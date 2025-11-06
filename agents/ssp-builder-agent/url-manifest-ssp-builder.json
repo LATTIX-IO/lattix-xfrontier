@@ -1,0 +1,47 @@
+{
+  "reference_manifest_version": "1.0",
+  "agent": "SSP Builder",
+  "last_verified": "2025-11-05",
+  "sources": [
+    {
+      "id": "nist_800_18_r1",
+      "title": "NIST SP 800-18 Rev.1 (Guide for Developing SSPs)",
+      "url": "https://csrc.nist.gov/publications/detail/sp/800-18/rev-1/final",
+      "type": "standard",
+      "scope": ["ssp-structure", "content"],
+      "stability": "stable"
+    },
+    {
+      "id": "nist_800_37_r2",
+      "title": "NIST SP 800-37 Rev.2 (RMF)",
+      "url": "https://csrc.nist.gov/publications/detail/sp/800-37/rev-2/final",
+      "type": "standard",
+      "scope": ["authorization", "ssp-context"],
+      "stability": "stable"
+    },
+    {
+      "id": "fedramp_ssp_templates",
+      "title": "FedRAMP SSP Templates",
+      "url": "https://www.fedramp.gov/",
+      "type": "program",
+      "scope": ["templates", "examples"],
+      "stability": "changing"
+    },
+    {
+      "id": "cmmc_model",
+      "title": "CMMC 2.0 Model & Scoping",
+      "url": "https://dodcio.defense.gov/CMMC/",
+      "type": "program",
+      "scope": ["ssp-sections", "cui-boundaries"],
+      "stability": "changing"
+    },
+    {
+      "id": "nist_800_207",
+      "title": "NIST SP 800-207 (Zero Trust Architecture)",
+      "url": "https://csrc.nist.gov/publications/detail/sp/800-207/final",
+      "type": "standard",
+      "scope": ["architecture", "boundary-definitions"],
+      "stability": "stable"
+    }
+  ]
+}

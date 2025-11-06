@@ -1,0 +1,39 @@
+{
+  "reference_manifest_version": "1.0",
+  "agent": "Customer Success",
+  "last_verified": "2025-11-05",
+  "sources": [
+    {
+      "id": "gainsight_resources",
+      "title": "Gainsight — Resources (Public)",
+      "url": "https://www.gainsight.com/resources/",
+      "type": "best-practice",
+      "scope": ["onboarding","health-scores","qbrs"],
+      "stability": "changing"
+    },
+    {
+      "id": "successhacker",
+      "title": "SuccessHacker — Articles",
+      "url": "https://successhacker.co/blog/",
+      "type": "best-practice",
+      "scope": ["playbooks","renewals","csops"],
+      "stability": "changing"
+    },
+    {
+      "id": "tsia",
+      "title": "TSIA (Public Research)",
+      "url": "https://www.tsia.com/blog",
+      "type": "analyst",
+      "scope": ["xaas","expansion","benchmarks"],
+      "stability": "changing"
+    },
+    {
+      "id": "bain_nps",
+      "title": "Bain — Net Promoter System",
+      "url": "https://www.netpromotersystem.com/about/",
+      "type": "framework",
+      "scope": ["nps","loyalty","surveys"],
+      "stability": "stable"
+    }
+  ]
+}

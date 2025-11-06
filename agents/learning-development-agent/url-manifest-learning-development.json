@@ -1,0 +1,39 @@
+{
+  "reference_manifest_version": "1.0",
+  "agent": "Learning & Development",
+  "last_verified": "2025-11-05",
+  "sources": [
+    {
+      "id": "atd",
+      "title": "ATD (Public Articles)",
+      "url": "https://www.td.org/insights",
+      "type": "best-practice",
+      "scope": ["l-d-strategy","skills","measurement"],
+      "stability": "changing"
+    },
+    {
+      "id": "kirkpatrick",
+      "title": "Kirkpatrick Model (Overview)",
+      "url": "https://www.kirkpatrickpartners.com/the-kirkpatrick-model/",
+      "type": "framework",
+      "scope": ["evaluation-levels"],
+      "stability": "stable"
+    },
+    {
+      "id": "bloom_taxonomy",
+      "title": "Bloom’s Taxonomy (Overview)",
+      "url": "https://cft.vanderbilt.edu/guides-sub-pages/blooms-taxonomy/",
+      "type": "framework",
+      "scope": ["learning-objectives"],
+      "stability": "stable"
+    },
+    {
+      "id": "ms_learn_hub",
+      "title": "Microsoft Learn Hub",
+      "url": "https://learn.microsoft.com/training/",
+      "type": "catalog",
+      "scope": ["role-paths","modules","skills"],
+      "stability": "changing"
+    }
+  ]
+}

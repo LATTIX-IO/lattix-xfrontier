@@ -1,0 +1,71 @@
+{
+  "reference_manifest_version": "1.0",
+  "agent": "Privacy Officer",
+  "last_verified": "2025-11-05",
+  "sources": [
+    {
+      "id": "eu_gdpr_portal",
+      "title": "EU GDPR (Official)",
+      "url": "https://gdpr.eu/",
+      "type": "regulation",
+      "scope": ["articles","recitals","guides"],
+      "stability": "stable"
+    },
+    {
+      "id": "edpb",
+      "title": "European Data Protection Board",
+      "url": "https://edpb.europa.eu/",
+      "type": "regulator",
+      "scope": ["guidelines","opinions","binding-decisions"],
+      "stability": "changing"
+    },
+    {
+      "id": "ico",
+      "title": "UK ICO",
+      "url": "https://ico.org.uk/",
+      "type": "regulator",
+      "scope": ["guidance","codes-of-practice"],
+      "stability": "changing"
+    },
+    {
+      "id": "cppa",
+      "title": "California Privacy Protection Agency (CPRA)",
+      "url": "https://cppa.ca.gov/",
+      "type": "regulator",
+      "scope": ["regulations","enforcement"],
+      "stability": "changing"
+    },
+    {
+      "id": "nist_privacy_framework",
+      "title": "NIST Privacy Framework",
+      "url": "https://www.nist.gov/privacy-framework",
+      "type": "framework",
+      "scope": ["functions","implementation"],
+      "stability": "stable"
+    },
+    {
+      "id": "hhs_ocr",
+      "title": "HHS OCR (HIPAA)",
+      "url": "https://www.hhs.gov/hipaa/",
+      "type": "regulator",
+      "scope": ["privacy","security-rule","breach-notification"],
+      "stability": "changing"
+    },
+    {
+      "id": "ftc_privacy",
+      "title": "FTC Privacy & Data Security",
+      "url": "https://www.ftc.gov/business-guidance/privacy-security",
+      "type": "regulator",
+      "scope": ["guidance","enforcement"],
+      "stability": "changing"
+    },
+    {
+      "id": "iapp_resource_center",
+      "title": "IAPP Resource Center (public pages)",
+      "url": "https://iapp.org/resources/",
+      "type": "guidance",
+      "scope": ["summaries","maps","glossaries"],
+      "stability": "changing"
+    }
+  ]
+}

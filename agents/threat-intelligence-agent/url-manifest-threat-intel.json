@@ -1,0 +1,63 @@
+{
+  "reference_manifest_version": "1.0",
+  "agent": "Threat Intelligence",
+  "last_verified": "2025-11-05",
+  "sources": [
+    {
+      "id": "mitre_attack",
+      "title": "MITRE ATT&CK (Enterprise)",
+      "url": "https://attack.mitre.org/matrices/enterprise/",
+      "type": "catalog",
+      "scope": ["tactics","techniques","groups","software"],
+      "stability": "changing"
+    },
+    {
+      "id": "cisa_kev",
+      "title": "CISA KEV Catalog",
+      "url": "https://www.cisa.gov/known-exploited-vulnerabilities-catalog",
+      "type": "advisory",
+      "scope": ["exploited-cves","dates","notes"],
+      "stability": "changing"
+    },
+    {
+      "id": "nvd_cve",
+      "title": "NVD (CVE/NIST)",
+      "url": "https://nvd.nist.gov/vuln/search",
+      "type": "catalog",
+      "scope": ["cve","cvss","cpe"],
+      "stability": "changing"
+    },
+    {
+      "id": "mitre_d3fend",
+      "title": "MITRE D3FEND",
+      "url": "https://d3fend.mitre.org/",
+      "type": "catalog",
+      "scope": ["defensive-techniques","mappings"],
+      "stability": "changing"
+    },
+    {
+      "id": "microsoft_threat_intel",
+      "title": "Microsoft Threat Intelligence (MSTIC) Blog",
+      "url": "https://www.microsoft.com/security/blog/",
+      "type": "vendor",
+      "scope": ["campaigns","tradecraft","ioc"],
+      "stability": "changing"
+    },
+    {
+      "id": "google_tag",
+      "title": "Google Threat Analysis Group",
+      "url": "https://blog.google/threat-analysis-group/",
+      "type": "vendor",
+      "scope": ["state-actors","exploits"],
+      "stability": "changing"
+    },
+    {
+      "id": "mandiant_blog",
+      "title": "Mandiant (Research & Intelligence)",
+      "url": "https://www.mandiant.com/resources/blog",
+      "type": "vendor",
+      "scope": ["tactics","malware","reports"],
+      "stability": "changing"
+    }
+  ]
+}

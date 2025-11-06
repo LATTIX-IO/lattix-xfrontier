@@ -1,0 +1,261 @@
+{
+  "reference_manifest_version": "1.1",
+  "agent": "Developer (Full-Stack SDET Generalist, Language-Agnostic) — Core CS/SE & Architecture",
+  "last_verified": "2025-11-05",
+  "sources": [
+    {
+      "id": "swebok",
+      "title": "SWEBOK — Software Engineering Body of Knowledge (IEEE CS)",
+      "url": "https://www.computer.org/education/bodies-of-knowledge/software-engineering",
+      "type": "body-of-knowledge",
+      "scope": ["requirements","design","construction","testing","maintenance","configuration","quality","professional-practice"],
+      "stability": "stable"
+    },
+    {
+      "id": "sebok",
+      "title": "SEBoK — Systems Engineering Body of Knowledge",
+      "url": "https://sebokwiki.org/",
+      "type": "body-of-knowledge",
+      "scope": ["system-thinking","lifecycle","architecture","trade studies"],
+      "stability": "stable"
+    },
+    {
+      "id": "12factor",
+      "title": "The Twelve-Factor App",
+      "url": "https://12factor.net/",
+      "type": "architecture-principles",
+      "scope": ["saas-architecture","config","build-release-run","dev-prod-parity","logs"],
+      "stability": "stable"
+    },
+    {
+      "id": "google_sre_book",
+      "title": "Google SRE Book (Free Online)",
+      "url": "https://sre.google/sre-book/table-of-contents/",
+      "type": "operations-architecture",
+      "scope": ["reliability","slis-slos-error-budgets","capacity","release-engineering"],
+      "stability": "stable"
+    },
+    {
+      "id": "osi_posix",
+      "title": "The Open Group Base Specifications (POSIX) — Overview",
+      "url": "https://pubs.opengroup.org/onlinepubs/9699919799/",
+      "type": "standard",
+      "scope": ["process-model","signals","filesystems","threads","shell-utilities"],
+      "stability": "stable"
+    },
+    {
+      "id": "ostep",
+      "title": "Operating Systems: Three Easy Pieces (OSTEP)",
+      "url": "https://pages.cs.wisc.edu/~remzi/OSTEP/",
+      "type": "textbook",
+      "scope": ["processes","scheduling","vm","filesystems","concurrency"],
+      "stability": "stable"
+    },
+    {
+      "id": "http_rfc_9110",
+      "title": "HTTP Semantics — RFC 9110",
+      "url": "https://www.rfc-editor.org/rfc/rfc9110",
+      "type": "standard",
+      "scope": ["methods","status-codes","headers","content-negotiation","caching"],
+      "stability": "stable"
+    },
+    {
+      "id": "rest_fielding",
+      "title": "REST — Fielding Dissertation (Chapter 5: Architectural Styles and REST)",
+      "url": "https://www.ics.uci.edu/~fielding/pubs/dissertation/rest_arch_style.htm",
+      "type": "architecture",
+      "scope": ["rest-constraints","hypermedia","client-server","statelessness","cache"],
+      "stability": "stable"
+    },
+    {
+      "id": "grpc_concepts",
+      "title": "RPC Fundamentals via gRPC Concepts (Product-Agnostic Patterns)",
+      "url": "https://grpc.io/docs/what-is-grpc/core-concepts/",
+      "type": "architecture",
+      "scope": ["rpc","idl","streaming","contracts","backwards-compatibility"],
+      "stability": "stable",
+      "notes": "Use for general RPC concepts; avoid product-specific implementation details."
+    },
+    {
+      "id": "ddd_reference",
+      "title": "Domain-Driven Design Reference (Evans, Free PDF)",
+      "url": "https://domainlanguage.com/ddd/reference/",
+      "type": "architecture",
+      "scope": ["ubiquitous-language","bounded-contexts","aggregates","repositories"],
+      "stability": "stable"
+    },
+    {
+      "id": "hexagonal_arch",
+      "title": "Hexagonal Architecture (Ports & Adapters) — Alistair Cockburn",
+      "url": "https://alistair.cockburn.us/hexagonal-architecture/",
+      "type": "architecture-pattern",
+      "scope": ["decoupling","ports-adapters","testability","domain-isolation"],
+      "stability": "stable"
+    },
+    {
+      "id": "cqrs_eventsourcing",
+      "title": "CQRS & Event Sourcing — Greg Young (Reference Materials)",
+      "url": "https://cqrs.wordpress.com/documents/",
+      "type": "architecture-pattern",
+      "scope": ["read-write-separation","events","event-stores"],
+      "stability": "stable"
+    },
+    {
+      "id": "reactive_manifesto",
+      "title": "The Reactive Manifesto",
+      "url": "https://www.reactivemanifesto.org/",
+      "type": "architecture-principles",
+      "scope": ["responsive","resilient","elastic","message-driven"],
+      "stability": "stable"
+    },
+    {
+      "id": "eip_hohpe",
+      "title": "Enterprise Integration Patterns (Public Catalog)",
+      "url": "https://www.enterpriseintegrationpatterns.com/patterns/messaging/",
+      "type": "architecture-patterns",
+      "scope": ["messaging","pubsub","saga","routing","idempotency"],
+      "stability": "stable"
+    },
+    {
+      "id": "lamport_time_clocks",
+      "title": "Time, Clocks, and the Ordering of Events in a Distributed System (Lamport)",
+      "url": "https://lamport.azurewebsites.net/pubs/time-clocks.pdf",
+      "type": "paper",
+      "scope": ["partial-order","happens-before","logical-clocks"],
+      "stability": "stable"
+    },
+    {
+      "id": "paxos_made_simple",
+      "title": "Paxos Made Simple (Lamport)",
+      "url": "https://lamport.azurewebsites.net/pubs/paxos-simple.pdf",
+      "type": "paper",
+      "scope": ["consensus","fault-tolerance"],
+      "stability": "stable"
+    },
+    {
+      "id": "raft_in_search_of",
+      "title": "In Search of an Understandable Consensus Algorithm (Raft)",
+      "url": "https://raft.github.io/raft.pdf",
+      "type": "paper",
+      "scope": ["consensus","state-machine-replication","leader-election","log-replication"],
+      "stability": "stable"
+    },
+    {
+      "id": "cap_theorem_primer",
+      "title": "CAP Theorem Primer (Plain-English Overview)",
+      "url": "https://www.infoq.com/articles/cap-twelve-years-later-how-the-rules-have-changed/",
+      "type": "concepts",
+      "scope": ["consistency","availability","partition-tolerance","tradeoffs"],
+      "stability": "stable",
+      "notes": "If unavailable, cite neutral academic overviews."
+    },
+    {
+      "id": "pacelc",
+      "title": "PACELC: When You Can’t Have Both Consistency and Latency (Abadi)",
+      "url": "https://dbmsmusings.blogspot.com/2010/04/pacelc-availability-and-consistency.html",
+      "type": "concepts",
+      "scope": ["latency-consistency-tradeoff","replication","partitioning"],
+      "stability": "stable"
+    },
+    {
+      "id": "r2dbc_acid",
+      "title": "ACID & Transactions (Vendor-Neutral Overviews)",
+      "url": "https://web.stanford.edu/class/cs245/notes/",
+      "type": "course-notes",
+      "scope": ["acid","isolation","concurrency-control","logging","recovery"],
+      "stability": "stable",
+      "notes": "Use generally applicable theory; avoid vendor specifics."
+    },
+    {
+      "id": "cmu_15_445_notes",
+      "title": "CMU 15-445/645 — Intro to Database Systems (Notes)",
+      "url": "https://15445.courses.cs.cmu.edu/",
+      "type": "course-notes",
+      "scope": ["storage","indexes","transactions","mvcc","query-optimization"],
+      "stability": "changing"
+    },
+    {
+      "id": "cp_algorithms",
+      "title": "CP-Algorithms",
+      "url": "https://cp-algorithms.com/",
+      "type": "reference",
+      "scope": ["data-structures","algorithms","complexity","implementations"],
+      "stability": "changing",
+      "notes": "Use for algorithmic concepts; do not rely on language-specific code."
+    },
+    {
+      "id": "visu_algo",
+      "title": "VisuAlgo",
+      "url": "https://visualgo.net/en",
+      "type": "reference",
+      "scope": ["visualizations","graphs","trees","sorting","complexity"],
+      "stability": "stable"
+    },
+    {
+      "id": "little_book_of_semaphores",
+      "title": "The Little Book of Semaphores",
+      "url": "https://greenteapress.com/wp/semaphores/",
+      "type": "textbook",
+      "scope": ["concurrency","mutex","semaphores","monitors","barriers"],
+      "stability": "stable"
+    },
+    {
+      "id": "software_arch_handbook_sei",
+      "title": "SEI — Software Architecture Resources",
+      "url": "https://resources.sei.cmu.edu/library/subject-areas/software-architecture/",
+      "type": "best-practice",
+      "scope": ["architecture-evaluation","quality-attributes","views-and-beyond"],
+      "stability": "stable"
+    },
+    {
+      "id": "adr_mnygard",
+      "title": "Architecture Decision Records (ADRs) — Michael Nygard",
+      "url": "http://thinkrelevance.com/blog/2011/11/15/documenting-architecture-decisions",
+      "type": "practice",
+      "scope": ["decision-logs","traceability","governance"],
+      "stability": "stable"
+    },
+    {
+      "id": "owasp_asvs",
+      "title": "OWASP ASVS (Security Requirements Catalog)",
+      "url": "https://owasp.org/www-project-application-security-verification-standard/",
+      "type": "nonfunctional-requirements",
+      "scope": ["security-criteria","verification-levels"],
+      "stability": "stable",
+      "notes": "Use for cross-language nonfunctional requirements; keep security guidance generic."
+    },
+    {
+      "id": "w3c_wcag",
+      "title": "W3C — WCAG 2.x",
+      "url": "https://www.w3.org/WAI/standards-guidelines/wcag/",
+      "type": "nonfunctional-requirements",
+      "scope": ["accessibility-principles","conformance-levels","testing"],
+      "stability": "stable"
+    },
+    {
+      "id": "paradigms_overview",
+      "title": "Programming Paradigms Overview (Stanford CS107/CS107E references)",
+      "url": "https://cs107e.github.io/",
+      "type": "course-notes",
+      "scope": ["imperative","object-oriented","functional","dataflow","logic","concurrency-models"],
+      "stability": "changing",
+      "notes": "Use as taxonomy/context, not language-specific instruction."
+    },
+    {
+      "id": "crafting_interpreters",
+      "title": "Crafting Interpreters (Free Online)",
+      "url": "https://craftinginterpreters.com/",
+      "type": "textbook",
+      "scope": ["language-design","parsing","interpreters","vm-concepts"],
+      "stability": "stable"
+    },
+    {
+      "id": "sicp",
+      "title": "SICP — Structure and Interpretation of Computer Programs",
+      "url": "https://web.mit.edu/alexmv/6.037/sicp.pdf",
+      "type": "textbook",
+      "scope": ["abstraction","metalinguistic-abstraction","streams","interpreters"],
+      "stability": "stable"
+    }
+  ]
+}

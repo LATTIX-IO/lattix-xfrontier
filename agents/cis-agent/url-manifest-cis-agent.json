@@ -1,0 +1,39 @@
+{
+  "reference_manifest_version": "1.0",
+  "agent": "CIS Controls v8",
+  "last_verified": "2025-11-05",
+  "sources": [
+    {
+      "id": "cis_controls_v8",
+      "title": "CIS Critical Security Controls v8",
+      "url": "https://www.cisecurity.org/controls/v8",
+      "type": "standard",
+      "scope": ["safeguards", "ig1-ig3"],
+      "stability": "stable"
+    },
+    {
+      "id": "cis_benchmarks",
+      "title": "CIS Benchmarks (OS/Cloud/Kubernetes)",
+      "url": "https://www.cisecurity.org/benchmarks",
+      "type": "benchmark",
+      "scope": ["hardening", "platform-specific"],
+      "stability": "changing"
+    },
+    {
+      "id": "cis_mappings",
+      "title": "CIS Controls Mappings (NIST/CSF/ISO)",
+      "url": "https://www.cisecurity.org/insights/white-papers",
+      "type": "mapping",
+      "scope": ["crosswalks", "comparisons"],
+      "stability": "changing"
+    },
+    {
+      "id": "cisa_cpg",
+      "title": "CISA Cybersecurity Performance Goals",
+      "url": "https://www.cisa.gov/cpg",
+      "type": "guidance",
+      "scope": ["prioritization", "baseline"],
+      "stability": "changing"
+    }
+  ]
+}

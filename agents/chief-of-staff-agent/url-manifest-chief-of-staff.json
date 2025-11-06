@@ -1,0 +1,39 @@
+{
+  "reference_manifest_version": "1.0",
+  "agent": "Chief of Staff",
+  "last_verified": "2025-11-05",
+  "sources": [
+    {
+      "id": "hbr_management",
+      "title": "Harvard Business Review — Management (Public)",
+      "url": "https://hbr.org/topic/management",
+      "type": "best-practice",
+      "scope": ["exec-comms","decision-making","org-design"],
+      "stability": "changing"
+    },
+    {
+      "id": "mck_insights",
+      "title": "McKinsey — Insights (Public)",
+      "url": "https://www.mckinsey.com/featured-insights",
+      "type": "analyst",
+      "scope": ["operations","strategy","org"],
+      "stability": "changing"
+    },
+    {
+      "id": "firstround_review",
+      "title": "First Round Review",
+      "url": "https://review.firstround.com/",
+      "type": "best-practice",
+      "scope": ["company-building","ops","comms"],
+      "stability": "changing"
+    },
+    {
+      "id": "gov_uk_style",
+      "title": "GOV.UK Service Manual — Writing for GOV.UK",
+      "url": "https://www.gov.uk/guidance/content-design/writing-for-gov-uk",
+      "type": "style-guide",
+      "scope": ["plain-language","structure"],
+      "stability": "stable"
+    }
+  ]
+}

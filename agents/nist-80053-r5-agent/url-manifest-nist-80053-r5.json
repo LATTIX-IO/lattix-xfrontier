@@ -1,0 +1,55 @@
+{
+  "reference_manifest_version": "1.0",
+  "agent": "NIST SP 800-53 Rev.5",
+  "last_verified": "2025-11-05",
+  "sources": [
+    {
+      "id": "nist_800_53_r5",
+      "title": "NIST SP 800-53 Rev.5 (Controls)",
+      "url": "https://csrc.nist.gov/publications/detail/sp/800-53/rev-5/final",
+      "type": "standard",
+      "scope": ["controls", "parameters", "enhancements"],
+      "stability": "stable"
+    },
+    {
+      "id": "nist_800_53a_r5",
+      "title": "NIST SP 800-53A Rev.5 (Assessment Procedures)",
+      "url": "https://csrc.nist.gov/publications/detail/sp/800-53a/rev-5/final",
+      "type": "standard",
+      "scope": ["assessment-procedures", "objective-evidence"],
+      "stability": "stable"
+    },
+    {
+      "id": "nist_oscal_catalogs",
+      "title": "NIST OSCAL Catalogs/Profiles",
+      "url": "https://pages.nist.gov/OSCAL/",
+      "type": "schema",
+      "scope": ["machine-readable-controls", "profiles"],
+      "stability": "changing"
+    },
+    {
+      "id": "fedramp_baselines",
+      "title": "FedRAMP Baselines (Low/Moderate/High)",
+      "url": "https://www.fedramp.gov/",
+      "type": "program",
+      "scope": ["baselines", "parameters"],
+      "stability": "changing"
+    },
+    {
+      "id": "nist_800_63b",
+      "title": "NIST SP 800-63B (Digital Identity)",
+      "url": "https://pages.nist.gov/800-63-3/sp800-63b.html",
+      "type": "standard",
+      "scope": ["identity", "authentication"],
+      "stability": "stable"
+    },
+    {
+      "id": "nist_800_160_v1",
+      "title": "NIST SP 800-160 Vol.1 (Systems Security Engineering)",
+      "url": "https://csrc.nist.gov/publications/detail/sp/800-160/vol-1/final",
+      "type": "standard",
+      "scope": ["sse", "lifecycle"],
+      "stability": "stable"
+    }
+  ]
+}

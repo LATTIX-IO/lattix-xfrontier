@@ -1,0 +1,63 @@
+{
+  "reference_manifest_version": "1.0",
+  "agent": "Social Media (Best Practices)",
+  "last_verified": "2025-11-05",
+  "sources": [
+    {
+      "id": "linkedin_best_practices",
+      "title": "LinkedIn — Best Practices",
+      "url": "https://www.linkedin.com/business/marketing/blog",
+      "type": "platform",
+      "scope": ["b2b-content","ads","company-pages"],
+      "stability": "changing"
+    },
+    {
+      "id": "meta_business_help",
+      "title": "Meta Business Help Center",
+      "url": "https://www.facebook.com/business/help",
+      "type": "platform",
+      "scope": ["ads","targeting","formats"],
+      "stability": "changing"
+    },
+    {
+      "id": "youtube_creators",
+      "title": "YouTube Creators",
+      "url": "https://www.youtube.com/creators/",
+      "type": "platform",
+      "scope": ["video-storytelling","shorts","analytics"],
+      "stability": "changing"
+    },
+    {
+      "id": "x_business",
+      "title": "X Business (formerly Twitter)",
+      "url": "https://business.twitter.com/en/help.html",
+      "type": "platform",
+      "scope": ["posting","ads","brand-safety"],
+      "stability": "changing"
+    },
+    {
+      "id": "hootsuite_benchmarks",
+      "title": "Hootsuite — Social Trends (Public)",
+      "url": "https://blog.hootsuite.com/",
+      "type": "best-practice",
+      "scope": ["content-calendar","benchmarks"],
+      "stability": "changing"
+    },
+    {
+      "id": "buffer_library",
+      "title": "Buffer — Social Media Library",
+      "url": "https://buffer.com/library",
+      "type": "best-practice",
+      "scope": ["copywriting","timing","formatting"],
+      "stability": "changing"
+    },
+    {
+      "id": "sprout_best_practices",
+      "title": "Sprout Social — Best Practices",
+      "url": "https://sproutsocial.com/insights/",
+      "type": "best-practice",
+      "scope": ["reporting","listening","engagement"],
+      "stability": "changing"
+    }
+  ]
+}

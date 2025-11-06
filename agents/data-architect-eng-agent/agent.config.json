@@ -1,0 +1,27 @@
+{
+  "schema_version": "1.0.0",
+  "id": "data-architect-eng-agent",
+  "name": "Data Architect Eng Agent",
+  "description": "",
+  "version": "0.1.0",
+  "status": "draft",
+  "owners": [
+    "@lattix-io"
+  ],
+  "tags": [
+    "product",
+    "engineering",
+    "platform",
+    "architecture"
+  ],
+  "capabilities": [],
+  "prompt_file": "system-prompt.md",
+  "url_manifest": "url-manifest-data-architect-eng.json",
+  "model_defaults": {
+    "provider": "openai",
+    "model": "gpt-5",
+    "temperature": 0.3,
+    "top_p": 0.9,
+    "max_tokens": 4096
+  }
+}

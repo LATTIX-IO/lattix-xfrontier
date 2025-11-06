@@ -1,0 +1,79 @@
+{
+  "reference_manifest_version": "1.0",
+  "agent": "Website Content (SaaS SEO & CTA)",
+  "last_verified": "2025-11-05",
+  "sources": [
+    {
+      "id": "google_search_central",
+      "title": "Google Search Central",
+      "url": "https://developers.google.com/search/docs/fundamentals/creating-helpful-content",
+      "type": "guidance",
+      "scope": ["helpful-content","eeat","seo-basics"],
+      "stability": "changing"
+    },
+    {
+      "id": "google_page_experience",
+      "title": "Google Page Experience & Core Web Vitals",
+      "url": "https://developers.google.com/search/docs/appearance/core-web-vitals",
+      "type": "guidance",
+      "scope": ["core-web-vitals","page-experience"],
+      "stability": "changing"
+    },
+    {
+      "id": "schema_org",
+      "title": "Schema.org (Structured Data)",
+      "url": "https://schema.org/",
+      "type": "guidance",
+      "scope": ["structured-data","saas-markup-examples"],
+      "stability": "stable"
+    },
+    {
+      "id": "nn_group_web_writing",
+      "title": "Nielsen Norman Group — Web Writing & IA",
+      "url": "https://www.nngroup.com/topic/writing/",
+      "type": "best-practice",
+      "scope": ["scannability","information-architecture","ux-writing"],
+      "stability": "changing"
+    },
+    {
+      "id": "baymard_ux_research",
+      "title": "Baymard Institute — UX Research (Public)",
+      "url": "https://baymard.com/blog",
+      "type": "best-practice",
+      "scope": ["checkout-ux","forms","trust","evidence"],
+      "stability": "changing"
+    },
+    {
+      "id": "cxl_landing_pages",
+      "title": "CXL — Landing Page Optimization",
+      "url": "https://cxl.com/blog/category/conversion-optimization/",
+      "type": "best-practice",
+      "scope": ["copy","layouts","cta-testing"],
+      "stability": "changing"
+    },
+    {
+      "id": "ahrefs_content",
+      "title": "Ahrefs — SEO Content Guides",
+      "url": "https://ahrefs.com/blog/",
+      "type": "best-practice",
+      "scope": ["keyword-intent","topic-clusters","internal-linking"],
+      "stability": "changing"
+    },
+    {
+      "id": "backlinko_content",
+      "title": "Backlinko — Content & On-page SEO",
+      "url": "https://backlinko.com/blog",
+      "type": "best-practice",
+      "scope": ["on-page","linkable-assets","checklists"],
+      "stability": "changing"
+    },
+    {
+      "id": "growth_design",
+      "title": "Growth.Design — Product Storytelling",
+      "url": "https://growth.design/case-studies/",
+      "type": "best-practice",
+      "scope": ["storytelling","behavioral-design","cta-framing"],
+      "stability": "changing"
+    }
+  ]
+}

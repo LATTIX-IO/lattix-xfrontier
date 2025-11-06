@@ -1,0 +1,55 @@
+{
+  "reference_manifest_version": "1.0",
+  "agent": "AI Architect / Engineer",
+  "last_verified": "2025-11-05",
+  "sources": [
+    {
+      "id": "azure_ai_foundry",
+      "title": "Azure AI Foundry (Docs)",
+      "url": "https://learn.microsoft.com/azure/ai-foundry/",
+      "type": "docs",
+      "scope": ["agent-service","model-catalog","evaluation","safety"],
+      "stability": "changing"
+    },
+    {
+      "id": "azure_openai",
+      "title": "Azure OpenAI Service",
+      "url": "https://learn.microsoft.com/azure/ai-services/openai/",
+      "type": "docs",
+      "scope": ["models","tokens","rate-limits","function-calling"],
+      "stability": "changing"
+    },
+    {
+      "id": "semantic_kernel",
+      "title": "Semantic Kernel",
+      "url": "https://learn.microsoft.com/semantic-kernel/",
+      "type": "docs",
+      "scope": ["plugins","connectors","patterns"],
+      "stability": "changing"
+    },
+    {
+      "id": "autogen",
+      "title": "AutoGen (Microsoft)",
+      "url": "https://microsoft.github.io/autogen/",
+      "type": "docs",
+      "scope": ["multi-agent","patterns","examples"],
+      "stability": "changing"
+    },
+    {
+      "id": "langchain",
+      "title": "LangChain & LangGraph",
+      "url": "https://python.langchain.com/",
+      "type": "docs",
+      "scope": ["rag","graphs","tools"],
+      "stability": "changing"
+    },
+    {
+      "id": "nist_ai_rmf",
+      "title": "NIST AI Risk Management Framework",
+      "url": "https://www.nist.gov/itl/ai-risk-management-framework",
+      "type": "framework",
+      "scope": ["governance","risk","measures"],
+      "stability": "stable"
+    }
+  ]
+}

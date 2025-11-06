@@ -1,0 +1,47 @@
+{
+  "reference_manifest_version": "1.0",
+  "agent": "Grants & RFP",
+  "last_verified": "2025-11-05",
+  "sources": [
+    {
+      "id": "grants_gov",
+      "title": "Grants.gov",
+      "url": "https://www.grants.gov/",
+      "type": "portal",
+      "scope": ["notices","foas","forms"],
+      "stability": "changing"
+    },
+    {
+      "id": "nsf_bfa",
+      "title": "NSF — Funding Opportunities",
+      "url": "https://www.nsf.gov/funding/",
+      "type": "agency",
+      "scope": ["solicitations","pappg"],
+      "stability": "changing"
+    },
+    {
+      "id": "nih_era",
+      "title": "NIH — Grants & Funding",
+      "url": "https://grants.nih.gov/grants/oer.htm",
+      "type": "agency",
+      "scope": ["foas","policies","forms"],
+      "stability": "changing"
+    },
+    {
+      "id": "dod_baa",
+      "title": "DoD — Broad Agency Announcements",
+      "url": "https://sam.gov/opp/search?index=opp&is_active=true&mode=search&notice_type=BAA",
+      "type": "portal",
+      "scope": ["baa","solicitations"],
+      "stability": "changing"
+    },
+    {
+      "id": "eu_fto",
+      "title": "EU Funding & Tenders",
+      "url": "https://ec.europa.eu/info/funding-tenders/opportunities/portal/",
+      "type": "portal",
+      "scope": ["calls","work-programmes"],
+      "stability": "changing"
+    }
+  ]
+}

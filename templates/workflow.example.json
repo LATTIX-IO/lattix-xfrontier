@@ -1,0 +1,20 @@
+ {
+  "name": "Example Workflow",
+  "stages": [
+    {
+      "name": "GTM Content",
+      "topic": "gtm.content",
+      "payload": { "brief": "Launch announcement draft" },
+      "budget_ms": 2000,
+      "expected_keys": ["blog_post"]
+    },
+    {
+      "name": "Security Compliance",
+      "topic": "security.compliance",
+      "payload": { "system": "New SSP/SAR for Product X" },
+      "budget_ms": 3000,
+      "expected_keys": ["ssp", "sar"]
+    }
+  ]
+}
+

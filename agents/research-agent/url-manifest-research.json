@@ -1,0 +1,65 @@
+{
+  "reference_manifest_version": "1.0",
+  "agent": "Research",
+  "last_verified": "2025-11-05",
+  "sources": [
+    {
+      "id": "arxiv",
+      "title": "arXiv",
+      "url": "https://arxiv.org/",
+      "type": "papers",
+      "scope": ["preprints","cs","math","stat"],
+      "stability": "changing"
+    },
+    {
+      "id": "nist_csrc",
+      "title": "NIST CSRC Publications",
+      "url": "https://csrc.nist.gov/publications",
+      "type": "standards",
+      "scope": ["security","privacy","ai"],
+      "stability": "stable"
+    },
+    {
+      "id": "ieee_xplore",
+      "title": "IEEE Xplore (open pages/abstracts)",
+      "url": "https://ieeexplore.ieee.org/",
+      "type": "papers",
+      "scope": ["abstracts","open-access"],
+      "stability": "changing",
+      "notes": "Use open content only; do not reproduce paywalled text."
+    },
+    {
+      "id": "acm_dl",
+      "title": "ACM Digital Library (open pages/abstracts)",
+      "url": "https://dl.acm.org/",
+      "type": "papers",
+      "scope": ["abstracts","open-access"],
+      "stability": "changing",
+      "notes": "Use open content only."
+    },
+    {
+      "id": "ssrn",
+      "title": "SSRN",
+      "url": "https://www.ssrn.com/",
+      "type": "papers",
+      "scope": ["working-papers","economics","law","tech"],
+      "stability": "changing"
+    },
+    {
+      "id": "whitehouse",
+      "title": "White House — Briefings & Fact Sheets",
+      "url": "https://www.whitehouse.gov/briefing-room/",
+      "type": "gov",
+      "scope": ["policy","executive-orders"],
+      "stability": "changing"
+    },
+    {
+      "id": "eu_commission",
+      "title": "European Commission — Press & Publications",
+      "url": "https://commission.europa.eu/news",
+      "type": "gov",
+      "scope": ["policy","regulatory-news"],
+      "stability": "changing"
+    }
+  ]
+}

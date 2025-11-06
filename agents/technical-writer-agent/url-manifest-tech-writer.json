@@ -1,0 +1,55 @@
+{
+  "reference_manifest_version": "1.0",
+  "agent": "Tech Writer (Software Docs)",
+  "last_verified": "2025-11-05",
+  "sources": [
+    {
+      "id": "google_dev_style",
+      "title": "Google Developer Documentation Style Guide",
+      "url": "https://developers.google.com/style",
+      "type": "style-guide",
+      "scope": ["terminology","examples","formatting"],
+      "stability": "stable"
+    },
+    {
+      "id": "microsoft_style_guide",
+      "title": "Microsoft Writing Style Guide",
+      "url": "https://learn.microsoft.com/style-guide/",
+      "type": "style-guide",
+      "scope": ["voice","ui-text","glossary"],
+      "stability": "stable"
+    },
+    {
+      "id": "diataxis",
+      "title": "Diátaxis Documentation Framework",
+      "url": "https://diataxis.fr/",
+      "type": "framework",
+      "scope": ["tutorials","how-to","explanations","reference"],
+      "stability": "stable"
+    },
+    {
+      "id": "write_the_docs",
+      "title": "Write the Docs (Public Guides)",
+      "url": "https://www.writethedocs.org/guide/",
+      "type": "community",
+      "scope": ["information-architecture","workflows"],
+      "stability": "changing"
+    },
+    {
+      "id": "nn_group_ux_writing",
+      "title": "Nielsen Norman Group — UX Writing",
+      "url": "https://www.nngroup.com/topic/ux-writing/",
+      "type": "best-practice",
+      "scope": ["microcopy","readability","navigation"],
+      "stability": "changing"
+    },
+    {
+      "id": "readme_best_practices",
+      "title": "GitHub — README Best Practices (Community)",
+      "url": "https://github.com/matiassingers/awesome-readme",
+      "type": "community",
+      "scope": ["readme-structure","examples"],
+      "stability": "changing"
+    }
+  ]
+}

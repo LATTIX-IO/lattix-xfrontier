@@ -1,0 +1,47 @@
+{
+  "reference_manifest_version": "1.0",
+  "agent": "Product Owner",
+  "last_verified": "2025-11-05",
+  "sources": [
+    {
+      "id": "scrum_guide",
+      "title": "The Scrum Guide",
+      "url": "https://scrumguides.org/",
+      "type": "framework",
+      "scope": ["roles","events","artifacts"],
+      "stability": "stable"
+    },
+    {
+      "id": "svpg",
+      "title": "SVPG (Marty Cagan) — Product",
+      "url": "https://svpg.com/articles/",
+      "type": "best-practice",
+      "scope": ["product-principles","org","discovery"],
+      "stability": "changing"
+    },
+    {
+      "id": "teresa_torres",
+      "title": "Teresa Torres — Continuous Discovery",
+      "url": "https://www.producttalk.org/blog/",
+      "type": "best-practice",
+      "scope": ["discovery-habits","opportunity-solution-tree"],
+      "stability": "changing"
+    },
+    {
+      "id": "lean_startup",
+      "title": "Lean Startup (Public Resources)",
+      "url": "https://www.leanstartup.co/resources/",
+      "type": "best-practice",
+      "scope": ["experiments","validated-learning"],
+      "stability": "changing"
+    },
+    {
+      "id": "okrs",
+      "title": "Measure What Matters — OKRs (Public)",
+      "url": "https://www.whatmatters.com/",
+      "type": "framework",
+      "scope": ["okrs","examples","antipatterns"],
+      "stability": "changing"
+    }
+  ]
+}

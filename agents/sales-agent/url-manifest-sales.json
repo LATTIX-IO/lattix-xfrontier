@@ -1,0 +1,63 @@
+{
+  "reference_manifest_version": "1.0",
+  "agent": "Sales (Customer-Centric SaaS & Security)",
+  "last_verified": "2025-11-05",
+  "sources": [
+    {
+      "id": "winning_by_design",
+      "title": "Winning by Design — SaaS Sales Architecture (Public)",
+      "url": "https://www.winningbydesign.com/learn/",
+      "type": "best-practice",
+      "scope": ["recurring-revenue","value-architecture","playbooks"],
+      "stability": "changing"
+    },
+    {
+      "id": "meddicc",
+      "title": "MEDDICC (Official Resources)",
+      "url": "https://meddicc.com/resources/",
+      "type": "framework",
+      "scope": ["qualification","sales-process"],
+      "stability": "changing"
+    },
+    {
+      "id": "gartner_b2b_buying",
+      "title": "Gartner (Public) — B2B Buying Journey",
+      "url": "https://www.gartner.com/en/insights/sales",
+      "type": "analyst",
+      "scope": ["buying-committee","enablement"],
+      "stability": "changing"
+    },
+    {
+      "id": "force_management",
+      "title": "Force Management (Public Insights)",
+      "url": "https://forcemanagement.com/blog",
+      "type": "best-practice",
+      "scope": ["value-selling","messaging"],
+      "stability": "changing"
+    },
+    {
+      "id": "openview_pricing",
+      "title": "OpenView — Pricing & Packaging",
+      "url": "https://openviewpartners.com/blog/category/pricing/",
+      "type": "best-practice",
+      "scope": ["pricing","packaging","plg-alignment"],
+      "stability": "changing"
+    },
+    {
+      "id": "microsoft_security_buyers",
+      "title": "Microsoft Security — Solution Guides (Public)",
+      "url": "https://learn.microsoft.com/security/",
+      "type": "vendor",
+      "scope": ["security-outcomes","buyer-guides"],
+      "stability": "changing"
+    },
+    {
+      "id": "nist_csf_value",
+      "title": "NIST CSF 2.0 (Value Outcomes Framing)",
+      "url": "https://www.nist.gov/cyberframework",
+      "type": "framework",
+      "scope": ["outcomes","risk-reduction"],
+      "stability": "stable"
+    }
+  ]
+}
