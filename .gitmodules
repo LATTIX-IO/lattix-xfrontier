@@ -1,0 +1,27 @@
+[submodule "lattix-frontier-agents"]
+	path = lattix-frontier-agents
+	url = https://github.com/LATTIX-IO/lattix-frontier-agents.git
+[submodule "lattix-frontier-backend"]
+	path = lattix-frontier-backend
+	url = https://github.com/LATTIX-IO/lattix-frontier-backend.git
+[submodule "lattix-frontier-contracts"]
+	path = lattix-frontier-contracts
+	url = https://github.com/LATTIX-IO/lattix-frontier-contracts.git
+[submodule "lattix-frontier-data"]
+	path = lattix-frontier-data
+	url = https://github.com/LATTIX-IO/lattix-frontier-data.git
+[submodule "lattix-frontier-docs"]
+	path = lattix-frontier-docs
+	url = https://github.com/LATTIX-IO/lattix-frontier-docs.git
+[submodule "lattix-frontier-frontend"]
+	path = lattix-frontier-frontend
+	url = https://github.com/LATTIX-IO/lattix-frontier-frontend.git
+[submodule "lattix-frontier-gitops"]
+	path = lattix-frontier-gitops
+	url = https://github.com/LATTIX-IO/lattix-frontier-gitops.git
+[submodule "lattix-frontier-infra"]
+	path = lattix-frontier-infra
+	url = https://github.com/LATTIX-IO/lattix-frontier-infra.git
+[submodule "lattix-frontier-workers"]
+	path = lattix-frontier-workers
+	url = https://github.com/LATTIX-IO/lattix-frontier-workers.git

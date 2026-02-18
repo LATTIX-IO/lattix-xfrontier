@@ -1,6 +1,0 @@
-{
-  "topics": ["gtm.content"],
-  "module": "runtime.agents.example_handler",
-  "function": "handle"
-}
-
