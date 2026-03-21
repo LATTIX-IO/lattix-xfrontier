@@ -1,0 +1,101 @@
+services:
+  frontend:
+    image: node:22-alpine
+    container_name: frontier-frontend
+    working_dir: /workspace/lattix-frontier-frontend
+    command: sh -lc "LOCK_HASH_FILE=node_modules/.lockhash; CURRENT_HASH=$(sha256sum package-lock.json | awk '{print $1}'); SAVED_HASH=$(cat $$LOCK_HASH_FILE 2>/dev/null || true); if [ ! -x node_modules/.bin/next ] || [ \"$$CURRENT_HASH\" != \"$$SAVED_HASH\" ]; then npm ci --include=dev && mkdir -p node_modules && echo $$CURRENT_HASH > $$LOCK_HASH_FILE; fi; npm run dev -- --hostname 0.0.0.0 --port 3000"
+    stdin_open: true
+    tty: true
+    environment:
+      NEXT_TELEMETRY_DISABLED: 1
+      NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL:-http://localhost:8000}
+      API_BASE_URL_INTERNAL: ${API_BASE_URL_INTERNAL:-http://backend:8000}
+    ports:
+      - "127.0.0.1:3000:3000"
+    volumes:
+      - ./:/workspace
+      - frontier_frontend_node_modules:/workspace/lattix-frontier-frontend/node_modules
+    depends_on:
+      - backend
+
+  backend:
+    image: python:3.12-slim
+    container_name: frontier-backend
+    working_dir: /workspace/lattix-frontier-backend
+    command: sh -lc "pip install --no-cache-dir -r requirements.txt && if [ \"${FRONTIER_INSTALL_RUNTIME_ENGINES:-0}\" = \"1\" ]; then pip install --no-cache-dir -r requirements-runtime-engines.txt; fi && uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"
+    environment:
+      FRONTEND_ORIGIN: ${FRONTEND_ORIGIN:-http://localhost:3000}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_MODEL: ${OPENAI_MODEL:-gpt-4o-mini}
+      FRONTIER_INSTALL_RUNTIME_ENGINES: ${FRONTIER_INSTALL_RUNTIME_ENGINES:-0}
+      POSTGRES_DSN: ${POSTGRES_DSN:-postgresql://frontier:frontier@postgres:5432/frontier}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      NEO4J_URI: ${NEO4J_URI:-bolt://neo4j:7687}
+      NEO4J_USERNAME: ${NEO4J_USERNAME:-neo4j}
+      NEO4J_PASSWORD: ${NEO4J_PASSWORD:-frontier123}
+    ports:
+      - "127.0.0.1:8000:8000"
+    volumes:
+      - ./:/workspace
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+      neo4j:
+        condition: service_started
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: frontier-postgres
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-frontier}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-frontier}
+      POSTGRES_DB: ${POSTGRES_DB:-frontier}
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - frontier_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-frontier} -d ${POSTGRES_DB:-frontier}"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+  redis:
+    image: redis:7-alpine
+    container_name: frontier-redis
+    ports:
+      - "127.0.0.1:6379:6379"
+    volumes:
+      - frontier_redis_data:/data
+
+  neo4j:
+    image: neo4j:5.23-community
+    container_name: frontier-neo4j
+    environment:
+      NEO4J_AUTH: ${NEO4J_USERNAME:-neo4j}/${NEO4J_PASSWORD:-frontier123}
+    ports:
+      - "127.0.0.1:7474:7474"
+      - "127.0.0.1:7687:7687"
+    volumes:
+      - frontier_neo4j_data:/data
+
+  # Optional workers profile for integration runs.
+  # Enable with: docker compose --profile stack -f docker-compose.local.yml up
+  workers:
+    image: python:3.12-slim
+    profiles: ["stack"]
+    container_name: frontier-workers
+    working_dir: /workspace/lattix-frontier-workers
+    command: sh -lc "python -m http.server 8010"
+    ports:
+      - "127.0.0.1:8010:8010"
+    volumes:
+      - ./:/workspace
+
+volumes:
+  frontier_frontend_node_modules:
+  frontier_postgres_data:
+  frontier_redis_data:
+  frontier_neo4j_data:

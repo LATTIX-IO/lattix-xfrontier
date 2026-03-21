@@ -1,0 +1,9 @@
+{
+  "name": "lattix-frontier-installer",
+  "bootstrap": {
+    "sh": "install/bootstrap.sh",
+    "powershell": "install/bootstrap.ps1"
+  },
+  "publicRepo": "https://github.com/LATTIX-IO/lattix-xfrontier",
+  "entrypoint": "lattix_frontier/install/installer.py"
+}

@@ -1,0 +1,9 @@
+http://{$LOCAL_STACK_HOST:frontier.localhost} {
+    handle_path /api/* {
+        reverse_proxy orchestrator:8000
+    }
+
+    handle {
+        reverse_proxy frontend:3000
+    }
+}

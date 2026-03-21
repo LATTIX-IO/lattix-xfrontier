@@ -137,6 +137,9 @@ celerybeat.pid
 # Environments
 .env
 .envrc
+.installer/
+.frontier/
+.tools/
 .venv
 env/
 venv/

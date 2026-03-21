@@ -1,0 +1,10 @@
+services:
+  orchestrator:
+    environment:
+      LOG_LEVEL: DEBUG
+      FRONTIER_ENV: development
+    volumes:
+      - ./:/app
+  vault:
+    environment:
+      VAULT_DEV_ROOT_TOKEN_ID: dev-root-token

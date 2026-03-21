@@ -1,0 +1,79 @@
+[build-system]
+requires = ["hatchling>=1.27.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "lattix-frontier"
+version = "0.1.0"
+description = "Lattix Frontier root orchestration and control plane"
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "Proprietary" }
+authors = [
+  { name = "Lattix" }
+]
+dependencies = [
+  "PyJWT[crypto]>=2.10.1",
+  "click>=8.1.7",
+  "fastapi>=0.115.0",
+  "httpx>=0.28.0",
+  "presidio-analyzer>=2.2.355",
+  "hvac>=2.3.0",
+  "langgraph>=0.3.0",
+  "langgraph-checkpoint-postgres>=2.0.0",
+  "nats-py>=2.10.0",
+  "opentelemetry-api>=1.30.0",
+  "opentelemetry-exporter-otlp>=1.30.0",
+  "opentelemetry-sdk>=1.30.0",
+  "opa-python-client>=0.2.3",
+  "psycopg>=3.2.0",
+  "pydantic>=2.10.0",
+  "pydantic-settings>=2.7.0",
+  "python-dotenv>=1.0.1",
+  "structlog>=24.4.0",
+  "uvicorn[standard]>=0.34.0",
+  "zeroconf>=0.145.0"
+]
+
+[project.optional-dependencies]
+dev = [
+  "conftest>=0.1.0",
+  "mypy>=1.15.0",
+  "pytest>=8.3.0",
+  "pytest-asyncio>=0.25.0",
+  "pytest-cov>=6.0.0",
+  "ruff>=0.9.0"
+]
+security = [
+  "biscuit-auth>=4.0.0",
+  "gliner>=0.2.16"
+]
+maf = [
+  "microsoft-agent-framework @ git+https://github.com/microsoft/agent-framework-python.git"
+]
+
+[project.scripts]
+lattix = "lattix_frontier.cli:cli"
+frontier-installer = "lattix_frontier.install.installer:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["lattix_frontier"]
+
+[tool.hatch.metadata]
+allow-direct-references = true
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "ASYNC", "C4"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+warn_unused_configs = true
+plugins = []
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

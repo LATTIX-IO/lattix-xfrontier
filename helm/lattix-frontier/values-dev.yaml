@@ -1,0 +1,8 @@
+orchestrator:
+  replicaCount: 1
+vault:
+  dev: true
+ingress:
+  enabled: false
+federation:
+  enabled: false

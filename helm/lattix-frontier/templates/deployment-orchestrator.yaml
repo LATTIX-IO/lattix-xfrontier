@@ -1,0 +1,33 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "lattix-frontier.fullname" . }}-orchestrator
+spec:
+  replicas: {{ .Values.orchestrator.replicaCount }}
+  selector:
+    matchLabels:
+      app: lattix-orchestrator
+  template:
+    metadata:
+      labels:
+        app: lattix-orchestrator
+    spec:
+      serviceAccountName: lattix-orchestrator
+      securityContext:
+{{ toYaml .Values.security.podSecurityContext | indent 8 }}
+      containers:
+        - name: orchestrator
+          image: {{ .Values.orchestrator.image.repository }}:{{ .Values.orchestrator.image.tag }}
+          securityContext:
+{{ toYaml .Values.security.containerSecurityContext | indent 12 }}
+          ports:
+            - containerPort: 8000
+          env:
+            - name: FEDERATION_ENABLED
+              value: {{ .Values.federation.enabled | quote }}
+            - name: FEDERATION_CLUSTER_NAME
+              value: {{ .Values.federation.clusterName | quote }}
+            - name: FEDERATION_REGION
+              value: {{ .Values.federation.region | quote }}
+            - name: FEDERATION_PEER_ENDPOINTS
+              value: {{ join "," .Values.federation.peers | quote }}

@@ -1,0 +1,23 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "lattix-frontier.fullname" . }}-api
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: lattix-api
+  template:
+    metadata:
+      labels:
+        app: lattix-api
+    spec:
+      securityContext:
+{{ toYaml .Values.security.podSecurityContext | indent 8 }}
+      containers:
+        - name: api
+          image: {{ .Values.orchestrator.image.repository }}:{{ .Values.orchestrator.image.tag }}
+          securityContext:
+{{ toYaml .Values.security.containerSecurityContext | indent 12 }}
+          ports:
+            - containerPort: 8000
