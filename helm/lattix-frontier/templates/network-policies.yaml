@@ -1,0 +1,82 @@
+{{- if .Values.networkPolicies.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: lattix-default-deny
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: lattix-orchestrator-allow
+spec:
+  podSelector:
+    matchLabels:
+      app: lattix-orchestrator
+  egress:
+    - to:
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: lattix-api-ingress-allow
+spec:
+  podSelector:
+    matchLabels:
+      app: lattix-api
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: lattix-envoy
+        - podSelector:
+            matchLabels:
+              app: lattix-orchestrator
+  policyTypes: [Ingress]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: lattix-agents-egress-allow
+spec:
+  podSelector:
+    matchExpressions:
+      - key: app
+        operator: In
+        values:
+          - lattix-agent-research
+          - lattix-agent-code
+          - lattix-agent-review
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app: lattix-api
+        - podSelector:
+            matchLabels:
+              app: lattix-vault
+        - podSelector:
+            matchLabels:
+              app: lattix-nats
+        - podSelector:
+            matchLabels:
+              app: lattix-opa
+  policyTypes: [Egress]
+        - podSelector:
+            matchLabels:
+              app: lattix-api
+        - podSelector:
+            matchLabels:
+              app: lattix-vault
+        - podSelector:
+            matchLabels:
+              app: lattix-opa
+        - podSelector:
+            matchLabels:
+              app: lattix-nats
+        - podSelector:
+            matchLabels:
+              app: lattix-postgres
+  policyTypes: [Egress]
+{{- end }}

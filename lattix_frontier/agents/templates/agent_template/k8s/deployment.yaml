@@ -1,0 +1,17 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: template-agent
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: template-agent
+  template:
+    metadata:
+      labels:
+        app: template-agent
+    spec:
+      containers:
+        - name: template-agent
+          image: template-agent:latest

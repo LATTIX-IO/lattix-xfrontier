@@ -1,0 +1,17 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "lattix-frontier.fullname" . }}-nats
+spec:
+  serviceName: {{ include "lattix-frontier.fullname" . }}-nats
+  selector:
+    matchLabels:
+      app: lattix-nats
+  template:
+    metadata:
+      labels:
+        app: lattix-nats
+    spec:
+      containers:
+        - name: nats
+          image: nats:2.11-alpine

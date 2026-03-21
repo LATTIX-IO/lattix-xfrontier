@@ -1,0 +1,61 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: lattix-frontier-frontend/package-lock.json
+      - name: Install dependencies
+        working-directory: lattix-frontier-frontend
+        run: npm ci
+      - name: Lint
+        working-directory: lattix-frontier-frontend
+        run: npm run lint
+      - name: Build
+        working-directory: lattix-frontier-frontend
+        run: npm run build
+      - name: Test
+        working-directory: lattix-frontier-frontend
+        run: npm test
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+      - name: Lint
+        run: ruff check .
+      - name: Type check
+        run: mypy lattix_frontier/
+      - name: Policy tests
+        run: opa test policies/ -v
+      - name: Unit tests
+        run: pytest tests/unit/ -v --cov=lattix_frontier --cov-report=xml
+      - name: Integration tests
+        run: |
+          docker compose up -d
+          pytest tests/integration/ -v
+          docker compose down -v
+      - name: Upload coverage
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage
+          path: coverage.xml

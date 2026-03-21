@@ -1,0 +1,16 @@
+.git
+.venv
+__pycache__
+.pytest_cache
+.mypy_cache
+.ruff_cache
+node_modules
+npm-debug.log
+dist
+build
+coverage
+.next
+lattix-frontier-frontend/.next
+lattix-frontier-frontend/node_modules
+lattix-frontier-frontend/dev.log
+lattix-frontier-frontend/.pytest_cache

@@ -1,0 +1,32 @@
+name: release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Build images
+        run: |
+          docker build -t lattix-frontier/orchestrator:${GITHUB_REF_NAME} -f Dockerfile .
+          docker build -t lattix-frontier/agent-base:${GITHUB_REF_NAME} -f Dockerfile.agent .
+      - name: Run e2e tests
+        run: pytest tests/e2e/ -v
+      - name: Package Helm chart
+        run: helm package helm/lattix-frontier
+      - name: Package installer assets
+        run: |
+          mkdir -p dist/installer
+          cp install/bootstrap.sh dist/installer/
+          cp install/bootstrap.ps1 dist/installer/
+          cp install/frontier-installer.py dist/installer/
+          cp install/manifest.json dist/installer/
+      - name: Push release artifacts
+        run: echo "Push images and chart to registries from CI secrets/config here."

@@ -1,0 +1,104 @@
+global:
+  imageRegistry: ""
+  imagePullSecrets: []
+
+orchestrator:
+  replicaCount: 1
+  image:
+    repository: lattix-frontier/orchestrator
+    tag: 0.1.0
+  resources:
+    requests: { cpu: 500m, memory: 512Mi }
+    limits: { cpu: "2", memory: 2Gi }
+
+agents:
+  research:
+    enabled: true
+    replicaCount: 1
+    image:
+      repository: lattix-frontier/agent-research
+      tag: 0.1.0
+  code:
+    enabled: true
+    replicaCount: 1
+    image:
+      repository: lattix-frontier/agent-code
+      tag: 0.1.0
+  review:
+    enabled: true
+    replicaCount: 1
+    image:
+      repository: lattix-frontier/agent-review
+      tag: 0.1.0
+
+vault:
+  enabled: true
+  dev: false
+  ha:
+    enabled: false
+
+opa:
+  enabled: true
+  sidecar: false
+
+nats:
+  enabled: true
+  jetstream:
+    enabled: true
+    memStorage: 1Gi
+    fileStorage: 10Gi
+
+postgres:
+  enabled: true
+  persistence:
+    size: 20Gi
+
+envoy:
+  enabled: true
+
+jaeger:
+  enabled: true
+
+ingress:
+  enabled: false
+  className: nginx
+  host: lattix.local
+  tls:
+    enabled: false
+    secretName: ""
+
+networkPolicies:
+  enabled: true
+
+federation:
+  enabled: false
+  clusterName: frontier-cluster
+  region: us-east
+  peers: []
+
+distribution:
+  publicInstall:
+    enabled: true
+    repoUrl: https://github.com/LATTIX-IO/lattix-xfrontier
+
+security:
+  podSecurityContext:
+    runAsNonRoot: true
+    seccompProfile:
+      type: RuntimeDefault
+  containerSecurityContext:
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    capabilities:
+      drop: ["ALL"]
+  biscuit:
+    rootKeySecret: lattix-biscuit-root-key
+  vault:
+    authMethod: kubernetes
+  opa:
+    policyConfigMap: lattix-opa-policies
+
+vendorImages:
+  envoy: envoyproxy/envoy:v1.32.4
+  opa: openpolicyagent/opa:0.68.0-static
+  jaeger: jaegertracing/all-in-one:1.61.0

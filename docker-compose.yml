@@ -1,0 +1,178 @@
+services:
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+      args:
+        NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL:-/api}
+    depends_on: [orchestrator]
+    ports: ["3000:3000"]
+    environment:
+      NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL:-/api}
+      API_BASE_URL_INTERNAL: http://orchestrator:8000
+      NEXT_PUBLIC_ENABLE_MOCK_DATA: ${NEXT_PUBLIC_ENABLE_MOCK_DATA:-false}
+
+  orchestrator:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    depends_on: [postgres, vault, opa, nats, envoy]
+    ports: ["8000:8000"]
+    environment:
+      DATABASE_URL: postgresql://lattix:lattix@postgres:5432/lattix
+      VAULT_ADDR: http://vault:8200
+      VAULT_TOKEN: dev-root-token
+      OPA_ADDR: http://opa:8181
+      NATS_URL: nats://nats:4222
+      JAEGER_ENDPOINT: http://jaeger:4317
+      LOG_LEVEL: DEBUG
+      A2A_JWT_ALG: ${A2A_JWT_ALG:-HS256}
+      A2A_JWT_ISS: ${A2A_JWT_ISS:-lattix-frontier}
+      A2A_JWT_AUD: ${A2A_JWT_AUD:-agents}
+      A2A_JWT_SECRET: ${A2A_JWT_SECRET}
+      A2A_REQUIRE_NONCE: ${A2A_REQUIRE_NONCE:-true}
+      A2A_REPLAY_PROTECTION: ${A2A_REPLAY_PROTECTION:-true}
+      A2A_CLOCK_SKEW_SECONDS: ${A2A_CLOCK_SKEW_SECONDS:-30}
+      A2A_REPLAY_TTL_SECONDS: ${A2A_REPLAY_TTL_SECONDS:-900}
+      A2A_TRUSTED_SUBJECTS: ${A2A_TRUSTED_SUBJECTS:-orchestrator,research,code,review,coordinator}
+    volumes:
+      - ./policies:/app/policies:ro
+
+  local-gateway:
+    image: caddy:2.8.4-alpine
+    depends_on: [frontend, orchestrator]
+    environment:
+      LOCAL_STACK_HOST: ${LOCAL_STACK_HOST:-frontier.localhost}
+    volumes:
+      - ./docker/local/Caddyfile:/etc/caddy/Caddyfile:ro
+    ports: ["${LOCAL_GATEWAY_HTTP_PORT:-80}:80"]
+
+  agent-research:
+    build:
+      context: .
+      dockerfile: Dockerfile.agent
+    environment:
+      AGENT_ID: research
+      AGENT_PORT: "8081"
+      ORCHESTRATOR_URL: http://orchestrator:8000
+      VAULT_ADDR: http://vault:8200
+      NATS_URL: nats://nats:4222
+      A2A_JWT_ALG: ${A2A_JWT_ALG:-HS256}
+      A2A_JWT_ISS: ${A2A_JWT_ISS:-lattix-frontier}
+      A2A_JWT_AUD: ${A2A_JWT_AUD:-agents}
+      A2A_JWT_SECRET: ${A2A_JWT_SECRET}
+      A2A_REQUIRE_NONCE: ${A2A_REQUIRE_NONCE:-true}
+      A2A_REPLAY_PROTECTION: ${A2A_REPLAY_PROTECTION:-true}
+      A2A_CLOCK_SKEW_SECONDS: ${A2A_CLOCK_SKEW_SECONDS:-30}
+      A2A_REPLAY_TTL_SECONDS: ${A2A_REPLAY_TTL_SECONDS:-900}
+      A2A_TRUSTED_SUBJECTS: ${A2A_TRUSTED_SUBJECTS:-orchestrator,research,code,review,coordinator}
+    ports: ["8081:8081"]
+
+  agent-code:
+    build:
+      context: .
+      dockerfile: Dockerfile.agent
+    environment:
+      AGENT_ID: code
+      AGENT_PORT: "8082"
+      ORCHESTRATOR_URL: http://orchestrator:8000
+      VAULT_ADDR: http://vault:8200
+      NATS_URL: nats://nats:4222
+      A2A_JWT_ALG: ${A2A_JWT_ALG:-HS256}
+      A2A_JWT_ISS: ${A2A_JWT_ISS:-lattix-frontier}
+      A2A_JWT_AUD: ${A2A_JWT_AUD:-agents}
+      A2A_JWT_SECRET: ${A2A_JWT_SECRET}
+      A2A_REQUIRE_NONCE: ${A2A_REQUIRE_NONCE:-true}
+      A2A_REPLAY_PROTECTION: ${A2A_REPLAY_PROTECTION:-true}
+      A2A_CLOCK_SKEW_SECONDS: ${A2A_CLOCK_SKEW_SECONDS:-30}
+      A2A_REPLAY_TTL_SECONDS: ${A2A_REPLAY_TTL_SECONDS:-900}
+      A2A_TRUSTED_SUBJECTS: ${A2A_TRUSTED_SUBJECTS:-orchestrator,research,code,review,coordinator}
+    ports: ["8082:8082"]
+
+  agent-review:
+    build:
+      context: .
+      dockerfile: Dockerfile.agent
+    environment:
+      AGENT_ID: review
+      AGENT_PORT: "8083"
+      ORCHESTRATOR_URL: http://orchestrator:8000
+      VAULT_ADDR: http://vault:8200
+      NATS_URL: nats://nats:4222
+      A2A_JWT_ALG: ${A2A_JWT_ALG:-HS256}
+      A2A_JWT_ISS: ${A2A_JWT_ISS:-lattix-frontier}
+      A2A_JWT_AUD: ${A2A_JWT_AUD:-agents}
+      A2A_JWT_SECRET: ${A2A_JWT_SECRET}
+      A2A_REQUIRE_NONCE: ${A2A_REQUIRE_NONCE:-true}
+      A2A_REPLAY_PROTECTION: ${A2A_REPLAY_PROTECTION:-true}
+      A2A_CLOCK_SKEW_SECONDS: ${A2A_CLOCK_SKEW_SECONDS:-30}
+      A2A_REPLAY_TTL_SECONDS: ${A2A_REPLAY_TTL_SECONDS:-900}
+      A2A_TRUSTED_SUBJECTS: ${A2A_TRUSTED_SUBJECTS:-orchestrator,research,code,review,coordinator}
+    ports: ["8083:8083"]
+
+  vault:
+    image: hashicorp/vault:1.18
+    cap_add: [IPC_LOCK]
+    environment:
+      VAULT_DEV_ROOT_TOKEN_ID: dev-root-token
+      VAULT_DEV_LISTEN_ADDRESS: 0.0.0.0:8200
+    ports: ["8200:8200"]
+    volumes: [vault-data:/vault/file]
+
+  opa:
+    image: openpolicyagent/opa:0.68.0-static
+    command: ["run", "--server", "--addr=0.0.0.0:8181", "--log-level=info", "/policies"]
+    volumes: [./policies:/policies:ro]
+    ports: ["8181:8181"]
+
+  envoy:
+    image: envoyproxy/envoy:v1.32.4
+    volumes: [./envoy/envoy.yaml:/etc/envoy/envoy.yaml:ro]
+    ports: ["9901:9901", "10000:10000"]
+    depends_on: [opa]
+    networks:
+      - default
+
+  sandbox-egress-gateway:
+    image: sameersbn/squid:3.5.27-2
+    container_name: frontier-sandbox-egress-gateway
+    restart: unless-stopped
+    volumes:
+      - ./docker/sandbox/squid.conf:/etc/squid/squid.conf:ro
+    ports: ["3128:3128"]
+    networks:
+      sandbox-internal:
+        aliases: ["sandbox-egress-gateway"]
+      default:
+        aliases: ["sandbox-egress-external"]
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: lattix
+      POSTGRES_USER: lattix
+      POSTGRES_PASSWORD: lattix
+    ports: ["5432:5432"]
+    volumes: [postgres-data:/var/lib/postgresql/data]
+
+  nats:
+    image: nats:2.11-alpine
+    command: ["--jetstream", "--store_dir=/data", "--http_port=8222"]
+    ports: ["4222:4222", "8222:8222"]
+    volumes: [nats-data:/data]
+
+  jaeger:
+    image: jaegertracing/all-in-one:1.61.0
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+    ports: ["16686:16686", "4317:4317"]
+
+volumes:
+  vault-data:
+  postgres-data:
+  nats-data:
+
+networks:
+  sandbox-internal:
+    name: frontier-sandbox-internal
+    internal: true
