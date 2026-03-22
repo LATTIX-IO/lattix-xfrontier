@@ -1,0 +1,20 @@
+{
+  "gtm": ["gtm.content"],
+  "brand": ["gtm.content"],
+  "growth": ["gtm.content"],
+  "content": ["gtm.content"],
+  "product": ["ops.project"],
+  "engineering": ["ops.project"],
+  "platform": ["ops.project"],
+  "architecture": ["ops.project"],
+  "security": ["security.compliance"],
+  "risk": ["security.compliance"],
+  "compliance": ["security.compliance"],
+  "governance": ["legal.contract", "security.compliance"],
+  "operations": ["people.personnel"],
+  "people": ["people.personnel"],
+  "enablement": ["people.personnel"],
+  "research": ["gtm.content"],
+  "funding": ["gtm.content"]
+}
+

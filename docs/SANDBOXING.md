@@ -1,6 +1,6 @@
 # Sandboxing
 
-Lattix Frontier now includes a cross-platform sandbox subsystem under `lattix_frontier/sandbox/`.
+Lattix xFrontier now includes a cross-platform sandbox subsystem under `lattix_frontier/sandbox/`.
 
 ## Goals
 

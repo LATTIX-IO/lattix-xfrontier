@@ -10,6 +10,9 @@ dist
 build
 coverage
 .next
+apps/frontend/.next
+apps/frontend/node_modules
+apps/frontend/dev.log
 lattix-frontier-frontend/.next
 lattix-frontier-frontend/node_modules
 lattix-frontier-frontend/dev.log

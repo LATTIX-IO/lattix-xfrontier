@@ -26,7 +26,7 @@ def _run_command(command: list[str]) -> None:
 
 @click.group()
 def cli() -> None:
-    """Lattix Frontier CLI."""
+    """Lattix xFrontier CLI."""
 
 
 @cli.command()

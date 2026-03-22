@@ -1,4 +1,4 @@
-# Lattix Frontier — React Flow Node Specs & Execution Design
+# Lattix xFrontier — React Flow Node Specs & Execution Design
 
 ## Purpose
 

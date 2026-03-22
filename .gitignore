@@ -141,6 +141,11 @@ celerybeat.pid
 .frontier/
 .tools/
 .venv
+node_modules/
+.next/
+apps/frontend/node_modules/
+apps/frontend/.next/
+apps/frontend/dev.log
 env/
 venv/
 ENV/

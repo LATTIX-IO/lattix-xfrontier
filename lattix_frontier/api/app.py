@@ -20,7 +20,7 @@ def create_app() -> FastAPI:
     configure_logging(settings.log_level)
     configure_tracing(settings.app_name, settings.jaeger_endpoint)
 
-    app = FastAPI(title="Lattix Frontier", version="0.1.0")
+    app = FastAPI(title="Lattix xFrontier", version="0.1.0")
     app.add_middleware(SecurityHeadersMiddleware)
     app.add_middleware(TelemetryMiddleware)
     app.add_middleware(AuthMiddleware)

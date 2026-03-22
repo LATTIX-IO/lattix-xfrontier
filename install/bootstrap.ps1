@@ -3,7 +3,7 @@ $ErrorActionPreference = 'Stop'
 $BootstrapDir = Join-Path ($env:TEMP ?? '.\tmp') 'frontier-install'
 $InstallerUrl = if ($env:INSTALLER_URL) { $env:INSTALLER_URL } else { 'https://raw.githubusercontent.com/LATTIX-IO/lattix-xfrontier/main/install/frontier-installer.py' }
 
-Write-Host '==> Lattix Frontier bootstrap'
+Write-Host '==> Lattix xFrontier bootstrap'
 Write-Host '==> Preparing installer workspace'
 New-Item -ItemType Directory -Force -Path $BootstrapDir | Out-Null
 

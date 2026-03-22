@@ -1,0 +1,18 @@
+{
+  "id": "demo-operations-agent",
+  "name": "Demo Operations Agent",
+  "version": 1,
+  "tags": ["demo", "operations", "oss"],
+  "capabilities": ["task-planning", "runbook-drafting"],
+  "owners": ["oss-maintainers"],
+  "model_defaults": {
+    "provider": "openai",
+    "model": "gpt-4o-mini"
+  },
+  "tools": [
+    {
+      "id": "task-board",
+      "mode": "advisory"
+    }
+  ]
+}

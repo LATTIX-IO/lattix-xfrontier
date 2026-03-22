@@ -1,6 +1,39 @@
-# Lattix Frontier
+# Lattix xFrontier
 
-Lattix Frontier is a secure, multi-agent orchestration platform built around four layers:
+Lattix xFrontier is a secure, local-first multi-agent orchestration platform licensed under the GNU Affero General Public License v3.0-or-later (AGPLv3+). The public repository contains the open-source core, while optional private agent assets and environment overlays can still live outside the public tree.
+
+Lattix xFrontier is an independent project created by Lattix. It is not affiliated with, endorsed by, sponsored by, or otherwise associated with OpenAI or with any OpenAI initiative, branding, or program that uses the term "Frontier." The Lattix xFrontier name, ideas, and product direction were developed independently by Lattix.
+
+## License
+
+This repository is licensed under **AGPL-3.0-or-later**.
+
+- You may use, modify, and redistribute the software under the terms of the AGPL.
+- If you run a modified version for users over a network, you must make the corresponding source available to those users.
+- AGPL does **not** prohibit commercial use; it requires reciprocity and source availability for covered modifications.
+
+See `LICENSE` for the full text.
+
+## Repository layout
+
+The FOSS-ready layout is now organized around first-class app, package, deploy, and example directories:
+
+- `apps/frontend/` — Next.js builder and operator UI
+- `apps/backend/` — FastAPI orchestration/backend service
+- `apps/workers/` — worker and runtime helpers
+- `packages/contracts/` — public schemas and contracts
+- `packages/data/` — public data and seed assets
+- `lattix_frontier/` — root orchestration/control-plane package
+- `deploy/infra/` — public-safe infrastructure references
+- `deploy/gitops/` — public-safe GitOps references
+- `examples/agents/` — public demo agent assets used by default in local-first development
+- `docs/reference/lattix-frontier-docs/` — imported legacy documentation tree for migration/reference
+
+Legacy `lattix-frontier-*` directories are retained temporarily as compatibility mirrors while the repository completes its transition away from submodule-shaped paths.
+
+## Architecture
+
+Lattix xFrontier is built around four layers:
 
 ```text
 ┌──────────────────────────────────────────────────────────┐
@@ -38,6 +71,8 @@ lattix dev
 
 For the local browser experience, open `http://frontier.localhost` (or your configured `LOCAL_STACK_HOST`). The local gateway is intentionally HTTP-only for local development, serves the frontend there, and proxies `/api/*` to the orchestrator.
 
+By default, local-first development seeds safe public demo agents from `examples/agents/`. Optional private or proprietary agent definitions can be layered in by setting `FRONTIER_AGENT_ASSETS_ROOT` to an external directory.
+
 Useful follow-ups:
 
 - `lattix health`
@@ -56,13 +91,17 @@ Policy tests use a repo-local OPA binary when present at `.tools/opa/opa(.exe)`,
 
 ## What exists now
 
-This root package adds a release-oriented control plane alongside the existing monorepo subprojects:
+The public repository currently exposes:
 
 - `lattix_frontier/` — root orchestration, agents, security, guardrails, events, API, observability
-- `docker-compose.yml` — full local-first stack for orchestrator + built-in agents + infra
+- `apps/` — public application surfaces
+- `packages/` — public reusable contracts and data assets
+- `deploy/` — public-safe deployment references
+- `examples/` — public sample assets for demos and onboarding
+- `docker-compose.yml` / `docker-compose.local.yml` — local-first stack definitions
 - `helm/lattix-frontier/` — Kubernetes deployment chart
 - `policies/` — baseline OPA policies and tests
-- `tests/` — unit, integration, and e2e tests for the new root platform
+- `tests/` — unit, integration, and e2e tests for the root platform
 
 ## CLI
 
@@ -123,8 +162,9 @@ helm install lattix ./helm/lattix-frontier -f helm/lattix-frontier/values-prod.y
 - `docs/API.md`
 - `docs/SANDBOXING.md`
 - `docs/INSTALLER.md`
+- `docs/FOSS_RELEASE.md`
 
 ## Notes
 
-The monorepo also still contains existing frontend, backend, workers, and agent repositories. The root `lattix_frontier` package is designed to coexist with those subprojects while providing the cross-cutting orchestration and platform runtime required for the full Frontier release.
+The public repository intentionally excludes proprietary Lattix agent definitions. The old `lattix-frontier-agents` subrepo remains private; AGPL applies to the public code in this repository, while open-source development should rely on `examples/agents/` or an explicit external `FRONTIER_AGENT_ASSETS_ROOT`.
 

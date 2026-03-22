@@ -1,0 +1,89 @@
+"use client";
+
+import Link from "next/link";
+import { useState } from "react";
+import { getPublishedWorkflows, createWorkflowRun } from "@/lib/api";
+import type { WorkflowDefinition } from "@/types/frontier";
+import { useEffect } from "react";
+
+export default function WorkflowStartPage() {
+  const [workflows, setWorkflows] = useState<WorkflowDefinition[]>([]);
+  const [startingId, setStartingId] = useState<string | null>(null);
+  const [lastRunId, setLastRunId] = useState<string | null>(null);
+  const [startError, setStartError] = useState<string | null>(null);
+
+  useEffect(() => {
+    getPublishedWorkflows().then(setWorkflows);
+  }, []);
+
+  async function onStart(workflowId: string) {
+    setStartingId(workflowId);
+    setStartError(null);
+    try {
+      const result = await createWorkflowRun({ workflow_definition_id: workflowId });
+      setLastRunId(result.id);
+    } catch {
+      setStartError("Unable to start workflow run. Please try again after backend is healthy.");
+    } finally {
+      setStartingId(null);
+    }
+  }
+
+  return (
+    <section className="space-y-6">
+      <header>
+        <h1 className="text-2xl font-semibold">Workflow Catalog</h1>
+        <p className="fx-muted">Start a published workflow with guided intake and approval-aware execution.</p>
+      </header>
+
+      <div className="fx-panel overflow-hidden">
+        <table className="w-full text-sm">
+          <thead className="fx-table-head">
+            <tr>
+              <th className="px-3 py-2 text-left">Workflow</th>
+              <th className="px-3 py-2 text-left">Version</th>
+              <th className="px-3 py-2 text-left">Description</th>
+              <th className="px-3 py-2 text-left">Workflow ID</th>
+              <th className="px-3 py-2 text-right">Action</th>
+            </tr>
+          </thead>
+          <tbody>
+            {workflows.map((workflow) => (
+              <tr key={workflow.id} className="border-t border-[var(--fx-border)]">
+                <td className="px-3 py-2 text-[var(--foreground)]">{workflow.name}</td>
+                <td className="px-3 py-2 text-[var(--foreground)]">v{workflow.version}</td>
+                <td className="fx-muted px-3 py-2">{workflow.description}</td>
+                <td className="px-3 py-2 font-mono text-xs text-[var(--foreground)]">{workflow.id}</td>
+                <td className="px-3 py-2 text-right">
+                  <div className="flex justify-end gap-2">
+                    <Link className="fx-btn-secondary px-2.5 py-1 text-xs font-medium" href={`/workflows/${workflow.id}`}>
+                      Open
+                    </Link>
+                    <button
+                      onClick={() => onStart(workflow.id)}
+                      disabled={startingId === workflow.id}
+                      className="fx-btn-primary px-2.5 py-1 text-xs font-medium disabled:opacity-60"
+                    >
+                      {startingId === workflow.id ? "Starting..." : "Start"}
+                    </button>
+                  </div>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      {lastRunId ? (
+        <div className="fx-panel flex items-center justify-between p-3 text-sm">
+          <p className="fx-muted">Workflow run started: <span className="font-mono text-[var(--foreground)]">{lastRunId}</span></p>
+          <Link className="fx-btn-secondary px-3 py-1.5 text-xs" href={`/runs/${lastRunId}`}>
+            Open run
+          </Link>
+        </div>
+      ) : null}
+
+      {startError ? <p className="text-xs text-[var(--fx-danger)]">{startError}</p> : null}
+    </section>
+  );
+}

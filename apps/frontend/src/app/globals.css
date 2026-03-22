@@ -1,0 +1,329 @@
+@import "tailwindcss";
+
+:root {
+  --background: 210 20% 99%;
+  --foreground: 220 14% 14%;
+  --card: 0 0% 100%;
+  --muted: 210 16% 95%;
+  --muted-foreground: 220 9% 45%;
+  --primary: 35 95% 52%;
+  --accent: 38 98% 55%;
+  --border: 220 14% 89%;
+  --ui-border: hsl(220 14% 89%);
+  --radius: 0.5rem;
+
+  --state-critical: 2 84% 60%;
+  --state-warning: 35 95% 52%;
+  --state-success: 142 55% 45%;
+  --state-info: 205 90% 56%;
+  --state-neutral: 220 9% 56%;
+
+  --fx-header: hsl(var(--background) / 0.94);
+  --fx-header-elevated: hsl(var(--background) / 0.98);
+  --fx-sidebar: hsl(var(--card));
+  --fx-surface: hsl(var(--card));
+  --fx-surface-elevated: hsl(var(--muted) / 0.45);
+  --fx-border: var(--ui-border);
+  --fx-muted: hsl(var(--muted-foreground));
+  --fx-primary: hsl(var(--primary));
+  --fx-warning: hsl(var(--state-warning));
+  --fx-success: hsl(var(--state-success));
+  --fx-danger: hsl(var(--state-critical));
+  --fx-input: hsl(var(--card));
+  --fx-input-text: hsl(var(--foreground));
+  --fx-nav-hover: hsl(var(--muted) / 0.78);
+  --fx-nav-active: hsl(var(--accent) / 0.14);
+  --fx-top-strip: hsl(var(--muted));
+  --fx-top-strip-text: hsl(var(--foreground));
+  --fx-focus-ring: hsl(var(--accent));
+}
+
+.theme-light {
+  --background: 210 20% 99%;
+  --foreground: 220 14% 14%;
+  --card: 0 0% 100%;
+  --muted: 210 16% 95%;
+  --muted-foreground: 220 9% 45%;
+  --primary: 35 95% 52%;
+  --accent: 38 98% 55%;
+  --border: 220 14% 89%;
+  --ui-border: hsl(220 14% 89%);
+}
+
+.theme-dark {
+  --background: 240 2% 11%;
+  --foreground: 210 20% 96%;
+  --card: 240 2% 13%;
+  --muted: 240 2% 16%;
+  --muted-foreground: 210 10% 74%;
+  --primary: 35 95% 56%;
+  --accent: 38 98% 55%;
+  --border: 240 2% 28%;
+  --ui-border: hsl(240 2% 28%);
+
+  --state-critical: 3 86% 64%;
+  --state-warning: 38 96% 60%;
+  --state-success: 144 50% 54%;
+  --state-info: 202 88% 62%;
+  --state-neutral: 215 10% 72%;
+
+  --fx-header: hsl(var(--background) / 0.94);
+  --fx-header-elevated: hsl(var(--background) / 0.98);
+  --fx-sidebar: hsl(var(--card));
+  --fx-surface: hsl(var(--card));
+  --fx-surface-elevated: hsl(var(--muted) / 0.65);
+  --fx-border: var(--ui-border);
+  --fx-muted: hsl(var(--muted-foreground));
+  --fx-primary: hsl(var(--primary));
+  --fx-warning: hsl(var(--state-warning));
+  --fx-success: hsl(var(--state-success));
+  --fx-danger: hsl(var(--state-critical));
+  --fx-input: hsl(var(--card));
+  --fx-input-text: hsl(var(--foreground));
+  --fx-nav-hover: hsl(var(--muted) / 0.85);
+  --fx-nav-active: hsl(var(--accent) / 0.2);
+  --fx-top-strip: hsl(var(--muted));
+  --fx-top-strip-text: hsl(var(--foreground));
+  --fx-focus-ring: hsl(var(--accent));
+}
+
+@theme inline {
+  --color-background: hsl(var(--background));
+  --color-foreground: hsl(var(--foreground));
+  --color-card: hsl(var(--card));
+  --color-muted: hsl(var(--muted));
+  --color-border: hsl(var(--border));
+  --color-primary: hsl(var(--primary));
+  --color-accent: hsl(var(--accent));
+  --font-sans: var(--font-inter);
+  --font-mono: var(--font-space-mono);
+}
+
+body {
+  background: hsl(var(--background));
+  color: hsl(var(--foreground));
+  font-family: var(--font-inter), Inter, Arial, Helvetica, sans-serif;
+  font-size: 10pt;
+  line-height: 1.35;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+.fx-app {
+  background: hsl(var(--background));
+}
+
+.fx-top-strip {
+  background: var(--fx-top-strip);
+  color: var(--fx-top-strip-text);
+  border-bottom: 1px solid var(--ui-border);
+}
+
+.fx-header {
+  background: var(--fx-header);
+  backdrop-filter: saturate(120%) blur(8px);
+  -webkit-backdrop-filter: saturate(120%) blur(8px);
+  border-bottom: 1px solid var(--ui-border);
+}
+
+.fx-panel {
+  background: hsl(var(--card) / 0.95);
+  border: 1px solid var(--ui-border);
+  border-radius: var(--radius);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+}
+
+.fx-input {
+  background: var(--fx-input);
+  border: 1px solid var(--ui-border);
+  color: var(--fx-input-text);
+  border-radius: calc(var(--radius) - 2px);
+}
+
+.fx-input::placeholder {
+  color: var(--fx-muted);
+}
+
+.fx-muted {
+  color: var(--fx-muted);
+}
+
+.fx-nav-active {
+  background: var(--fx-nav-active);
+  color: hsl(var(--foreground));
+  border: 1px solid color-mix(in srgb, var(--ui-border) 70%, var(--fx-primary) 30%);
+}
+
+.fx-btn-primary {
+  background: var(--fx-primary);
+  color: #1e1302;
+  border: 1px solid color-mix(in srgb, var(--fx-primary) 74%, #000 0%);
+  border-radius: calc(var(--radius) - 2px);
+}
+
+.fx-btn-primary:hover {
+  filter: brightness(0.93);
+}
+
+.fx-btn-secondary {
+  background: hsl(var(--card));
+  color: hsl(var(--foreground));
+  border: 1px solid var(--ui-border);
+  border-radius: calc(var(--radius) - 2px);
+}
+
+.fx-btn-secondary:hover {
+  filter: brightness(0.93);
+}
+
+.fx-btn-success {
+  background: var(--fx-success);
+  color: #0c1a12;
+  border: 1px solid color-mix(in srgb, var(--fx-success) 68%, #000 0%);
+  border-radius: calc(var(--radius) - 2px);
+}
+
+.fx-btn-success:hover {
+  filter: brightness(0.94);
+}
+
+.fx-btn-warning {
+  background: var(--fx-warning);
+  color: #202020;
+  border: 1px solid color-mix(in srgb, var(--fx-warning) 66%, #000 0%);
+  border-radius: calc(var(--radius) - 2px);
+}
+
+.fx-btn-warning:hover {
+  filter: brightness(0.94);
+}
+
+.fx-btn-primary:focus-visible,
+.fx-btn-secondary:focus-visible,
+.fx-btn-success:focus-visible,
+.fx-btn-warning:focus-visible,
+.fx-field:focus-visible,
+.fx-input:focus-visible,
+button:focus-visible,
+select:focus-visible,
+input:focus-visible,
+textarea:focus-visible {
+  outline: 2px solid var(--fx-focus-ring);
+  outline-offset: 2px;
+}
+
+.fx-btn-primary:disabled,
+.fx-btn-secondary:disabled,
+.fx-btn-success:disabled,
+.fx-btn-warning:disabled {
+  opacity: 0.58;
+  cursor: not-allowed;
+  filter: saturate(0.8);
+}
+
+.fx-btn-primary[aria-busy="true"],
+.fx-btn-secondary[aria-busy="true"],
+.fx-btn-success[aria-busy="true"],
+.fx-btn-warning[aria-busy="true"] {
+  cursor: progress;
+}
+
+.fx-badge-local {
+  border: 1px solid color-mix(in srgb, hsl(var(--state-info)) 50%, var(--ui-border) 50%);
+  background: color-mix(in srgb, hsl(var(--state-info)) 12%, transparent);
+  color: hsl(var(--foreground));
+  border-radius: 999px;
+}
+
+.fx-table-head {
+  background: hsl(var(--muted));
+  color: hsl(var(--muted-foreground));
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+
+.fx-field {
+  background: var(--fx-input);
+  border: 1px solid var(--ui-border);
+  color: var(--fx-input-text);
+  border-radius: calc(var(--radius) - 2px);
+  min-height: 32px;
+}
+
+.fx-chip {
+  border: 1px solid var(--ui-border);
+  background: hsl(var(--card));
+  border-radius: calc(var(--radius) - 2px);
+  font-size: 11px;
+}
+
+.fx-pill {
+  border-radius: 999px;
+  border: 1px solid var(--ui-border);
+  background: hsl(var(--muted) / 0.7);
+  font-size: 11px;
+}
+
+.fx-data-grid {
+  border: 1px solid var(--ui-border);
+  border-radius: 0.75rem;
+  background: hsl(var(--card));
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+}
+
+.fx-data-grid table thead tr {
+  height: 36px;
+}
+
+.fx-data-grid table tbody tr {
+  height: 36px;
+}
+
+.fx-data-grid table tbody tr:hover {
+  background: hsl(var(--muted) / 0.55);
+}
+
+.fx-data-grid table tbody td,
+.fx-data-grid table thead th {
+  border-bottom: 1px solid var(--ui-border);
+  vertical-align: middle;
+}
+
+.fx-data-grid table tbody td {
+  font-size: 12px;
+}
+
+.fx-panel table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.fx-panel table thead tr {
+  height: 36px;
+  background: hsl(var(--muted));
+}
+
+.fx-panel table thead th {
+  font-size: 11px;
+  font-weight: 600;
+  color: hsl(var(--muted-foreground));
+  border-bottom: 1px solid var(--ui-border);
+}
+
+.fx-panel table tbody tr {
+  height: 36px;
+}
+
+.fx-panel table tbody tr:hover {
+  background: hsl(var(--muted) / 0.55);
+}
+
+.fx-panel table tbody td {
+  font-size: 12px;
+  border-bottom: 1px solid var(--ui-border);
+}

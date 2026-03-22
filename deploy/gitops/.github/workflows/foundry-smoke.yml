@@ -1,0 +1,45 @@
+name: foundry-smoke
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Target environment"
+        required: true
+        type: choice
+        options:
+          - dev
+          - stage
+          - prod
+  push:
+    branches: [ "main" ]
+    paths:
+      - "environments/**"
+      - "scripts/**"
+      - ".github/workflows/foundry-smoke.yml"
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    env:
+      TARGET_ENV: ${{ github.event.inputs.environment || 'dev' }}
+      FOUNDRY_PROJECT_ENDPOINT_DEV: ${{ secrets.FOUNDRY_PROJECT_ENDPOINT_DEV }}
+      FOUNDRY_API_KEY_DEV: ${{ secrets.FOUNDRY_API_KEY_DEV }}
+      FOUNDRY_PROJECT_REGION_DEV: ${{ secrets.FOUNDRY_PROJECT_REGION_DEV }}
+      FOUNDRY_PROJECT_ENDPOINT_STAGE: ${{ secrets.FOUNDRY_PROJECT_ENDPOINT_STAGE }}
+      FOUNDRY_API_KEY_STAGE: ${{ secrets.FOUNDRY_API_KEY_STAGE }}
+      FOUNDRY_PROJECT_REGION_STAGE: ${{ secrets.FOUNDRY_PROJECT_REGION_STAGE }}
+      FOUNDRY_PROJECT_ENDPOINT_PROD: ${{ secrets.FOUNDRY_PROJECT_ENDPOINT_PROD }}
+      FOUNDRY_API_KEY_PROD: ${{ secrets.FOUNDRY_API_KEY_PROD }}
+      FOUNDRY_PROJECT_REGION_PROD: ${{ secrets.FOUNDRY_PROJECT_REGION_PROD }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate required env vars
+        shell: pwsh
+        run: ./scripts/validate_required_secrets.ps1 -Environment $env:TARGET_ENV
+
+      - name: Foundry endpoint smoke test
+        shell: pwsh
+        run: ./scripts/smoke_foundry.ps1 -Environment $env:TARGET_ENV

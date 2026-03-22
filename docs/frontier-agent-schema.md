@@ -1,4 +1,4 @@
-# Lattix Frontier — Canonical Agent Schema (Proprietary)
+# Lattix xFrontier — Canonical Agent Schema (Proprietary)
 
 ## Purpose
 

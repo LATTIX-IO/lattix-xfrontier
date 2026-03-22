@@ -1,0 +1,13 @@
+{
+  "name": "Security Compliance Workflow",
+  "stages": [
+    {
+      "name": "Security Compliance",
+      "topic": "security.compliance",
+      "payload": { "system": "New SSP/SAR for Product X" },
+      "budget_ms": 3000,
+      "expected_keys": ["ssp", "sar"]
+    }
+  ]
+}
+

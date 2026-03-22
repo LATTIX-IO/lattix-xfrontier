@@ -99,7 +99,7 @@ class FrontierInstaller:
         return 0
 
     def _print_header(self) -> None:
-        print("==> Lattix Frontier installer")  # noqa: T201
+        print("==> Lattix xFrontier installer")  # noqa: T201
         print("==> This installer will configure your preferred local and/or enterprise deployment.")  # noqa: T201
 
     def _print_step(self, title: str, payload: dict[str, Any]) -> None:

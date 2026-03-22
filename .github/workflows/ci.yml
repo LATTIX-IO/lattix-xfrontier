@@ -10,24 +10,22 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          submodules: recursive
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
-          cache-dependency-path: lattix-frontier-frontend/package-lock.json
+          cache-dependency-path: apps/frontend/package-lock.json
       - name: Install dependencies
-        working-directory: lattix-frontier-frontend
+        working-directory: apps/frontend
         run: npm ci
       - name: Lint
-        working-directory: lattix-frontier-frontend
+        working-directory: apps/frontend
         run: npm run lint
       - name: Build
-        working-directory: lattix-frontier-frontend
+        working-directory: apps/frontend
         run: npm run build
       - name: Test
-        working-directory: lattix-frontier-frontend
+        working-directory: apps/frontend
         run: npm test
 
   test:

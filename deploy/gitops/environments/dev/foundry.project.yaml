@@ -1,0 +1,8 @@
+project:
+  environment: dev
+  name: lattix-frontier-dev
+  endpoint: https://jpbooth-7441-resource.services.ai.azure.com/api/projects/jpbooth-7441
+  region: eastus2
+  auth:
+    api_key_secret: FOUNDRY_API_KEY_DEV
+

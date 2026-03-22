@@ -1,4 +1,4 @@
-"""Root package for the Lattix Frontier control plane."""
+"""Root package for the Lattix xFrontier control plane."""
 
 __all__ = ["__version__"]
 

@@ -2,7 +2,7 @@ services:
   frontend:
     image: node:22-alpine
     container_name: frontier-frontend
-    working_dir: /workspace/lattix-frontier-frontend
+    working_dir: /workspace/apps/frontend
     command: sh -lc "LOCK_HASH_FILE=node_modules/.lockhash; CURRENT_HASH=$(sha256sum package-lock.json | awk '{print $1}'); SAVED_HASH=$(cat $$LOCK_HASH_FILE 2>/dev/null || true); if [ ! -x node_modules/.bin/next ] || [ \"$$CURRENT_HASH\" != \"$$SAVED_HASH\" ]; then npm ci --include=dev && mkdir -p node_modules && echo $$CURRENT_HASH > $$LOCK_HASH_FILE; fi; npm run dev -- --hostname 0.0.0.0 --port 3000"
     stdin_open: true
     tty: true
@@ -14,19 +14,20 @@ services:
       - "127.0.0.1:3000:3000"
     volumes:
       - ./:/workspace
-      - frontier_frontend_node_modules:/workspace/lattix-frontier-frontend/node_modules
+      - frontier_frontend_node_modules:/workspace/apps/frontend/node_modules
     depends_on:
       - backend
 
   backend:
     image: python:3.12-slim
     container_name: frontier-backend
-    working_dir: /workspace/lattix-frontier-backend
+    working_dir: /workspace/apps/backend
     command: sh -lc "pip install --no-cache-dir -r requirements.txt && if [ \"${FRONTIER_INSTALL_RUNTIME_ENGINES:-0}\" = \"1\" ]; then pip install --no-cache-dir -r requirements-runtime-engines.txt; fi && uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"
     environment:
       FRONTEND_ORIGIN: ${FRONTEND_ORIGIN:-http://localhost:3000}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       OPENAI_MODEL: ${OPENAI_MODEL:-gpt-4o-mini}
+      FRONTIER_AGENT_ASSETS_ROOT: ${FRONTIER_AGENT_ASSETS_ROOT:-/workspace/examples/agents}
       FRONTIER_INSTALL_RUNTIME_ENGINES: ${FRONTIER_INSTALL_RUNTIME_ENGINES:-0}
       POSTGRES_DSN: ${POSTGRES_DSN:-postgresql://frontier:frontier@postgres:5432/frontier}
       REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
@@ -87,7 +88,7 @@ services:
     image: python:3.12-slim
     profiles: ["stack"]
     container_name: frontier-workers
-    working_dir: /workspace/lattix-frontier-workers
+    working_dir: /workspace/apps/workers
     command: sh -lc "python -m http.server 8010"
     ports:
       - "127.0.0.1:8010:8010"

@@ -4,7 +4,7 @@ set -eu
 BOOTSTRAP_DIR="${TMPDIR:-/tmp}/frontier-install"
 INSTALLER_URL="${INSTALLER_URL:-https://raw.githubusercontent.com/LATTIX-IO/lattix-xfrontier/main/install/frontier-installer.py}"
 
-echo "==> Lattix Frontier bootstrap"
+echo "==> Lattix xFrontier bootstrap"
 echo "==> Preparing installer workspace"
 mkdir -p "$BOOTSTRAP_DIR"
 

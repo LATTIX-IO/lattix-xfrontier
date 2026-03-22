@@ -1,6 +1,6 @@
 # Architecture
 
-Lattix Frontier is organized into four layers: orchestration, guardrails, agent execution, and infrastructure.
+Lattix xFrontier is organized into four layers: orchestration, guardrails, agent execution, and infrastructure.
 
 - `lattix_frontier/orchestrator/` manages workflow state and execution.
 - `lattix_frontier/guardrails/` enforces policy, DLP, capability, and budget checks.

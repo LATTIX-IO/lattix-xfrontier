@@ -1,0 +1,18 @@
+{
+  "id": "demo-research-agent",
+  "name": "Demo Research Agent",
+  "version": 1,
+  "tags": ["demo", "research", "oss"],
+  "capabilities": ["market-research", "brief-synthesis"],
+  "owners": ["oss-maintainers"],
+  "model_defaults": {
+    "provider": "openai",
+    "model": "gpt-4o-mini"
+  },
+  "tools": [
+    {
+      "id": "web-search",
+      "mode": "advisory"
+    }
+  ]
+}

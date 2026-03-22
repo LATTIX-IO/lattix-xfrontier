@@ -1,6 +1,6 @@
 # Installer and Public Distribution
 
-Lattix Frontier now includes a public-facing installer flow intended to be published from a public repository.
+Lattix xFrontier now includes a public-facing installer flow intended to be published from a public repository.
 
 ## Bootstrap commands
 

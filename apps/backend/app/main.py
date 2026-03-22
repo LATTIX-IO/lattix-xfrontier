@@ -1,0 +1,8192 @@
+from __future__ import annotations
+
+import json
+import os
+import re
+import asyncio
+import ipaddress
+import socket
+import importlib.util
+from collections import defaultdict, deque
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from pprint import pformat
+from typing import Any, Literal
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
+
+from fastapi import Body, FastAPI, HTTPException, Request
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel, Field
+from app.platform_services import Neo4jRunGraph, PostgresStateStore, RedisMemoryStore
+
+try:
+    from openai import OpenAI
+except Exception:  # pragma: no cover - optional dependency during local setup
+    OpenAI = None
+
+try:
+    from presidio_analyzer import AnalyzerEngine
+except Exception:  # pragma: no cover - optional dependency during local setup
+    AnalyzerEngine = None
+
+
+class WorkflowRunSummary(BaseModel):
+    id: str
+    title: str
+    status: Literal["Running", "Blocked", "Needs Review", "Done", "Failed"]
+    updatedAt: str
+    progressLabel: str
+
+
+class WorkflowRunEvent(BaseModel):
+    id: str
+    type: Literal[
+        "user_message",
+        "agent_message",
+        "step_started",
+        "step_completed",
+        "guardrail_result",
+        "artifact_created",
+        "approval_required",
+        "approval_decision",
+        "error",
+    ]
+    title: str
+    summary: str
+    createdAt: str
+    metadata: dict[str, Any] | None = None
+
+
+class ArtifactSummary(BaseModel):
+    id: str
+    name: str
+    status: Literal["Draft", "Needs Review", "Approved", "Blocked"]
+    version: int
+
+
+class GeneratedCodeArtifact(BaseModel):
+    id: str
+    name: str
+    status: Literal["Draft", "Needs Review", "Approved", "Blocked"] = "Draft"
+    version: int = 1
+    framework: Literal["microsoft-agent-framework", "langgraph"]
+    language: Literal["python"] = "python"
+    path: str
+    summary: str = ""
+    content: str
+    generated_at: str
+    entity_type: Literal["agent", "workflow"]
+    entity_id: str
+
+
+class InboxItem(BaseModel):
+    id: str
+    runId: str
+    runName: str
+    artifactType: str
+    reason: str
+    queue: Literal["Needs Review", "Needs Approval", "Clarifications Requested", "Blocked by Guardrails"]
+
+
+class WorkflowDefinition(BaseModel):
+    id: str
+    name: str
+    description: str
+    version: int
+    status: Literal["draft", "published", "archived"]
+    graph_json: dict[str, Any] = Field(default_factory=dict)
+    security_config: dict[str, Any] = Field(default_factory=dict)
+    generated_artifacts: list[GeneratedCodeArtifact] = Field(default_factory=list)
+
+
+class AgentDefinition(BaseModel):
+    id: str
+    name: str
+    version: int
+    status: Literal["draft", "published", "archived"]
+    type: Literal["form", "graph"]
+    config_json: dict[str, Any] = Field(default_factory=dict)
+    generated_artifacts: list[GeneratedCodeArtifact] = Field(default_factory=list)
+
+
+class GuardrailRuleSet(BaseModel):
+    id: str
+    name: str
+    version: int
+    status: Literal["draft", "published", "archived"]
+    config_json: dict[str, Any] = Field(default_factory=dict)
+
+
+class SecurityImmutableBaseline(BaseModel):
+    enforce_capability_filter: bool = True
+    enforce_policy_gate: bool = True
+    fail_closed_policy_decisions: bool = True
+    enforce_signed_a2a_messages: bool = True
+    enforce_a2a_replay_protection: bool = True
+    require_readonly_rootfs_for_sandbox: bool = True
+    require_non_root_sandbox_user: bool = True
+    require_egress_mediation_when_network_enabled: bool = True
+    allow_filter_chain_reordering: bool = False
+    allow_custom_policy_code: bool = False
+
+
+class SecurityScopeConfig(BaseModel):
+    classification: Literal["public", "internal", "confidential", "restricted"] = "internal"
+    guardrail_ruleset_id: str | None = None
+    blocked_keywords: list[str] = Field(default_factory=list)
+    allowed_egress_hosts: list[str] = Field(default_factory=list)
+    allowed_retrieval_sources: list[str] = Field(default_factory=list)
+    allowed_mcp_server_urls: list[str] = Field(default_factory=list)
+    allowed_runtime_engines: list[str] = Field(default_factory=list)
+    allowed_memory_scopes: list[str] = Field(default_factory=list)
+    max_tool_calls_per_run: int | None = None
+    max_retrieval_items: int | None = None
+    max_collaboration_agents: int | None = None
+    require_human_approval: bool | None = None
+    require_human_approval_for_high_risk_tools: bool | None = None
+    allow_runtime_override: bool | None = None
+    enable_platform_signals: bool | None = None
+    platform_signal_enforcement: Literal["off", "audit", "block_high", "raise_high"] | None = None
+
+
+class WorkflowSecurityConfig(SecurityScopeConfig):
+    pass
+
+
+class AgentSecurityConfig(SecurityScopeConfig):
+    pass
+
+
+class PlatformSettings(BaseModel):
+    local_only_mode: bool = True
+    mask_secrets_in_events: bool = True
+    allow_direct_openai_without_agent: bool = True
+    require_human_approval: bool = False
+    default_guardrail_ruleset_id: str | None = None
+    global_blocked_keywords: list[str] = Field(default_factory=list)
+    collaboration_max_agents: int = 8
+    enforce_egress_allowlist: bool = True
+    allowed_egress_hosts: list[str] = Field(default_factory=lambda: ["localhost", "127.0.0.1", "::1"])
+    allowed_mcp_server_urls: list[str] = Field(default_factory=lambda: ["http://localhost:7071/mcp"])
+    allowed_retrieval_sources: list[str] = Field(default_factory=lambda: ["kb://default"])
+    enforce_local_network_only: bool = True
+    allow_local_network_hostnames: list[str] = Field(default_factory=lambda: ["localhost", ".local"])
+    mcp_require_local_server: bool = True
+    retrieval_require_local_source_url: bool = True
+    a2a_require_signed_messages: bool = True
+    a2a_trusted_subjects: list[str] = Field(default_factory=lambda: ["orchestrator"])
+    a2a_replay_protection: bool = True
+    require_human_approval_for_high_risk_tools: bool = True
+    high_risk_tool_patterns: list[str] = Field(default_factory=lambda: ["delete", "send", "execute", "write", "admin"])
+    max_tool_calls_per_run: int = 20
+    max_retrieval_items: int = 8
+    enforce_integration_policies: bool = False
+    require_signed_integrations: bool = False
+    require_sandbox_for_third_party: bool = False
+    allow_local_unsigned_integrations: bool = True
+    default_runtime_engine: str = "native"
+    allowed_runtime_engines: list[str] = Field(default_factory=lambda: ["native"])
+    allow_runtime_engine_override: bool = False
+    enforce_runtime_engine_allowlist: bool = True
+    default_runtime_strategy: str = "single"
+    default_hybrid_runtime_routing: dict[str, str] = Field(
+        default_factory=lambda: {
+            "default": "native",
+            "orchestration": "native",
+            "retrieval": "native",
+            "tooling": "native",
+            "collaboration": "native",
+        }
+    )
+    enable_foss_guardrail_signals: bool = True
+    foss_guardrail_signal_enforcement: str = "block_high"
+    foss_guardrail_detect_prompt_injection: bool = True
+    foss_guardrail_detect_pii: bool = True
+    foss_guardrail_detect_command_injection: bool = True
+    foss_guardrail_detect_exfiltration: bool = True
+    emergency_read_only_mode: bool = False
+    block_new_runs: bool = False
+    block_graph_runs: bool = False
+    block_tool_calls: bool = False
+    block_retrieval_calls: bool = False
+    require_authenticated_requests: bool = False
+    require_a2a_runtime_headers: bool = False
+
+
+class NodeDefinition(BaseModel):
+    type_key: str
+    title: str | None = None
+    description: str
+    category: str = "Core"
+    color: str = "#6ca0ff"
+
+
+class IntegrationDefinition(BaseModel):
+    id: str
+    name: str
+    type: Literal["http", "database", "queue", "vector", "custom"]
+    status: Literal["draft", "configured", "error", "archived"]
+    base_url: str = ""
+    auth_type: Literal["none", "api_key", "bearer", "oauth2", "basic"] = "none"
+    secret_ref: str = ""
+    metadata_json: dict[str, Any] = Field(default_factory=dict)
+    capabilities: list[str] = Field(default_factory=list)
+    permission_scopes: list[str] = Field(default_factory=list)
+    data_access: list[str] = Field(default_factory=list)
+    egress_allowlist: list[str] = Field(default_factory=list)
+    publisher: Literal["first_party", "third_party", "custom"] = "custom"
+    execution_mode: Literal["local", "sandboxed"] = "local"
+    signature_verified: bool = False
+    approved_for_marketplace: bool = False
+
+
+class AgentTemplate(BaseModel):
+    id: str
+    name: str
+    description: str
+    category: Literal["ops", "security", "sales", "finance", "general"] = "general"
+    status: Literal["active", "deprecated"] = "active"
+    config_json: dict[str, Any] = Field(default_factory=dict)
+
+
+class PlaybookDefinition(BaseModel):
+    id: str
+    name: str
+    description: str
+    category: Literal["go_to_market", "security", "support", "operations", "other"] = "other"
+    status: Literal["active", "deprecated"] = "active"
+    graph_json: dict[str, Any] = Field(default_factory=dict)
+    metadata_json: dict[str, Any] = Field(default_factory=dict)
+
+
+class TemplateCatalogItem(BaseModel):
+    id: str
+    source_id: str
+    template_type: Literal["agent", "workflow", "playbook"]
+    name: str
+    description: str
+    category: str = "general"
+    status: Literal["active", "deprecated"] = "active"
+    version: int | None = None
+
+
+class CollaborationParticipant(BaseModel):
+    user_id: str
+    display_name: str
+    role: Literal["owner", "editor", "viewer"] = "editor"
+    last_seen_at: str
+
+
+class CollaborationSession(BaseModel):
+    id: str
+    entity_type: Literal["agent", "workflow"]
+    entity_id: str
+    graph_json: dict[str, Any] = Field(default_factory=dict)
+    version: int = 1
+    updated_at: str
+    participants: list[CollaborationParticipant] = Field(default_factory=list)
+
+
+class ObservabilityRunTrace(BaseModel):
+    run_id: str
+    status: str
+    event_count: int
+    node_count: int
+    edge_count: int
+    duration_ms: int | None = None
+    token_estimate: int | None = None
+    cost_estimate_usd: float | None = None
+    latency_by_stage_ms: dict[str, int] = Field(default_factory=dict)
+
+
+class AuditEvent(BaseModel):
+    id: str
+    action: str
+    actor: str
+    outcome: Literal["allowed", "blocked", "error"]
+    created_at: str
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class GraphNode(BaseModel):
+    id: str
+    type: str
+    title: str
+    x: float = 0
+    y: float = 0
+    config: dict[str, Any] = Field(default_factory=dict)
+
+
+class GraphEdge(BaseModel):
+    from_node: str = Field(alias="from")
+    to_node: str = Field(alias="to")
+    from_port: str | None = None
+    to_port: str | None = None
+
+    model_config = {"populate_by_name": True}
+
+
+class GraphPayload(BaseModel):
+    nodes: list[GraphNode] = Field(default_factory=list)
+    links: list[GraphEdge] = Field(default_factory=list)
+    input: dict[str, Any] = Field(default_factory=dict)
+
+
+class GraphValidationIssue(BaseModel):
+    code: str
+    message: str
+    path: str
+
+
+class GraphValidationResult(BaseModel):
+    valid: bool
+    issues: list[GraphValidationIssue]
+
+
+class GraphRunEvent(BaseModel):
+    id: str
+    node_id: str
+    type: Literal["node_started", "node_completed", "node_failed"]
+    title: str
+    summary: str
+    created_at: str
+
+
+class GraphRunResult(BaseModel):
+    run_id: str
+    status: Literal["completed", "failed"]
+    execution_order: list[str]
+    node_results: dict[str, dict[str, Any]]
+    events: list[GraphRunEvent]
+    validation: GraphValidationResult
+    runtime: dict[str, Any] = Field(default_factory=dict)
+
+
+class RuntimeProviderStatus(BaseModel):
+    provider: str
+    configured: bool
+    model: str
+    mode: Literal["live", "simulated"]
+
+
+def _normalize_version(raw_version: Any) -> int:
+    if isinstance(raw_version, int):
+        return max(1, raw_version)
+    if isinstance(raw_version, str):
+        match = re.match(r"^(\d+)", raw_version.strip())
+        if match:
+            return max(1, int(match.group(1)))
+    return 1
+
+
+def _env_flag(name: str, default: bool) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    normalized = raw.strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    return default
+
+
+def _slug_to_name(slug: str) -> str:
+    return slug.replace("-", " ").strip().title()
+
+
+def _slugify(value: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "-", value.strip().lower()).strip("-")
+
+
+def _is_uuid(value: str) -> bool:
+    try:
+        UUID(value)
+        return True
+    except (TypeError, ValueError):
+        return False
+
+
+def _normalize_node_type(node_type: str) -> str:
+    candidate = node_type.strip()
+    if not candidate:
+        return "frontier/unknown"
+    if candidate.startswith("frontier/"):
+        return candidate
+    return f"frontier/{candidate}"
+
+
+_SUPPORTED_RUNTIME_ENGINES = {
+    "native",
+    "langgraph",
+    "langchain",
+    "semantic-kernel",
+    "autogen",
+}
+
+_SUPPORTED_RUNTIME_STRATEGIES = {"single", "hybrid"}
+_HYBRID_RUNTIME_ROLES = ("default", "orchestration", "retrieval", "tooling", "collaboration")
+_SECURITY_CLASSIFICATIONS = {"public", "internal", "confidential", "restricted"}
+_SECURITY_CLASSIFICATION_RANK = {
+    "public": 0,
+    "internal": 1,
+    "confidential": 2,
+    "restricted": 3,
+}
+_SIGNAL_ENFORCEMENT_RANK = {
+    "off": 0,
+    "audit": 1,
+    "block_high": 2,
+    "raise_high": 3,
+}
+
+_L3_DELEGATED_NODE_TYPES = {
+    "frontier/agent",
+    "frontier/retrieval",
+    "frontier/tool-call",
+    "frontier/memory",
+    "frontier/guardrail",
+    "frontier/manifold",
+    "frontier/human-review",
+}
+_L3_NATIVE_CONTROL_PLANE_NODE_TYPES = {
+    "frontier/trigger",
+    "frontier/prompt",
+    "frontier/output",
+}
+
+_CANONICAL_AGENT_SCHEMA_VERSION = "frontier-agent-definition/1.0"
+
+
+def _default_agent_graph(*, source_agent_id: str, agent_name: str, system_prompt: str, model: str) -> dict[str, Any]:
+    safe_prompt = system_prompt.strip() or (
+        f"You are the {agent_name} in the Frontier platform. "
+        "Provide safe, policy-aligned, actionable outputs with concise reasoning summaries."
+    )
+    return {
+        "nodes": [
+            {
+                "id": "trigger",
+                "type": "frontier/trigger",
+                "title": "Trigger",
+                "x": 70,
+                "y": 90,
+                "config": {"trigger_mode": "manual"},
+            },
+            {
+                "id": "prompt",
+                "type": "frontier/prompt",
+                "title": "Prompt",
+                "x": 330,
+                "y": 90,
+                "config": {"system_prompt_text": safe_prompt},
+            },
+            {
+                "id": "agent",
+                "type": "frontier/agent",
+                "title": "Agent Runtime",
+                "x": 610,
+                "y": 90,
+                "config": {
+                    "agent_id": source_agent_id,
+                    "model": model,
+                    "temperature": 0.2,
+                },
+            },
+            {
+                "id": "output",
+                "type": "frontier/output",
+                "title": "Output",
+                "x": 900,
+                "y": 90,
+                "config": {
+                    "destination": "artifact_store",
+                    "format": "markdown",
+                },
+            },
+        ],
+        "links": [
+            {"from": "trigger", "to": "agent", "from_port": "out", "to_port": "in"},
+            {"from": "prompt", "to": "agent", "from_port": "prompt", "to_port": "prompt"},
+            {"from": "agent", "to": "output", "from_port": "out", "to_port": "in"},
+            {"from": "agent", "to": "output", "from_port": "response", "to_port": "result"},
+        ],
+    }
+
+
+def _normalize_graph_json_payload(candidate: Any) -> dict[str, Any]:
+    if not isinstance(candidate, dict):
+        return {"nodes": [], "links": []}
+    nodes = candidate.get("nodes") if isinstance(candidate.get("nodes"), list) else []
+    links = candidate.get("links") if isinstance(candidate.get("links"), list) else []
+    return {
+        "nodes": [dict(item) if isinstance(item, dict) else item for item in nodes],
+        "links": [dict(item) if isinstance(item, dict) else item for item in links],
+    }
+
+
+def _normalize_text_list(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    output: list[str] = []
+    for item in value:
+        text = str(item).strip()
+        if text and text not in output:
+            output.append(text)
+    return output
+
+
+def _python_literal(value: Any) -> str:
+    return pformat(value, width=100, sort_dicts=True)
+
+
+def _safe_python_identifier(value: str, *, prefix: str) -> str:
+    candidate = re.sub(r"[^0-9A-Za-z_]+", "_", str(value or "").strip()).strip("_").lower()
+    if not candidate:
+        candidate = prefix
+    if candidate[0].isdigit():
+        candidate = f"{prefix}_{candidate}"
+    return candidate
+
+
+def _artifact_slug(name: str, fallback: str) -> str:
+    return _slugify(name) or _slugify(fallback) or fallback
+
+
+def _hydrate_graph_for_codegen(graph_json: dict[str, Any]) -> tuple[list[GraphNode], list[GraphEdge], list[str], dict[str, list[str]]]:
+    payload = GraphPayload(
+        nodes=graph_json.get("nodes") if isinstance(graph_json.get("nodes"), list) else [],
+        links=graph_json.get("links") if isinstance(graph_json.get("links"), list) else [],
+    )
+    node_ids = [node.id for node in payload.nodes]
+    order = _topological_order(node_ids, payload.links) or node_ids
+    upstream_node_ids: dict[str, list[str]] = defaultdict(list)
+    for edge in payload.links:
+        upstream_node_ids[edge.to_node].append(edge.from_node)
+    return payload.nodes, payload.links, order, dict(upstream_node_ids)
+
+
+def _node_blueprints_for_codegen(nodes: list[GraphNode], order: list[str], upstream_node_ids: dict[str, list[str]]) -> dict[str, dict[str, Any]]:
+    ordered_nodes = {node.id: node for node in nodes}
+    blueprints: dict[str, dict[str, Any]] = {}
+    for node_id in order:
+        node = ordered_nodes[node_id]
+        blueprints[node.id] = {
+            "id": node.id,
+            "title": node.title,
+            "type": _normalize_node_type(node.type),
+            "config": node.config if isinstance(node.config, dict) else {},
+            "upstream": list(upstream_node_ids.get(node.id, [])),
+            "position": {"x": node.x, "y": node.y},
+        }
+    return blueprints
+
+
+def _workflow_runtime_policy_snapshot(platform: PlatformSettings) -> dict[str, Any]:
+    return {
+        "default_runtime_engine": _normalize_runtime_engine(platform.default_runtime_engine),
+        "default_runtime_strategy": _normalize_runtime_strategy(platform.default_runtime_strategy),
+        "allowed_runtime_engines": _normalize_runtime_engine_list(platform.allowed_runtime_engines),
+        "allow_runtime_engine_override": bool(platform.allow_runtime_engine_override),
+        "enforce_runtime_engine_allowlist": bool(platform.enforce_runtime_engine_allowlist),
+        "default_hybrid_runtime_routing": _normalize_hybrid_runtime_routing(
+            platform.default_hybrid_runtime_routing,
+            default_engine=platform.default_runtime_engine,
+        ),
+    }
+
+
+def _agent_runtime_policy_snapshot(agent: AgentDefinition) -> dict[str, Any]:
+    config_json = agent.config_json if isinstance(agent.config_json, dict) else {}
+    runtime = config_json.get("runtime") if isinstance(config_json.get("runtime"), dict) else {}
+    engine_policy = runtime.get("engine_policy") if isinstance(runtime.get("engine_policy"), dict) else {}
+    default_runtime_engine = _normalize_runtime_engine(
+        engine_policy.get("default_runtime_engine") or store.platform_settings.default_runtime_engine
+    )
+    return {
+        "default_runtime_engine": default_runtime_engine,
+        "default_runtime_strategy": _normalize_runtime_strategy(store.platform_settings.default_runtime_strategy),
+        "allowed_runtime_engines": _normalize_runtime_engine_list(
+            engine_policy.get("allowed_runtime_engines")
+            if isinstance(engine_policy.get("allowed_runtime_engines"), list)
+            else store.platform_settings.allowed_runtime_engines
+        ),
+        "allow_runtime_engine_override": bool(
+            engine_policy.get("allow_runtime_engine_override", store.platform_settings.allow_runtime_engine_override)
+        ),
+        "enforce_runtime_engine_allowlist": bool(
+            engine_policy.get("enforce_runtime_engine_allowlist", store.platform_settings.enforce_runtime_engine_allowlist)
+        ),
+        "default_hybrid_runtime_routing": _normalize_hybrid_runtime_routing(
+            store.platform_settings.default_hybrid_runtime_routing,
+            default_engine=default_runtime_engine,
+        ),
+    }
+
+
+def _build_langgraph_artifact(
+    *,
+    entity_type: Literal["agent", "workflow"],
+    entity_id: str,
+    entity_name: str,
+    version: int,
+    graph_json: dict[str, Any],
+    effective_security_policy: dict[str, Any],
+    runtime_policy: dict[str, Any],
+) -> GeneratedCodeArtifact:
+    nodes, links, execution_order, upstream_node_ids = _hydrate_graph_for_codegen(graph_json)
+    blueprints = _node_blueprints_for_codegen(nodes, execution_order, upstream_node_ids)
+    slug = _artifact_slug(entity_name, entity_id)
+    kind_name = "agent" if entity_type == "agent" else "workflow"
+    lines = [
+        'from __future__ import annotations',
+        '',
+        'from typing import Any, TypedDict',
+        '',
+        'from langgraph.graph import END, START, StateGraph',
+        '',
+        f'{entity_type.upper()}_ID = {entity_id!r}',
+        f'{entity_type.upper()}_NAME = {entity_name!r}',
+        f'VERSION = {version}',
+        f'GRAPH_SPEC = {_python_literal(graph_json)}',
+        f'NODE_BLUEPRINTS = {_python_literal(blueprints)}',
+        f'EXECUTION_ORDER = {_python_literal(execution_order)}',
+        f'UPSTREAM_NODE_IDS = {_python_literal(upstream_node_ids)}',
+        f'EFFECTIVE_SECURITY_POLICY = {_python_literal(effective_security_policy)}',
+        f'RUNTIME_POLICY = {_python_literal(runtime_policy)}',
+        '',
+        'class FrontierState(TypedDict, total=False):',
+        '    input: dict[str, Any]',
+        '    node_results: dict[str, dict[str, Any]]',
+        '    last_output: Any',
+        '',
+        'def _record_node_result(state: FrontierState, node_id: str, payload: dict[str, Any]) -> FrontierState:',
+        '    node_results = dict(state.get("node_results", {}))',
+        '    node_results[node_id] = payload',
+        '    next_state = dict(state)',
+        '    next_state["node_results"] = node_results',
+        '    next_state["last_output"] = payload.get("response") or payload.get("published") or payload',
+        '    return next_state',
+        '',
+        'def _execute_generated_node(node_id: str, state: FrontierState) -> FrontierState:',
+        '    blueprint = NODE_BLUEPRINTS[node_id]',
+        '    node_type = blueprint["type"]',
+        '    config = blueprint["config"]',
+        '    upstream_ids = UPSTREAM_NODE_IDS.get(node_id, [])',
+        '    upstream_results = {upstream_id: state.get("node_results", {}).get(upstream_id) for upstream_id in upstream_ids}',
+        '    if node_type == "frontier/trigger":',
+        '        payload = {"trigger": config, "input": state.get("input", {})}',
+        '    elif node_type == "frontier/prompt":',
+        '        payload = {"system_prompt": config.get("system_prompt_text", ""), "profile": config}',
+        '    elif node_type == "frontier/agent":',
+        '        payload = {',
+        '            "agent_id": config.get("agent_id") or node_id,',
+        '            "response": f"Generated LangGraph stub for {blueprint[\"title\"]}",',
+        '            "model": config.get("model") or RUNTIME_POLICY.get("default_runtime_engine"),',
+        '            "upstream": upstream_results,',
+        '        }',
+        '    elif node_type == "frontier/retrieval":',
+        '        payload = {"documents": [], "grounding_context": "Attach retriever implementation here.", "config": config}',
+        '    elif node_type == "frontier/tool-call":',
+        '        payload = {"tool_request": config, "status": "stubbed", "upstream": upstream_results}',
+        '    elif node_type == "frontier/memory":',
+        '        payload = {"memory_state": {"scope": config.get("scope", "session")}, "config": config}',
+        '    elif node_type == "frontier/guardrail":',
+        '        payload = {"decision": "allow", "config": config, "effective_security_policy": EFFECTIVE_SECURITY_POLICY}',
+        '    elif node_type == "frontier/human-review":',
+        '        payload = {"approval_required": True, "reviewer_group": config.get("reviewer_group", "reviewers")}',
+        '    elif node_type == "frontier/manifold":',
+        '        payload = {"logic_mode": config.get("logic_mode", "OR"), "upstream": upstream_results}',
+        '    elif node_type == "frontier/output":',
+        '        payload = {"published": {"destination": config.get("destination", "artifact_store"), "payload": upstream_results}}',
+        '    else:',
+        '        payload = {"note": f"Unhandled node type {node_type}", "upstream": upstream_results}',
+        '    return _record_node_result(state, node_id, payload)',
+        '',
+    ]
+    for node_id in execution_order:
+        function_name = f'node_{_safe_python_identifier(node_id, prefix="node")}'
+        lines.extend([
+            f'def {function_name}(state: FrontierState) -> FrontierState:',
+            f'    return _execute_generated_node({node_id!r}, state)',
+            '',
+        ])
+    lines.extend([
+        'def build_graph() -> Any:',
+        '    builder = StateGraph(FrontierState)',
+    ])
+    for node_id in execution_order:
+        function_name = f'node_{_safe_python_identifier(node_id, prefix="node")}'
+        lines.append(f'    builder.add_node({node_id!r}, {function_name})')
+    lines.extend([
+        '    if EXECUTION_ORDER:',
+        '        builder.add_edge(START, EXECUTION_ORDER[0])',
+        '        for current_node, next_node in zip(EXECUTION_ORDER, EXECUTION_ORDER[1:]):',
+        '            builder.add_edge(current_node, next_node)',
+        '        builder.add_edge(EXECUTION_ORDER[-1], END)',
+        '    return builder.compile()',
+        '',
+        'def run_graph(input_payload: dict[str, Any] | None = None) -> dict[str, Any]:',
+        '    graph = build_graph()',
+        '    return graph.invoke({"input": input_payload or {}, "node_results": {}})',
+        '',
+        'if __name__ == "__main__":',
+        '    result = run_graph({"message": "Generated scaffold smoke test"})',
+        '    print(result)',
+    ])
+
+    return GeneratedCodeArtifact(
+        id=str(uuid5(NAMESPACE_URL, f'generated:{entity_type}:{entity_id}:langgraph:v{version}')),
+        name=f'{entity_name} · LangGraph scaffold',
+        version=version,
+        framework='langgraph',
+        path=f'generated/{entity_type}s/{slug}/v{version}/langgraph_{kind_name}.py',
+        summary=f'LangGraph scaffold generated from {len(nodes)} nodes and {len(links)} links.',
+        content='\n'.join(lines) + '\n',
+        generated_at=_now_iso(),
+        entity_type=entity_type,
+        entity_id=entity_id,
+    )
+
+
+def _build_agent_framework_artifact(
+    *,
+    entity_type: Literal["agent", "workflow"],
+    entity_id: str,
+    entity_name: str,
+    version: int,
+    graph_json: dict[str, Any],
+    effective_security_policy: dict[str, Any],
+    runtime_policy: dict[str, Any],
+) -> GeneratedCodeArtifact:
+    nodes, links, execution_order, upstream_node_ids = _hydrate_graph_for_codegen(graph_json)
+    blueprints = _node_blueprints_for_codegen(nodes, execution_order, upstream_node_ids)
+    slug = _artifact_slug(entity_name, entity_id)
+    kind_name = "agent" if entity_type == "agent" else "workflow"
+    lines = [
+        'from __future__ import annotations',
+        '',
+        'from typing import Any',
+        '',
+        'from agent_framework import Message',
+        'from agent_framework.azure import AzureAIClient',
+        'from azure.identity.aio import DefaultAzureCredential',
+        '',
+        f'{entity_type.upper()}_ID = {entity_id!r}',
+        f'{entity_type.upper()}_NAME = {entity_name!r}',
+        f'VERSION = {version}',
+        f'GRAPH_SPEC = {_python_literal(graph_json)}',
+        f'NODE_BLUEPRINTS = {_python_literal(blueprints)}',
+        f'EXECUTION_ORDER = {_python_literal(execution_order)}',
+        f'UPSTREAM_NODE_IDS = {_python_literal(upstream_node_ids)}',
+        f'EFFECTIVE_SECURITY_POLICY = {_python_literal(effective_security_policy)}',
+        f'RUNTIME_POLICY = {_python_literal(runtime_policy)}',
+        '',
+        'def _node_instructions(blueprint: dict[str, Any]) -> str:',
+        '    config = blueprint.get("config", {})',
+        '    title = blueprint.get("title") or blueprint.get("id") or "Frontier node"',
+        '    return (',
+        '        f"You are the generated executor for {title}. "',
+        '        "Respect EFFECTIVE_SECURITY_POLICY, keep outputs deterministic, and use GRAPH_SPEC as the source of truth. "',
+        '        f"Node config: {config}"',
+        '    )',
+        '',
+        'async def instantiate_frontier_agents() -> dict[str, Any]:',
+        '    credential = DefaultAzureCredential()',
+        '    instantiated: dict[str, Any] = {}',
+        '    for node_id in EXECUTION_ORDER:',
+        '        blueprint = NODE_BLUEPRINTS[node_id]',
+        '        if blueprint.get("type") != "frontier/agent":',
+        '            continue',
+        '        client = AzureAIClient(credential=credential)',
+        '        instantiated[node_id] = client.as_agent(',
+        '            name=f"{blueprint.get(\"title\", node_id)}Agent",',
+        '            instructions=_node_instructions(blueprint),',
+        '        )',
+        '    return instantiated',
+        '',
+        'async def build_frontier_blueprint() -> dict[str, Any]:',
+        '    agents = await instantiate_frontier_agents()',
+        '    return {',
+        f'        "entity_id": {entity_id!r},',
+        f'        "entity_name": {entity_name!r},',
+        '        "graph_spec": GRAPH_SPEC,',
+        '        "execution_order": EXECUTION_ORDER,',
+        '        "security_policy": EFFECTIVE_SECURITY_POLICY,',
+        '        "runtime_policy": RUNTIME_POLICY,',
+        '        "instantiated_agents": list(agents.keys()),',
+        '    }',
+        '',
+        'async def run_frontier_task(task: str) -> dict[str, Any]:',
+        '    blueprint = await build_frontier_blueprint()',
+        '    user_message = Message("user", [task])',
+        '    return {',
+        '        "blueprint": blueprint,',
+        '        "initial_message": user_message,',
+        '        "note": "Wire WorkflowBuilder / custom Executors here using EXECUTION_ORDER and UPSTREAM_NODE_IDS.",',
+        '    }',
+        '',
+        'if __name__ == "__main__":',
+        '    import asyncio',
+        '',
+        '    print(asyncio.run(run_frontier_task("Generated scaffold smoke test")))',
+    ]
+    return GeneratedCodeArtifact(
+        id=str(uuid5(NAMESPACE_URL, f'generated:{entity_type}:{entity_id}:microsoft-agent-framework:v{version}')),
+        name=f'{entity_name} · Microsoft Agent Framework scaffold',
+        version=version,
+        framework='microsoft-agent-framework',
+        path=f'generated/{entity_type}s/{slug}/v{version}/agent_framework_{kind_name}.py',
+        summary=f'Microsoft Agent Framework scaffold generated from {len(nodes)} nodes and {len(links)} links.',
+        content='\n'.join(lines) + '\n',
+        generated_at=_now_iso(),
+        entity_type=entity_type,
+        entity_id=entity_id,
+    )
+
+
+def _build_generated_artifacts_for_workflow(item: WorkflowDefinition, *, version: int) -> list[GeneratedCodeArtifact]:
+    effective_policy = _resolve_effective_security_policy(
+        platform=store.platform_settings,
+        workflow_config=item.security_config,
+    )
+    runtime_policy = _workflow_runtime_policy_snapshot(store.platform_settings)
+    return [
+        _build_langgraph_artifact(
+            entity_type='workflow',
+            entity_id=item.id,
+            entity_name=item.name,
+            version=version,
+            graph_json=item.graph_json if isinstance(item.graph_json, dict) else {},
+            effective_security_policy=effective_policy,
+            runtime_policy=runtime_policy,
+        ),
+        _build_agent_framework_artifact(
+            entity_type='workflow',
+            entity_id=item.id,
+            entity_name=item.name,
+            version=version,
+            graph_json=item.graph_json if isinstance(item.graph_json, dict) else {},
+            effective_security_policy=effective_policy,
+            runtime_policy=runtime_policy,
+        ),
+    ]
+
+
+def _build_generated_artifacts_for_agent(item: AgentDefinition, *, version: int) -> list[GeneratedCodeArtifact]:
+    config_json = item.config_json if isinstance(item.config_json, dict) else {}
+    workflow_id = str(config_json.get('workflow_definition_id') or '').strip()
+    workflow = store.workflow_definitions.get(workflow_id) if workflow_id else None
+    effective_policy = _resolve_effective_security_policy(
+        platform=store.platform_settings,
+        workflow_config=workflow.security_config if workflow else None,
+        agent_config=config_json.get('security') if isinstance(config_json.get('security'), dict) else None,
+    )
+    runtime_policy = _agent_runtime_policy_snapshot(item)
+    graph_json = config_json.get('graph_json') if isinstance(config_json.get('graph_json'), dict) else {}
+    return [
+        _build_langgraph_artifact(
+            entity_type='agent',
+            entity_id=item.id,
+            entity_name=item.name,
+            version=version,
+            graph_json=graph_json,
+            effective_security_policy=effective_policy,
+            runtime_policy=runtime_policy,
+        ),
+        _build_agent_framework_artifact(
+            entity_type='agent',
+            entity_id=item.id,
+            entity_name=item.name,
+            version=version,
+            graph_json=graph_json,
+            effective_security_policy=effective_policy,
+            runtime_policy=runtime_policy,
+        ),
+    ]
+
+
+def _iter_generated_artifacts() -> list[GeneratedCodeArtifact]:
+    artifacts: list[GeneratedCodeArtifact] = []
+    for workflow in store.workflow_definitions.values():
+        artifacts.extend(workflow.generated_artifacts)
+    for agent in store.agent_definitions.values():
+        artifacts.extend(agent.generated_artifacts)
+    return artifacts
+
+
+def _find_generated_artifact(artifact_id: str) -> GeneratedCodeArtifact | None:
+    target = str(artifact_id or '').strip()
+    if not target:
+        return None
+    for artifact in _iter_generated_artifacts():
+        if artifact.id == target:
+            return artifact
+    return None
+
+
+def _default_framework_profiles() -> dict[str, dict[str, Any]]:
+    return {
+        "native": {
+            "role": "platform-default",
+            "enabled": True,
+        },
+        "langgraph": {
+            "role": "orchestration",
+            "enabled": True,
+        },
+        "langchain": {
+            "role": "rag-and-connectors",
+            "enabled": True,
+        },
+        "semantic-kernel": {
+            "role": "tool-and-plugin-abstraction",
+            "enabled": True,
+        },
+        "autogen": {
+            "role": "multi-agent-collaboration",
+            "enabled": True,
+        },
+    }
+
+
+def _canonicalize_agent_config(
+    config_json: dict[str, Any] | None,
+    *,
+    agent_id: str,
+    agent_name: str,
+    source_agent_id: str | None = None,
+    system_prompt: str = "",
+    model_defaults: dict[str, Any] | None = None,
+    tags: list[str] | None = None,
+    capabilities: list[str] | None = None,
+    owners: list[str] | None = None,
+    tools: list[dict[str, Any]] | None = None,
+    seed_source: str | None = None,
+    prompt_file: str | None = None,
+    url_manifest: str | None = None,
+) -> dict[str, Any]:
+    current = dict(config_json) if isinstance(config_json, dict) else {}
+    resolved_source_agent_id = str(source_agent_id or current.get("source_agent_id") or agent_id).strip()
+
+    resolved_model_defaults = dict(model_defaults) if isinstance(model_defaults, dict) else {}
+    if not resolved_model_defaults:
+        candidate = current.get("model_defaults")
+        if isinstance(candidate, dict):
+            resolved_model_defaults = dict(candidate)
+    if not resolved_model_defaults:
+        resolved_model_defaults = {
+            "provider": "openai",
+            "model": _default_openai_model(),
+            "temperature": 0.2,
+            "top_p": 0.9,
+            "max_tokens": 4096,
+        }
+    resolved_model_defaults.setdefault("provider", "openai")
+    resolved_model_defaults.setdefault("model", _default_openai_model())
+    resolved_model_defaults.setdefault("temperature", 0.2)
+
+    graph_json = _normalize_graph_json_payload(current.get("graph_json"))
+    if not graph_json.get("nodes"):
+        graph_json = _default_agent_graph(
+            source_agent_id=resolved_source_agent_id,
+            agent_name=agent_name,
+            system_prompt=system_prompt,
+            model=str(resolved_model_defaults.get("model") or _default_openai_model()),
+        )
+
+    resolved_tags = _normalize_text_list(tags if tags is not None else current.get("tags"))
+    resolved_capabilities = _normalize_text_list(capabilities if capabilities is not None else current.get("capabilities"))
+    resolved_owners = _normalize_text_list(owners if owners is not None else current.get("owners"))
+    raw_tools = tools if isinstance(tools, list) else current.get("tools")
+    if isinstance(raw_tools, list):
+        resolved_tools = [dict(item) for item in raw_tools if isinstance(item, dict)]
+    elif isinstance(raw_tools, dict) and isinstance(raw_tools.get("definitions"), list):
+        resolved_tools = [dict(item) for item in raw_tools.get("definitions", []) if isinstance(item, dict)]
+    else:
+        resolved_tools = []
+
+    runtime_config = current.get("runtime") if isinstance(current.get("runtime"), dict) else {}
+    runtime_engine_policy = runtime_config.get("engine_policy") if isinstance(runtime_config.get("engine_policy"), dict) else {}
+    runtime_engine_policy = {
+        "default_runtime_engine": _normalize_runtime_engine(runtime_engine_policy.get("default_runtime_engine") or "native"),
+        "allowed_runtime_engines": _normalize_runtime_engine_list(runtime_engine_policy.get("allowed_runtime_engines") if isinstance(runtime_engine_policy.get("allowed_runtime_engines"), list) else ["native", "langgraph", "langchain", "semantic-kernel", "autogen"]),
+        "allow_runtime_engine_override": bool(runtime_engine_policy.get("allow_runtime_engine_override", False)),
+        "enforce_runtime_engine_allowlist": bool(runtime_engine_policy.get("enforce_runtime_engine_allowlist", True)),
+    }
+
+    guardrails_existing = current.get("guardrails") if isinstance(current.get("guardrails"), dict) else {}
+    legacy_enable_signals = guardrails_existing.get("enable_foss_guardrail_signals")
+    legacy_signal_enforcement = guardrails_existing.get("foss_guardrail_signal_enforcement")
+
+    canonical = dict(current)
+    canonical.update(
+        {
+            "schema_version": _CANONICAL_AGENT_SCHEMA_VERSION,
+            "source_agent_id": resolved_source_agent_id,
+            "seed_source": seed_source or current.get("seed_source"),
+            "prompt_file": prompt_file or current.get("prompt_file"),
+            "url_manifest": url_manifest or current.get("url_manifest"),
+            "system_prompt": system_prompt or str(current.get("system_prompt") or ""),
+            "tags": resolved_tags,
+            "capabilities": resolved_capabilities,
+            "owners": resolved_owners,
+            "model_defaults": resolved_model_defaults,
+            "graph_json": graph_json,
+            "meta": {
+                **(current.get("meta") if isinstance(current.get("meta"), dict) else {}),
+                "name": agent_name,
+                "tags": resolved_tags,
+                "capabilities": resolved_capabilities,
+                "owners": resolved_owners,
+            },
+            "runtime": {
+                **runtime_config,
+                "model_defaults": resolved_model_defaults,
+                "engine_policy": runtime_engine_policy,
+                "framework_mappings": {engine: _framework_adapter_mapping(engine) for engine in sorted(_SUPPORTED_RUNTIME_ENGINES)},
+                "framework_profiles": _default_framework_profiles(),
+            },
+            "reasoning": {
+                **(current.get("reasoning") if isinstance(current.get("reasoning"), dict) else {}),
+                "strategy": str((current.get("reasoning") or {}).get("strategy") if isinstance(current.get("reasoning"), dict) else "plan-execute-review"),
+                "self_review": bool((current.get("reasoning") or {}).get("self_review", True)) if isinstance(current.get("reasoning"), dict) else True,
+                "expose_internal_reasoning": bool((current.get("reasoning") or {}).get("expose_internal_reasoning", False)) if isinstance(current.get("reasoning"), dict) else False,
+            },
+            "knowledge": {
+                **(current.get("knowledge") if isinstance(current.get("knowledge"), dict) else {}),
+                "retrieval_mode": str(((current.get("knowledge") or {}).get("retrieval_mode") if isinstance(current.get("knowledge"), dict) else "hybrid") or "hybrid"),
+                "sources": _normalize_text_list(((current.get("knowledge") or {}).get("sources") if isinstance(current.get("knowledge"), dict) else ["kb://default"]) or ["kb://default"]),
+                "top_k": int(((current.get("knowledge") or {}).get("top_k") if isinstance(current.get("knowledge"), dict) else 6) or 6),
+                "citation_required": bool(((current.get("knowledge") or {}).get("citation_required") if isinstance(current.get("knowledge"), dict) else True)),
+            },
+            "integrations": {
+                **(current.get("integrations") if isinstance(current.get("integrations"), dict) else {}),
+                "framework_runtime_adapters": {
+                    "langgraph": "orchestration",
+                    "langchain": "retrieval-and-tools",
+                    "semantic-kernel": "plugins-and-mcp",
+                    "autogen": "multi-agent-collaboration",
+                },
+            },
+            "mcp": {
+                **(current.get("mcp") if isinstance(current.get("mcp"), dict) else {}),
+                "enabled": bool(((current.get("mcp") or {}).get("enabled") if isinstance(current.get("mcp"), dict) else True)),
+                "allowed_servers": _normalize_text_list(((current.get("mcp") or {}).get("allowed_servers") if isinstance(current.get("mcp"), dict) else ["https://mcp.notion.com/mcp"]) or ["https://mcp.notion.com/mcp"]),
+            },
+            "a2a": {
+                **(current.get("a2a") if isinstance(current.get("a2a"), dict) else {}),
+                "enabled": bool(((current.get("a2a") or {}).get("enabled") if isinstance(current.get("a2a"), dict) else True)),
+                "require_signed_messages": bool(((current.get("a2a") or {}).get("require_signed_messages") if isinstance(current.get("a2a"), dict) else True)),
+            },
+            "tools": {
+                **(current.get("tools") if isinstance(current.get("tools"), dict) else {}),
+                "definitions": [dict(item) for item in resolved_tools if isinstance(item, dict)],
+                "require_human_approval_for_high_risk": True,
+            },
+            "memory": {
+                **(current.get("memory") if isinstance(current.get("memory"), dict) else {}),
+                "default_scope": str(((current.get("memory") or {}).get("default_scope") if isinstance(current.get("memory"), dict) else "session") or "session"),
+                "allow_scopes": _normalize_text_list(((current.get("memory") or {}).get("allow_scopes") if isinstance(current.get("memory"), dict) else ["run", "session", "user", "tenant", "agent", "workflow", "global"]) or ["run", "session", "user", "tenant", "agent", "workflow", "global"]),
+            },
+            "guardrails": {
+                **guardrails_existing,
+                "enable_platform_signals": bool(
+                    guardrails_existing.get("enable_platform_signals")
+                    if "enable_platform_signals" in guardrails_existing
+                    else (legacy_enable_signals if isinstance(legacy_enable_signals, bool) else True)
+                ),
+                "platform_signal_enforcement": str(
+                    guardrails_existing.get("platform_signal_enforcement")
+                    or legacy_signal_enforcement
+                    or "block_high"
+                ),
+                "platform_signal_detect_prompt_injection": bool(guardrails_existing.get("platform_signal_detect_prompt_injection", True)),
+                "platform_signal_detect_pii": bool(guardrails_existing.get("platform_signal_detect_pii", True)),
+                "platform_signal_detect_command_injection": bool(guardrails_existing.get("platform_signal_detect_command_injection", True)),
+                "platform_signal_detect_exfiltration": bool(guardrails_existing.get("platform_signal_detect_exfiltration", True)),
+            },
+        }
+    )
+
+    return canonical
+
+
+def _canonicalize_all_agent_definitions() -> None:
+    migrated: dict[str, AgentDefinition] = {}
+    for agent_id, agent in store.agent_definitions.items():
+        canonical_config = _canonicalize_agent_config(
+            agent.config_json if isinstance(agent.config_json, dict) else {},
+            agent_id=agent.id,
+            agent_name=agent.name,
+            source_agent_id=str((agent.config_json or {}).get("source_agent_id") or agent.id) if isinstance(agent.config_json, dict) else agent.id,
+            system_prompt=str((agent.config_json or {}).get("system_prompt") or "") if isinstance(agent.config_json, dict) else "",
+            model_defaults=(agent.config_json or {}).get("model_defaults") if isinstance(agent.config_json, dict) and isinstance((agent.config_json or {}).get("model_defaults"), dict) else None,
+            tags=_normalize_text_list((agent.config_json or {}).get("tags")) if isinstance(agent.config_json, dict) else None,
+            capabilities=_normalize_text_list((agent.config_json or {}).get("capabilities")) if isinstance(agent.config_json, dict) else None,
+            owners=_normalize_text_list((agent.config_json or {}).get("owners")) if isinstance(agent.config_json, dict) else None,
+            tools=(agent.config_json or {}).get("tools") if isinstance(agent.config_json, dict) and isinstance((agent.config_json or {}).get("tools"), list) else None,
+            seed_source=str((agent.config_json or {}).get("seed_source") or "") if isinstance(agent.config_json, dict) else None,
+            prompt_file=str((agent.config_json or {}).get("prompt_file") or "") if isinstance(agent.config_json, dict) else None,
+            url_manifest=str((agent.config_json or {}).get("url_manifest") or "") if isinstance(agent.config_json, dict) else None,
+        )
+        migrated[agent_id] = agent.model_copy(
+            update={
+                "type": "graph",
+                "config_json": canonical_config,
+            }
+        )
+    store.agent_definitions = migrated
+
+
+def _normalize_runtime_engine(value: Any) -> str:
+    text = str(value or "").strip().lower().replace("_", "-")
+    aliases = {
+        "": "native",
+        "default": "native",
+        "frontier": "native",
+        "semantic_kernel": "semantic-kernel",
+        "semantickernel": "semantic-kernel",
+        "sk": "semantic-kernel",
+    }
+    normalized = aliases.get(text, text)
+    return normalized or "native"
+
+
+def _normalize_runtime_engine_list(values: list[str]) -> list[str]:
+    normalized: list[str] = []
+    for item in values:
+        value = _normalize_runtime_engine(item)
+        if value in _SUPPORTED_RUNTIME_ENGINES and value not in normalized:
+            normalized.append(value)
+    return normalized
+
+
+def _normalize_runtime_strategy(value: Any) -> str:
+    text = str(value or "").strip().lower().replace("_", "-")
+    aliases = {
+        "": "single",
+        "default": "single",
+        "single-engine": "single",
+        "hybrid-routing": "hybrid",
+    }
+    normalized = aliases.get(text, text)
+    if normalized not in _SUPPORTED_RUNTIME_STRATEGIES:
+        return "single"
+    return normalized
+
+
+def _default_immutable_security_baseline() -> SecurityImmutableBaseline:
+    return SecurityImmutableBaseline()
+
+
+def _normalize_optional_positive_int(value: Any) -> int | None:
+    if value in {None, ""}:
+        return None
+    try:
+        candidate = int(value)
+    except (TypeError, ValueError):
+        return None
+    return candidate if candidate > 0 else None
+
+
+def _normalize_security_classification(value: Any) -> str:
+    candidate = str(value or "").strip().lower()
+    if candidate not in _SECURITY_CLASSIFICATIONS:
+        return "internal"
+    return candidate
+
+
+def _normalize_signal_enforcement(value: Any) -> str:
+    candidate = str(value or "").strip().lower()
+    if candidate not in _SIGNAL_ENFORCEMENT_RANK:
+        return "block_high"
+    return candidate
+
+
+def _intersect_text_lists(base_values: list[str], requested_values: list[str]) -> list[str]:
+    base_lookup = {item.lower(): item for item in base_values}
+    results: list[str] = []
+    for item in requested_values:
+        matched = base_lookup.get(item.lower())
+        if matched and matched not in results:
+            results.append(matched)
+    return results
+
+
+def _max_security_classification(*values: Any) -> str:
+    resolved = [_normalize_security_classification(value) for value in values if value is not None]
+    if not resolved:
+        return "internal"
+    return max(resolved, key=lambda value: _SECURITY_CLASSIFICATION_RANK.get(value, 1))
+
+
+def _max_signal_enforcement(*values: Any) -> str:
+    resolved = [_normalize_signal_enforcement(value) for value in values if value is not None]
+    if not resolved:
+        return "block_high"
+    return max(resolved, key=lambda value: _SIGNAL_ENFORCEMENT_RANK.get(value, 2))
+
+
+def _normalize_security_scope_config(raw: Any) -> dict[str, Any]:
+    source = raw if isinstance(raw, dict) else {}
+    normalized: dict[str, Any] = {
+        "classification": _normalize_security_classification(source.get("classification")),
+    }
+
+    if "guardrail_ruleset_id" in source:
+        normalized["guardrail_ruleset_id"] = str(source.get("guardrail_ruleset_id") or "").strip() or None
+    if "blocked_keywords" in source:
+        normalized["blocked_keywords"] = _normalize_text_list(source.get("blocked_keywords"))
+    if "allowed_egress_hosts" in source:
+        normalized["allowed_egress_hosts"] = _normalize_text_list(source.get("allowed_egress_hosts"))
+    if "allowed_retrieval_sources" in source:
+        normalized["allowed_retrieval_sources"] = _normalize_text_list(source.get("allowed_retrieval_sources"))
+    if "allowed_mcp_server_urls" in source:
+        normalized["allowed_mcp_server_urls"] = _normalize_text_list(source.get("allowed_mcp_server_urls"))
+    if "allowed_runtime_engines" in source:
+        allowed_runtime_engines = _normalize_runtime_engine_list(source.get("allowed_runtime_engines") if isinstance(source.get("allowed_runtime_engines"), list) else [])
+        if allowed_runtime_engines:
+            normalized["allowed_runtime_engines"] = allowed_runtime_engines
+    if "allowed_memory_scopes" in source:
+        normalized["allowed_memory_scopes"] = _normalize_text_list(source.get("allowed_memory_scopes"))
+
+    for key in ["max_tool_calls_per_run", "max_retrieval_items", "max_collaboration_agents"]:
+        if key in source:
+            value = _normalize_optional_positive_int(source.get(key))
+            if value is not None:
+                normalized[key] = value
+
+    for key in [
+        "require_human_approval",
+        "require_human_approval_for_high_risk_tools",
+        "allow_runtime_override",
+        "enable_platform_signals",
+    ]:
+        if key in source:
+            normalized[key] = bool(source.get(key))
+
+    if "platform_signal_enforcement" in source and str(source.get("platform_signal_enforcement") or "").strip():
+        normalized["platform_signal_enforcement"] = _normalize_signal_enforcement(source.get("platform_signal_enforcement"))
+
+    return normalized
+
+
+def _platform_security_defaults(platform: "PlatformSettings") -> dict[str, Any]:
+    allowed_runtime_engines = _normalize_runtime_engine_list(platform.allowed_runtime_engines)
+    return {
+        "classification": "internal",
+        "guardrail_ruleset_id": platform.default_guardrail_ruleset_id,
+        "blocked_keywords": list(platform.global_blocked_keywords),
+        "allowed_egress_hosts": list(platform.allowed_egress_hosts if platform.enforce_egress_allowlist else []),
+        "allowed_retrieval_sources": list(platform.allowed_retrieval_sources),
+        "allowed_mcp_server_urls": list(platform.allowed_mcp_server_urls),
+        "allowed_runtime_engines": allowed_runtime_engines or ["native"],
+        "allowed_memory_scopes": ["run", "session", "user", "tenant", "agent", "workflow", "global"],
+        "max_tool_calls_per_run": int(platform.max_tool_calls_per_run),
+        "max_retrieval_items": int(platform.max_retrieval_items),
+        "max_collaboration_agents": int(platform.collaboration_max_agents),
+        "require_human_approval": bool(platform.require_human_approval),
+        "require_human_approval_for_high_risk_tools": bool(platform.require_human_approval_for_high_risk_tools),
+        "allow_runtime_override": bool(platform.allow_runtime_engine_override),
+        "enable_platform_signals": bool(platform.enable_foss_guardrail_signals),
+        "platform_signal_enforcement": _normalize_signal_enforcement(platform.foss_guardrail_signal_enforcement),
+    }
+
+
+def _resolve_effective_security_policy(
+    *,
+    platform: PlatformSettings,
+    workflow_config: dict[str, Any] | None = None,
+    agent_config: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    platform_defaults = _platform_security_defaults(platform)
+    workflow_security = _normalize_security_scope_config(workflow_config)
+    agent_security = _normalize_security_scope_config(agent_config)
+
+    effective = dict(platform_defaults)
+    effective["classification"] = _max_security_classification(
+        platform_defaults.get("classification"),
+        workflow_security.get("classification"),
+        agent_security.get("classification"),
+    )
+
+    for guardrail_key in ["guardrail_ruleset_id"]:
+        if workflow_security.get(guardrail_key):
+            effective[guardrail_key] = workflow_security.get(guardrail_key)
+        if agent_security.get(guardrail_key):
+            effective[guardrail_key] = agent_security.get(guardrail_key)
+
+    effective["blocked_keywords"] = _normalize_text_list(
+        list(platform_defaults.get("blocked_keywords", []))
+        + list(workflow_security.get("blocked_keywords", []))
+        + list(agent_security.get("blocked_keywords", []))
+    )
+
+    for list_key in [
+        "allowed_egress_hosts",
+        "allowed_retrieval_sources",
+        "allowed_mcp_server_urls",
+        "allowed_runtime_engines",
+        "allowed_memory_scopes",
+    ]:
+        values = list(platform_defaults.get(list_key, []))
+        if list_key in workflow_security:
+            values = _intersect_text_lists(values, list(workflow_security.get(list_key, [])))
+        if list_key in agent_security:
+            values = _intersect_text_lists(values, list(agent_security.get(list_key, [])))
+        effective[list_key] = values
+
+    for numeric_key in ["max_tool_calls_per_run", "max_retrieval_items", "max_collaboration_agents"]:
+        limit = platform_defaults.get(numeric_key)
+        for override in [workflow_security.get(numeric_key), agent_security.get(numeric_key)]:
+            if isinstance(override, int) and override > 0:
+                limit = override if limit is None else min(int(limit), override)
+        effective[numeric_key] = limit
+
+    effective["require_human_approval"] = bool(
+        platform_defaults.get("require_human_approval")
+        or workflow_security.get("require_human_approval")
+        or agent_security.get("require_human_approval")
+    )
+    effective["require_human_approval_for_high_risk_tools"] = bool(
+        platform_defaults.get("require_human_approval_for_high_risk_tools")
+        or workflow_security.get("require_human_approval_for_high_risk_tools")
+        or agent_security.get("require_human_approval_for_high_risk_tools")
+    )
+
+    allow_runtime_override = bool(platform_defaults.get("allow_runtime_override"))
+    if "allow_runtime_override" in workflow_security:
+        allow_runtime_override = allow_runtime_override and bool(workflow_security.get("allow_runtime_override"))
+    if "allow_runtime_override" in agent_security:
+        allow_runtime_override = allow_runtime_override and bool(agent_security.get("allow_runtime_override"))
+    effective["allow_runtime_override"] = allow_runtime_override
+
+    effective["enable_platform_signals"] = bool(
+        platform_defaults.get("enable_platform_signals")
+        or workflow_security.get("enable_platform_signals") is True
+        or agent_security.get("enable_platform_signals") is True
+    )
+    effective["platform_signal_enforcement"] = _max_signal_enforcement(
+        platform_defaults.get("platform_signal_enforcement"),
+        workflow_security.get("platform_signal_enforcement"),
+        agent_security.get("platform_signal_enforcement"),
+    )
+
+    return {
+        "immutable_baseline": _default_immutable_security_baseline().model_dump(),
+        "platform_defaults": platform_defaults,
+        "workflow_overrides": workflow_security,
+        "agent_overrides": agent_security,
+        "effective": effective,
+    }
+
+
+def _validate_security_guardrail_reference(config: dict[str, Any], *, label: str) -> None:
+    ruleset_id = str(config.get("guardrail_ruleset_id") or "").strip()
+    if not ruleset_id:
+        return
+    ruleset = store.guardrail_rulesets.get(ruleset_id)
+    if not ruleset or ruleset.status != "published":
+        raise HTTPException(status_code=400, detail=f"{label} requires a published guardrail ruleset")
+
+
+def _normalize_hybrid_runtime_routing(raw: Any, *, default_engine: str) -> dict[str, str]:
+    source = raw if isinstance(raw, dict) else {}
+    normalized_default = _normalize_runtime_engine(default_engine)
+    if normalized_default not in _SUPPORTED_RUNTIME_ENGINES:
+        normalized_default = "native"
+
+    routing: dict[str, str] = {"default": normalized_default}
+    for role in _HYBRID_RUNTIME_ROLES:
+        if role == "default":
+            continue
+        candidate = _normalize_runtime_engine(source.get(role) or normalized_default)
+        if candidate not in _SUPPORTED_RUNTIME_ENGINES:
+            candidate = normalized_default
+        routing[role] = candidate
+
+    requested_default = _normalize_runtime_engine(source.get("default") or normalized_default)
+    if requested_default in _SUPPORTED_RUNTIME_ENGINES:
+        routing["default"] = requested_default
+
+    for role in _HYBRID_RUNTIME_ROLES:
+        if role == "default":
+            continue
+        candidate = _normalize_runtime_engine(source.get(role) or routing["default"])
+        routing[role] = candidate if candidate in _SUPPORTED_RUNTIME_ENGINES else routing["default"]
+
+    return routing
+
+
+def _resolve_engine_execution(selected_engine: str) -> dict[str, Any]:
+    selected = _normalize_runtime_engine(selected_engine)
+    if selected not in _SUPPORTED_RUNTIME_ENGINES:
+        raise HTTPException(status_code=400, detail=f"Unsupported runtime engine '{selected}'")
+
+    if selected == "native":
+        return {
+            "selected_engine": "native",
+            "executed_engine": "native",
+            "mode": "native",
+            "probe": {
+                "engine": "native",
+                "available": True,
+                "missing_modules": [],
+            },
+            "note": "",
+        }
+
+    if not _env_flag("FRONTIER_ENABLE_NON_NATIVE_ENGINES", False):
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "message": "Non-native runtime engines are disabled",
+                "requested": selected,
+            },
+        )
+
+    runtime_probe = _framework_runtime_probe(selected)
+    allow_compat_fallback = _env_flag("FRONTIER_NON_NATIVE_ENGINE_FALLBACK_TO_COMPAT", True)
+    if runtime_probe.get("available"):
+        return {
+            "selected_engine": selected,
+            "executed_engine": selected,
+            "mode": "delegated",
+            "probe": runtime_probe,
+            "note": "",
+        }
+
+    if not allow_compat_fallback:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "message": "Runtime engine dependencies are not available",
+                "requested": selected,
+                "missing_modules": runtime_probe.get("missing_modules", []),
+            },
+        )
+
+    return {
+        "selected_engine": selected,
+        "executed_engine": "native",
+        "mode": "compatibility",
+        "probe": runtime_probe,
+        "note": f"Engine '{selected}' missing deps; using native compatibility execution.",
+    }
+
+
+def _framework_adapter_mapping(engine: str) -> dict[str, str]:
+    if engine == "native":
+        return {
+            "frontier/trigger": "native.trigger",
+            "frontier/prompt": "native.prompt",
+            "frontier/agent": "native.agent",
+            "frontier/tool-call": "native.tool_call",
+            "frontier/retrieval": "native.retrieval",
+            "frontier/memory": "native.memory",
+            "frontier/guardrail": "native.guardrail",
+            "frontier/human-review": "native.human_review",
+            "frontier/manifold": "native.manifold",
+            "frontier/output": "native.output",
+        }
+
+    if engine in {"langgraph", "langchain"}:
+        return {
+            "frontier/trigger": "framework.entrypoint",
+            "frontier/prompt": "framework.prompt_template",
+            "frontier/agent": "framework.llm_node",
+            "frontier/tool-call": "framework.tool_node",
+            "frontier/retrieval": "framework.retriever_node",
+            "frontier/memory": "framework.checkpoint_or_memory",
+            "frontier/guardrail": "framework.policy_node",
+            "frontier/human-review": "framework.human_gate",
+            "frontier/manifold": "framework.router_or_join",
+            "frontier/output": "framework.sink",
+        }
+
+    if engine == "semantic-kernel":
+        return {
+            "frontier/trigger": "sk.entry",
+            "frontier/prompt": "sk.prompt_function",
+            "frontier/agent": "sk.chat_or_planner",
+            "frontier/tool-call": "sk.plugin_function",
+            "frontier/retrieval": "sk.memory_search",
+            "frontier/memory": "sk.memory_store",
+            "frontier/guardrail": "sk.filter_or_policy",
+            "frontier/human-review": "sk.approval_step",
+            "frontier/manifold": "sk.branch_join",
+            "frontier/output": "sk.output_formatter",
+        }
+
+    return {
+        "frontier/trigger": "autogen.entry",
+        "frontier/prompt": "autogen.system_message",
+        "frontier/agent": "autogen.assistant_agent",
+        "frontier/tool-call": "autogen.tool_executor",
+        "frontier/retrieval": "autogen.retrieval_agent",
+        "frontier/memory": "autogen.state_store",
+        "frontier/guardrail": "autogen.policy_gate",
+        "frontier/human-review": "autogen.user_proxy_gate",
+        "frontier/manifold": "autogen.selector",
+        "frontier/output": "autogen.result_sink",
+    }
+
+
+def _resolve_runtime_engine(run_input: dict[str, Any], platform: PlatformSettings) -> dict[str, Any]:
+    runtime = run_input.get("runtime") if isinstance(run_input.get("runtime"), dict) else {}
+    requested_raw = ""
+    strategy_raw = ""
+    if isinstance(runtime, dict):
+        requested_raw = str(runtime.get("engine") or runtime.get("framework") or "")
+        strategy_raw = str(runtime.get("strategy") or "")
+
+    requested = _normalize_runtime_engine(requested_raw)
+    default_strategy = _normalize_runtime_strategy(platform.default_runtime_strategy)
+    strategy = default_strategy
+    if platform.allow_runtime_engine_override and strategy_raw:
+        strategy = _normalize_runtime_strategy(strategy_raw)
+    default_engine = _normalize_runtime_engine(platform.default_runtime_engine)
+    if default_engine not in _SUPPORTED_RUNTIME_ENGINES:
+        default_engine = "native"
+
+    selected = default_engine
+    if platform.allow_runtime_engine_override and requested:
+        selected = requested
+
+    if selected not in _SUPPORTED_RUNTIME_ENGINES:
+        raise HTTPException(status_code=400, detail=f"Unsupported runtime engine '{selected}'")
+
+    allowed = _normalize_runtime_engine_list(platform.allowed_runtime_engines)
+    if not allowed:
+        allowed = ["native"]
+
+    if platform.enforce_runtime_engine_allowlist and selected not in allowed:
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "message": "Runtime engine is not allowed by platform policy",
+                "requested": selected,
+                "allowed": allowed,
+            },
+        )
+
+    if strategy == "hybrid":
+        policy_default_routing = _normalize_hybrid_runtime_routing(
+            platform.default_hybrid_runtime_routing,
+            default_engine=selected,
+        )
+        requested_routing = dict(policy_default_routing)
+        if platform.allow_runtime_engine_override and isinstance(runtime.get("hybrid_routing"), dict):
+            requested_routing = _normalize_hybrid_runtime_routing(
+                {**policy_default_routing, **runtime.get("hybrid_routing")},
+                default_engine=selected,
+            )
+        if platform.enforce_runtime_engine_allowlist:
+            disallowed = [
+                {"role": role, "engine": engine}
+                for role, engine in requested_routing.items()
+                if engine not in allowed
+            ]
+            if disallowed:
+                raise HTTPException(
+                    status_code=403,
+                    detail={
+                        "message": "Runtime engine is not allowed by platform policy",
+                        "requested": disallowed,
+                        "allowed": allowed,
+                    },
+                )
+
+        effective_routing: dict[str, str] = {}
+        role_modes: dict[str, str] = {}
+        role_probes: dict[str, dict[str, Any]] = {}
+        notes: list[str] = []
+        for role, role_engine in requested_routing.items():
+            role_resolution = _resolve_engine_execution(role_engine)
+            effective_routing[role] = _normalize_runtime_engine(role_resolution.get("executed_engine") or "native")
+            role_modes[role] = str(role_resolution.get("mode") or "native")
+            role_probes[role] = role_resolution.get("probe") if isinstance(role_resolution.get("probe"), dict) else {
+                "engine": role_engine,
+                "available": False,
+                "missing_modules": [],
+            }
+            note = str(role_resolution.get("note") or "").strip()
+            if note:
+                notes.append(f"{role}: {note}")
+
+        return {
+            "requested_engine": requested or default_engine,
+            "selected_engine": selected,
+            "executed_engine": effective_routing.get("default", "native"),
+            "mode": "hybrid",
+            "strategy": "hybrid",
+            "allow_override": platform.allow_runtime_engine_override,
+            "allowed_engines": allowed,
+            "node_mapping": _framework_adapter_mapping(selected),
+            "adapter_probe": role_probes.get("default", {"engine": selected, "available": True, "missing_modules": []}),
+            "hybrid_routing": requested_routing,
+            "hybrid_effective_routing": effective_routing,
+            "hybrid_role_modes": role_modes,
+            "hybrid_adapter_probes": role_probes,
+            "hybrid_resolution_notes": notes,
+            "policy_default_hybrid_routing": policy_default_routing,
+        }
+
+    single_resolution = _resolve_engine_execution(selected)
+    runtime_mode = str(single_resolution.get("mode") or "native")
+    executed_engine = _normalize_runtime_engine(single_resolution.get("executed_engine") or "native")
+    runtime_probe = single_resolution.get("probe") if isinstance(single_resolution.get("probe"), dict) else {
+        "engine": selected,
+        "available": True,
+        "missing_modules": [],
+    }
+
+    return {
+        "requested_engine": requested or default_engine,
+        "selected_engine": selected,
+        "executed_engine": executed_engine,
+        "mode": runtime_mode,
+        "strategy": "single",
+        "allow_override": platform.allow_runtime_engine_override,
+        "allowed_engines": allowed,
+        "node_mapping": _framework_adapter_mapping(selected),
+        "adapter_probe": runtime_probe,
+    }
+
+
+def _infer_agent_runtime_role(
+    node: GraphNode,
+    *,
+    by_port: dict[str, list[dict[str, Any]]],
+    prior_agent_outputs: list[str],
+) -> str:
+    role_hint = str(node.config.get("runtime_role") or node.config.get("framework_role") or "").strip().lower()
+    if role_hint in _HYBRID_RUNTIME_ROLES:
+        return role_hint
+
+    retrieval_inputs = _port_values(by_port, "retrieval", "documents")
+    if retrieval_inputs:
+        return "retrieval"
+
+    tool_inputs = _port_values(by_port, "tool_result", "result", "tool_output", "tool_request")
+    if tool_inputs:
+        return "tooling"
+
+    title = str(node.title or "").strip().lower()
+    if any(marker in title for marker in ["orchestr", "router", "planner"]):
+        return "orchestration"
+
+    if prior_agent_outputs:
+        return "collaboration"
+
+    return "default"
+
+
+def _infer_graph_node_runtime_role(
+    node: GraphNode,
+    *,
+    node_type: str,
+    incoming_by_port: dict[str, list[dict[str, Any]]],
+    execution_state: dict[str, Any],
+) -> str:
+    role_hint = str(node.config.get("runtime_role") or node.config.get("framework_role") or "").strip().lower()
+    if role_hint in _HYBRID_RUNTIME_ROLES:
+        return role_hint
+
+    if node_type.startswith("frontier/agent"):
+        prior_agent_outputs = execution_state.get("agent_outputs") if isinstance(execution_state.get("agent_outputs"), list) else []
+        return _infer_agent_runtime_role(
+            node,
+            by_port=incoming_by_port,
+            prior_agent_outputs=prior_agent_outputs,
+        )
+
+    if node_type == "frontier/retrieval":
+        return "retrieval"
+    if node_type == "frontier/tool-call":
+        return "tooling"
+    if node_type == "frontier/memory":
+        return "collaboration"
+
+    if node_type in {"frontier/trigger", "frontier/prompt", "frontier/manifold", "frontier/guardrail", "frontier/human-review", "frontier/output"}:
+        return "orchestration"
+
+    return "default"
+
+
+def _resolve_node_runtime_engine(runtime_info: dict[str, Any], role: str) -> dict[str, str]:
+    strategy = _normalize_runtime_strategy(runtime_info.get("strategy"))
+    normalized_role = role if role in _HYBRID_RUNTIME_ROLES else "default"
+
+    if strategy == "hybrid":
+        requested_routing = runtime_info.get("hybrid_routing") if isinstance(runtime_info.get("hybrid_routing"), dict) else {}
+        effective_routing = runtime_info.get("hybrid_effective_routing") if isinstance(runtime_info.get("hybrid_effective_routing"), dict) else {}
+        role_modes = runtime_info.get("hybrid_role_modes") if isinstance(runtime_info.get("hybrid_role_modes"), dict) else {}
+
+        selected_engine = _normalize_runtime_engine(
+            requested_routing.get(normalized_role)
+            or requested_routing.get("default")
+            or runtime_info.get("selected_engine")
+            or "native"
+        )
+        executed_engine = _normalize_runtime_engine(
+            effective_routing.get(normalized_role)
+            or effective_routing.get("default")
+            or selected_engine
+        )
+        node_mode = str(role_modes.get(normalized_role) or role_modes.get("default") or ("native" if executed_engine == "native" else "delegated"))
+        return {
+            "selected_engine": selected_engine,
+            "executed_engine": executed_engine,
+            "mode": node_mode,
+        }
+
+    selected_engine = _normalize_runtime_engine(runtime_info.get("selected_engine") or "native")
+    executed_engine = _normalize_runtime_engine(runtime_info.get("executed_engine") or "native")
+    return {
+        "selected_engine": selected_engine,
+        "executed_engine": executed_engine,
+        "mode": str(runtime_info.get("mode") or "native"),
+    }
+
+
+def _default_openai_model() -> str:
+    return os.getenv("OPENAI_MODEL", "gpt-5.2")
+
+
+def _fallback_openai_model() -> str:
+    return os.getenv("OPENAI_FALLBACK_MODEL", "gpt-5.1")
+
+
+def _clean_inbox_prompt(text: str) -> str:
+    candidate = str(text or "")
+    # Remove leading @agent mentions used for routing so model receives a clean task instruction.
+    cleaned = re.sub(r"^(?:\s*@[^\s]+\s+)+", "", candidate).strip()
+    return cleaned or candidate.strip()
+
+
+def _truncate_event_summary(text: str, max_chars: int = 700) -> str:
+    value = str(text or "").strip()
+    if len(value) <= max_chars:
+        return value
+    return f"{value[:max_chars].rstrip()}…"
+
+
+def _should_enforce_architecture_contract(*, selected_agent: AgentDefinition | None, prompt_text: str) -> bool:
+    candidate = str(prompt_text or "").lower()
+    if any(token in candidate for token in ["architecture", "uml", "sequence diagram", "component diagram", "deployment topology"]):
+        return True
+
+    if not selected_agent:
+        return False
+
+    config_json = selected_agent.config_json if isinstance(selected_agent.config_json, dict) else {}
+    source_agent_id = str(config_json.get("source_agent_id") or "").strip().lower()
+    agent_name = str(selected_agent.name or "").strip().lower()
+    return any(marker in source_agent_id or marker in agent_name for marker in ["uml-architect", "architect", "architecture"])
+
+
+def _with_architecture_contract(user_prompt: str, *, enabled: bool) -> str:
+    prompt = str(user_prompt or "").strip() or "Design the target architecture for this request."
+    if not enabled:
+        return prompt
+
+    contract = (
+        "\n\nArchitecture response contract (required):\n"
+        "1) Do not return generic recommended actions as the main answer.\n"
+        "2) Provide a concrete target architecture with explicit components, boundaries, interfaces, and data flows.\n"
+        "3) Include these sections exactly:\n"
+        "   - Assumptions & constraints\n"
+        "   - Target architecture\n"
+        "   - Component responsibilities\n"
+        "   - Interface contracts\n"
+        "   - Data model & state\n"
+        "   - Security, reliability, and observability\n"
+        "   - Deployment topology\n"
+        "   - Trade-offs and alternatives\n"
+        "   - Incremental implementation plan\n"
+        "4) Include at least one Mermaid diagram (flowchart or sequenceDiagram).\n"
+        "5) Use valid Markdown headings, bullet lists, and fenced code blocks where appropriate."
+    )
+    return f"{prompt}{contract}"
+
+
+def _extract_openai_responses_payload(response: Any) -> tuple[str, list[str]]:
+    text = ""
+    summaries: list[str] = []
+
+    output_text = getattr(response, "output_text", None)
+    if isinstance(output_text, str) and output_text.strip():
+        text = output_text.strip()
+
+    output_items = getattr(response, "output", None)
+    if not isinstance(output_items, list):
+        output_items = response.get("output") if isinstance(response, dict) and isinstance(response.get("output"), list) else []
+
+    for item in output_items:
+        item_type = ""
+        if isinstance(item, dict):
+            item_type = str(item.get("type") or "").strip().lower()
+            item_summary = item.get("summary")
+            item_content = item.get("content")
+        else:
+            item_type = str(getattr(item, "type", "") or "").strip().lower()
+            item_summary = getattr(item, "summary", None)
+            item_content = getattr(item, "content", None)
+
+        if item_type == "reasoning" and isinstance(item_summary, list):
+            for summary_item in item_summary:
+                if isinstance(summary_item, str) and summary_item.strip():
+                    summaries.append(summary_item.strip())
+                    continue
+                if isinstance(summary_item, dict):
+                    candidate = str(summary_item.get("text") or summary_item.get("summary") or "").strip()
+                else:
+                    candidate = str(getattr(summary_item, "text", "") or getattr(summary_item, "summary", "") or "").strip()
+                if candidate:
+                    summaries.append(candidate)
+
+        if not text and isinstance(item_content, list):
+            chunks: list[str] = []
+            for content_item in item_content:
+                if isinstance(content_item, str):
+                    if content_item.strip():
+                        chunks.append(content_item.strip())
+                    continue
+                if isinstance(content_item, dict):
+                    piece = str(content_item.get("text") or content_item.get("content") or "").strip()
+                else:
+                    piece = str(getattr(content_item, "text", "") or getattr(content_item, "content", "") or "").strip()
+                if piece:
+                    chunks.append(piece)
+            if chunks:
+                text = "\n".join(chunks)
+
+    return text.strip(), summaries
+
+
+def _resolve_agent_chat_model(agent: AgentDefinition | None) -> str:
+    if agent is None:
+        return _default_openai_model()
+    config_json = agent.config_json if isinstance(agent.config_json, dict) else {}
+    model_defaults = config_json.get("model_defaults") if isinstance(config_json.get("model_defaults"), dict) else {}
+    configured_model = str(model_defaults.get("model") or "").strip()
+    return configured_model or _default_openai_model()
+
+
+def _openai_status() -> RuntimeProviderStatus:
+    key = os.getenv("OPENAI_API_KEY", "").strip()
+    has_client = OpenAI is not None
+    is_placeholder_key = key.lower().startswith("replace-") or "your-api-key" in key.lower() or key.lower() in {"changeme", "todo"}
+    configured = bool(key) and has_client and not is_placeholder_key
+    return RuntimeProviderStatus(
+        provider="openai",
+        configured=configured,
+        model=_default_openai_model(),
+        mode="live" if configured else "simulated",
+    )
+
+
+_OPENAI_CLIENT: Any | None = None
+_PRESIDIO_ANALYZER: Any | None = None
+_POSTGRES_STATE = PostgresStateStore(os.getenv("POSTGRES_DSN", ""))
+_REDIS_MEMORY = RedisMemoryStore(os.getenv("REDIS_URL", ""))
+_NEO4J_GRAPH = Neo4jRunGraph(
+    os.getenv("NEO4J_URI", ""),
+    os.getenv("NEO4J_USERNAME", ""),
+    os.getenv("NEO4J_PASSWORD", ""),
+)
+
+
+def _get_openai_client() -> Any | None:
+    global _OPENAI_CLIENT  # noqa: PLW0603
+    status = _openai_status()
+    if not status.configured:
+        return None
+    if _OPENAI_CLIENT is None:
+        _OPENAI_CLIENT = OpenAI(api_key=os.getenv("OPENAI_API_KEY", "").strip())
+    return _OPENAI_CLIENT
+
+
+def _module_available(module_name: str) -> bool:
+    try:
+        return importlib.util.find_spec(module_name) is not None
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _import_module(module_name: str) -> Any:
+    import importlib
+
+    return importlib.import_module(module_name)
+
+
+def _framework_runtime_probe(engine: str) -> dict[str, Any]:
+    normalized = _normalize_runtime_engine(engine)
+    required_modules: list[str] = []
+
+    if normalized == "langgraph":
+        required_modules = ["langgraph", "langchain_openai"]
+    elif normalized == "langchain":
+        required_modules = ["langchain_core", "langchain_openai"]
+    elif normalized == "semantic-kernel":
+        required_modules = ["semantic_kernel"]
+    elif normalized == "autogen":
+        # Either modern agentchat or legacy autogen package is acceptable.
+        if _module_available("autogen_agentchat") or _module_available("autogen"):
+            required_modules = []
+        else:
+            required_modules = ["autogen_agentchat|autogen"]
+
+    if not required_modules:
+        return {
+            "engine": normalized,
+            "available": True,
+            "missing_modules": [],
+        }
+
+    missing_modules: list[str] = [name for name in required_modules if not _module_available(name)]
+    return {
+        "engine": normalized,
+        "available": len(missing_modules) == 0,
+        "missing_modules": missing_modules,
+    }
+
+
+def _extract_langchain_content(content: Any) -> str:
+    if isinstance(content, str):
+        return content.strip()
+    if isinstance(content, list):
+        chunks: list[str] = []
+        for item in content:
+            if isinstance(item, str):
+                chunks.append(item)
+            elif isinstance(item, dict):
+                text = item.get("text") if isinstance(item.get("text"), str) else None
+                if text:
+                    chunks.append(text)
+                else:
+                    chunks.append(_safe_json(item))
+            else:
+                chunks.append(str(item))
+        return "\n".join(part for part in chunks if part).strip()
+    return str(content).strip()
+
+
+def _run_langchain_chat(
+    *,
+    system_prompt: str,
+    user_prompt: str,
+    model: str,
+    temperature: float,
+) -> tuple[str, dict[str, Any]]:
+    key = os.getenv("OPENAI_API_KEY", "").strip()
+    if not key:
+        return (
+            f"[simulated:{model}] {user_prompt[:280]}",
+            {
+                "provider": "langchain-openai",
+                "model": model,
+                "mode": "simulated",
+                "reason": "OPENAI_API_KEY missing",
+            },
+        )
+
+    try:
+        langchain_messages = _import_module("langchain_core.messages")
+        langchain_openai = _import_module("langchain_openai")
+        HumanMessage = getattr(langchain_messages, "HumanMessage")
+        SystemMessage = getattr(langchain_messages, "SystemMessage")
+        ChatOpenAI = getattr(langchain_openai, "ChatOpenAI")
+
+        llm = ChatOpenAI(
+            model=model,
+            temperature=temperature,
+            api_key=key,
+        )
+        messages: list[Any] = []
+        if system_prompt.strip():
+            messages.append(SystemMessage(content=system_prompt))
+        messages.append(HumanMessage(content=user_prompt))
+
+        response = llm.invoke(messages)
+        text = _extract_langchain_content(getattr(response, "content", ""))
+        if not text:
+            text = "[empty-response]"
+        return (
+            text,
+            {
+                "provider": "langchain-openai",
+                "model": model,
+                "mode": "live",
+            },
+        )
+    except Exception as exc:  # noqa: BLE001
+        return (
+            f"[fallback:{model}] {user_prompt[:280]}",
+            {
+                "provider": "langchain-openai",
+                "model": model,
+                "mode": "simulated",
+                "reason": f"LangChain call failed: {str(exc)[:180]}",
+            },
+        )
+
+
+def _run_langgraph_chat(
+    *,
+    system_prompt: str,
+    user_prompt: str,
+    model: str,
+    temperature: float,
+) -> tuple[str, dict[str, Any]]:
+    try:
+        langgraph_graph = _import_module("langgraph.graph")
+        END = getattr(langgraph_graph, "END")
+        StateGraph = getattr(langgraph_graph, "StateGraph")
+
+        def _invoke_node(state: dict[str, Any]) -> dict[str, Any]:
+            text, meta = _run_langchain_chat(
+                system_prompt=str(state.get("system_prompt") or ""),
+                user_prompt=str(state.get("user_prompt") or ""),
+                model=model,
+                temperature=temperature,
+            )
+            return {
+                "response": text,
+                "meta": meta,
+            }
+
+        workflow = StateGraph(dict)
+        workflow.add_node("agent", _invoke_node)
+        workflow.set_entry_point("agent")
+        workflow.add_edge("agent", END)
+        compiled = workflow.compile()
+        result = compiled.invoke(
+            {
+                "system_prompt": system_prompt,
+                "user_prompt": user_prompt,
+            }
+        )
+
+        response_text = str(result.get("response") or "").strip()
+        meta = result.get("meta") if isinstance(result.get("meta"), dict) else {}
+        return (
+            response_text or f"[simulated:{model}] {user_prompt[:280]}",
+            {
+                "provider": "langgraph",
+                "model": model,
+                "mode": str(meta.get("mode") or "live"),
+                "upstream_provider": meta.get("provider") or "langchain-openai",
+            },
+        )
+    except Exception as exc:  # noqa: BLE001
+        return (
+            f"[fallback:{model}] {user_prompt[:280]}",
+            {
+                "provider": "langgraph",
+                "model": model,
+                "mode": "simulated",
+                "reason": f"LangGraph call failed: {str(exc)[:180]}",
+            },
+        )
+
+
+def _run_semantic_kernel_chat(
+    *,
+    system_prompt: str,
+    user_prompt: str,
+    model: str,
+    temperature: float,
+) -> tuple[str, dict[str, Any]]:
+    key = os.getenv("OPENAI_API_KEY", "").strip()
+    if not key:
+        return (
+            f"[simulated:{model}] {user_prompt[:280]}",
+            {
+                "provider": "semantic-kernel",
+                "model": model,
+                "mode": "simulated",
+                "reason": "OPENAI_API_KEY missing",
+            },
+        )
+
+    try:
+        semantic_kernel = _import_module("semantic_kernel")
+        semantic_kernel_openai = _import_module("semantic_kernel.connectors.ai.open_ai")
+        Kernel = getattr(semantic_kernel, "Kernel")
+        OpenAIChatCompletion = getattr(semantic_kernel_openai, "OpenAIChatCompletion")
+
+        kernel = Kernel()
+        service_id = "frontier-chat"
+        kernel.add_service(OpenAIChatCompletion(service_id=service_id, ai_model_id=model, api_key=key))
+
+        prompt = (
+            "{{$system}}\n\n"
+            "User message:\n"
+            "{{$input}}"
+        )
+        result = kernel.invoke_prompt(
+            prompt=prompt,
+            service_id=service_id,
+            arguments={
+                "system": system_prompt,
+                "input": user_prompt,
+                "temperature": temperature,
+            },
+        )
+        text = str(result).strip()
+        if not text:
+            text = "[empty-response]"
+        return (
+            text,
+            {
+                "provider": "semantic-kernel",
+                "model": model,
+                "mode": "live",
+            },
+        )
+    except Exception as exc:  # noqa: BLE001
+        return (
+            f"[fallback:{model}] {user_prompt[:280]}",
+            {
+                "provider": "semantic-kernel",
+                "model": model,
+                "mode": "simulated",
+                "reason": f"Semantic Kernel call failed: {str(exc)[:180]}",
+            },
+        )
+
+
+def _run_coroutine_sync(coro: Any) -> Any:
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(coro)
+
+    if loop.is_running():
+        new_loop = asyncio.new_event_loop()
+        try:
+            return new_loop.run_until_complete(coro)
+        finally:
+            new_loop.close()
+
+    return loop.run_until_complete(coro)
+
+
+def _run_autogen_chat(
+    *,
+    system_prompt: str,
+    user_prompt: str,
+    model: str,
+    temperature: float,
+) -> tuple[str, dict[str, Any]]:
+    key = os.getenv("OPENAI_API_KEY", "").strip()
+    if not key:
+        return (
+            f"[simulated:{model}] {user_prompt[:280]}",
+            {
+                "provider": "autogen",
+                "model": model,
+                "mode": "simulated",
+                "reason": "OPENAI_API_KEY missing",
+            },
+        )
+
+    # Try modern AutoGen first.
+    try:
+        autogen_agentchat_agents = _import_module("autogen_agentchat.agents")
+        autogen_ext_openai = _import_module("autogen_ext.models.openai")
+        AssistantAgent = getattr(autogen_agentchat_agents, "AssistantAgent")
+        OpenAIChatCompletionClient = getattr(autogen_ext_openai, "OpenAIChatCompletionClient")
+
+        model_client = OpenAIChatCompletionClient(model=model, api_key=key, temperature=temperature)
+        assistant = AssistantAgent(
+            name="frontier_assistant",
+            model_client=model_client,
+            system_message=system_prompt or "You are a helpful assistant.",
+        )
+        run_result = _run_coroutine_sync(assistant.run(task=user_prompt))
+
+        text = ""
+        messages = getattr(run_result, "messages", None)
+        if isinstance(messages, list) and messages:
+            last = messages[-1]
+            text = str(getattr(last, "content", "") or "").strip()
+        if not text:
+            text = str(getattr(run_result, "summary", "") or "").strip()
+        if not text:
+            text = "[empty-response]"
+
+        return (
+            text,
+            {
+                "provider": "autogen",
+                "model": model,
+                "mode": "live",
+            },
+        )
+    except Exception:  # noqa: BLE001
+        pass
+
+    # Fall back to legacy pyautogen surface.
+    try:
+        autogen = _import_module("autogen")
+
+        llm_config = {
+            "config_list": [{"model": model, "api_key": key, "temperature": temperature}],
+        }
+        assistant = autogen.AssistantAgent(
+            name="frontier_assistant",
+            system_message=system_prompt or "You are a helpful assistant.",
+            llm_config=llm_config,
+        )
+        user_proxy = autogen.UserProxyAgent(
+            name="frontier_user_proxy",
+            human_input_mode="NEVER",
+            code_execution_config=False,
+        )
+        chat_result = user_proxy.initiate_chat(
+            assistant,
+            message=user_prompt,
+            max_turns=1,
+            silent=True,
+        )
+        text = str(getattr(chat_result, "summary", "") or "").strip()
+        if not text:
+            text = "[empty-response]"
+        return (
+            text,
+            {
+                "provider": "autogen",
+                "model": model,
+                "mode": "live",
+            },
+        )
+    except Exception as exc:  # noqa: BLE001
+        return (
+            f"[fallback:{model}] {user_prompt[:280]}",
+            {
+                "provider": "autogen",
+                "model": model,
+                "mode": "simulated",
+                "reason": f"AutoGen call failed: {str(exc)[:180]}",
+            },
+        )
+
+
+def _run_framework_chat(
+    *,
+    engine: str,
+    system_prompt: str,
+    user_prompt: str,
+    model: str,
+    temperature: float,
+) -> tuple[str, dict[str, Any]]:
+    resolved_engine = _normalize_runtime_engine(engine)
+    if resolved_engine == "langchain":
+        return _run_langchain_chat(
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            model=model,
+            temperature=temperature,
+        )
+    if resolved_engine == "langgraph":
+        return _run_langgraph_chat(
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            model=model,
+            temperature=temperature,
+        )
+    if resolved_engine == "semantic-kernel":
+        return _run_semantic_kernel_chat(
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            model=model,
+            temperature=temperature,
+        )
+    if resolved_engine == "autogen":
+        return _run_autogen_chat(
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            model=model,
+            temperature=temperature,
+        )
+    return _run_openai_chat(
+        system_prompt=system_prompt,
+        user_prompt=user_prompt,
+        model=model,
+        temperature=temperature,
+    )
+
+
+def _simulate_tool_execution_payload(
+    *,
+    tool_id: str,
+    request_payload: Any,
+    context_payload: Any,
+    call_index: int,
+    endpoint_url: str,
+    method: str,
+) -> dict[str, Any]:
+    return {
+        "ok": True,
+        "tool_id": tool_id,
+        "policy_checked": True,
+        "call_index": call_index,
+        "request": request_payload,
+        "context": context_payload,
+        "endpoint_url": endpoint_url,
+        "method": method,
+    }
+
+
+def _run_framework_retrieval(
+    *,
+    engine: str,
+    query_payload: Any,
+    source_id: str,
+    top_k: int,
+    filters_payload: Any,
+) -> tuple[list[dict[str, Any]], str, dict[str, Any]]:
+    resolved_engine = _normalize_runtime_engine(engine)
+    query_text = _safe_json(query_payload)[:1000]
+
+    if resolved_engine == "langchain":
+        try:
+            langchain_documents = _import_module("langchain_core.documents")
+            Document = getattr(langchain_documents, "Document")
+            docs = [
+                Document(
+                    page_content=f"[langchain] Retrieved context {idx} for query: {query_text}",
+                    metadata={"source": source_id, "rank": idx, "filters": filters_payload},
+                )
+                for idx in range(1, top_k + 1)
+            ]
+            normalized = [
+                {
+                    "id": f"doc-{idx}",
+                    "score": round(0.95 - (idx * 0.03), 2),
+                    "source": str(getattr(doc, "metadata", {}).get("source") or source_id),
+                    "text": str(getattr(doc, "page_content", ""))[:500],
+                }
+                for idx, doc in enumerate(docs, start=1)
+            ]
+            return normalized, f"LangChain retriever produced {len(normalized)} documents.", {
+                "framework": "langchain",
+                "mode": "live",
+            }
+        except Exception as exc:  # noqa: BLE001
+            return [], "LangChain retrieval fallback (framework unavailable).", {
+                "framework": "langchain",
+                "mode": "simulated",
+                "reason": f"LangChain retrieval failed: {str(exc)[:180]}",
+            }
+
+    if resolved_engine == "langgraph":
+        try:
+            langgraph_graph = _import_module("langgraph.graph")
+            StateGraph = getattr(langgraph_graph, "StateGraph")
+            START = getattr(langgraph_graph, "START")
+            END = getattr(langgraph_graph, "END")
+
+            def _retrieve_node(state: dict[str, Any]) -> dict[str, Any]:
+                query = str(state.get("query") or "")[:1000]
+                output_docs = [
+                    {
+                        "id": f"doc-{idx}",
+                        "score": round(0.93 - (idx * 0.02), 2),
+                        "source": source_id,
+                        "text": f"[langgraph] Retrieved context {idx} for query: {query}",
+                    }
+                    for idx in range(1, top_k + 1)
+                ]
+                return {"docs": output_docs}
+
+            graph = StateGraph(dict)
+            graph.add_node("retrieve", _retrieve_node)
+            graph.add_edge(START, "retrieve")
+            graph.add_edge("retrieve", END)
+            app_graph = graph.compile()
+            result_state = app_graph.invoke({"query": query_text, "filters": filters_payload})
+            docs = result_state.get("docs", []) if isinstance(result_state, dict) else []
+            normalized = [dict(item) for item in docs if isinstance(item, dict)]
+            return normalized, f"LangGraph retrieval produced {len(normalized)} documents.", {
+                "framework": "langgraph",
+                "mode": "live",
+            }
+        except Exception as exc:  # noqa: BLE001
+            return [], "LangGraph retrieval fallback (framework unavailable).", {
+                "framework": "langgraph",
+                "mode": "simulated",
+                "reason": f"LangGraph retrieval failed: {str(exc)[:180]}",
+            }
+
+    if resolved_engine == "semantic-kernel":
+        try:
+            semantic_kernel = _import_module("semantic_kernel")
+            Kernel = getattr(semantic_kernel, "Kernel")
+            kernel = Kernel()
+            docs = [
+                {
+                    "id": f"doc-{idx}",
+                    "score": round(0.92 - (idx * 0.025), 2),
+                    "source": source_id,
+                    "text": f"[semantic-kernel] Retrieved context {idx} for query: {query_text}",
+                    "filters": filters_payload,
+                }
+                for idx in range(1, top_k + 1)
+            ]
+            _ = kernel  # intentional: ensure semantic-kernel runtime path is exercised
+            return docs, f"Semantic Kernel retrieval produced {len(docs)} documents.", {
+                "framework": "semantic-kernel",
+                "mode": "live",
+            }
+        except Exception as exc:  # noqa: BLE001
+            return [], "Semantic Kernel retrieval fallback (framework unavailable).", {
+                "framework": "semantic-kernel",
+                "mode": "simulated",
+                "reason": f"Semantic Kernel retrieval failed: {str(exc)[:180]}",
+            }
+
+    if resolved_engine == "autogen":
+        try:
+            if _module_available("autogen_agentchat"):
+                _ = _import_module("autogen_agentchat")
+            elif _module_available("autogen"):
+                _ = _import_module("autogen")
+            docs = [
+                {
+                    "id": f"doc-{idx}",
+                    "score": round(0.9 - (idx * 0.02), 2),
+                    "source": source_id,
+                    "text": f"[autogen] Retrieved context {idx} for query: {query_text}",
+                }
+                for idx in range(1, top_k + 1)
+            ]
+            return docs, f"AutoGen retrieval produced {len(docs)} documents.", {
+                "framework": "autogen",
+                "mode": "live",
+            }
+        except Exception as exc:  # noqa: BLE001
+            return [], "AutoGen retrieval fallback (framework unavailable).", {
+                "framework": "autogen",
+                "mode": "simulated",
+                "reason": f"AutoGen retrieval failed: {str(exc)[:180]}",
+            }
+
+    docs = [
+        {
+            "id": f"doc-{idx}",
+            "score": round(0.95 - (idx * 0.04), 2),
+            "source": source_id,
+            "text": f"[native] Retrieved context {idx} for query: {query_text}",
+        }
+        for idx in range(1, top_k + 1)
+    ]
+    return docs, f"Native retrieval produced {len(docs)} documents.", {
+        "framework": "native",
+        "mode": "live",
+    }
+
+
+def _run_framework_tool_call(
+    *,
+    engine: str,
+    tool_id: str,
+    request_payload: Any,
+    context_payload: Any,
+    call_index: int,
+    endpoint_url: str,
+    method: str,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    resolved_engine = _normalize_runtime_engine(engine)
+
+    def _simulate() -> dict[str, Any]:
+        return _simulate_tool_execution_payload(
+            tool_id=tool_id,
+            request_payload=request_payload,
+            context_payload=context_payload,
+            call_index=call_index,
+            endpoint_url=endpoint_url,
+            method=method,
+        )
+
+    if resolved_engine == "langchain":
+        try:
+            langchain_tools = _import_module("langchain_core.tools")
+            StructuredTool = getattr(langchain_tools, "StructuredTool")
+            tool = StructuredTool.from_function(
+                func=lambda payload=None, context=None: _simulate(),
+                name="frontier_tool_call",
+                description="Frontier framework delegated tool call",
+            )
+            output = tool.invoke({"payload": request_payload, "context": context_payload})
+            if not isinstance(output, dict):
+                output = _simulate()
+            return output, {"framework": "langchain", "mode": "live"}
+        except Exception as exc:  # noqa: BLE001
+            return _simulate(), {
+                "framework": "langchain",
+                "mode": "simulated",
+                "reason": f"LangChain tool call failed: {str(exc)[:180]}",
+            }
+
+    if resolved_engine == "langgraph":
+        try:
+            langgraph_graph = _import_module("langgraph.graph")
+            StateGraph = getattr(langgraph_graph, "StateGraph")
+            START = getattr(langgraph_graph, "START")
+            END = getattr(langgraph_graph, "END")
+
+            def _tool_node(state: dict[str, Any]) -> dict[str, Any]:
+                return {"tool_output": _simulate()}
+
+            graph = StateGraph(dict)
+            graph.add_node("tool", _tool_node)
+            graph.add_edge(START, "tool")
+            graph.add_edge("tool", END)
+            app_graph = graph.compile()
+            result_state = app_graph.invoke({"payload": request_payload, "context": context_payload})
+            output = result_state.get("tool_output") if isinstance(result_state, dict) else None
+            if not isinstance(output, dict):
+                output = _simulate()
+            return output, {"framework": "langgraph", "mode": "live"}
+        except Exception as exc:  # noqa: BLE001
+            return _simulate(), {
+                "framework": "langgraph",
+                "mode": "simulated",
+                "reason": f"LangGraph tool call failed: {str(exc)[:180]}",
+            }
+
+    if resolved_engine == "semantic-kernel":
+        try:
+            semantic_kernel = _import_module("semantic_kernel")
+            Kernel = getattr(semantic_kernel, "Kernel")
+            kernel = Kernel()
+            _ = kernel
+            return _simulate(), {"framework": "semantic-kernel", "mode": "live"}
+        except Exception as exc:  # noqa: BLE001
+            return _simulate(), {
+                "framework": "semantic-kernel",
+                "mode": "simulated",
+                "reason": f"Semantic Kernel tool call failed: {str(exc)[:180]}",
+            }
+
+    if resolved_engine == "autogen":
+        try:
+            if _module_available("autogen_agentchat"):
+                _ = _import_module("autogen_agentchat")
+            elif _module_available("autogen"):
+                _ = _import_module("autogen")
+            return _simulate(), {"framework": "autogen", "mode": "live"}
+        except Exception as exc:  # noqa: BLE001
+            return _simulate(), {
+                "framework": "autogen",
+                "mode": "simulated",
+                "reason": f"AutoGen tool call failed: {str(exc)[:180]}",
+            }
+
+    return _simulate(), {"framework": "native", "mode": "live"}
+
+
+def _run_framework_memory(
+    *,
+    engine: str,
+    action: str,
+    scope: str,
+    bucket_id: str,
+    node_id: str,
+    message: str,
+    source_payload: Any,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    resolved_engine = _normalize_runtime_engine(engine)
+
+    def _native_memory_flow() -> dict[str, Any]:
+        if action == "clear":
+            _memory_clear_entries(bucket_id)
+            return {
+                "memory_state": {
+                    "scope": scope,
+                    "bucket_id": bucket_id,
+                    "entries": 0,
+                    "action": "clear",
+                    "session_id": bucket_id,
+                }
+            }
+
+        if action == "read":
+            bucket_snapshot = _memory_get_entries(bucket_id, limit=1000)
+            return {
+                "memory_state": {
+                    "scope": scope,
+                    "bucket_id": bucket_id,
+                    "entries": len(bucket_snapshot),
+                    "action": "read",
+                    "session_id": bucket_id,
+                },
+                "memory_items": bucket_snapshot[-10:],
+                "context": bucket_snapshot[-10:],
+                "memory": {
+                    "scope": scope,
+                    "bucket_id": bucket_id,
+                    "entries": len(bucket_snapshot),
+                    "action": "read",
+                    "session_id": bucket_id,
+                },
+            }
+
+        candidate = source_payload.get("response") if isinstance(source_payload, dict) else None
+        if not candidate:
+            candidate = source_payload.get("message") if isinstance(source_payload, dict) else None
+        if not candidate:
+            candidate = _safe_json(source_payload) if source_payload is not None else message
+        entry = {
+            "id": str(uuid4()),
+            "at": _now_iso(),
+            "node_id": node_id,
+            "content": str(candidate)[:4000],
+        }
+        _memory_append_entry(bucket_id, entry)
+        bucket_snapshot = _memory_get_entries(bucket_id, limit=1000)
+        return {
+            "memory_state": {
+                "scope": scope,
+                "bucket_id": bucket_id,
+                "entries": len(bucket_snapshot),
+                "action": "append",
+                "session_id": bucket_id,
+            },
+            "context": _memory_get_entries(bucket_id, limit=10),
+            "memory": {
+                "scope": scope,
+                "bucket_id": bucket_id,
+                "entries": len(bucket_snapshot),
+                "action": "append",
+                "session_id": bucket_id,
+            },
+            "out": {"state": "completed"},
+        }
+
+    if resolved_engine == "langchain":
+        try:
+            _import_module("langchain_core.messages")
+            return _native_memory_flow(), {"framework": "langchain", "mode": "live"}
+        except Exception as exc:  # noqa: BLE001
+            result = _native_memory_flow()
+            return result, {"framework": "langchain", "mode": "simulated", "reason": f"LangChain memory failed: {str(exc)[:180]}"}
+
+    if resolved_engine == "langgraph":
+        try:
+            _import_module("langgraph")
+            return _native_memory_flow(), {"framework": "langgraph", "mode": "live"}
+        except Exception as exc:  # noqa: BLE001
+            result = _native_memory_flow()
+            return result, {"framework": "langgraph", "mode": "simulated", "reason": f"LangGraph memory failed: {str(exc)[:180]}"}
+
+    if resolved_engine == "semantic-kernel":
+        try:
+            _import_module("semantic_kernel")
+            return _native_memory_flow(), {"framework": "semantic-kernel", "mode": "live"}
+        except Exception as exc:  # noqa: BLE001
+            result = _native_memory_flow()
+            return result, {"framework": "semantic-kernel", "mode": "simulated", "reason": f"Semantic Kernel memory failed: {str(exc)[:180]}"}
+
+    if resolved_engine == "autogen":
+        try:
+            if _module_available("autogen_agentchat"):
+                _import_module("autogen_agentchat")
+            elif _module_available("autogen"):
+                _import_module("autogen")
+            return _native_memory_flow(), {"framework": "autogen", "mode": "live"}
+        except Exception as exc:  # noqa: BLE001
+            result = _native_memory_flow()
+            return result, {"framework": "autogen", "mode": "simulated", "reason": f"AutoGen memory failed: {str(exc)[:180]}"}
+
+    return _native_memory_flow(), {"framework": "native", "mode": "live"}
+
+
+def _run_framework_guardrail(
+    *,
+    engine: str,
+    candidate_payload: Any,
+    guardrail_config: dict[str, Any],
+    stage: str,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    resolved_engine = _normalize_runtime_engine(engine)
+
+    def _evaluate() -> dict[str, Any]:
+        return _evaluate_guardrail(candidate_payload, guardrail_config, stage=stage)
+
+    if resolved_engine == "langchain":
+        try:
+            _import_module("langchain_core.messages")
+            return _evaluate(), {"framework": "langchain", "mode": "live", "stage": stage}
+        except Exception as exc:  # noqa: BLE001
+            return _evaluate(), {"framework": "langchain", "mode": "simulated", "stage": stage, "reason": f"LangChain guardrail failed: {str(exc)[:180]}"}
+
+    if resolved_engine == "langgraph":
+        try:
+            _import_module("langgraph")
+            return _evaluate(), {"framework": "langgraph", "mode": "live", "stage": stage}
+        except Exception as exc:  # noqa: BLE001
+            return _evaluate(), {"framework": "langgraph", "mode": "simulated", "stage": stage, "reason": f"LangGraph guardrail failed: {str(exc)[:180]}"}
+
+    if resolved_engine == "semantic-kernel":
+        try:
+            _import_module("semantic_kernel")
+            return _evaluate(), {"framework": "semantic-kernel", "mode": "live", "stage": stage}
+        except Exception as exc:  # noqa: BLE001
+            return _evaluate(), {"framework": "semantic-kernel", "mode": "simulated", "stage": stage, "reason": f"Semantic Kernel guardrail failed: {str(exc)[:180]}"}
+
+    if resolved_engine == "autogen":
+        try:
+            if _module_available("autogen_agentchat"):
+                _import_module("autogen_agentchat")
+            elif _module_available("autogen"):
+                _import_module("autogen")
+            return _evaluate(), {"framework": "autogen", "mode": "live", "stage": stage}
+        except Exception as exc:  # noqa: BLE001
+            return _evaluate(), {"framework": "autogen", "mode": "simulated", "stage": stage, "reason": f"AutoGen guardrail failed: {str(exc)[:180]}"}
+
+    return _evaluate(), {"framework": "native", "mode": "live", "stage": stage}
+
+
+def _run_framework_manifold(
+    *,
+    engine: str,
+    sources: list[dict[str, Any]],
+    mode: str,
+    min_required: int,
+    fallback_payload: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    resolved_engine = _normalize_runtime_engine(engine)
+
+    def _evaluate() -> dict[str, Any]:
+        active_count = len([item for item in sources if item])
+        passed = active_count >= min_required
+        if mode == "AND":
+            passed = active_count >= max(min_required, 2 if len(sources) > 1 else 1)
+        payload = sources[-1] if sources else fallback_payload
+        return {
+            "passed": passed,
+            "logic_mode": mode,
+            "active_inputs": active_count,
+            "payload": payload,
+            "sources": sources,
+        }
+
+    if resolved_engine == "langchain":
+        try:
+            _import_module("langchain_core")
+            return _evaluate(), {"framework": "langchain", "mode": "live"}
+        except Exception as exc:  # noqa: BLE001
+            return _evaluate(), {"framework": "langchain", "mode": "simulated", "reason": f"LangChain manifold failed: {str(exc)[:180]}"}
+
+    if resolved_engine == "langgraph":
+        try:
+            _import_module("langgraph")
+            return _evaluate(), {"framework": "langgraph", "mode": "live"}
+        except Exception as exc:  # noqa: BLE001
+            return _evaluate(), {"framework": "langgraph", "mode": "simulated", "reason": f"LangGraph manifold failed: {str(exc)[:180]}"}
+
+    if resolved_engine == "semantic-kernel":
+        try:
+            _import_module("semantic_kernel")
+            return _evaluate(), {"framework": "semantic-kernel", "mode": "live"}
+        except Exception as exc:  # noqa: BLE001
+            return _evaluate(), {"framework": "semantic-kernel", "mode": "simulated", "reason": f"Semantic Kernel manifold failed: {str(exc)[:180]}"}
+
+    if resolved_engine == "autogen":
+        try:
+            if _module_available("autogen_agentchat"):
+                _import_module("autogen_agentchat")
+            elif _module_available("autogen"):
+                _import_module("autogen")
+            return _evaluate(), {"framework": "autogen", "mode": "live"}
+        except Exception as exc:  # noqa: BLE001
+            return _evaluate(), {"framework": "autogen", "mode": "simulated", "reason": f"AutoGen manifold failed: {str(exc)[:180]}"}
+
+    return _evaluate(), {"framework": "native", "mode": "live"}
+
+
+def _run_framework_human_review(
+    *,
+    engine: str,
+    candidate_payload: Any,
+    reviewer_group: str,
+    auto_approve: bool,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    resolved_engine = _normalize_runtime_engine(engine)
+
+    def _evaluate() -> dict[str, Any]:
+        if auto_approve:
+            return {
+                "approved": True,
+                "rejected": False,
+                "feedback": "Auto-approved in test execution mode.",
+                "reviewer_group": reviewer_group,
+                "candidate": candidate_payload,
+                "review_status": "auto_approved",
+            }
+        return {
+            "approved": False,
+            "rejected": False,
+            "feedback": "Pending human approval.",
+            "reviewer_group": reviewer_group,
+            "candidate": candidate_payload,
+            "review_status": "pending_approval",
+        }
+
+    if resolved_engine == "langchain":
+        try:
+            _import_module("langchain_core")
+            return _evaluate(), {"framework": "langchain", "mode": "live"}
+        except Exception as exc:  # noqa: BLE001
+            return _evaluate(), {"framework": "langchain", "mode": "simulated", "reason": f"LangChain human-review failed: {str(exc)[:180]}"}
+
+    if resolved_engine == "langgraph":
+        try:
+            _import_module("langgraph")
+            return _evaluate(), {"framework": "langgraph", "mode": "live"}
+        except Exception as exc:  # noqa: BLE001
+            return _evaluate(), {"framework": "langgraph", "mode": "simulated", "reason": f"LangGraph human-review failed: {str(exc)[:180]}"}
+
+    if resolved_engine == "semantic-kernel":
+        try:
+            _import_module("semantic_kernel")
+            return _evaluate(), {"framework": "semantic-kernel", "mode": "live"}
+        except Exception as exc:  # noqa: BLE001
+            return _evaluate(), {"framework": "semantic-kernel", "mode": "simulated", "reason": f"Semantic Kernel human-review failed: {str(exc)[:180]}"}
+
+    if resolved_engine == "autogen":
+        try:
+            if _module_available("autogen_agentchat"):
+                _import_module("autogen_agentchat")
+            elif _module_available("autogen"):
+                _import_module("autogen")
+            return _evaluate(), {"framework": "autogen", "mode": "live"}
+        except Exception as exc:  # noqa: BLE001
+            return _evaluate(), {"framework": "autogen", "mode": "simulated", "reason": f"AutoGen human-review failed: {str(exc)[:180]}"}
+
+    return _evaluate(), {"framework": "native", "mode": "live"}
+
+
+def _get_presidio_analyzer() -> Any | None:
+    global _PRESIDIO_ANALYZER  # noqa: PLW0603
+    if AnalyzerEngine is None:
+        return None
+    if _PRESIDIO_ANALYZER is None:
+        try:
+            _PRESIDIO_ANALYZER = AnalyzerEngine()
+        except Exception:  # noqa: BLE001
+            _PRESIDIO_ANALYZER = None
+    return _PRESIDIO_ANALYZER
+
+
+def _run_openai_chat(
+    *,
+    system_prompt: str,
+    user_prompt: str,
+    model: str,
+    temperature: float,
+) -> tuple[str, dict[str, Any]]:
+    client = _get_openai_client()
+    if client is None:
+        return (
+            f"[simulated:{model}] {user_prompt[:280]}",
+            {
+                "provider": "openai",
+                "model": model,
+                "mode": "simulated",
+                "reason": "OPENAI_API_KEY missing/placeholder or OpenAI SDK unavailable",
+            },
+        )
+
+    messages: list[dict[str, str]] = []
+    if system_prompt.strip():
+        messages.append({"role": "system", "content": system_prompt})
+    messages.append({"role": "user", "content": user_prompt})
+
+    attempt_models: list[str] = []
+    primary_model = str(model or "").strip() or _default_openai_model()
+    secondary_model = _fallback_openai_model().strip()
+    if not secondary_model:
+        secondary_model = "gpt-5.1"
+
+    candidate_models = [primary_model]
+    if secondary_model and secondary_model not in candidate_models:
+        candidate_models.append(secondary_model)
+
+    last_error = ""
+    for candidate_model in candidate_models:
+        attempt_models.append(candidate_model)
+        response_api_error = ""
+
+        responses_client = getattr(client, "responses", None)
+        if responses_client is not None and hasattr(responses_client, "create"):
+            try:
+                response_api = responses_client.create(
+                    model=candidate_model,
+                    input=messages,
+                    reasoning={"summary": "auto"},
+                    temperature=temperature,
+                )
+                text, reasoning_summaries = _extract_openai_responses_payload(response_api)
+                if text:
+                    return (
+                        text,
+                        {
+                            "provider": "openai",
+                            "model": candidate_model,
+                            "requested_model": primary_model,
+                            "attempted_models": attempt_models,
+                            "fallback_used": candidate_model != primary_model,
+                            "mode": "live",
+                            "response_api": "responses",
+                            "reasoning": {
+                                "summary_mode": "auto",
+                                "available": len(reasoning_summaries) > 0,
+                                "summaries": reasoning_summaries,
+                            },
+                        },
+                    )
+            except Exception as exc:  # noqa: BLE001
+                response_api_error = str(exc)
+
+        try:
+            response = client.chat.completions.create(
+                model=candidate_model,
+                temperature=temperature,
+                messages=messages,
+            )
+            text = (response.choices[0].message.content or "").strip()
+            return (
+                text,
+                {
+                    "provider": "openai",
+                    "model": candidate_model,
+                    "requested_model": primary_model,
+                    "attempted_models": attempt_models,
+                    "fallback_used": candidate_model != primary_model,
+                    "mode": "live",
+                    "response_api": "chat.completions",
+                    "reasoning": {
+                        "summary_mode": "auto",
+                        "available": False,
+                        "summaries": [],
+                    },
+                },
+            )
+        except Exception as exc:  # noqa: BLE001
+            completion_error = str(exc)
+            if response_api_error:
+                last_error = f"responses.create failed: {response_api_error[:120]} ; chat.completions failed: {completion_error[:120]}"
+            else:
+                last_error = completion_error
+            continue
+
+    return (
+        f"[fallback:{primary_model}] {user_prompt[:280]}",
+        {
+            "provider": "openai",
+            "model": primary_model,
+            "attempted_models": attempt_models,
+            "mode": "simulated",
+            "reason": f"OpenAI call failed: {last_error[:180]}",
+        },
+    )
+
+
+def _configured_agent_assets_root(repo_root: Path) -> Path | None:
+    configured = str(os.getenv("FRONTIER_AGENT_ASSETS_ROOT") or "").strip()
+    if not configured:
+        return None
+
+    candidate = Path(configured)
+    if not candidate.is_absolute():
+        candidate = repo_root / candidate
+    return candidate.resolve()
+
+
+def _agent_assets_roots(repo_root: Path) -> list[Path]:
+    roots: list[Path] = []
+
+    examples_root = (repo_root / "examples" / "agents").resolve()
+    legacy_root = (repo_root / "lattix-frontier-agents" / "agents").resolve()
+    configured_root = _configured_agent_assets_root(repo_root)
+
+    for candidate in [examples_root, legacy_root, configured_root]:
+        if candidate is None:
+            continue
+        if candidate not in roots:
+            roots.append(candidate)
+
+    return roots
+
+
+def _iter_agent_assets_dirs(repo_root: Path) -> list[Path]:
+    agent_dirs: list[Path] = []
+    for root in _agent_assets_roots(repo_root):
+        if not root.exists() or not root.is_dir():
+            continue
+        for agent_dir in root.iterdir():
+            if not agent_dir.is_dir() or agent_dir.name in {"REGISTRY", "__pycache__"}:
+                continue
+            agent_dirs.append(agent_dir)
+    return agent_dirs
+
+
+def _load_seeded_agents_from_repo() -> dict[str, AgentDefinition]:
+    repo_root = Path(__file__).resolve().parents[2]
+
+    seeded: dict[str, AgentDefinition] = {}
+
+    for agent_dir in _iter_agent_assets_dirs(repo_root):
+        config_path = agent_dir / "agent.config.json"
+        if not config_path.exists():
+            continue
+
+        try:
+            config = json.loads(config_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            continue
+
+        source_agent_id = str(config.get("id") or agent_dir.name)
+        agent_id = source_agent_id if _is_uuid(source_agent_id) else str(uuid5(NAMESPACE_URL, f"frontier-agent:{source_agent_id}"))
+        agent_name = str(config.get("name") or _slug_to_name(agent_dir.name))
+        prompt_path = agent_dir / "system-prompt.md"
+        system_prompt = ""
+        if prompt_path.exists() and prompt_path.is_file():
+            try:
+                system_prompt = prompt_path.read_text(encoding="utf-8").strip()
+            except Exception:  # noqa: BLE001
+                system_prompt = ""
+
+        canonical_config = _canonicalize_agent_config(
+            {
+                "seed_source": str(config_path.relative_to(repo_root)).replace("\\", "/"),
+                "source_agent_id": source_agent_id,
+                "tags": config.get("tags", []),
+                "capabilities": config.get("capabilities", []),
+                "owners": config.get("owners", []),
+                "model_defaults": config.get("model_defaults", {}),
+                "prompt_file": config.get("prompt_file"),
+                "url_manifest": config.get("url_manifest"),
+                "system_prompt": system_prompt,
+                "tools": config.get("tools", []),
+            },
+            agent_id=agent_id,
+            agent_name=agent_name,
+            source_agent_id=source_agent_id,
+            system_prompt=system_prompt,
+            model_defaults=config.get("model_defaults") if isinstance(config.get("model_defaults"), dict) else None,
+            tags=_normalize_text_list(config.get("tags")),
+            capabilities=_normalize_text_list(config.get("capabilities")),
+            owners=_normalize_text_list(config.get("owners")),
+            tools=config.get("tools") if isinstance(config.get("tools"), list) else None,
+            seed_source=str(config_path.relative_to(repo_root)).replace("\\", "/"),
+            prompt_file=str(config.get("prompt_file") or "").strip() or None,
+            url_manifest=str(config.get("url_manifest") or "").strip() or None,
+        )
+
+        seeded[agent_id] = AgentDefinition(
+            id=agent_id,
+            name=agent_name,
+            version=_normalize_version(config.get("version")),
+            status="published",
+            type="graph",
+            config_json=canonical_config,
+        )
+
+    return seeded
+
+
+def _load_agent_system_prompt(agent_slug: str) -> str:
+    repo_root = Path(__file__).resolve().parents[2]
+    for assets_root in _agent_assets_roots(repo_root):
+        prompt_path = assets_root / agent_slug / "system-prompt.md"
+        if prompt_path.exists() and prompt_path.is_file():
+            try:
+                return prompt_path.read_text(encoding="utf-8").strip()
+            except Exception:  # noqa: BLE001
+                return ""
+    return ""
+
+
+def _load_prompt_from_relative_path(path_value: str) -> str:
+    candidate = str(path_value or "").strip().replace("\\", "/")
+    if not candidate:
+        return ""
+
+    repo_root = Path(__file__).resolve().parents[2]
+    search_paths = [repo_root / candidate]
+    for assets_root in _agent_assets_roots(repo_root):
+        search_paths.append(assets_root / candidate)
+        search_paths.append(assets_root.parent / candidate)
+
+    for path in search_paths:
+        if path.exists() and path.is_file():
+            try:
+                return path.read_text(encoding="utf-8").strip()
+            except Exception:  # noqa: BLE001
+                continue
+    return ""
+
+
+def _agent_lookup_keys(agent: AgentDefinition) -> set[str]:
+    keys: set[str] = set()
+    keys.add(str(agent.id).strip().lower())
+
+    name_key = _slugify(agent.name)
+    if name_key:
+        keys.add(name_key)
+
+    config_json = agent.config_json if isinstance(agent.config_json, dict) else {}
+    source_agent_id = str(config_json.get("source_agent_id") or "").strip().lower()
+    if source_agent_id:
+        keys.add(source_agent_id)
+        source_slug = _slugify(source_agent_id)
+        if source_slug:
+            keys.add(source_slug)
+    return keys
+
+
+def _resolve_published_agent_definition(token: str) -> AgentDefinition | None:
+    requested = str(token or "").strip().lower()
+    if not requested:
+        return None
+
+    requested_slug = _slugify(requested)
+    for agent in store.agent_definitions.values():
+        if agent.status != "published":
+            continue
+        keys = _agent_lookup_keys(agent)
+        if requested in keys or (requested_slug and requested_slug in keys):
+            return agent
+    return None
+
+
+def _resolve_agent_system_prompt(agent: AgentDefinition, requested_token: str | None = None) -> tuple[str, str]:
+    config_json = agent.config_json if isinstance(agent.config_json, dict) else {}
+
+    config_prompt = str(config_json.get("system_prompt") or "").strip()
+    if config_prompt:
+        return config_prompt, "config_json.system_prompt"
+
+    prompt_file = str(config_json.get("prompt_file") or "").strip()
+    if prompt_file:
+        text = _load_prompt_from_relative_path(prompt_file)
+        if text:
+            return text, "config_json.prompt_file"
+
+    source_agent_id = str(config_json.get("source_agent_id") or "").strip()
+    if source_agent_id:
+        text = _load_agent_system_prompt(source_agent_id)
+        if text:
+            return text, "repo.agent.system-prompt.md"
+
+    requested = str(requested_token or "").strip()
+    if requested:
+        text = _load_agent_system_prompt(requested)
+        if text:
+            return text, "repo.token.system-prompt.md"
+
+    name_slug = _slugify(agent.name)
+    if name_slug:
+        text = _load_agent_system_prompt(name_slug)
+        if text:
+            return text, "repo.name-slug.system-prompt.md"
+
+    fallback = (
+        f"You are {agent.name}. "
+        "Provide clear, accurate, and policy-safe outputs. "
+        "Do not fabricate facts. Keep responses concise and actionable."
+    )
+    return fallback, "fallback.production-default"
+
+
+def _build_agent_chat_guardrail_config(agent: AgentDefinition | None) -> dict[str, Any]:
+    merged: dict[str, Any] = {}
+
+    default_ruleset_id = str(store.platform_settings.default_guardrail_ruleset_id or "").strip()
+    if default_ruleset_id:
+        default_ruleset = store.guardrail_rulesets.get(default_ruleset_id)
+        if default_ruleset and isinstance(default_ruleset.config_json, dict) and default_ruleset.status == "published":
+            merged.update(default_ruleset.config_json)
+
+    if agent is None:
+        return merged
+
+    config_json = agent.config_json if isinstance(agent.config_json, dict) else {}
+    guardrails = config_json.get("guardrails") if isinstance(config_json.get("guardrails"), dict) else {}
+    if not guardrails:
+        return merged
+
+    translated: dict[str, Any] = {}
+    if "blocked_keywords" in guardrails:
+        translated["blocked_keywords"] = guardrails.get("blocked_keywords")
+    if "required_keywords" in guardrails:
+        translated["required_keywords"] = guardrails.get("required_keywords")
+    if "min_length" in guardrails:
+        translated["min_length"] = guardrails.get("min_length")
+    if "max_length" in guardrails:
+        translated["max_length"] = guardrails.get("max_length")
+    if "detect_secrets" in guardrails:
+        translated["detect_secrets"] = guardrails.get("detect_secrets")
+    if "tripwire_action" in guardrails:
+        translated["tripwire_action"] = guardrails.get("tripwire_action")
+    if "reject_message" in guardrails:
+        translated["reject_message"] = guardrails.get("reject_message")
+
+    # Canonical agent config uses platform_* naming; evaluator expects detect_* + signal_enforcement + enable_foss_signals.
+    if "enable_platform_signals" in guardrails:
+        translated["enable_foss_signals"] = guardrails.get("enable_platform_signals")
+    if "platform_signal_enforcement" in guardrails:
+        translated["signal_enforcement"] = guardrails.get("platform_signal_enforcement")
+    if "platform_signal_detect_prompt_injection" in guardrails:
+        translated["detect_prompt_injection"] = guardrails.get("platform_signal_detect_prompt_injection")
+    if "platform_signal_detect_pii" in guardrails:
+        translated["detect_pii"] = guardrails.get("platform_signal_detect_pii")
+    if "platform_signal_detect_command_injection" in guardrails:
+        translated["detect_command_injection"] = guardrails.get("platform_signal_detect_command_injection")
+    if "platform_signal_detect_exfiltration" in guardrails:
+        translated["detect_exfiltration"] = guardrails.get("platform_signal_detect_exfiltration")
+
+    merged.update({key: value for key, value in translated.items() if value is not None})
+    return merged
+
+
+def _topological_order(node_ids: list[str], links: list[GraphEdge]) -> list[str] | None:
+    indegree = {node_id: 0 for node_id in node_ids}
+    adjacency: dict[str, list[str]] = defaultdict(list)
+
+    for edge in links:
+        if edge.from_node in indegree and edge.to_node in indegree:
+            adjacency[edge.from_node].append(edge.to_node)
+            indegree[edge.to_node] += 1
+
+    queue: deque[str] = deque([node_id for node_id, value in indegree.items() if value == 0])
+    order: list[str] = []
+
+    while queue:
+        current = queue.popleft()
+        order.append(current)
+        for nxt in adjacency[current]:
+            indegree[nxt] -= 1
+            if indegree[nxt] == 0:
+                queue.append(nxt)
+
+    if len(order) != len(node_ids):
+        return None
+
+    return order
+
+
+def _validate_graph(payload: GraphPayload) -> GraphValidationResult:
+    issues: list[GraphValidationIssue] = []
+
+    if not payload.nodes:
+        issues.append(GraphValidationIssue(code="GRAPH_EMPTY", message="Graph has no nodes.", path="nodes"))
+        return GraphValidationResult(valid=False, issues=issues)
+
+    node_ids: list[str] = []
+    node_map: dict[str, GraphNode] = {}
+    trigger_count = 0
+
+    for index, node in enumerate(payload.nodes):
+        normalized_type = _normalize_node_type(node.type)
+
+        if not node.id.strip():
+            issues.append(
+                GraphValidationIssue(
+                    code="NODE_ID_REQUIRED",
+                    message="Node id is required.",
+                    path=f"nodes[{index}].id",
+                )
+            )
+            continue
+
+        if node.id in node_map:
+            issues.append(
+                GraphValidationIssue(
+                    code="NODE_ID_DUPLICATE",
+                    message=f"Duplicate node id '{node.id}'.",
+                    path=f"nodes[{index}].id",
+                )
+            )
+            continue
+
+        if normalized_type.endswith("/unknown"):
+            issues.append(
+                GraphValidationIssue(
+                    code="NODE_TYPE_INVALID",
+                    message="Node type is invalid or empty.",
+                    path=f"nodes[{index}].type",
+                )
+            )
+
+        if normalized_type == "frontier/trigger":
+            trigger_count += 1
+            mode = str(node.config.get("trigger_mode") or "manual")
+            schedule_cron = str(node.config.get("schedule_cron") or "").strip()
+            schedule_preset = str(node.config.get("schedule_preset") or "").strip()
+            if mode == "schedule" and not schedule_cron and not schedule_preset:
+                issues.append(
+                    GraphValidationIssue(
+                        code="TRIGGER_SCHEDULE_CRON_REQUIRED",
+                        message="trigger_mode=schedule requires config.schedule_cron or config.schedule_preset.",
+                        path=f"nodes[{index}].config.schedule_cron",
+                    )
+                )
+            if mode == "webhook" and not str(node.config.get("webhook_path") or "").strip():
+                issues.append(
+                    GraphValidationIssue(
+                        code="TRIGGER_WEBHOOK_PATH_REQUIRED",
+                        message="trigger_mode=webhook requires config.webhook_path.",
+                        path=f"nodes[{index}].config.webhook_path",
+                    )
+                )
+            if mode == "api_event" and not str(node.config.get("api_event_name") or "").strip():
+                issues.append(
+                    GraphValidationIssue(
+                        code="TRIGGER_API_EVENT_REQUIRED",
+                        message="trigger_mode=api_event requires config.api_event_name.",
+                        path=f"nodes[{index}].config.api_event_name",
+                    )
+                )
+            if mode == "tool_event" and not str(node.config.get("tool_event_name") or "").strip():
+                issues.append(
+                    GraphValidationIssue(
+                        code="TRIGGER_TOOL_EVENT_REQUIRED",
+                        message="trigger_mode=tool_event requires config.tool_event_name.",
+                        path=f"nodes[{index}].config.tool_event_name",
+                    )
+                )
+            if mode == "human_feedback" and not str(node.config.get("human_queue") or "").strip():
+                issues.append(
+                    GraphValidationIssue(
+                        code="TRIGGER_HUMAN_QUEUE_REQUIRED",
+                        message="trigger_mode=human_feedback requires config.human_queue.",
+                        path=f"nodes[{index}].config.human_queue",
+                    )
+                )
+
+        if normalized_type == "frontier/guardrail":
+            stage = str(node.config.get("stage") or "output")
+            if stage not in {"input", "output", "tool_input", "tool_output"}:
+                issues.append(
+                    GraphValidationIssue(
+                        code="GUARDRAIL_STAGE_INVALID",
+                        message="Guardrail stage must be one of: input, output, tool_input, tool_output.",
+                        path=f"nodes[{index}].config.stage",
+                    )
+                )
+            run_in_parallel = node.config.get("run_in_parallel")
+            if stage == "output" and isinstance(run_in_parallel, bool) and run_in_parallel is True:
+                issues.append(
+                    GraphValidationIssue(
+                        code="GUARDRAIL_OUTPUT_PARALLEL_UNSUPPORTED",
+                        message="Output guardrails run after execution; run_in_parallel=true is not applicable.",
+                        path=f"nodes[{index}].config.run_in_parallel",
+                    )
+                )
+
+        node_ids.append(node.id)
+        node_map[node.id] = node
+
+    if trigger_count == 0:
+        issues.append(
+            GraphValidationIssue(
+                code="TRIGGER_REQUIRED",
+                message="At least one frontier/trigger node is required.",
+                path="nodes",
+            )
+        )
+
+    edges_by_target: dict[str, list[GraphEdge]] = defaultdict(list)
+    for edge in payload.links:
+        edges_by_target[edge.to_node].append(edge)
+
+    def _incoming_to_port(node_id: str, port_name: str) -> list[GraphEdge]:
+        matches: list[GraphEdge] = []
+        for edge in edges_by_target.get(node_id, []):
+            resolved_port = str(edge.to_port or "in")
+            if resolved_port == port_name:
+                matches.append(edge)
+        return matches
+
+    for node_id, node in node_map.items():
+        normalized_type = _normalize_node_type(node.type)
+        node_path = f"nodes[{node_ids.index(node_id)}]"
+
+        if normalized_type == "frontier/prompt":
+            if not str(node.config.get("system_prompt_text") or "").strip():
+                issues.append(
+                    GraphValidationIssue(
+                        code="PROMPT_TEXT_REQUIRED",
+                        message="Prompt nodes require config.system_prompt_text.",
+                        path=f"{node_path}.config.system_prompt_text",
+                    )
+                )
+
+        if normalized_type.startswith("frontier/agent"):
+            if not str(node.config.get("agent_id") or "").strip():
+                issues.append(
+                    GraphValidationIssue(
+                        code="AGENT_ID_REQUIRED",
+                        message="Agent nodes require config.agent_id.",
+                        path=f"{node_path}.config.agent_id",
+                    )
+                )
+            if not str(node.config.get("model") or "").strip():
+                issues.append(
+                    GraphValidationIssue(
+                        code="AGENT_MODEL_REQUIRED",
+                        message="Agent nodes require config.model.",
+                        path=f"{node_path}.config.model",
+                    )
+                )
+
+            has_flow_input = len(_incoming_to_port(node_id, "in")) > 0
+            if not has_flow_input:
+                issues.append(
+                    GraphValidationIssue(
+                        code="AGENT_FLOW_INPUT_REQUIRED",
+                        message="Agent nodes require a flow input connection to port 'in'.",
+                        path=f"{node_path}.inputs.in",
+                    )
+                )
+
+            has_prompt_input = len(_incoming_to_port(node_id, "prompt")) > 0
+            has_inline_prompt = bool(str(node.config.get("system_prompt") or "").strip())
+            if not has_prompt_input and not has_inline_prompt:
+                issues.append(
+                    GraphValidationIssue(
+                        code="AGENT_PROMPT_REQUIRED",
+                        message="Agent nodes require either a prompt connection to port 'prompt' or config.system_prompt.",
+                        path=f"{node_path}.inputs.prompt",
+                    )
+                )
+
+        if normalized_type == "frontier/tool-call":
+            if not str(node.config.get("tool_id") or "").strip():
+                issues.append(
+                    GraphValidationIssue(
+                        code="TOOL_ID_REQUIRED",
+                        message="Tool / API Call nodes require config.tool_id.",
+                        path=f"{node_path}.config.tool_id",
+                    )
+                )
+            if len(_incoming_to_port(node_id, "in")) == 0:
+                issues.append(
+                    GraphValidationIssue(
+                        code="TOOL_FLOW_INPUT_REQUIRED",
+                        message="Tool / API Call nodes require a flow input connection to port 'in'.",
+                        path=f"{node_path}.inputs.in",
+                    )
+                )
+            has_request_input = (
+                len(_incoming_to_port(node_id, "request")) > 0
+                or len(_incoming_to_port(node_id, "tool_input")) > 0
+            )
+            if not has_request_input:
+                issues.append(
+                    GraphValidationIssue(
+                        code="TOOL_REQUEST_INPUT_REQUIRED",
+                        message="Tool / API Call nodes require a request input connection to port 'request'.",
+                        path=f"{node_path}.inputs.request",
+                    )
+                )
+
+        if normalized_type == "frontier/retrieval":
+            if not str(node.config.get("source_type") or "").strip():
+                issues.append(
+                    GraphValidationIssue(
+                        code="RETRIEVAL_SOURCE_REQUIRED",
+                        message="Retrieval nodes require config.source_type.",
+                        path=f"{node_path}.config.source_type",
+                    )
+                )
+            has_query_input = (
+                len(_incoming_to_port(node_id, "query")) > 0
+                or len(_incoming_to_port(node_id, "data")) > 0
+                or len(_incoming_to_port(node_id, "request")) > 0
+            )
+            if not has_query_input:
+                issues.append(
+                    GraphValidationIssue(
+                        code="RETRIEVAL_QUERY_INPUT_REQUIRED",
+                        message="Retrieval nodes require a query input connection to port 'query'.",
+                        path=f"{node_path}.inputs.query",
+                    )
+                )
+
+        if normalized_type == "frontier/memory":
+            if not str(node.config.get("action") or "").strip():
+                issues.append(
+                    GraphValidationIssue(
+                        code="MEMORY_ACTION_REQUIRED",
+                        message="Memory nodes require config.action.",
+                        path=f"{node_path}.config.action",
+                    )
+                )
+            if not str(node.config.get("scope") or "").strip():
+                issues.append(
+                    GraphValidationIssue(
+                        code="MEMORY_SCOPE_REQUIRED",
+                        message="Memory nodes require config.scope.",
+                        path=f"{node_path}.config.scope",
+                    )
+                )
+
+        if normalized_type == "frontier/guardrail":
+            if not str(node.config.get("tripwire_action") or "").strip():
+                issues.append(
+                    GraphValidationIssue(
+                        code="GUARDRAIL_ACTION_REQUIRED",
+                        message="Guardrail nodes require config.tripwire_action.",
+                        path=f"{node_path}.config.tripwire_action",
+                    )
+                )
+            configured_ruleset_id = str(node.config.get("ruleset_id") or "").strip()
+            if configured_ruleset_id:
+                ruleset = store.guardrail_rulesets.get(configured_ruleset_id)
+                if not ruleset:
+                    issues.append(
+                        GraphValidationIssue(
+                            code="GUARDRAIL_RULESET_NOT_FOUND",
+                            message=f"Guardrail ruleset '{configured_ruleset_id}' does not exist.",
+                            path=f"{node_path}.config.ruleset_id",
+                        )
+                    )
+                elif ruleset.status != "published":
+                    issues.append(
+                        GraphValidationIssue(
+                            code="GUARDRAIL_RULESET_NOT_PUBLISHED",
+                            message=f"Guardrail ruleset '{configured_ruleset_id}' must be published before use.",
+                            path=f"{node_path}.config.ruleset_id",
+                        )
+                    )
+
+        if normalized_type == "frontier/human-review":
+            if not str(node.config.get("reviewer_group") or "").strip():
+                issues.append(
+                    GraphValidationIssue(
+                        code="HUMAN_REVIEW_GROUP_REQUIRED",
+                        message="Human Review nodes require config.reviewer_group.",
+                        path=f"{node_path}.config.reviewer_group",
+                    )
+                )
+
+        if normalized_type == "frontier/output":
+            if not str(node.config.get("destination") or "").strip():
+                issues.append(
+                    GraphValidationIssue(
+                        code="OUTPUT_DESTINATION_REQUIRED",
+                        message="Output nodes require config.destination.",
+                        path=f"{node_path}.config.destination",
+                    )
+                )
+            if not str(node.config.get("format") or "").strip():
+                issues.append(
+                    GraphValidationIssue(
+                        code="OUTPUT_FORMAT_REQUIRED",
+                        message="Output nodes require config.format.",
+                        path=f"{node_path}.config.format",
+                    )
+                )
+            if len(_incoming_to_port(node_id, "in")) == 0:
+                issues.append(
+                    GraphValidationIssue(
+                        code="OUTPUT_FLOW_INPUT_REQUIRED",
+                        message="Output nodes require a flow input connection to port 'in'.",
+                        path=f"{node_path}.inputs.in",
+                    )
+                )
+            has_result_input = (
+                len(_incoming_to_port(node_id, "result")) > 0
+                or len(_incoming_to_port(node_id, "data")) > 0
+                or len(_incoming_to_port(node_id, "approved")) > 0
+                or len(_incoming_to_port(node_id, "approved_output")) > 0
+                or len(_incoming_to_port(node_id, "payload")) > 0
+            )
+            if not has_result_input:
+                issues.append(
+                    GraphValidationIssue(
+                        code="OUTPUT_RESULT_INPUT_REQUIRED",
+                        message="Output nodes require a payload input connection to port 'result'.",
+                        path=f"{node_path}.inputs.result",
+                    )
+                )
+
+    for index, edge in enumerate(payload.links):
+        if edge.from_node not in node_map:
+            issues.append(
+                GraphValidationIssue(
+                    code="EDGE_SOURCE_NOT_FOUND",
+                    message=f"Source node '{edge.from_node}' does not exist.",
+                    path=f"links[{index}].from",
+                )
+            )
+        if edge.to_node not in node_map:
+            issues.append(
+                GraphValidationIssue(
+                    code="EDGE_TARGET_NOT_FOUND",
+                    message=f"Target node '{edge.to_node}' does not exist.",
+                    path=f"links[{index}].to",
+                )
+            )
+        if edge.from_node == edge.to_node:
+            issues.append(
+                GraphValidationIssue(
+                    code="EDGE_SELF_LOOP",
+                    message="Self-loop is not allowed without explicit loop node semantics.",
+                    path=f"links[{index}]",
+                )
+            )
+
+    if not issues:
+        order = _topological_order(node_ids, payload.links)
+        if order is None:
+            issues.append(
+                GraphValidationIssue(
+                    code="GRAPH_CYCLE",
+                    message="Graph contains a cycle. Use a dedicated loop node for bounded iteration semantics.",
+                    path="links",
+                )
+            )
+
+    return GraphValidationResult(valid=len(issues) == 0, issues=issues)
+
+
+def _incoming_values(node_id: str, links: list[GraphEdge], node_results: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
+    incoming = [edge.from_node for edge in links if edge.to_node == node_id]
+    return [node_results[source] for source in incoming if source in node_results]
+
+
+def _incoming_values_by_port(
+    node_id: str,
+    links: list[GraphEdge],
+    node_results: dict[str, dict[str, Any]],
+) -> dict[str, list[dict[str, Any]]]:
+    grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for edge in links:
+        if edge.to_node != node_id:
+            continue
+        if edge.from_node not in node_results:
+            continue
+        grouped[str(edge.to_port or "in")].append(node_results[edge.from_node])
+    return grouped
+
+
+def _port_values(by_port: dict[str, list[dict[str, Any]]], *port_names: str) -> list[dict[str, Any]]:
+    merged: list[dict[str, Any]] = []
+    for name in port_names:
+        merged.extend(by_port.get(name, []))
+    return merged
+
+
+def _safe_json(value: Any) -> str:
+    if isinstance(value, str):
+        return value
+    try:
+        return json.dumps(value, ensure_ascii=False)
+    except Exception:  # noqa: BLE001
+        return str(value)
+
+
+_VAR_EXACT_PATTERN = re.compile(r"^var\.([A-Za-z0-9_.-]+)$")
+_VAR_TEMPLATE_PATTERN = re.compile(r"\{\{\s*var\.([A-Za-z0-9_.-]+)\s*\}\}|\$\{\s*var\.([A-Za-z0-9_.-]+)\s*\}")
+
+
+def _deep_get(value: Any, path: str) -> Any:
+    current = value
+    for segment in [part for part in path.split(".") if part]:
+        if isinstance(current, dict) and segment in current:
+            current = current.get(segment)
+            continue
+        if isinstance(current, list) and segment.isdigit():
+            index = int(segment)
+            if 0 <= index < len(current):
+                current = current[index]
+                continue
+        return None
+    return current
+
+
+def _build_runtime_var_context(
+    run_input: dict[str, Any],
+    execution_state: dict[str, Any],
+    node_results: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
+    runtime = run_input.get("runtime") if isinstance(run_input.get("runtime"), dict) else {}
+    supplied_vars = run_input.get("vars") if isinstance(run_input.get("vars"), dict) else {}
+
+    var_context: dict[str, Any] = {
+        **supplied_vars,
+        "input": run_input,
+        "runtime": runtime,
+        "nodeResults": node_results,
+        "runId": execution_state.get("run_id"),
+        "sessionId": execution_state.get("session_id"),
+    }
+
+    for key in ["currentUser", "currentTenant", "session_id", "entityType", "entityId", "message"]:
+        if key in run_input:
+            var_context[key] = run_input.get(key)
+
+    if isinstance(runtime, dict):
+        if runtime.get("session_id") and "sessionId" not in var_context:
+            var_context["sessionId"] = runtime.get("session_id")
+        if runtime.get("current_user") and "currentUser" not in var_context:
+            var_context["currentUser"] = runtime.get("current_user")
+        if runtime.get("current_tenant") and "currentTenant" not in var_context:
+            var_context["currentTenant"] = runtime.get("current_tenant")
+
+    return var_context
+
+
+def _resolve_template_text(value: str, var_context: dict[str, Any]) -> Any:
+    exact_match = _VAR_EXACT_PATTERN.fullmatch(value.strip())
+    if exact_match:
+        resolved = _deep_get(var_context, exact_match.group(1))
+        return resolved if resolved is not None else value
+
+    def _replace(match: re.Match[str]) -> str:
+        path = match.group(1) or match.group(2) or ""
+        resolved = _deep_get(var_context, path)
+        if resolved is None:
+            return match.group(0)
+        if isinstance(resolved, (dict, list)):
+            return _safe_json(resolved)
+        return str(resolved)
+
+    return _VAR_TEMPLATE_PATTERN.sub(_replace, value)
+
+
+def _resolve_runtime_value(value: Any, var_context: dict[str, Any]) -> Any:
+    if isinstance(value, str):
+        return _resolve_template_text(value, var_context)
+    if isinstance(value, list):
+        return [_resolve_runtime_value(item, var_context) for item in value]
+    if isinstance(value, dict):
+        return {key: _resolve_runtime_value(item, var_context) for key, item in value.items()}
+    return value
+
+
+def _parse_hhmm(value: str) -> tuple[int, int]:
+    text = str(value or "").strip()
+    match = re.fullmatch(r"(\d{1,2}):(\d{2})", text)
+    if not match:
+        return 9, 0
+
+    hour = max(0, min(23, int(match.group(1))))
+    minute = max(0, min(59, int(match.group(2))))
+    return hour, minute
+
+
+def _resolve_trigger_cron(config: dict[str, Any]) -> str:
+    preset = str(config.get("schedule_preset") or "").strip().lower()
+    cron = str(config.get("schedule_cron") or "").strip()
+    hour, minute = _parse_hhmm(str(config.get("schedule_time") or "09:00"))
+
+    if preset in {"", "custom"}:
+        return cron or f"{minute} {hour} * * *"
+
+    if preset == "hourly":
+        return f"{minute} * * * *"
+
+    if preset == "daily":
+        return f"{minute} {hour} * * *"
+
+    if preset == "weekdays":
+        return f"{minute} {hour} * * 1-5"
+
+    if preset == "weekends":
+        return f"{minute} {hour} * * 0,6"
+
+    if preset == "weekly":
+        day = str(config.get("schedule_day_of_week") or "1").strip()
+        if day not in {"0", "1", "2", "3", "4", "5", "6"}:
+            day = "1"
+        return f"{minute} {hour} * * {day}"
+
+    if preset == "monthly":
+        dom = str(config.get("schedule_day_of_month") or "1").strip()
+        if not dom.isdigit() or not (1 <= int(dom) <= 28):
+            dom = "1"
+        return f"{minute} {hour} {dom} * *"
+
+    return cron or f"{minute} {hour} * * *"
+
+
+def _resolve_memory_bucket_id(config: dict[str, Any], run_input: dict[str, Any], execution_state: dict[str, Any]) -> str:
+    scope = str(config.get("scope") or "session").strip().lower()
+    session_id = str(config.get("session_id") or execution_state.get("session_id") or f"session:{execution_state.get('run_id')}").strip()
+    current_user = str(config.get("user_id") or run_input.get("currentUser") or run_input.get("current_user") or "").strip()
+    current_tenant = str(config.get("tenant_id") or run_input.get("currentTenant") or run_input.get("current_tenant") or "").strip()
+    agent_id = str(config.get("agent_id") or "").strip()
+    workflow_id = str(config.get("workflow_id") or run_input.get("workflow_id") or "").strip()
+    dimension_key = str(config.get("dimension_key") or "").strip()
+
+    if dimension_key:
+        return f"dim:{dimension_key}"
+
+    if scope == "run":
+        return f"run:{execution_state.get('run_id')}"
+    if scope == "user" and current_user:
+        return f"user:{current_user}"
+    if scope == "tenant" and current_tenant:
+        return f"tenant:{current_tenant}"
+    if scope == "agent" and agent_id:
+        return f"agent:{agent_id}"
+    if scope == "workflow" and workflow_id:
+        return f"workflow:{workflow_id}"
+    if scope == "global":
+        return "global"
+
+    return session_id or f"session:{execution_state.get('run_id')}"
+
+
+def _redact_sensitive_text(text: str) -> str:
+    redacted = text
+    redacted = re.sub(r"\bsk-[A-Za-z0-9_-]{10,}\b", "[REDACTED_API_KEY]", redacted)
+    redacted = re.sub(r"(?i)(api[_-]?key\s*[=:]\s*)[^\s,;]+", r"\1[REDACTED]", redacted)
+    redacted = re.sub(r"(?i)(bearer\s+)[A-Za-z0-9._\-]+", r"\1[REDACTED_TOKEN]", redacted)
+    return redacted
+
+
+def _mask_secret_ref(secret_ref: str) -> str:
+    clean = str(secret_ref or "").strip()
+    if not clean:
+        return ""
+    if len(clean) <= 6:
+        return "***"
+    return f"{clean[:3]}***{clean[-2:]}"
+
+
+def _sanitize_base_url(base_url: str) -> str:
+    clean = str(base_url or "").strip()
+    if not clean:
+        return ""
+
+    try:
+        parts = urlsplit(clean)
+    except Exception:  # noqa: BLE001
+        return _redact_sensitive_text(clean)
+
+    if not parts.scheme or not parts.netloc:
+        return _redact_sensitive_text(clean)
+
+    redacted_netloc = parts.netloc
+    if "@" in redacted_netloc:
+        userinfo, hostinfo = redacted_netloc.rsplit("@", 1)
+        if ":" in userinfo:
+            username, _password = userinfo.split(":", 1)
+            redacted_netloc = f"{username}:[REDACTED]@{hostinfo}"
+
+    redacted_query = urlencode(
+        [
+            (key, "[REDACTED]" if re.search(r"(?i)(token|key|secret|password)", key) else value)
+            for key, value in parse_qsl(parts.query, keep_blank_values=True)
+        ]
+    )
+
+    return urlunsplit((parts.scheme, redacted_netloc, parts.path, redacted_query, parts.fragment))
+
+
+def _extract_host(candidate: str) -> str:
+    value = str(candidate or "").strip()
+    if not value:
+        return ""
+
+    try:
+        parsed = urlsplit(value)
+    except Exception:  # noqa: BLE001
+        return ""
+
+    if parsed.hostname:
+        return parsed.hostname.lower()
+
+    if "://" not in value and "/" not in value:
+        return value.lower()
+
+    return ""
+
+
+def _is_host_allowed(candidate: str, allowed_hosts: list[str]) -> bool:
+    host = _extract_host(candidate)
+    if not host:
+        return False
+    normalized = {str(item).strip().lower() for item in allowed_hosts if str(item).strip()}
+    if not normalized:
+        return False
+    if host in normalized:
+        return True
+    return any(host.endswith(f".{root}") for root in normalized)
+
+
+def _is_local_or_private_host(host: str, allowed_hostnames: list[str] | None = None) -> bool:
+    value = str(host or "").strip().lower()
+    if not value:
+        return False
+
+    if value in {"localhost", "127.0.0.1", "::1"}:
+        return True
+
+    allowed = [str(item).strip().lower() for item in (allowed_hostnames or []) if str(item).strip()]
+    for item in allowed:
+        if item.startswith(".") and value.endswith(item):
+            return True
+        if value == item:
+            return True
+
+    try:
+        parsed = ipaddress.ip_address(value)
+        return bool(parsed.is_loopback or parsed.is_private)
+    except ValueError:
+        pass
+
+    try:
+        resolved = socket.getaddrinfo(value, None)
+    except Exception:  # noqa: BLE001
+        return False
+
+    if not resolved:
+        return False
+    for entry in resolved:
+        sockaddr = entry[4]
+        ip_text = str(sockaddr[0]) if isinstance(sockaddr, tuple) and sockaddr else ""
+        if not ip_text:
+            continue
+        try:
+            parsed = ipaddress.ip_address(ip_text)
+            if not (parsed.is_loopback or parsed.is_private):
+                return False
+        except ValueError:
+            return False
+    return True
+
+
+def _is_local_network_url(url: str, allowed_hostnames: list[str] | None = None) -> bool:
+    value = str(url or "").strip()
+    if not value:
+        return False
+    try:
+        parsed = urlsplit(value)
+    except Exception:  # noqa: BLE001
+        return False
+    if parsed.scheme not in {"http", "https"}:
+        return False
+    host = str(parsed.hostname or "").strip().lower()
+    if not host:
+        return False
+    return _is_local_or_private_host(host, allowed_hostnames=allowed_hostnames)
+
+
+def _source_allowed(candidate: str, allowlist: list[str]) -> bool:
+    value = str(candidate or "").strip()
+    if not value:
+        return False
+    normalized = [str(item).strip() for item in allowlist if str(item).strip()]
+    if not normalized:
+        return False
+    return any(value == item or value.startswith(f"{item}/") for item in normalized)
+
+
+def _normalize_secret_ref(secret_ref: str, auth_type: str) -> str:
+    if auth_type == "none":
+        return ""
+
+    clean = str(secret_ref or "").strip()
+    if not clean:
+        return ""
+
+    if any(char.isspace() for char in clean):
+        raise HTTPException(status_code=400, detail="secret_ref must be a reference key, not raw credential text")
+
+    if clean.lower().startswith(("sk-", "bearer", "apikey", "api_key")):
+        raise HTTPException(status_code=400, detail="secret_ref appears to contain a raw secret; provide a secret reference path")
+
+    return clean
+
+
+def _normalize_string_list(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    normalized: list[str] = []
+    for item in value:
+        text = str(item).strip()
+        if text and text not in normalized:
+            normalized.append(text)
+    return normalized
+
+
+def _evaluate_integration_policy(integration: IntegrationDefinition, platform: PlatformSettings) -> dict[str, Any]:
+    warnings: list[str] = []
+    violations: list[str] = []
+
+    if integration.auth_type != "none" and not integration.secret_ref.strip():
+        violations.append("auth_type requires a secret_ref")
+
+    if integration.auth_type == "none" and integration.secret_ref.strip():
+        warnings.append("secret_ref provided with auth_type=none; secret may be unused")
+
+    if integration.type in {"http", "custom", "queue", "vector"} and not integration.egress_allowlist:
+        message = "Integration should define egress_allowlist for outbound destinations"
+        if platform.enforce_integration_policies and not platform.local_only_mode:
+            violations.append(message)
+        else:
+            warnings.append(message)
+
+    if not integration.permission_scopes:
+        message = "permission_scopes is empty; integration should declare least-privilege scopes"
+        if platform.enforce_integration_policies and not platform.local_only_mode:
+            violations.append(message)
+        else:
+            warnings.append(message)
+
+    if platform.require_signed_integrations and not integration.signature_verified:
+        if platform.local_only_mode and platform.allow_local_unsigned_integrations:
+            warnings.append("Unsigned integration allowed because local_only_mode + allow_local_unsigned_integrations are enabled")
+        else:
+            violations.append("Integration must be signature_verified when require_signed_integrations is enabled")
+
+    if platform.require_sandbox_for_third_party and integration.publisher == "third_party" and integration.execution_mode != "sandboxed":
+        if platform.local_only_mode:
+            warnings.append("third_party integration not sandboxed; allowed in local_only_mode")
+        else:
+            violations.append("third_party integrations must run in sandboxed execution_mode")
+
+    if not integration.approved_for_marketplace:
+        warnings.append("Integration is not approved_for_marketplace")
+
+    return {
+        "ok": len(violations) == 0,
+        "mode": "strict" if platform.enforce_integration_policies else "advisory",
+        "warnings": warnings,
+        "violations": violations,
+    }
+
+
+def _build_integration_diagnostics(integration: IntegrationDefinition) -> dict[str, Any]:
+    has_base_url = bool(integration.base_url.strip())
+    secret_required = integration.auth_type != "none"
+    has_secret_ref = bool(integration.secret_ref.strip())
+    has_secret_path = integration.secret_ref.startswith("secret/") if has_secret_ref else False
+    has_embedded_credentials = bool(re.search(r"://[^/@\s:]+:[^@\s]+@", integration.base_url))
+    uses_secure_transport = integration.base_url.startswith("https://") or integration.base_url.startswith("postgresql://")
+    local_only_ok = integration.base_url.startswith("http://localhost") or integration.base_url.startswith("http://127.0.0.1")
+
+    warnings: list[str] = []
+    if not has_base_url:
+        warnings.append("Missing base_url or DSN")
+    if secret_required and not has_secret_ref:
+        warnings.append("Selected auth_type requires secret_ref")
+    if secret_required and has_secret_ref and not has_secret_path:
+        warnings.append("secret_ref should use namespaced path format such as secret/<scope>/<name>")
+    if has_embedded_credentials:
+        warnings.append("Embedded credentials detected in base_url; use secret_ref instead")
+    if integration.type == "http" and not (uses_secure_transport or local_only_ok):
+        warnings.append("HTTP integration should use HTTPS for non-local endpoints")
+
+    policy = _evaluate_integration_policy(integration, store.platform_settings)
+
+    return {
+        "checks": {
+            "has_base_url": has_base_url,
+            "secret_required": secret_required,
+            "has_secret_ref": has_secret_ref,
+            "secret_ref_path_format": has_secret_path,
+            "no_embedded_credentials": not has_embedded_credentials,
+            "secure_transport_or_localhost": uses_secure_transport or local_only_ok,
+        },
+        "masked": {
+            "base_url": _sanitize_base_url(integration.base_url),
+            "secret_ref": _mask_secret_ref(integration.secret_ref),
+        },
+        "warnings": warnings,
+        "policy": policy,
+    }
+
+
+def _integration_response_payload(integration: IntegrationDefinition) -> dict[str, Any]:
+    payload = integration.model_dump()
+    payload["secret_ref"] = _mask_secret_ref(integration.secret_ref)
+    payload["secret_configured"] = bool(integration.secret_ref.strip())
+    payload["base_url"] = _sanitize_base_url(integration.base_url)
+    return payload
+
+
+def _build_template_catalog() -> list[TemplateCatalogItem]:
+    items: list[TemplateCatalogItem] = []
+
+    for template in store.agent_templates.values():
+        items.append(
+            TemplateCatalogItem(
+                id=f"template-agent:{template.id}",
+                source_id=template.id,
+                template_type="agent",
+                name=template.name,
+                description=template.description,
+                category=str(template.category),
+                status=template.status,
+            )
+        )
+
+    for workflow in store.workflow_definitions.values():
+        items.append(
+            TemplateCatalogItem(
+                id=f"template-workflow:{workflow.id}",
+                source_id=workflow.id,
+                template_type="workflow",
+                name=workflow.name,
+                description=workflow.description,
+                category="workflow",
+                status="active" if workflow.status != "archived" else "deprecated",
+                version=workflow.version,
+            )
+        )
+
+    for playbook in store.playbooks.values():
+        items.append(
+            TemplateCatalogItem(
+                id=f"template-playbook:{playbook.id}",
+                source_id=playbook.id,
+                template_type="playbook",
+                name=playbook.name,
+                description=playbook.description,
+                category=str(playbook.category),
+                status=playbook.status,
+                version=int(playbook.metadata_json.get("template_version", 1)) if isinstance(playbook.metadata_json, dict) else 1,
+            )
+        )
+
+    return sorted(items, key=lambda item: (item.template_type, item.name.lower(), item.source_id.lower()))
+
+
+def _text_contains_blocked_keywords(text: str, blocked_keywords: list[str]) -> list[str]:
+    lowered = text.lower()
+    matches: list[str] = []
+    for keyword in blocked_keywords:
+        if isinstance(keyword, str) and keyword.strip() and keyword.lower() in lowered:
+            matches.append(keyword)
+    return matches
+
+
+def _resolve_guardrail_config(node_config: dict[str, Any]) -> tuple[dict[str, Any], str | None, str | None]:
+    config = dict(node_config)
+    ruleset_id = str(config.get("ruleset_id") or store.platform_settings.default_guardrail_ruleset_id or "").strip()
+    if not ruleset_id:
+        return config, None, None
+
+    ruleset = store.guardrail_rulesets.get(ruleset_id)
+    if not ruleset:
+        return config, ruleset_id, "not_found"
+    if ruleset.status != "published":
+        return config, ruleset_id, "not_published"
+
+    merged = dict(ruleset.config_json if isinstance(ruleset.config_json, dict) else {})
+    merged.update(config)
+    return merged, ruleset_id, None
+
+
+def _evaluate_guardrail(candidate: Any, config: dict[str, Any], stage: str) -> dict[str, Any]:
+    text = _safe_json(candidate)
+    issues: list[dict[str, Any]] = []
+    platform = store.platform_settings
+
+    def _append_issue(code: str, message: str, *, severity: str = "medium", source: str = "rule") -> None:
+        issues.append(
+            {
+                "code": code,
+                "message": message,
+                "severity": severity,
+                "source": source,
+            }
+        )
+
+    def _foss_signal_enforcement() -> str:
+        configured = str(config.get("signal_enforcement") or platform.foss_guardrail_signal_enforcement or "block_high").strip().lower()
+        if configured in {"off", "audit", "block_high", "raise_high"}:
+            return configured
+        return "block_high"
+
+    def _collect_foss_signal_issues() -> list[dict[str, Any]]:
+        if not bool(config.get("enable_foss_signals", platform.enable_foss_guardrail_signals)):
+            return []
+
+        findings: list[dict[str, Any]] = []
+        lowered_text = text.lower()
+
+        detect_prompt_injection = bool(config.get("detect_prompt_injection", platform.foss_guardrail_detect_prompt_injection))
+        detect_exfiltration = bool(config.get("detect_exfiltration", platform.foss_guardrail_detect_exfiltration))
+        detect_command_injection = bool(config.get("detect_command_injection", platform.foss_guardrail_detect_command_injection))
+        detect_pii = bool(config.get("detect_pii", platform.foss_guardrail_detect_pii))
+
+        if detect_prompt_injection:
+            prompt_injection_patterns = [
+                r"ignore\s+(all\s+)?previous\s+instructions",
+                r"reveal\s+(the\s+)?system\s+prompt",
+                r"bypass\s+(all\s+)?guardrails",
+                r"developer\s+mode",
+                r"do\s+anything\s+now",
+                r"jailbreak",
+            ]
+            if any(re.search(pattern, lowered_text) for pattern in prompt_injection_patterns):
+                findings.append(
+                    {
+                        "code": "PROMPT_INJECTION_SIGNAL",
+                        "message": "Possible prompt-injection pattern detected.",
+                        "severity": "high",
+                        "source": "foss-heuristic",
+                    }
+                )
+
+        if detect_exfiltration:
+            exfiltration_patterns = [
+                r"(show|dump|print|reveal).*(api[_\s-]?key|secret|token|password|private\s+key)",
+                r"export.*(credentials|secrets)",
+                r"copy.*(vault|key\s?store)",
+            ]
+            if any(re.search(pattern, lowered_text) for pattern in exfiltration_patterns):
+                findings.append(
+                    {
+                        "code": "EXFILTRATION_SIGNAL",
+                        "message": "Possible credential or secret exfiltration intent detected.",
+                        "severity": "high",
+                        "source": "foss-heuristic",
+                    }
+                )
+
+        if detect_command_injection:
+            command_injection_patterns = [
+                r"(;|&&|\|\|)\s*(rm\s+-rf|curl\s+|wget\s+|powershell\s+-enc|bash\s+-c)",
+                r"\b(drop\s+table|truncate\s+table)\b",
+                r"\b(sudo\s+|chmod\s+777)\b",
+            ]
+            if any(re.search(pattern, lowered_text) for pattern in command_injection_patterns):
+                findings.append(
+                    {
+                        "code": "COMMAND_INJECTION_SIGNAL",
+                        "message": "Possible command or SQL injection pattern detected.",
+                        "severity": "high",
+                        "source": "foss-heuristic",
+                    }
+                )
+
+        if detect_pii:
+            pii_regex_checks = [
+                ("PII_EMAIL_SIGNAL", r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b"),
+                ("PII_PHONE_SIGNAL", r"\b(?:\+?\d{1,2}\s*)?(?:\(?\d{3}\)?[-.\s]?){2}\d{4}\b"),
+                ("PII_SSN_SIGNAL", r"\b\d{3}-\d{2}-\d{4}\b"),
+                ("PII_CREDIT_CARD_SIGNAL", r"\b(?:\d[ -]*?){13,16}\b"),
+            ]
+            for code, pattern in pii_regex_checks:
+                if re.search(pattern, text):
+                    findings.append(
+                        {
+                            "code": code,
+                            "message": "Possible sensitive PII detected.",
+                            "severity": "high" if code in {"PII_SSN_SIGNAL", "PII_CREDIT_CARD_SIGNAL"} else "medium",
+                            "source": "foss-heuristic",
+                        }
+                    )
+
+            analyzer = _get_presidio_analyzer()
+            if analyzer is not None:
+                try:
+                    entities = analyzer.analyze(text=text, language="en")
+                    for entity in entities[:8]:
+                        entity_type = str(getattr(entity, "entity_type", "UNKNOWN"))
+                        findings.append(
+                            {
+                                "code": "PRESIDIO_PII_SIGNAL",
+                                "message": f"Presidio detected potential PII entity: {entity_type}.",
+                                "severity": "medium",
+                                "source": "presidio",
+                            }
+                        )
+                except Exception:  # noqa: BLE001
+                    pass
+
+        # Deduplicate noisy repeats while preserving first seen metadata.
+        deduped: list[dict[str, Any]] = []
+        seen: set[tuple[str, str]] = set()
+        for finding in findings:
+            key = (str(finding.get("code")), str(finding.get("source")))
+            if key in seen:
+                continue
+            seen.add(key)
+            deduped.append(finding)
+        return deduped
+
+    blocked_keywords = config.get("blocked_keywords", [])
+    if isinstance(blocked_keywords, list):
+        lowered_text = text.lower()
+        for keyword in blocked_keywords:
+            if isinstance(keyword, str) and keyword.strip() and keyword.lower() in lowered_text:
+                _append_issue("BLOCKED_KEYWORD", f"Blocked keyword detected: {keyword}", severity="high", source="rule")
+
+    required_keywords = config.get("required_keywords", [])
+    if isinstance(required_keywords, list):
+        lowered_text = text.lower()
+        for keyword in required_keywords:
+            if isinstance(keyword, str) and keyword.strip() and keyword.lower() not in lowered_text:
+                _append_issue("REQUIRED_KEYWORD_MISSING", f"Required keyword missing: {keyword}", severity="medium", source="rule")
+
+    min_length = config.get("min_length")
+    if isinstance(min_length, int) and len(text) < min_length:
+        _append_issue("MIN_LENGTH", f"Content shorter than min_length={min_length}", severity="low", source="rule")
+
+    max_length = config.get("max_length")
+    if isinstance(max_length, int) and len(text) > max_length:
+        _append_issue("MAX_LENGTH", f"Content exceeds max_length={max_length}", severity="low", source="rule")
+
+    if config.get("detect_secrets", False):
+        if re.search(r"\bsk-[A-Za-z0-9_-]{10,}\b", text):
+            _append_issue("SECRET_PATTERN", "Possible API key detected in payload.", severity="high", source="rule")
+
+    issues.extend(_collect_foss_signal_issues())
+
+    tripwire_triggered = len(issues) > 0
+    run_in_parallel = bool(config.get("run_in_parallel", True))
+    action = str(config.get("tripwire_action") or config.get("mode") or "allow").lower()
+    if action in {"block", "raise", "halt"}:
+        action = "raise_exception"
+    elif action in {"rewrite", "reject"}:
+        action = "reject_content"
+    elif action not in {"allow", "raise_exception", "reject_content"}:
+        action = "allow"
+
+    signal_enforcement = _foss_signal_enforcement()
+    has_high_severity = any(str(item.get("severity") or "").lower() == "high" for item in issues)
+    if signal_enforcement == "raise_high" and has_high_severity:
+        action = "raise_exception"
+    elif signal_enforcement == "block_high" and has_high_severity and action == "allow":
+        action = "reject_content"
+
+    output_info = {
+        "stage": stage,
+        "issues": issues,
+        "run_in_parallel": run_in_parallel,
+        "configured_action": action,
+        "tripwire_triggered": tripwire_triggered,
+        "signal_enforcement": signal_enforcement,
+    }
+    return {
+        "tripwire_triggered": tripwire_triggered,
+        "output_info": output_info,
+        "behavior": action,
+    }
+
+
+def _execute_node(
+    node: GraphNode,
+    incoming: list[dict[str, Any]],
+    incoming_by_port: dict[str, list[dict[str, Any]]] | None,
+    run_input: dict[str, Any],
+    execution_state: dict[str, Any],
+    mem_store: dict[str, list[dict[str, Any]]],
+) -> dict[str, Any]:
+    node_type = _normalize_node_type(node.type)
+    runtime = execution_state.get("runtime", {})
+    session_id = str(execution_state.get("session_id") or "session/default")
+    message = str(run_input.get("message") or "")
+
+    if node_type == "frontier/trigger":
+        trigger_mode = str(node.config.get("trigger_mode") or "manual")
+        effective_schedule_cron = _resolve_trigger_cron(node.config if isinstance(node.config, dict) else {}) if trigger_mode == "schedule" else ""
+        return {
+            "run_context": {
+                "run_id": str(uuid4()),
+                "started_at": _now_iso(),
+                "trigger_mode": trigger_mode,
+            },
+            "trigger": {
+                "mode": trigger_mode,
+                "schedule_preset": node.config.get("schedule_preset"),
+                "schedule_time": node.config.get("schedule_time"),
+                "schedule_day_of_week": node.config.get("schedule_day_of_week"),
+                "schedule_day_of_month": node.config.get("schedule_day_of_month"),
+                "schedule_cron": effective_schedule_cron or node.config.get("schedule_cron"),
+                "schedule_timezone": node.config.get("schedule_timezone"),
+                "webhook_path": node.config.get("webhook_path"),
+                "api_event_name": node.config.get("api_event_name"),
+                "tool_event_name": node.config.get("tool_event_name"),
+                "human_queue": node.config.get("human_queue"),
+            },
+            "message": message or "Workflow triggered.",
+        }
+
+    if node_type == "frontier/prompt":
+        objective = str(node.config.get("objective") or "general_assistant")
+        style = str(node.config.get("style") or "concise")
+        audience = str(node.config.get("audience") or "technical")
+        safety_level = str(node.config.get("safety_level") or "balanced")
+        include_citations = bool(node.config.get("include_citations", False))
+        custom_prompt = str(node.config.get("system_prompt_text") or "").strip()
+
+        system_prompt_lines = [
+            f"Objective: {objective}.",
+            f"Style: {style}.",
+            f"Audience: {audience}.",
+            f"Safety level: {safety_level}.",
+            "Prefer deterministic, actionable outputs with explicit assumptions.",
+        ]
+        if include_citations:
+            system_prompt_lines.append("Include citations or source notes when factual claims are made.")
+        if custom_prompt:
+            system_prompt_lines.append("Custom instructions:\n" + custom_prompt)
+
+        return {
+            "system_prompt": "\n".join(system_prompt_lines),
+            "prompt_text": custom_prompt,
+            "prompt_profile": {
+                "objective": objective,
+                "style": style,
+                "audience": audience,
+                "safety_level": safety_level,
+                "include_citations": include_citations,
+            },
+        }
+
+    if node_type == "frontier/manifold":
+        runtime_info = execution_state.get("runtime_info") if isinstance(execution_state.get("runtime_info"), dict) else {}
+        by_port = incoming_by_port or {}
+        node_role = _infer_graph_node_runtime_role(
+            node,
+            node_type=node_type,
+            incoming_by_port=by_port,
+            execution_state=execution_state,
+        )
+        node_runtime = _resolve_node_runtime_engine(runtime_info, node_role)
+        manifold_selected_engine = _normalize_runtime_engine(node_runtime.get("selected_engine") or "native")
+        manifold_executed_engine = _normalize_runtime_engine(node_runtime.get("executed_engine") or "native")
+
+        sources = incoming
+        mode = str(node.config.get("logic_mode") or "OR").upper()
+        min_required_raw = node.config.get("min_required", 1)
+        try:
+            min_required = max(1, int(min_required_raw))
+        except (TypeError, ValueError):
+            min_required = 1
+
+        manifold_result, manifold_meta = _run_framework_manifold(
+            engine=manifold_executed_engine,
+            sources=sources,
+            mode=mode,
+            min_required=min_required,
+            fallback_payload={"message": message},
+        )
+        if not isinstance(manifold_result, dict):
+            manifold_result = {
+                "passed": False,
+                "logic_mode": mode,
+                "active_inputs": len([item for item in sources if item]),
+                "payload": sources[-1] if sources else {"message": message},
+                "sources": sources,
+            }
+        manifold_result["framework"] = manifold_selected_engine
+        manifold_result["executed_engine"] = manifold_executed_engine
+        manifold_result["runtime_mode"] = str(node_runtime.get("mode") or "native")
+        manifold_result["framework_meta"] = manifold_meta
+        return manifold_result
+
+    if node_type.startswith("frontier/agent"):
+        by_port = incoming_by_port or {}
+        prompt_inputs = _port_values(by_port, "prompt")
+        memory_inputs = _port_values(by_port, "memory", "memory_state")
+        context_inputs = _port_values(by_port, "context", "data")
+        retrieval_inputs = _port_values(by_port, "retrieval", "documents")
+        guardrail_inputs = _port_values(by_port, "guardrail", "decision")
+        tool_result_inputs = _port_values(by_port, "tool_result", "result", "tool_output")
+
+        upstream_message = incoming[-1].get("response") if incoming else message
+        if not upstream_message:
+            upstream_message = incoming[-1].get("message") if incoming else ""
+
+        if context_inputs:
+            upstream_message = _safe_json(context_inputs[-1])
+        elif tool_result_inputs:
+            upstream_message = _safe_json(tool_result_inputs[-1])
+        prior_agent_outputs = execution_state.setdefault("agent_outputs", [])
+        collaboration_context = "\n".join(f"- {item}" for item in prior_agent_outputs[-4:])
+        memory_items = _memory_get_entries(session_id, limit=100) if runtime.get("use_memory", True) else []
+        memory_context = "\n".join(f"- {item.get('content', '')}" for item in memory_items[-6:])
+        memory_port_context = "\n".join(f"- {_safe_json(item)[:300]}" for item in memory_inputs[-6:])
+        retrieval_context = "\n".join(f"- {_safe_json(item)[:300]}" for item in retrieval_inputs[-6:])
+
+        model = str(node.config.get("model") or runtime.get("model") or _default_openai_model())
+        temperature_raw = node.config.get("temperature", runtime.get("temperature", 0.2))
+        try:
+            temperature = max(0.0, min(1.5, float(temperature_raw)))
+        except (TypeError, ValueError):
+            temperature = 0.2
+
+        upstream_system_prompt = ""
+        if prompt_inputs:
+            prompt_candidate = prompt_inputs[-1]
+            if isinstance(prompt_candidate, dict):
+                upstream_system_prompt = str(prompt_candidate.get("system_prompt") or prompt_candidate.get("prompt_text") or "")
+        for item in reversed(incoming):
+            if isinstance(item, dict) and isinstance(item.get("system_prompt"), str) and item.get("system_prompt", "").strip():
+                upstream_system_prompt = str(item.get("system_prompt"))
+                break
+
+        system_prompt = str(
+            node.config.get("system_prompt")
+            or upstream_system_prompt
+            or "You are a specialist execution agent in a collaborative workflow. Keep answers concise and actionable."
+        )
+        user_prompt = (
+            f"Workflow task for node '{node.title}'\n"
+            f"Current input:\n{str(upstream_message)[:2000]}\n\n"
+            f"Recent collaborator outputs:\n{collaboration_context or '- none'}\n\n"
+            f"Memory context:\n{memory_context or '- none'}\n\n"
+            f"Memory port context:\n{memory_port_context or '- none'}\n\n"
+            f"Retrieval context:\n{retrieval_context or '- none'}"
+        )
+        runtime_info = execution_state.get("runtime_info") if isinstance(execution_state.get("runtime_info"), dict) else {}
+        role = _infer_agent_runtime_role(
+            node,
+            by_port=by_port,
+            prior_agent_outputs=prior_agent_outputs,
+        )
+        node_runtime = _resolve_node_runtime_engine(runtime_info, role)
+        selected_engine = _normalize_runtime_engine(node_runtime.get("selected_engine") or "native")
+        executed_engine = _normalize_runtime_engine(node_runtime.get("executed_engine") or "native")
+        node_runtime_mode = str(node_runtime.get("mode") or runtime_info.get("mode") or "native")
+
+        if executed_engine != "native":
+            response_text, model_meta = _run_framework_chat(
+                engine=executed_engine,
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                model=model,
+                temperature=temperature,
+            )
+        else:
+            response_text, model_meta = _run_openai_chat(
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                model=model,
+                temperature=temperature,
+            )
+
+        model_meta["framework"] = selected_engine
+        model_meta["executed_engine"] = executed_engine
+        model_meta["runtime_mode"] = node_runtime_mode
+        model_meta["runtime_strategy"] = str(runtime_info.get("strategy") or "single")
+        model_meta["runtime_role"] = role
+        prior_agent_outputs.append(f"{node.title}: {response_text[:240]}")
+        runtime_dispatches = execution_state.setdefault("runtime_dispatches", [])
+        if isinstance(runtime_dispatches, list):
+            runtime_dispatches.append(
+                {
+                    "node_id": node.id,
+                    "node_title": node.title,
+                    "role": role,
+                    "requested_engine": selected_engine,
+                    "executed_engine": executed_engine,
+                    "mode": node_runtime_mode,
+                }
+            )
+
+        return {
+            "response": response_text,
+            "out": response_text,
+            "output": response_text,
+            "artifacts": [
+                {
+                    "name": f"{node.title} artifact",
+                    "status": "Draft",
+                }
+            ],
+            "memory": {
+                "session_id": session_id,
+                "summary": response_text[:240],
+            },
+            "tool_request": {
+                "recommended": "tool/unspecified",
+                "reason": "Agent may delegate follow-up tool/API calls.",
+                "request": {
+                    "agent_id": node.config.get("agent_id"),
+                    "message": response_text,
+                },
+            },
+            "tool_api": {
+                "recommended": "tool/unspecified",
+                "reason": "Legacy alias for tool_request.",
+            },
+            "retrieval_query": {
+                "query": response_text,
+            },
+            "guardrail": guardrail_inputs[-1] if guardrail_inputs else {"status": "none"},
+            "state_delta": {
+                "agent_id": node.config.get("agent_id"),
+                "node_id": node.id,
+            },
+            "model": model_meta,
+            "session_id": session_id,
+        }
+
+    if node_type == "frontier/tool-call":
+        tool_config = node.config if isinstance(node.config, dict) else {}
+        platform = store.platform_settings
+        if platform.emergency_read_only_mode or platform.block_tool_calls:
+            return {
+                "tool_output": {
+                    "ok": False,
+                    "rejected": True,
+                    "message": "Tool call rejected by emergency policy control.",
+                },
+                "status": {"state": "policy_rejected"},
+                "policy": {
+                    "control": "emergency_or_block_tool_calls",
+                    "emergency_read_only_mode": platform.emergency_read_only_mode,
+                    "block_tool_calls": platform.block_tool_calls,
+                },
+            }
+        by_port = incoming_by_port or {}
+        runtime_info = execution_state.get("runtime_info") if isinstance(execution_state.get("runtime_info"), dict) else {}
+        node_role = _infer_graph_node_runtime_role(
+            node,
+            node_type=node_type,
+            incoming_by_port=by_port,
+            execution_state=execution_state,
+        )
+        node_runtime = _resolve_node_runtime_engine(runtime_info, node_role)
+        tool_selected_engine = _normalize_runtime_engine(node_runtime.get("selected_engine") or "native")
+        tool_executed_engine = _normalize_runtime_engine(node_runtime.get("executed_engine") or "native")
+
+        tool_calls = int(execution_state.get("tool_call_count") or 0) + 1
+        execution_state["tool_call_count"] = tool_calls
+        if tool_calls > max(1, int(platform.max_tool_calls_per_run)):
+            return {
+                "tool_output": {
+                    "ok": False,
+                    "rejected": True,
+                    "message": "Tool call rejected: max_tool_calls_per_run exceeded.",
+                },
+                "status": {"state": "policy_rejected"},
+                "policy": {
+                    "control": "max_tool_calls_per_run",
+                    "observed": tool_calls,
+                    "limit": platform.max_tool_calls_per_run,
+                },
+            }
+
+        tool_id = str(tool_config.get("tool_id") or "tool/unspecified")
+        endpoint_url = str(tool_config.get("endpoint_url") or tool_config.get("server_url") or "").strip()
+        mcp_server_url = str(tool_config.get("mcp_server_url") or tool_config.get("server_url") or "").strip()
+
+        if platform.enforce_egress_allowlist and endpoint_url and not _is_host_allowed(endpoint_url, platform.allowed_egress_hosts):
+            return {
+                "tool_output": {
+                    "ok": False,
+                    "rejected": True,
+                    "message": f"Tool call rejected: host not in allowlist ({_extract_host(endpoint_url) or 'unknown'}).",
+                },
+                "status": {"state": "policy_rejected"},
+                "policy": {
+                    "control": "egress_allowlist",
+                    "allowed_hosts": platform.allowed_egress_hosts,
+                },
+            }
+
+        if platform.enforce_local_network_only and endpoint_url and not _is_local_network_url(endpoint_url, platform.allow_local_network_hostnames):
+            return {
+                "tool_output": {
+                    "ok": False,
+                    "rejected": True,
+                    "message": "Tool call rejected: endpoint must be local/private in local-network-only mode.",
+                },
+                "status": {"state": "policy_rejected"},
+                "policy": {
+                    "control": "local_network_only",
+                    "requested_endpoint": endpoint_url,
+                },
+            }
+
+        if "mcp" in tool_id.lower() or mcp_server_url:
+            if mcp_server_url and mcp_server_url not in platform.allowed_mcp_server_urls:
+                return {
+                    "tool_output": {
+                        "ok": False,
+                        "rejected": True,
+                        "message": "Tool call rejected: MCP server is not approved.",
+                    },
+                    "status": {"state": "policy_rejected"},
+                    "policy": {
+                        "control": "allowed_mcp_server_urls",
+                        "allowed": platform.allowed_mcp_server_urls,
+                        "requested": mcp_server_url,
+                    },
+                }
+            if platform.mcp_require_local_server and mcp_server_url and not _is_local_network_url(mcp_server_url, platform.allow_local_network_hostnames):
+                return {
+                    "tool_output": {
+                        "ok": False,
+                        "rejected": True,
+                        "message": "Tool call rejected: MCP server must be local/private.",
+                    },
+                    "status": {"state": "policy_rejected"},
+                    "policy": {
+                        "control": "mcp_local_network_only",
+                        "requested": mcp_server_url,
+                    },
+                }
+
+        is_high_risk = any(pattern.lower() in tool_id.lower() for pattern in platform.high_risk_tool_patterns)
+        if is_high_risk and platform.require_human_approval_for_high_risk_tools:
+            return {
+                "tool_output": {
+                    "ok": False,
+                    "approval_required": True,
+                    "message": "High-risk tool action requires human approval before execution.",
+                },
+                "status": {"state": "approval_required"},
+                "policy": {
+                    "control": "require_human_approval_for_high_risk_tools",
+                    "tool_id": tool_id,
+                },
+            }
+
+        tool_input_guardrail = tool_config.get("tool_input_guardrail")
+        request_payload = (_port_values(by_port, "request", "tool_input") or incoming or [run_input])[-1]
+        context_payload = (_port_values(by_port, "context", "auth_context", "data") or [])[-1] if _port_values(by_port, "context", "auth_context", "data") else {}
+        if isinstance(tool_input_guardrail, dict):
+            input_payload = {
+                "request": request_payload,
+                "context": context_payload,
+            }
+            precheck = _evaluate_guardrail(input_payload, tool_input_guardrail, stage="tool_input")
+            if precheck["tripwire_triggered"]:
+                behavior = precheck["behavior"]
+                if behavior == "raise_exception":
+                    raise RuntimeError(f"ToolInputGuardrailTripwireTriggered at node '{node.id}'")
+                if behavior == "reject_content":
+                    replacement = str(
+                        tool_input_guardrail.get("reject_message")
+                        or "Tool input rejected by guardrail; call skipped."
+                    )
+                    return {
+                        "tool_output": {"ok": False, "rejected": True, "message": replacement},
+                        "guardrail": precheck,
+                        "status": {"state": "guardrail_rejected"},
+                    }
+
+        if tool_executed_engine != "native":
+            delegated_result, delegated_meta = _run_framework_tool_call(
+                engine=tool_executed_engine,
+                tool_id=tool_id,
+                request_payload=request_payload,
+                context_payload=context_payload,
+                call_index=tool_calls,
+                endpoint_url=endpoint_url,
+                method=str(tool_config.get("method") or "POST"),
+            )
+            tool_result_payload = dict(delegated_result) if isinstance(delegated_result, dict) else {
+                "ok": False,
+                "rejected": True,
+                "message": "Framework tool execution returned invalid payload.",
+            }
+            tool_result_payload["framework"] = tool_selected_engine
+            tool_result_payload["executed_engine"] = tool_executed_engine
+            tool_result_payload["runtime_mode"] = str(node_runtime.get("mode") or "native")
+            if isinstance(delegated_meta, dict):
+                tool_result_payload["framework_meta"] = delegated_meta
+        else:
+            tool_result_payload = _simulate_tool_execution_payload(
+                tool_id=tool_id,
+                request_payload=request_payload,
+                context_payload=context_payload,
+                call_index=tool_calls,
+                endpoint_url=endpoint_url,
+                method=str(tool_config.get("method") or "POST"),
+            )
+            tool_result_payload["framework"] = "native"
+            tool_result_payload["executed_engine"] = "native"
+            tool_result_payload["runtime_mode"] = "native"
+
+        result = {
+            "result": tool_result_payload,
+            "status": {"state": "completed"},
+            "out": {"state": "completed"},
+        }
+
+        tool_output_guardrail = tool_config.get("tool_output_guardrail")
+        if isinstance(tool_output_guardrail, dict):
+            postcheck = _evaluate_guardrail(result["result"], tool_output_guardrail, stage="tool_output")
+            if postcheck["tripwire_triggered"]:
+                behavior = postcheck["behavior"]
+                if behavior == "raise_exception":
+                    raise RuntimeError(f"ToolOutputGuardrailTripwireTriggered at node '{node.id}'")
+                if behavior == "reject_content":
+                    replacement = str(
+                        tool_output_guardrail.get("reject_message")
+                        or "Tool output rejected by guardrail."
+                    )
+                    result["result"] = {"ok": False, "rejected": True, "message": replacement}
+                    result["status"] = {"state": "guardrail_rejected"}
+            result["guardrail"] = postcheck
+
+        result["tool_output"] = result["result"]
+
+        return result
+
+    if node_type == "frontier/retrieval":
+        platform = store.platform_settings
+        if platform.emergency_read_only_mode or platform.block_retrieval_calls:
+            return {
+                "documents": [],
+                "grounding_context": "Retrieval blocked by emergency policy control.",
+                "status": {"state": "policy_rejected"},
+                "policy": {
+                    "control": "emergency_or_block_retrieval_calls",
+                    "emergency_read_only_mode": platform.emergency_read_only_mode,
+                    "block_retrieval_calls": platform.block_retrieval_calls,
+                },
+            }
+        retrieval_config = node.config if isinstance(node.config, dict) else {}
+        by_port = incoming_by_port or {}
+        runtime_info = execution_state.get("runtime_info") if isinstance(execution_state.get("runtime_info"), dict) else {}
+        node_role = _infer_graph_node_runtime_role(
+            node,
+            node_type=node_type,
+            incoming_by_port=by_port,
+            execution_state=execution_state,
+        )
+        node_runtime = _resolve_node_runtime_engine(runtime_info, node_role)
+        retrieval_selected_engine = _normalize_runtime_engine(node_runtime.get("selected_engine") or "native")
+        retrieval_executed_engine = _normalize_runtime_engine(node_runtime.get("executed_engine") or "native")
+        source_id = str(retrieval_config.get("source_id") or "kb://default")
+        source_url = str(retrieval_config.get("source_url") or "").strip()
+
+        retrieval_calls = int(execution_state.get("retrieval_call_count") or 0) + 1
+        execution_state["retrieval_call_count"] = retrieval_calls
+
+        query_payload = (_port_values(by_port, "query", "data", "request") or incoming or [run_input])[-1]
+        filters_payload = (_port_values(by_port, "filters") or [])[-1] if _port_values(by_port, "filters") else {}
+
+        if source_url and platform.enforce_egress_allowlist and not _is_host_allowed(source_url, platform.allowed_egress_hosts):
+            return {
+            "documents": [],
+                "grounding_context": "Retrieval blocked by egress allowlist policy.",
+                "status": {"state": "policy_rejected"},
+                "policy": {
+                    "control": "egress_allowlist",
+                    "requested_host": _extract_host(source_url),
+                    "allowed_hosts": platform.allowed_egress_hosts,
+                },
+            }
+
+        if platform.retrieval_require_local_source_url and source_url and not _is_local_network_url(source_url, platform.allow_local_network_hostnames):
+            return {
+                "documents": [],
+                "grounding_context": "Retrieval blocked: source_url must be local/private.",
+                "status": {"state": "policy_rejected"},
+                "policy": {
+                    "control": "retrieval_local_network_only",
+                    "requested_source_url": source_url,
+                },
+            }
+
+        if not _source_allowed(source_id, platform.allowed_retrieval_sources):
+            return {
+                "documents": [],
+                "grounding_context": "Retrieval blocked: source is not in trusted retrieval allowlist.",
+                "status": {"state": "policy_rejected"},
+                "policy": {
+                    "control": "allowed_retrieval_sources",
+                    "requested_source": source_id,
+                    "allowed_sources": platform.allowed_retrieval_sources,
+                },
+            }
+
+        requested_count = retrieval_config.get("top_k", 3)
+        try:
+            requested_count_int = max(1, int(requested_count))
+        except (TypeError, ValueError):
+            requested_count_int = 3
+        doc_count = min(requested_count_int, max(1, int(platform.max_retrieval_items)))
+
+        if retrieval_executed_engine != "native":
+            docs, grounding_context, retrieval_meta = _run_framework_retrieval(
+                engine=retrieval_executed_engine,
+                query_payload=query_payload,
+                source_id=source_id,
+                top_k=doc_count,
+                filters_payload=filters_payload,
+            )
+            if not isinstance(docs, list):
+                docs = []
+        else:
+            docs = [{"id": f"doc-{i}", "score": round(0.95 - (i * 0.04), 2), "source": source_id} for i in range(1, doc_count + 1)]
+            grounding_context = f"Retrieved {len(docs)} context documents from trusted source."
+            retrieval_meta = {"framework": "native", "mode": "live"}
+
+        return {
+            "documents": docs,
+            "grounding_context": grounding_context,
+            "retrieval": docs,
+            "data": grounding_context,
+            "query": query_payload,
+            "filters": filters_payload,
+            "out": {"state": "completed"},
+            "framework": retrieval_selected_engine,
+            "executed_engine": retrieval_executed_engine,
+            "runtime_mode": str(node_runtime.get("mode") or "native"),
+            "framework_meta": retrieval_meta,
+            "policy": {
+                "call_index": retrieval_calls,
+                "source_id": source_id,
+                "max_retrieval_items": platform.max_retrieval_items,
+            },
+        }
+
+    if node_type == "frontier/memory":
+        runtime_info = execution_state.get("runtime_info") if isinstance(execution_state.get("runtime_info"), dict) else {}
+        by_port = incoming_by_port or {}
+        node_role = _infer_graph_node_runtime_role(
+            node,
+            node_type=node_type,
+            incoming_by_port=by_port,
+            execution_state=execution_state,
+        )
+        node_runtime = _resolve_node_runtime_engine(runtime_info, node_role)
+        memory_selected_engine = _normalize_runtime_engine(node_runtime.get("selected_engine") or "native")
+        memory_executed_engine = _normalize_runtime_engine(node_runtime.get("executed_engine") or "native")
+        action = str(node.config.get("action") or "append").lower()
+        scope = str(node.config.get("scope") or "session")
+        bucket_id = _resolve_memory_bucket_id(node.config if isinstance(node.config, dict) else {}, run_input, execution_state)
+        write_inputs = _port_values(by_port, "write_payload", "payload")
+        source = write_inputs[-1] if write_inputs else (incoming[-1] if incoming else {"message": message})
+        memory_result, memory_meta = _run_framework_memory(
+            engine=memory_executed_engine,
+            action=action,
+            scope=scope,
+            bucket_id=bucket_id,
+            node_id=node.id,
+            message=message,
+            source_payload=source,
+        )
+        if not isinstance(memory_result, dict):
+            memory_result = {
+                "memory_state": {
+                    "scope": scope,
+                    "bucket_id": bucket_id,
+                    "entries": len(_memory_get_entries(bucket_id, limit=1000)),
+                    "action": action,
+                    "session_id": bucket_id,
+                }
+            }
+        memory_result["framework"] = memory_selected_engine
+        memory_result["executed_engine"] = memory_executed_engine
+        memory_result["runtime_mode"] = str(node_runtime.get("mode") or "native")
+        memory_result["framework_meta"] = memory_meta
+        return memory_result
+
+    if node_type == "frontier/guardrail":
+        runtime_info = execution_state.get("runtime_info") if isinstance(execution_state.get("runtime_info"), dict) else {}
+        by_port = incoming_by_port or {}
+        node_role = _infer_graph_node_runtime_role(
+            node,
+            node_type=node_type,
+            incoming_by_port=by_port,
+            execution_state=execution_state,
+        )
+        node_runtime = _resolve_node_runtime_engine(runtime_info, node_role)
+        guardrail_selected_engine = _normalize_runtime_engine(node_runtime.get("selected_engine") or "native")
+        guardrail_executed_engine = _normalize_runtime_engine(node_runtime.get("executed_engine") or "native")
+        candidates = _port_values(by_port, "candidate_output", "candidate", "data")
+        candidate = candidates[-1] if candidates else (incoming[-1] if incoming else {"response": run_input.get("message", "")})
+        candidate_payload = candidate.get("response") if isinstance(candidate, dict) and "response" in candidate else candidate
+        guardrail_config = node.config if isinstance(node.config, dict) else {}
+        guardrail_config, resolved_ruleset_id, ruleset_error = _resolve_guardrail_config(guardrail_config)
+        if ruleset_error == "not_found":
+            raise RuntimeError(f"Guardrail ruleset '{resolved_ruleset_id}' not found for node '{node.id}'")
+        if ruleset_error == "not_published":
+            raise RuntimeError(f"Guardrail ruleset '{resolved_ruleset_id}' is not published for node '{node.id}'")
+        stage = str(guardrail_config.get("stage") or "output")
+        evaluation, guardrail_meta = _run_framework_guardrail(
+            engine=guardrail_executed_engine,
+            candidate_payload=candidate_payload,
+            guardrail_config=guardrail_config,
+            stage=stage,
+        )
+
+        if evaluation["tripwire_triggered"] and evaluation["behavior"] == "raise_exception":
+            raise RuntimeError(f"{stage.capitalize()}GuardrailTripwireTriggered at node '{node.id}'")
+
+        if evaluation["tripwire_triggered"] and evaluation["behavior"] == "reject_content":
+            replacement = str(
+                guardrail_config.get("reject_message")
+                or "Content rejected by guardrail policy."
+            )
+            approved_output: Any = replacement
+        else:
+            approved_output = candidate_payload
+
+        return {
+            "approved_output": approved_output,
+            "approved": approved_output,
+            "violations": evaluation["output_info"]["issues"],
+            "flagged": evaluation["output_info"]["issues"],
+            "decision": {
+                "action": evaluation["behavior"],
+                "tripwire_triggered": evaluation["tripwire_triggered"],
+                "run_in_parallel": evaluation["output_info"]["run_in_parallel"],
+                "stage": stage,
+            },
+            "guardrail": {
+                "action": evaluation["behavior"],
+                "tripwire_triggered": evaluation["tripwire_triggered"],
+            },
+            "framework": guardrail_selected_engine,
+            "executed_engine": guardrail_executed_engine,
+            "runtime_mode": str(node_runtime.get("mode") or "native"),
+            "framework_meta": guardrail_meta,
+            "ruleset_id": resolved_ruleset_id,
+            "evaluation": evaluation,
+            "out": {"state": "completed"},
+        }
+
+    if node_type == "frontier/human-review":
+        runtime_info = execution_state.get("runtime_info") if isinstance(execution_state.get("runtime_info"), dict) else {}
+        by_port = incoming_by_port or {}
+        node_role = _infer_graph_node_runtime_role(
+            node,
+            node_type=node_type,
+            incoming_by_port=by_port,
+            execution_state=execution_state,
+        )
+        node_runtime = _resolve_node_runtime_engine(runtime_info, node_role)
+        review_selected_engine = _normalize_runtime_engine(node_runtime.get("selected_engine") or "native")
+        review_executed_engine = _normalize_runtime_engine(node_runtime.get("executed_engine") or "native")
+
+        candidates = _port_values(by_port, "candidate", "approved_output", "data")
+        candidate_payload = candidates[-1] if candidates else (incoming[-1] if incoming else {"message": message})
+        reviewer_group = str(node.config.get("reviewer_group") or "reviewers")
+        auto_approve = bool(node.config.get("auto_approve", True))
+
+        review_result, review_meta = _run_framework_human_review(
+            engine=review_executed_engine,
+            candidate_payload=candidate_payload,
+            reviewer_group=reviewer_group,
+            auto_approve=auto_approve,
+        )
+        if not isinstance(review_result, dict):
+            review_result = {
+                "approved": bool(auto_approve),
+                "rejected": False,
+                "feedback": "Auto-approved in test execution mode." if auto_approve else "Pending human approval.",
+                "reviewer_group": reviewer_group,
+                "candidate": candidate_payload,
+                "review_status": "auto_approved" if auto_approve else "pending_approval",
+            }
+        review_result["framework"] = review_selected_engine
+        review_result["executed_engine"] = review_executed_engine
+        review_result["runtime_mode"] = str(node_runtime.get("mode") or "native")
+        review_result["framework_meta"] = review_meta
+        return review_result
+
+    if node_type == "frontier/output":
+        by_port = incoming_by_port or {}
+        result_inputs = _port_values(by_port, "result", "data", "approved", "approved_output", "payload")
+        payload = result_inputs[-1] if result_inputs else (incoming[-1] if incoming else run_input)
+        return {
+            "published": {
+                "destination": node.config.get("destination", "artifact_store"),
+                "payload": payload,
+            }
+        }
+
+    return {
+        "result": {
+            "note": f"No executor implemented for {node_type}; passthrough result.",
+            "incoming": incoming,
+        }
+    }
+
+
+class InMemoryStore:
+    def __init__(self) -> None:
+        self.workflow_definitions: dict[str, WorkflowDefinition] = {
+            "44444444-4444-4444-8444-444444444444": WorkflowDefinition(
+                id="44444444-4444-4444-8444-444444444444",
+                name="Investor Outreach Pack",
+                description="Research, draft, guardrails, and approval-gated outreach workflow.",
+                version=4,
+                status="published",
+            ),
+            "77777777-7777-4777-8777-777777777777": WorkflowDefinition(
+                id="77777777-7777-4777-8777-777777777777",
+                name="Enterprise RFP Response",
+                description="Draft and validate RFP responses with compliance checks.",
+                version=1,
+                status="draft",
+            ),
+            "6d91d4fe-4cc5-48ab-bca6-d0364e1d2e71": WorkflowDefinition(
+                id="6d91d4fe-4cc5-48ab-bca6-d0364e1d2e71",
+                name="Founder Daily Operating Brief",
+                description="Automates a daily briefing with priorities, risks, and recommended next actions.",
+                version=1,
+                status="published",
+            ),
+            "3b3fc09f-b266-4755-aaf2-1906e6dc3402": WorkflowDefinition(
+                id="3b3fc09f-b266-4755-aaf2-1906e6dc3402",
+                name="Inbound Lead Qualification and Follow-up",
+                description="Scores inbound leads, drafts follow-up, and queues approval for high-impact outreach.",
+                version=1,
+                status="published",
+            ),
+            "1df577db-6cc4-46ad-9001-539f1cf9932b": WorkflowDefinition(
+                id="1df577db-6cc4-46ad-9001-539f1cf9932b",
+                name="Customer Interview to Product Insight",
+                description="Turns interview notes into prioritized product insights with guardrailed summaries.",
+                version=1,
+                status="published",
+            ),
+        }
+
+        seeded_agents = _load_seeded_agents_from_repo()
+        self.agent_definitions: dict[str, AgentDefinition] = seeded_agents or {
+            "88888888-8888-4888-8888-888888888888": AgentDefinition(
+                id="88888888-8888-4888-8888-888888888888",
+                name="Orchestration Agent",
+                version=1,
+                status="draft",
+                type="graph",
+            ),
+            "99999999-9999-4999-8999-999999999999": AgentDefinition(
+                id="99999999-9999-4999-8999-999999999999",
+                name="Market Intelligence Agent",
+                version=1,
+                status="draft",
+                type="graph",
+            ),
+        }
+
+        self.guardrail_rulesets: dict[str, GuardrailRuleSet] = {
+            "12121212-1212-4121-8121-121212121212": GuardrailRuleSet(
+                id="12121212-1212-4121-8121-121212121212",
+                name="Production Safety Baseline",
+                version=4,
+                status="published",
+                config_json={
+                    "stage": "output",
+                    "tripwire_action": "reject_content",
+                    "run_in_parallel": False,
+                    "blocked_keywords": ["password", "private_key", "access_token"],
+                    "detect_secrets": True,
+                    "signal_enforcement": "block_high",
+                    "detect_prompt_injection": True,
+                    "detect_pii": True,
+                    "detect_command_injection": True,
+                    "detect_exfiltration": True,
+                    "reject_message": "Blocked by production safety baseline policy.",
+                },
+            ),
+            "23232323-2323-4232-8232-232323232323": GuardrailRuleSet(
+                id="23232323-2323-4232-8232-232323232323",
+                name="PII & Secrets DLP",
+                version=1,
+                status="published",
+                config_json={
+                    "stage": "output",
+                    "tripwire_action": "reject_content",
+                    "run_in_parallel": False,
+                    "detect_secrets": True,
+                    "detect_pii": True,
+                    "signal_enforcement": "block_high",
+                    "reject_message": "Blocked by DLP guardrail (PII or secret exposure risk).",
+                },
+            ),
+            "34343434-3434-4343-8343-343434343434": GuardrailRuleSet(
+                id="34343434-3434-4343-8343-343434343434",
+                name="Prompt Injection Defense",
+                version=1,
+                status="published",
+                config_json={
+                    "stage": "input",
+                    "tripwire_action": "raise_exception",
+                    "run_in_parallel": True,
+                    "detect_prompt_injection": True,
+                    "signal_enforcement": "raise_high",
+                    "blocked_keywords": ["ignore previous instructions", "reveal system prompt"],
+                },
+            ),
+            "45454545-4545-4454-8454-454545454545": GuardrailRuleSet(
+                id="45454545-4545-4454-8454-454545454545",
+                name="Tool Execution Safety",
+                version=1,
+                status="published",
+                config_json={
+                    "stage": "tool_input",
+                    "tripwire_action": "raise_exception",
+                    "run_in_parallel": True,
+                    "detect_command_injection": True,
+                    "detect_exfiltration": True,
+                    "blocked_keywords": ["rm -rf", "drop table", "sudo"],
+                },
+            ),
+        }
+
+        self.platform_settings = PlatformSettings(
+            local_only_mode=True,
+            mask_secrets_in_events=True,
+            allow_direct_openai_without_agent=True,
+            require_human_approval=False,
+            default_guardrail_ruleset_id="12121212-1212-4121-8121-121212121212",
+            global_blocked_keywords=[],
+            collaboration_max_agents=8,
+            enforce_egress_allowlist=True,
+            allowed_egress_hosts=["localhost", "127.0.0.1", "::1"],
+            allowed_mcp_server_urls=["http://localhost:7071/mcp"],
+            allowed_retrieval_sources=["kb://default"],
+            enforce_local_network_only=True,
+            allow_local_network_hostnames=["localhost", ".local"],
+            mcp_require_local_server=True,
+            retrieval_require_local_source_url=True,
+            a2a_require_signed_messages=True,
+            a2a_trusted_subjects=["orchestrator"],
+            a2a_replay_protection=True,
+            require_human_approval_for_high_risk_tools=True,
+            high_risk_tool_patterns=["delete", "send", "execute", "write", "admin"],
+            max_tool_calls_per_run=20,
+            max_retrieval_items=8,
+        )
+
+        self.runs: dict[str, WorkflowRunSummary] = {
+            "11111111-1111-4111-8111-111111111111": WorkflowRunSummary(
+                id="11111111-1111-4111-8111-111111111111",
+                title="Investor Pack — Andreessen Horowitz — Jane Doe",
+                status="Running",
+                updatedAt="2m ago",
+                progressLabel="Step 3/6",
+            )
+        }
+
+        self.run_events: dict[str, list[WorkflowRunEvent]] = {
+            "11111111-1111-4111-8111-111111111111": [
+                WorkflowRunEvent(
+                    id="evt-1",
+                    type="user_message",
+                    title="Intake",
+                    summary="Target enterprise design partners in regulated sectors.",
+                    createdAt="09:11",
+                ),
+                WorkflowRunEvent(
+                    id="evt-2",
+                    type="approval_required",
+                    title="Needs approval",
+                    summary="Send/export action gated until artifact approval.",
+                    createdAt="09:20",
+                ),
+            ]
+        }
+        self.run_details: dict[str, dict[str, Any]] = {
+            "11111111-1111-4111-8111-111111111111": {
+                "artifacts": [
+                    {"id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1", "name": "Investor Brief", "status": "Needs Review", "version": 2},
+                    {"id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa2", "name": "Email Sequence", "status": "Draft", "version": 1},
+                ],
+                "status": "Running",
+                "graph": {
+                    "nodes": [
+                        {"id": "start", "title": "Intake", "type": "trigger", "x": 80, "y": 80},
+                        {"id": "orchestrator", "title": "Orchestrator", "type": "agent", "x": 280, "y": 80},
+                        {"id": "out", "title": "Artifact", "type": "output", "x": 520, "y": 80},
+                    ],
+                    "links": [
+                        {"from": "start", "to": "orchestrator"},
+                        {"from": "orchestrator", "to": "out"},
+                    ],
+                },
+                "agent_traces": [],
+                "approvals": {
+                    "required": True,
+                    "pending": True,
+                    "artifact_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1",
+                    "version": 2,
+                    "scope": "final send/export",
+                },
+            }
+        }
+
+        self.artifacts: list[ArtifactSummary] = [
+            ArtifactSummary(id="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1", name="Investor Brief", status="Needs Review", version=2),
+            ArtifactSummary(id="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa2", name="Email Sequence", status="Draft", version=1),
+        ]
+
+        self.inbox: list[InboxItem] = [
+            InboxItem(
+                id="bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb1",
+                runId="11111111-1111-4111-8111-111111111111",
+                runName="Investor Pack — Andreessen Horowitz — Jane Doe",
+                artifactType="Investor Brief",
+                reason="Approval required before export",
+                queue="Needs Approval",
+            )
+        ]
+        self.memory_by_session: dict[str, list[dict[str, Any]]] = defaultdict(list)
+
+        self.integrations: dict[str, IntegrationDefinition] = {
+            "int-http-001": IntegrationDefinition(
+                id="int-http-001",
+                name="Default Webhook Endpoint",
+                type="http",
+                status="draft",
+                base_url="http://localhost:9000/webhooks/frontier",
+                auth_type="none",
+                secret_ref="",
+                metadata_json={"purpose": "workflow notifications"},
+            ),
+            "int-db-001": IntegrationDefinition(
+                id="int-db-001",
+                name="PostgreSQL Operational DB",
+                type="database",
+                status="configured",
+                base_url="postgresql://frontier@postgres:5432/frontier",
+                auth_type="basic",
+                secret_ref="secret/postgres/frontier",
+                metadata_json={"schema": "public"},
+            ),
+        }
+
+        self.agent_templates: dict[str, AgentTemplate] = {
+            "tpl-agent-research": AgentTemplate(
+                id="tpl-agent-research",
+                name="Research Analyst Agent",
+                description="Template tuned for evidence-first research synthesis with source capture.",
+                category="general",
+                config_json={
+                    "model": "gpt-5.2",
+                    "temperature": 0.2,
+                    "system_prompt": "You are a research analyst. Be accurate, cite assumptions, and summarize clearly.",
+                    "required_nodes": ["trigger", "prompt", "agent", "retrieval", "output"],
+                },
+            ),
+            "tpl-agent-security": AgentTemplate(
+                id="tpl-agent-security",
+                name="Security Triage Agent",
+                description="Template for triaging security findings with strict guardrails and human review.",
+                category="security",
+                config_json={
+                    "model": "gpt-5.2",
+                    "temperature": 0.1,
+                    "system_prompt": "You are a security triage specialist. Prioritize risk, impact, and containment actions.",
+                    "required_nodes": ["trigger", "agent", "guardrail", "human-review", "output"],
+                },
+            ),
+        }
+
+        self.playbooks: dict[str, PlaybookDefinition] = {
+            "pbk-go-to-market": PlaybookDefinition(
+                id="pbk-go-to-market",
+                name="Go-To-Market Launch",
+                description="Prepackaged GTM workflow with research, content, and compliance gating.",
+                category="go_to_market",
+                graph_json={
+                    "nodes": [
+                        {"id": "trigger", "title": "Trigger", "type": "trigger", "x": 70, "y": 90},
+                        {"id": "prompt", "title": "System Prompt", "type": "prompt", "x": 320, "y": 90},
+                        {"id": "agent", "title": "Agent Runtime", "type": "agent", "x": 610, "y": 90},
+                        {"id": "retrieval", "title": "Retrieval", "type": "retrieval", "x": 870, "y": 90},
+                        {"id": "guardrail", "title": "Guardrail", "type": "guardrail", "x": 1120, "y": 90},
+                        {"id": "output", "title": "Output", "type": "output", "x": 1380, "y": 90},
+                    ],
+                    "links": [
+                        {"from": "trigger", "to": "agent"},
+                        {"from": "prompt", "to": "agent", "from_port": "prompt", "to_port": "prompt"},
+                        {"from": "agent", "to": "retrieval"},
+                        {"from": "retrieval", "to": "guardrail"},
+                        {"from": "guardrail", "to": "output"},
+                    ],
+                },
+                metadata_json={"template_version": 1, "recommended_team": ["marketing", "product", "compliance"]},
+            ),
+            "pbk-incident-response": PlaybookDefinition(
+                id="pbk-incident-response",
+                name="Incident Response",
+                description="Security incident flow with memory context, guardrails, and approval checkpoints.",
+                category="security",
+                graph_json={
+                    "nodes": [
+                        {"id": "trigger", "title": "Trigger", "type": "trigger", "x": 70, "y": 120},
+                        {"id": "memory", "title": "Memory", "type": "memory", "x": 330, "y": 120},
+                        {"id": "agent", "title": "Agent Runtime", "type": "agent", "x": 620, "y": 120},
+                        {"id": "guardrail", "title": "Guardrail", "type": "guardrail", "x": 890, "y": 120},
+                        {"id": "review", "title": "Human Review", "type": "human-review", "x": 1150, "y": 120},
+                        {"id": "output", "title": "Output", "type": "output", "x": 1410, "y": 120},
+                    ],
+                    "links": [
+                        {"from": "trigger", "to": "memory"},
+                        {"from": "memory", "to": "agent"},
+                        {"from": "agent", "to": "guardrail"},
+                        {"from": "guardrail", "to": "review"},
+                        {"from": "review", "to": "output"},
+                    ],
+                },
+                metadata_json={"template_version": 1, "recommended_team": ["secops", "platform", "legal"]},
+            ),
+            "pbk-founder-daily-brief": PlaybookDefinition(
+                id="pbk-founder-daily-brief",
+                name="Founder Daily Brief",
+                description="Daily founder briefing: retrieve context, summarize priorities, and publish action plan.",
+                category="operations",
+                graph_json={
+                    "nodes": [
+                        {"id": "trigger", "title": "Trigger", "type": "trigger", "x": 70, "y": 100, "config": {"trigger_mode": "schedule", "schedule_preset": "daily", "schedule_time": "08:30"}},
+                        {"id": "prompt", "title": "Brief Prompt", "type": "prompt", "x": 310, "y": 100, "config": {"system_prompt_text": "Summarize today's priorities, risks, and recommended actions for founders."}},
+                        {"id": "retrieval", "title": "Retrieve Signals", "type": "retrieval", "x": 560, "y": 100, "config": {"source_type": "hybrid", "source_id": "kb://default", "top_k": 5}},
+                        {"id": "agent", "title": "Strategy Agent", "type": "agent", "x": 820, "y": 100, "config": {"agent_id": "ceo-strategy-agent", "model": "gpt-5.2", "temperature": 0.2}},
+                        {"id": "guard", "title": "Guardrail", "type": "guardrail", "x": 1070, "y": 100, "config": {"stage": "output", "tripwire_action": "allow"}},
+                        {"id": "output", "title": "Publish Brief", "type": "output", "x": 1320, "y": 100, "config": {"destination": "artifact_store", "format": "markdown"}},
+                    ],
+                    "links": [
+                        {"from": "trigger", "to": "retrieval", "from_port": "payload", "to_port": "query"},
+                        {"from": "prompt", "to": "agent", "from_port": "prompt", "to_port": "prompt"},
+                        {"from": "retrieval", "to": "agent", "from_port": "grounding_context", "to_port": "retrieval"},
+                        {"from": "agent", "to": "guard", "from_port": "response", "to_port": "candidate_output"},
+                        {"from": "guard", "to": "output", "from_port": "approved_output", "to_port": "result"},
+                    ],
+                },
+                metadata_json={"template_version": 1, "recommended_team": ["founders", "ops"], "automation_goal": "daily-prioritization"},
+            ),
+            "pbk-lead-qual-and-followup": PlaybookDefinition(
+                id="pbk-lead-qual-and-followup",
+                name="Lead Qualification + Follow-up",
+                description="Automates lead triage, draft messaging, and approval-gated outreach.",
+                category="go_to_market",
+                graph_json={
+                    "nodes": [
+                        {"id": "trigger", "title": "Trigger", "type": "trigger", "x": 70, "y": 160, "config": {"trigger_mode": "api_event", "api_event_name": "lead.created"}},
+                        {"id": "memory", "title": "Memory", "type": "memory", "x": 320, "y": 160, "config": {"action": "append", "scope": "tenant"}},
+                        {"id": "retrieval", "title": "Retrieve Context", "type": "retrieval", "x": 560, "y": 160, "config": {"source_type": "hybrid", "source_id": "kb://default", "top_k": 4}},
+                        {"id": "agent", "title": "Sales Agent", "type": "agent", "x": 820, "y": 160, "config": {"agent_id": "sales-agent", "model": "gpt-5.2", "temperature": 0.3}},
+                        {"id": "review", "title": "Human Review", "type": "human-review", "x": 1060, "y": 160, "config": {"reviewer_group": "sales"}},
+                        {"id": "output", "title": "Output", "type": "output", "x": 1300, "y": 160, "config": {"destination": "artifact_store", "format": "json"}},
+                    ],
+                    "links": [
+                        {"from": "trigger", "to": "memory", "from_port": "payload", "to_port": "write_payload"},
+                        {"from": "trigger", "to": "retrieval", "from_port": "payload", "to_port": "query"},
+                        {"from": "memory", "to": "agent", "from_port": "context", "to_port": "memory"},
+                        {"from": "retrieval", "to": "agent", "from_port": "grounding_context", "to_port": "retrieval"},
+                        {"from": "agent", "to": "review", "from_port": "response", "to_port": "candidate"},
+                        {"from": "review", "to": "output", "from_port": "approved", "to_port": "result"},
+                    ],
+                },
+                metadata_json={"template_version": 1, "recommended_team": ["sales", "founders"], "automation_goal": "faster-lead-response"},
+            ),
+            "pbk-customer-insight-loop": PlaybookDefinition(
+                id="pbk-customer-insight-loop",
+                name="Customer Insight Loop",
+                description="Converts interview notes into prioritized product insights and founder-ready summaries.",
+                category="operations",
+                graph_json={
+                    "nodes": [
+                        {"id": "trigger", "title": "Trigger", "type": "trigger", "x": 70, "y": 220, "config": {"trigger_mode": "api_event", "api_event_name": "customer.interview.logged"}},
+                        {"id": "prompt", "title": "Prompt", "type": "prompt", "x": 300, "y": 220, "config": {"system_prompt_text": "Extract pains, feature requests, and urgency with concise rationale."}},
+                        {"id": "agent", "title": "Product Agent", "type": "agent", "x": 550, "y": 220, "config": {"agent_id": "product-owner-agent", "model": "gpt-5.2", "temperature": 0.2}},
+                        {"id": "guard", "title": "Guardrail", "type": "guardrail", "x": 790, "y": 220, "config": {"stage": "output", "tripwire_action": "allow"}},
+                        {"id": "manifold", "title": "Manifold", "type": "manifold", "x": 1030, "y": 220, "config": {"logic_mode": "OR", "min_required": 1}},
+                        {"id": "output", "title": "Output", "type": "output", "x": 1270, "y": 220, "config": {"destination": "artifact_store", "format": "markdown"}},
+                    ],
+                    "links": [
+                        {"from": "prompt", "to": "agent", "from_port": "prompt", "to_port": "prompt"},
+                        {"from": "agent", "to": "guard", "from_port": "response", "to_port": "candidate_output"},
+                        {"from": "guard", "to": "manifold", "from_port": "approved_output", "to_port": "in"},
+                        {"from": "agent", "to": "manifold", "from_port": "response", "to_port": "in"},
+                        {"from": "manifold", "to": "output", "from_port": "payload", "to_port": "result"},
+                    ],
+                },
+                metadata_json={"template_version": 1, "recommended_team": ["product", "founders", "customer-success"], "automation_goal": "voice-of-customer-to-roadmap"},
+            ),
+            "pbk-investor-update-autopilot": PlaybookDefinition(
+                id="pbk-investor-update-autopilot",
+                name="Investor Update Autopilot",
+                description="Compiles weekly metrics and drafts investor updates for founder review and send.",
+                category="operations",
+                graph_json={
+                    "nodes": [
+                        {"id": "trigger", "title": "Trigger", "type": "trigger", "x": 70, "y": 280, "config": {"trigger_mode": "schedule", "schedule_preset": "weekly", "schedule_day_of_week": "1", "schedule_time": "08:00"}},
+                        {"id": "retrieval", "title": "Retrieve Metrics", "type": "retrieval", "x": 320, "y": 280, "config": {"source_type": "hybrid", "source_id": "kb://default", "top_k": 6}},
+                        {"id": "agent", "title": "CFO Agent", "type": "agent", "x": 560, "y": 280, "config": {"agent_id": "cfo-agent", "model": "gpt-5.2", "temperature": 0.1}},
+                        {"id": "tool", "title": "Tool", "type": "tool-call", "x": 810, "y": 280, "config": {"tool_id": "tool/http", "method": "POST"}},
+                        {"id": "review", "title": "Human Review", "type": "human-review", "x": 1060, "y": 280, "config": {"reviewer_group": "founders"}},
+                        {"id": "output", "title": "Output", "type": "output", "x": 1310, "y": 280, "config": {"destination": "artifact_store", "format": "markdown"}},
+                    ],
+                    "links": [
+                        {"from": "trigger", "to": "retrieval", "from_port": "payload", "to_port": "query"},
+                        {"from": "retrieval", "to": "agent", "from_port": "grounding_context", "to_port": "retrieval"},
+                        {"from": "agent", "to": "tool", "from_port": "tool_request", "to_port": "request"},
+                        {"from": "tool", "to": "review", "from_port": "result", "to_port": "candidate"},
+                        {"from": "review", "to": "output", "from_port": "approved", "to_port": "result"},
+                    ],
+                },
+                metadata_json={"template_version": 1, "recommended_team": ["founders", "finance"], "automation_goal": "weekly-investor-comms"},
+            ),
+            "pbk-hiring-pipeline-assistant": PlaybookDefinition(
+                id="pbk-hiring-pipeline-assistant",
+                name="Hiring Pipeline Assistant",
+                description="Triages inbound candidates, drafts interview packets, and routes approvals.",
+                category="operations",
+                graph_json={
+                    "nodes": [
+                        {"id": "trigger", "title": "Trigger", "type": "trigger", "x": 70, "y": 340, "config": {"trigger_mode": "api_event", "api_event_name": "candidate.applied"}},
+                        {"id": "prompt", "title": "Prompt", "type": "prompt", "x": 320, "y": 340, "config": {"system_prompt_text": "Evaluate candidate fit by role criteria and output concise interview guidance."}},
+                        {"id": "agent", "title": "People Ops Agent", "type": "agent", "x": 570, "y": 340, "config": {"agent_id": "people-ops-agent", "model": "gpt-5.2", "temperature": 0.2}},
+                        {"id": "guard", "title": "Guardrail", "type": "guardrail", "x": 820, "y": 340, "config": {"stage": "output", "tripwire_action": "allow"}},
+                        {"id": "review", "title": "Human Review", "type": "human-review", "x": 1060, "y": 340, "config": {"reviewer_group": "hiring-managers"}},
+                        {"id": "output", "title": "Output", "type": "output", "x": 1310, "y": 340, "config": {"destination": "artifact_store", "format": "json"}},
+                    ],
+                    "links": [
+                        {"from": "prompt", "to": "agent", "from_port": "prompt", "to_port": "prompt"},
+                        {"from": "agent", "to": "guard", "from_port": "response", "to_port": "candidate_output"},
+                        {"from": "guard", "to": "review", "from_port": "approved_output", "to_port": "candidate"},
+                        {"from": "review", "to": "output", "from_port": "approved", "to_port": "result"},
+                    ],
+                },
+                metadata_json={"template_version": 1, "recommended_team": ["people-ops", "founders"], "automation_goal": "faster-hiring-decisions"},
+            ),
+        }
+
+        self.collaboration_sessions: dict[str, CollaborationSession] = {}
+        self.audit_events: list[AuditEvent] = []
+        self.a2a_seen_nonces: dict[str, str] = {}
+
+
+store = InMemoryStore()
+app = FastAPI(title="Lattix xFrontier Backend", version="0.1.0")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _extract_actor_from_request(request: Request | None, payload: dict[str, Any] | None = None) -> str:
+    payload = payload if isinstance(payload, dict) else {}
+    headers = request.headers if request is not None else {}
+    actor = (
+        str(headers.get("x-frontier-actor") or "").strip()
+        or str(headers.get("x-user-id") or "").strip()
+        or str(payload.get("actor_user_id") or "").strip()
+        or str(payload.get("user_id") or "").strip()
+        or "anonymous"
+    )
+    return actor
+
+
+def _append_audit_event(action: str, actor: str, outcome: Literal["allowed", "blocked", "error"], metadata: dict[str, Any] | None = None) -> None:
+    store.audit_events.insert(
+        0,
+        AuditEvent(
+            id=str(uuid4()),
+            action=action,
+            actor=str(actor or "anonymous"),
+            outcome=outcome,
+            created_at=_now_iso(),
+            metadata=metadata if isinstance(metadata, dict) else {},
+        ),
+    )
+    if len(store.audit_events) > 2000:
+        store.audit_events = store.audit_events[:2000]
+
+
+def _enforce_request_authn(request: Request | None, *, payload: dict[str, Any] | None = None, action: str) -> str:
+    actor = _extract_actor_from_request(request, payload=payload)
+    platform = store.platform_settings
+
+    if not platform.require_authenticated_requests:
+        return actor
+
+    if request is None:
+        _append_audit_event(action, actor, "blocked", {"reason": "missing_request_context"})
+        raise HTTPException(status_code=401, detail="Request context required for authenticated operation")
+
+    configured_token = str(os.getenv("FRONTIER_API_BEARER_TOKEN", "")).strip()
+    auth_header = str(request.headers.get("authorization") or "").strip()
+    bearer_prefix = "bearer "
+    provided_token = auth_header[len(bearer_prefix):].strip() if auth_header.lower().startswith(bearer_prefix) else ""
+
+    if configured_token:
+        if provided_token != configured_token:
+            _append_audit_event(action, actor, "blocked", {"reason": "invalid_bearer_token"})
+            raise HTTPException(status_code=401, detail="Invalid bearer token")
+    elif actor == "anonymous":
+        _append_audit_event(action, actor, "blocked", {"reason": "anonymous_actor"})
+        raise HTTPException(status_code=401, detail="Authenticated actor header required (x-frontier-actor)")
+
+    if platform.a2a_require_signed_messages and platform.require_a2a_runtime_headers:
+        subject = str(request.headers.get("x-frontier-subject") or "").strip()
+        signature = str(request.headers.get("x-frontier-signature") or "").strip()
+        nonce = str(request.headers.get("x-frontier-nonce") or "").strip()
+
+        if not subject or subject not in platform.a2a_trusted_subjects:
+            _append_audit_event(action, actor, "blocked", {"reason": "untrusted_subject", "subject": subject})
+            raise HTTPException(status_code=401, detail="Untrusted or missing A2A subject")
+        if not signature:
+            _append_audit_event(action, actor, "blocked", {"reason": "missing_signature"})
+            raise HTTPException(status_code=401, detail="Missing A2A signature header")
+
+        if platform.a2a_replay_protection:
+            if not nonce:
+                _append_audit_event(action, actor, "blocked", {"reason": "missing_nonce"})
+                raise HTTPException(status_code=401, detail="Missing A2A nonce header")
+            if nonce in store.a2a_seen_nonces:
+                _append_audit_event(action, actor, "blocked", {"reason": "nonce_replay", "nonce": nonce})
+                raise HTTPException(status_code=409, detail="A2A nonce replay detected")
+            store.a2a_seen_nonces[nonce] = _now_iso()
+            if len(store.a2a_seen_nonces) > 5000:
+                items = list(store.a2a_seen_nonces.items())[:5000]
+                store.a2a_seen_nonces = dict(items)
+
+    return actor
+
+
+def _enforce_emergency_write_policy(action: str, actor: str) -> None:
+    if store.platform_settings.emergency_read_only_mode:
+        _append_audit_event(action, actor, "blocked", {"reason": "emergency_read_only_mode"})
+        raise HTTPException(status_code=423, detail="Platform is in emergency read-only mode")
+
+
+def _collab_session_key(entity_type: str, entity_id: str) -> str:
+    return f"{entity_type}:{entity_id}"
+
+
+def _upsert_collaboration_participant(
+    participants: list[CollaborationParticipant],
+    user_id: str,
+    display_name: str,
+    role: Literal["owner", "editor", "viewer"],
+) -> list[CollaborationParticipant]:
+    next_participants: list[CollaborationParticipant] = []
+    found = False
+    for participant in participants:
+        if participant.user_id == user_id:
+            found = True
+            next_participants.append(
+                CollaborationParticipant(
+                    user_id=user_id,
+                    display_name=display_name or participant.display_name,
+                    role=role,
+                    last_seen_at=_now_iso(),
+                )
+            )
+        else:
+            next_participants.append(participant)
+
+    if not found:
+        next_participants.append(
+            CollaborationParticipant(
+                user_id=user_id,
+                display_name=display_name or user_id,
+                role=role,
+                last_seen_at=_now_iso(),
+            )
+        )
+    return next_participants
+
+
+def _resolve_entity_graph(entity_type: str, entity_id: str) -> dict[str, Any]:
+    if entity_type == "workflow":
+        item = store.workflow_definitions.get(entity_id)
+        if item and isinstance(item.graph_json, dict):
+            return item.graph_json
+    if entity_type == "agent":
+        item = store.agent_definitions.get(entity_id)
+        config = item.config_json if item and isinstance(item.config_json, dict) else {}
+        graph = config.get("graph_json") if isinstance(config.get("graph_json"), dict) else {}
+        if isinstance(graph, dict):
+            return graph
+    return {"nodes": [], "links": []}
+
+
+def _estimate_tokens_from_text(text: str) -> int:
+    normalized = str(text or "").strip()
+    if not normalized:
+        return 0
+    return max(1, len(normalized) // 4)
+
+
+def _build_observability_trace(run_id: str) -> ObservabilityRunTrace:
+    run_summary = store.runs.get(run_id)
+    run_detail = store.run_details.get(run_id, {}) if isinstance(store.run_details.get(run_id), dict) else {}
+    events = store.run_events.get(run_id, [])
+
+    graph = run_detail.get("graph") if isinstance(run_detail.get("graph"), dict) else {}
+    nodes = graph.get("nodes") if isinstance(graph.get("nodes"), list) else []
+    links = graph.get("links") if isinstance(graph.get("links"), list) else []
+
+    response_text = str(run_detail.get("response_text") or "")
+    token_estimate = _estimate_tokens_from_text(response_text)
+    cost_estimate_usd = round(token_estimate * 0.000002, 6) if token_estimate > 0 else 0.0
+
+    stage_counts: dict[str, int] = defaultdict(int)
+    for event in events:
+        stage_counts[event.type] += 1
+
+    latency_by_stage_ms = {
+        "ingest": 40 + stage_counts.get("user_message", 0) * 15,
+        "model": 120 + stage_counts.get("agent_message", 0) * 55,
+        "guardrail": 35 + stage_counts.get("guardrail_result", 0) * 25,
+        "artifact": 20 + stage_counts.get("artifact_created", 0) * 20,
+    }
+
+    duration_ms = sum(latency_by_stage_ms.values())
+    status = run_summary.status if run_summary else str(run_detail.get("status") or "Unknown")
+
+    return ObservabilityRunTrace(
+        run_id=run_id,
+        status=status,
+        event_count=len(events),
+        node_count=len(nodes),
+        edge_count=len(links),
+        duration_ms=duration_ms,
+        token_estimate=token_estimate,
+        cost_estimate_usd=cost_estimate_usd,
+        latency_by_stage_ms=latency_by_stage_ms,
+    )
+
+
+def _parse_iso_datetime(value: str) -> datetime | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _build_atf_alignment_report() -> dict[str, Any]:
+    platform = store.platform_settings
+    now = datetime.now(timezone.utc)
+    cutoff = now - timedelta(hours=24)
+
+    recent_audit = []
+    for event in store.audit_events:
+        created = _parse_iso_datetime(event.created_at)
+        if created is None or created < cutoff:
+            continue
+        recent_audit.append(event)
+
+    allowed_count = len([event for event in recent_audit if event.outcome == "allowed"])
+    blocked_count = len([event for event in recent_audit if event.outcome == "blocked"])
+    error_count = len([event for event in recent_audit if event.outcome == "error"])
+
+    pillars = {
+        "identity": {
+            "status": "strong" if platform.require_authenticated_requests else "partial",
+            "controls": {
+                "require_authenticated_requests": platform.require_authenticated_requests,
+                "a2a_require_signed_messages": platform.a2a_require_signed_messages,
+                "require_a2a_runtime_headers": platform.require_a2a_runtime_headers,
+                "a2a_replay_protection": platform.a2a_replay_protection,
+                "trusted_subject_count": len(platform.a2a_trusted_subjects),
+            },
+            "gaps": [] if platform.require_authenticated_requests else ["Enable require_authenticated_requests for strong API identity assurance"],
+        },
+        "behavior_monitoring": {
+            "status": "strong",
+            "controls": {
+                "audit_events_available": True,
+                "observability_dashboard_available": True,
+                "foss_guardrail_signals_enabled": platform.enable_foss_guardrail_signals,
+            },
+            "gaps": [],
+        },
+        "data_governance": {
+            "status": "strong" if platform.mask_secrets_in_events else "partial",
+            "controls": {
+                "mask_secrets_in_events": platform.mask_secrets_in_events,
+                "global_blocked_keywords": len(platform.global_blocked_keywords),
+            },
+            "gaps": [] if platform.mask_secrets_in_events else ["Enable mask_secrets_in_events to reduce accidental sensitive data exposure"],
+        },
+        "segmentation": {
+            "status": "strong" if platform.enforce_local_network_only and platform.enforce_egress_allowlist else "partial",
+            "controls": {
+                "enforce_egress_allowlist": platform.enforce_egress_allowlist,
+                "enforce_local_network_only": platform.enforce_local_network_only,
+                "mcp_require_local_server": platform.mcp_require_local_server,
+                "retrieval_require_local_source_url": platform.retrieval_require_local_source_url,
+            },
+            "gaps": [] if platform.enforce_local_network_only and platform.enforce_egress_allowlist else ["Enable both local-network and egress allowlist controls for stronger segmentation"],
+        },
+        "incident_response": {
+            "status": "strong" if (platform.emergency_read_only_mode or platform.block_new_runs or platform.block_graph_runs) else "partial",
+            "controls": {
+                "emergency_read_only_mode": platform.emergency_read_only_mode,
+                "block_new_runs": platform.block_new_runs,
+                "block_graph_runs": platform.block_graph_runs,
+                "block_tool_calls": platform.block_tool_calls,
+                "block_retrieval_calls": platform.block_retrieval_calls,
+            },
+            "gaps": [] if (platform.emergency_read_only_mode or platform.block_new_runs or platform.block_graph_runs) else ["Incident containment controls are available but currently not enabled"],
+        },
+    }
+
+    strong_count = len([item for item in pillars.values() if str(item.get("status")) == "strong"])
+    coverage_percent = int(round((strong_count / 5) * 100))
+    maturity = "principal" if strong_count == 5 else "senior" if strong_count >= 4 else "junior" if strong_count >= 2 else "intern"
+
+    return {
+        "generated_at": now.isoformat(),
+        "framework": "CSA Agentic Trust Framework",
+        "coverage_percent": coverage_percent,
+        "maturity_estimate": maturity,
+        "pillars": pillars,
+        "evidence": {
+            "audit_window_hours": 24,
+            "audit_event_count_24h": len(recent_audit),
+            "audit_allowed_24h": allowed_count,
+            "audit_blocked_24h": blocked_count,
+            "audit_error_24h": error_count,
+            "total_audit_events": len(store.audit_events),
+            "run_count_total": len(store.runs),
+        },
+    }
+
+
+def _upsert_artifact_summary(artifact: ArtifactSummary) -> None:
+    for index, existing in enumerate(store.artifacts):
+        if existing.id == artifact.id:
+            store.artifacts[index] = artifact
+            return
+    store.artifacts.insert(0, artifact)
+
+
+def _upsert_generated_artifact_summaries(artifacts: list[GeneratedCodeArtifact]) -> None:
+    for artifact in artifacts:
+        _upsert_artifact_summary(
+            ArtifactSummary(
+                id=artifact.id,
+                name=artifact.name,
+                status=artifact.status,
+                version=artifact.version,
+            )
+        )
+
+
+def _serialize_store_state() -> dict[str, Any]:
+    return {
+        "workflow_definitions": [item.model_dump() for item in store.workflow_definitions.values()],
+        "agent_definitions": [item.model_dump() for item in store.agent_definitions.values()],
+        "guardrail_rulesets": [item.model_dump() for item in store.guardrail_rulesets.values()],
+        "runs": [item.model_dump() for item in store.runs.values()],
+        "run_events": {run_id: [event.model_dump() for event in events] for run_id, events in store.run_events.items()},
+        "run_details": store.run_details,
+        "artifacts": [item.model_dump() for item in store.artifacts],
+        "inbox": [item.model_dump() for item in store.inbox],
+        "memory_by_session": dict(store.memory_by_session),
+        "platform_settings": store.platform_settings.model_dump(),
+        "integrations": [item.model_dump() for item in store.integrations.values()],
+        "agent_templates": [item.model_dump() for item in store.agent_templates.values()],
+        "playbooks": [item.model_dump() for item in store.playbooks.values()],
+        "collaboration_sessions": [item.model_dump() for item in store.collaboration_sessions.values()],
+        "audit_events": [item.model_dump() for item in store.audit_events],
+        "a2a_seen_nonces": store.a2a_seen_nonces,
+    }
+
+
+def _apply_store_state(payload: dict[str, Any]) -> None:
+    if not isinstance(payload, dict):
+        return
+
+    workflow_defs = payload.get("workflow_definitions")
+    if isinstance(workflow_defs, list):
+        store.workflow_definitions = {}
+        for item in workflow_defs:
+            try:
+                model = WorkflowDefinition.model_validate(item)
+                store.workflow_definitions[model.id] = model
+            except Exception:  # noqa: BLE001
+                continue
+
+    agent_defs = payload.get("agent_definitions")
+    if isinstance(agent_defs, list):
+        store.agent_definitions = {}
+        for item in agent_defs:
+            try:
+                model = AgentDefinition.model_validate(item)
+                model.config_json = _canonicalize_agent_config(
+                    model.config_json if isinstance(model.config_json, dict) else {},
+                    agent_id=model.id,
+                    agent_name=model.name,
+                    source_agent_id=str((model.config_json or {}).get("source_agent_id") or model.id) if isinstance(model.config_json, dict) else model.id,
+                    system_prompt=str((model.config_json or {}).get("system_prompt") or "") if isinstance(model.config_json, dict) else "",
+                    model_defaults=(model.config_json or {}).get("model_defaults") if isinstance(model.config_json, dict) and isinstance((model.config_json or {}).get("model_defaults"), dict) else None,
+                    tags=_normalize_text_list((model.config_json or {}).get("tags")) if isinstance(model.config_json, dict) else None,
+                    capabilities=_normalize_text_list((model.config_json or {}).get("capabilities")) if isinstance(model.config_json, dict) else None,
+                    owners=_normalize_text_list((model.config_json or {}).get("owners")) if isinstance(model.config_json, dict) else None,
+                    tools=(model.config_json or {}).get("tools") if isinstance(model.config_json, dict) and isinstance((model.config_json or {}).get("tools"), list) else None,
+                    seed_source=str((model.config_json or {}).get("seed_source") or "") if isinstance(model.config_json, dict) else None,
+                    prompt_file=str((model.config_json or {}).get("prompt_file") or "") if isinstance(model.config_json, dict) else None,
+                    url_manifest=str((model.config_json or {}).get("url_manifest") or "") if isinstance(model.config_json, dict) else None,
+                )
+                model.type = "graph"
+                store.agent_definitions[model.id] = model
+            except Exception:  # noqa: BLE001
+                continue
+
+    guardrail_defs = payload.get("guardrail_rulesets")
+    if isinstance(guardrail_defs, list):
+        store.guardrail_rulesets = {}
+        for item in guardrail_defs:
+            try:
+                model = GuardrailRuleSet.model_validate(item)
+                store.guardrail_rulesets[model.id] = model
+            except Exception:  # noqa: BLE001
+                continue
+
+    runs_payload = payload.get("runs")
+    if isinstance(runs_payload, list):
+        store.runs = {}
+        for item in runs_payload:
+            try:
+                model = WorkflowRunSummary.model_validate(item)
+                store.runs[model.id] = model
+            except Exception:  # noqa: BLE001
+                continue
+
+    run_events_payload = payload.get("run_events")
+    if isinstance(run_events_payload, dict):
+        hydrated_events: dict[str, list[WorkflowRunEvent]] = {}
+        for run_id, events in run_events_payload.items():
+            if not isinstance(events, list):
+                continue
+            hydrated_events[str(run_id)] = []
+            for event in events:
+                try:
+                    hydrated_events[str(run_id)].append(WorkflowRunEvent.model_validate(event))
+                except Exception:  # noqa: BLE001
+                    continue
+        store.run_events = hydrated_events
+
+    if isinstance(payload.get("run_details"), dict):
+        store.run_details = payload.get("run_details", {})
+
+    artifacts_payload = payload.get("artifacts")
+    if isinstance(artifacts_payload, list):
+        hydrated_artifacts: list[ArtifactSummary] = []
+        for artifact in artifacts_payload:
+            try:
+                hydrated_artifacts.append(ArtifactSummary.model_validate(artifact))
+            except Exception:  # noqa: BLE001
+                continue
+        store.artifacts = hydrated_artifacts
+
+    inbox_payload = payload.get("inbox")
+    if isinstance(inbox_payload, list):
+        hydrated_inbox: list[InboxItem] = []
+        for item in inbox_payload:
+            try:
+                hydrated_inbox.append(InboxItem.model_validate(item))
+            except Exception:  # noqa: BLE001
+                continue
+        store.inbox = hydrated_inbox
+
+    memory_payload = payload.get("memory_by_session")
+    if isinstance(memory_payload, dict):
+        store.memory_by_session = defaultdict(list)
+        for session_id, entries in memory_payload.items():
+            if isinstance(entries, list):
+                store.memory_by_session[str(session_id)] = entries
+
+    platform_settings_payload = payload.get("platform_settings")
+    if isinstance(platform_settings_payload, dict):
+        try:
+            store.platform_settings = PlatformSettings.model_validate(platform_settings_payload)
+        except Exception:  # noqa: BLE001
+            pass
+
+    integrations_payload = payload.get("integrations")
+    if isinstance(integrations_payload, list):
+        store.integrations = {}
+        for item in integrations_payload:
+            try:
+                model = IntegrationDefinition.model_validate(item)
+                store.integrations[model.id] = model
+            except Exception:  # noqa: BLE001
+                continue
+
+    templates_payload = payload.get("agent_templates")
+    if isinstance(templates_payload, list):
+        store.agent_templates = {}
+        for item in templates_payload:
+            try:
+                model = AgentTemplate.model_validate(item)
+                store.agent_templates[model.id] = model
+            except Exception:  # noqa: BLE001
+                continue
+
+    playbooks_payload = payload.get("playbooks")
+    if isinstance(playbooks_payload, list):
+        store.playbooks = {}
+        for item in playbooks_payload:
+            try:
+                model = PlaybookDefinition.model_validate(item)
+                store.playbooks[model.id] = model
+            except Exception:  # noqa: BLE001
+                continue
+
+    collaboration_payload = payload.get("collaboration_sessions")
+    if isinstance(collaboration_payload, list):
+        store.collaboration_sessions = {}
+        for item in collaboration_payload:
+            try:
+                model = CollaborationSession.model_validate(item)
+                store.collaboration_sessions[model.id] = model
+            except Exception:  # noqa: BLE001
+                continue
+
+    audit_events_payload = payload.get("audit_events")
+    if isinstance(audit_events_payload, list):
+        hydrated_audit_events: list[AuditEvent] = []
+        for item in audit_events_payload:
+            try:
+                hydrated_audit_events.append(AuditEvent.model_validate(item))
+            except Exception:  # noqa: BLE001
+                continue
+        store.audit_events = hydrated_audit_events
+
+    seen_nonces_payload = payload.get("a2a_seen_nonces")
+    if isinstance(seen_nonces_payload, dict):
+        normalized_seen: dict[str, str] = {}
+        for nonce, seen_at in seen_nonces_payload.items():
+            nonce_text = str(nonce).strip()
+            if not nonce_text:
+                continue
+            normalized_seen[nonce_text] = str(seen_at or "")
+        store.a2a_seen_nonces = normalized_seen
+
+
+def _persist_store_state() -> None:
+    try:
+        _POSTGRES_STATE.save_state(_serialize_store_state())
+    except Exception:  # noqa: BLE001
+        return
+
+
+def _merge_missing_bootstrap_content() -> None:
+    """Backfill newly seeded defaults into persisted stores without overwriting user data."""
+    bootstrap = InMemoryStore()
+
+    for workflow_id, definition in bootstrap.workflow_definitions.items():
+        if workflow_id not in store.workflow_definitions:
+            store.workflow_definitions[workflow_id] = definition
+
+    for ruleset_id, ruleset in bootstrap.guardrail_rulesets.items():
+        if ruleset_id not in store.guardrail_rulesets:
+            store.guardrail_rulesets[ruleset_id] = ruleset
+
+    for template_id, template in bootstrap.agent_templates.items():
+        if template_id not in store.agent_templates:
+            store.agent_templates[template_id] = template
+
+    for playbook_id, playbook in bootstrap.playbooks.items():
+        if playbook_id not in store.playbooks:
+            store.playbooks[playbook_id] = playbook
+
+
+def _sync_repo_agents_into_store(*, update_existing: bool = False) -> None:
+    seeded = _load_seeded_agents_from_repo()
+    for agent_id, seeded_agent in seeded.items():
+        existing = store.agent_definitions.get(agent_id)
+        if existing is None:
+            store.agent_definitions[agent_id] = seeded_agent
+            continue
+
+        if not update_existing:
+            # Database/store remains canonical by default.
+            # Repo-backed agents are treated as seed/bootstrap content only.
+            continue
+
+        merged_config = dict(existing.config_json)
+        merged_config.update(seeded_agent.config_json)
+        existing.name = seeded_agent.name
+        existing.type = seeded_agent.type
+        existing.status = "published"
+        existing.config_json = merged_config
+        existing.version = max(existing.version, seeded_agent.version)
+        store.agent_definitions[agent_id] = existing
+
+
+@app.on_event("startup")
+def _startup_initialize_state() -> None:
+    _POSTGRES_STATE.initialize()
+    state = _POSTGRES_STATE.load_state()
+    if state:
+        _apply_store_state(state)
+
+    _merge_missing_bootstrap_content()
+
+    sync_repo_agents = _env_flag("FRONTIER_SYNC_REPO_AGENTS", True)
+    sync_repo_updates_existing = _env_flag("FRONTIER_REPO_AGENTS_UPDATE_EXISTING", False)
+    if sync_repo_agents:
+        _sync_repo_agents_into_store(update_existing=sync_repo_updates_existing)
+
+    _canonicalize_all_agent_definitions()
+
+    _persist_store_state()
+
+
+def _memory_get_entries(session_id: str, limit: int = 100) -> list[dict[str, Any]]:
+    if _REDIS_MEMORY.enabled and _REDIS_MEMORY.healthcheck():
+        entries = _REDIS_MEMORY.get_entries(session_id, limit=limit)
+        if entries:
+            return entries
+    return store.memory_by_session.get(session_id, [])[-limit:]
+
+
+def _memory_clear_entries(session_id: str) -> None:
+    if _REDIS_MEMORY.enabled and _REDIS_MEMORY.healthcheck():
+        _REDIS_MEMORY.clear_entries(session_id)
+    store.memory_by_session[session_id] = []
+
+
+def _memory_append_entry(session_id: str, entry: dict[str, Any]) -> None:
+    if _REDIS_MEMORY.enabled and _REDIS_MEMORY.healthcheck():
+        _REDIS_MEMORY.append_entry(session_id, entry)
+    store.memory_by_session.setdefault(session_id, []).append(entry)
+
+
+def _build_runtime_l3_parity_report() -> dict[str, Any]:
+    engines = ["native", "langgraph", "langchain", "semantic-kernel", "autogen"]
+    node_types = sorted(_framework_adapter_mapping("native").keys())
+
+    matrix: list[dict[str, Any]] = []
+    l3_ready_cells = 0
+    total_cells = 0
+
+    probes = {
+        engine: ({"engine": "native", "available": True, "missing_modules": []} if engine == "native" else _framework_runtime_probe(engine))
+        for engine in engines
+    }
+
+    for node_type in node_types:
+        row: dict[str, Any] = {
+            "node_type": node_type,
+            "engines": {},
+        }
+        row_ready = True
+        for engine in engines:
+            total_cells += 1
+            adapter = _framework_adapter_mapping(engine).get(node_type, "")
+            probe = probes[engine]
+            has_delegated_or_native = node_type in _L3_DELEGATED_NODE_TYPES or node_type in _L3_NATIVE_CONTROL_PLANE_NODE_TYPES
+            l3_ready = bool(adapter) and has_delegated_or_native
+            if l3_ready:
+                l3_ready_cells += 1
+            row_ready = row_ready and l3_ready
+            row["engines"][engine] = {
+                "adapter": adapter,
+                "probe": {
+                    "available": bool(probe.get("available", False)),
+                    "missing_modules": list(probe.get("missing_modules", [])),
+                },
+                "l3_ready": l3_ready,
+            }
+        row["l3_ready"] = row_ready
+        matrix.append(row)
+
+    ready_nodes = len([row for row in matrix if row.get("l3_ready")])
+    coverage_percent = round((l3_ready_cells / total_cells) * 100, 2) if total_cells else 0.0
+    ci_status = "pass" if l3_ready_cells == total_cells else "warn"
+
+    ci_lines = [
+        "L3_PARITY_REPORT",
+        f"status={ci_status}",
+        f"coverage_percent={coverage_percent}",
+        f"ready_cells={l3_ready_cells}",
+        f"total_cells={total_cells}",
+        f"ready_nodes={ready_nodes}",
+        f"total_nodes={len(matrix)}",
+    ]
+
+    return {
+        "generated_at": _now_iso(),
+        "strategies": sorted(_SUPPORTED_RUNTIME_STRATEGIES),
+        "engines": engines,
+        "matrix": matrix,
+        "summary": {
+            "total_nodes": len(matrix),
+            "ready_nodes": ready_nodes,
+            "total_cells": total_cells,
+            "ready_cells": l3_ready_cells,
+            "coverage_percent": coverage_percent,
+        },
+        "ci_summary": {
+            "gate": "l3-runtime-parity",
+            "status": ci_status,
+            "artifact_name": "l3_runtime_parity_summary.txt",
+            "artifact_text": "\n".join(ci_lines),
+        },
+    }
+
+
+@app.get("/healthz")
+def healthz() -> dict[str, str]:
+    postgres_ok = _POSTGRES_STATE.enabled
+    redis_ok = _REDIS_MEMORY.healthcheck() if _REDIS_MEMORY.enabled else False
+    neo4j_ok = _NEO4J_GRAPH.healthcheck() if _NEO4J_GRAPH.enabled else False
+    return {
+        "status": "ok",
+        "timestamp": _now_iso(),
+        "postgres": "connected" if postgres_ok else "disabled",
+        "redis": "connected" if redis_ok else "disabled",
+        "neo4j": "connected" if neo4j_ok else "disabled",
+    }
+
+
+@app.get("/runtime/providers")
+def get_runtime_providers() -> dict[str, Any]:
+    status = _openai_status()
+    framework_adapters = {
+        engine: _framework_runtime_probe(engine)
+        for engine in sorted(_SUPPORTED_RUNTIME_ENGINES)
+        if engine != "native"
+    }
+    return {
+        "providers": [status.model_dump()],
+        "framework_adapters": framework_adapters,
+    }
+
+
+@app.get("/runtime/l3-parity-report")
+def get_runtime_l3_parity_report() -> dict[str, Any]:
+    return _build_runtime_l3_parity_report()
+
+
+@app.get("/runtime/local-integration-readiness")
+def get_local_integration_readiness() -> dict[str, Any]:
+    platform = store.platform_settings
+    mcp_local_servers = [
+        url
+        for url in platform.allowed_mcp_server_urls
+        if _is_local_network_url(url, platform.allow_local_network_hostnames)
+    ]
+    rag_local_ready = bool(platform.allowed_retrieval_sources) and bool(platform.retrieval_require_local_source_url)
+    mcp_local_ready = bool(platform.mcp_require_local_server) and len(mcp_local_servers) > 0
+    a2a_local_ready = bool(platform.a2a_require_signed_messages and platform.a2a_replay_protection and platform.a2a_trusted_subjects)
+
+    scores = {
+        "rag": 88 if rag_local_ready else 62,
+        "mcp": 85 if mcp_local_ready else 60,
+        "a2a": 84 if a2a_local_ready else 55,
+    }
+    overall = int(round((scores["rag"] + scores["mcp"] + scores["a2a"]) / 3))
+
+    return {
+        "scope": "local-network",
+        "overall_readiness_percent": overall,
+        "scores": scores,
+        "controls": {
+            "enforce_local_network_only": platform.enforce_local_network_only,
+            "allow_local_network_hostnames": platform.allow_local_network_hostnames,
+            "retrieval_require_local_source_url": platform.retrieval_require_local_source_url,
+            "mcp_require_local_server": platform.mcp_require_local_server,
+            "allowed_mcp_server_urls": platform.allowed_mcp_server_urls,
+            "allowed_local_mcp_server_urls": mcp_local_servers,
+            "a2a_require_signed_messages": platform.a2a_require_signed_messages,
+            "a2a_replay_protection": platform.a2a_replay_protection,
+            "a2a_trusted_subjects": platform.a2a_trusted_subjects,
+        },
+    }
+
+
+@app.get("/platform/settings")
+def get_platform_settings() -> dict[str, Any]:
+    return store.platform_settings.model_dump()
+
+
+@app.get("/platform/security-policy")
+def get_platform_security_policy() -> dict[str, Any]:
+    resolved = _resolve_effective_security_policy(platform=store.platform_settings)
+    resolved["backend_enforced_controls"] = [
+        "capability_filter",
+        "policy_gate_filter",
+        "signed_a2a_messages",
+        "a2a_replay_protection",
+        "readonly_sandbox_rootfs",
+        "non_root_sandbox_execution",
+        "fail_closed_policy_decisions",
+    ]
+    resolved["configurable_controls"] = [
+        "guardrail_ruleset_id",
+        "blocked_keywords",
+        "allowed_egress_hosts",
+        "allowed_retrieval_sources",
+        "allowed_mcp_server_urls",
+        "allowed_runtime_engines",
+        "max_tool_calls_per_run",
+        "max_retrieval_items",
+        "max_collaboration_agents",
+        "require_human_approval",
+        "require_human_approval_for_high_risk_tools",
+        "allow_runtime_override",
+        "enable_platform_signals",
+        "platform_signal_enforcement",
+    ]
+    return resolved
+
+
+@app.post("/platform/settings")
+def save_platform_settings(request: Request, payload: dict[str, Any] = Body(default_factory=dict)) -> dict[str, bool]:
+    actor = _enforce_request_authn(request, payload=payload, action="platform.settings.save")
+    current = store.platform_settings.model_dump()
+    merged = {**current}
+    for key in current.keys():
+        if key in payload:
+            merged[key] = payload[key]
+    if "allowed_runtime_engines" in payload:
+        merged["allowed_runtime_engines"] = _normalize_runtime_engine_list(payload.get("allowed_runtime_engines", [])) or ["native"]
+    if "default_runtime_engine" in payload:
+        merged["default_runtime_engine"] = _normalize_runtime_engine(payload.get("default_runtime_engine"))
+    if "default_runtime_strategy" in payload:
+        merged["default_runtime_strategy"] = _normalize_runtime_strategy(payload.get("default_runtime_strategy"))
+    if "default_hybrid_runtime_routing" in payload:
+        merged["default_hybrid_runtime_routing"] = _normalize_hybrid_runtime_routing(
+            payload.get("default_hybrid_runtime_routing"),
+            default_engine=_normalize_runtime_engine(merged.get("default_runtime_engine") or "native"),
+        )
+    store.platform_settings = PlatformSettings.model_validate(merged)
+    _append_audit_event(
+        "platform.settings.save",
+        actor,
+        "allowed",
+        {"updated_keys": [key for key in payload.keys() if key in current]},
+    )
+    _persist_store_state()
+    return {"ok": True}
+
+
+@app.get("/memory/{session_id}")
+def get_memory(session_id: str) -> dict[str, Any]:
+    entries = _memory_get_entries(session_id, limit=100)
+    return {
+        "session_id": session_id,
+        "count": len(entries),
+        "entries": entries,
+    }
+
+
+@app.delete("/memory/{session_id}")
+def clear_memory(session_id: str) -> dict[str, Any]:
+    _memory_clear_entries(session_id)
+    _persist_store_state()
+    return {"ok": True, "session_id": session_id}
+
+
+@app.get("/workflows/published")
+def get_published_workflows() -> list[dict[str, Any]]:
+    return [item.model_dump(exclude={"graph_json"}) for item in store.workflow_definitions.values() if item.status == "published"]
+
+
+@app.post("/workflow-runs")
+def create_workflow_run(request: Request, payload: dict[str, Any] = Body(default_factory=dict)) -> dict[str, str]:
+    actor = _enforce_request_authn(request, payload=payload, action="workflow.run.create")
+    _enforce_emergency_write_policy("workflow.run.create", actor)
+    if store.platform_settings.block_new_runs:
+        _append_audit_event("workflow.run.create", actor, "blocked", {"reason": "block_new_runs"})
+        raise HTTPException(status_code=423, detail="New workflow runs are temporarily blocked by policy")
+
+    run_id = str(uuid4())
+    title = str(payload.get("title") or payload.get("workflowName") or "Workflow Run")
+    prompt_text = str(payload.get("prompt") or "").strip()
+    model_prompt = _clean_inbox_prompt(prompt_text)
+    tokens_raw = payload.get("tokens") if isinstance(payload.get("tokens"), list) else []
+
+    requested_agent_tokens = [
+        str(token.get("value", "")).strip()
+        for token in tokens_raw
+        if isinstance(token, dict) and str(token.get("kind")) == "agent" and str(token.get("value", "")).strip()
+    ]
+    requested_workflow_tokens = [
+        str(token.get("value", "")).strip()
+        for token in tokens_raw
+        if isinstance(token, dict) and str(token.get("kind")) == "workflow" and str(token.get("value", "")).strip()
+    ]
+    requested_tags = [
+        str(token.get("value", "")).strip().lower()
+        for token in tokens_raw
+        if isinstance(token, dict) and str(token.get("kind")) == "tag" and str(token.get("value", "")).strip()
+    ]
+
+    published_agent_keys: set[str] = set()
+    for agent in store.agent_definitions.values():
+        if agent.status != "published":
+            continue
+        published_agent_keys.add(agent.id.lower())
+        if _slugify(agent.name):
+            published_agent_keys.add(_slugify(agent.name))
+        source_agent_id = str(agent.config_json.get("source_agent_id") or "").strip()
+        if source_agent_id:
+            published_agent_keys.add(source_agent_id.lower())
+            if _slugify(source_agent_id):
+                published_agent_keys.add(_slugify(source_agent_id))
+
+    published_workflow_keys: set[str] = set()
+    for workflow in store.workflow_definitions.values():
+        if workflow.status != "published":
+            continue
+        published_workflow_keys.add(workflow.id.lower())
+        if _slugify(workflow.name):
+            published_workflow_keys.add(_slugify(workflow.name))
+
+    requested_agents: list[str] = []
+    for token in requested_agent_tokens:
+        normalized = token.lower()
+        if normalized in published_agent_keys:
+            requested_agents.append(token)
+            continue
+        token_slug = _slugify(token)
+        if token_slug and token_slug in published_agent_keys:
+            requested_agents.append(token_slug)
+
+    requested_workflows: list[str] = []
+    for token in requested_workflow_tokens:
+        normalized = token.lower()
+        if normalized in published_workflow_keys:
+            requested_workflows.append(token)
+            continue
+        token_slug = _slugify(token)
+        if token_slug and token_slug in published_workflow_keys:
+            requested_workflows.append(token_slug)
+
+    if requested_workflows and title == "Workflow Run":
+        title = f"Workflow Run — {requested_workflows[0]}"
+
+    if len(requested_agents) > store.platform_settings.collaboration_max_agents:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Requested {len(requested_agents)} agents but platform allows at most "
+                f"{store.platform_settings.collaboration_max_agents} collaborators per run"
+            ),
+        )
+
+    selected_agent_token = requested_agents[0] if requested_agents else None
+    selected_agent_definition = _resolve_published_agent_definition(selected_agent_token or "") if selected_agent_token else None
+    if selected_agent_token and selected_agent_definition is None:
+        raise HTTPException(status_code=400, detail=f"Selected agent '{selected_agent_token}' is not available or not published")
+
+    selected_agent = selected_agent_definition.name if selected_agent_definition else selected_agent_token
+    selected_agent_id = selected_agent_definition.id if selected_agent_definition else None
+
+    if selected_agent is None and not store.platform_settings.allow_direct_openai_without_agent:
+        raise HTTPException(status_code=400, detail="Direct OpenAI run without selected agent is disabled by platform settings")
+
+    blocked_terms = _text_contains_blocked_keywords(prompt_text, store.platform_settings.global_blocked_keywords)
+    guardrail_block_reasons: list[str] = []
+    chat_guardrail_config = _build_agent_chat_guardrail_config(selected_agent_definition)
+    if selected_agent_definition and prompt_text and chat_guardrail_config:
+        input_guardrail = _evaluate_guardrail(
+            prompt_text,
+            {
+                **chat_guardrail_config,
+                "stage": "input",
+                "tripwire_action": str(chat_guardrail_config.get("tripwire_action") or "reject_content"),
+            },
+            stage="input",
+        )
+        if input_guardrail.get("tripwire_triggered"):
+            first_issue = next(iter(input_guardrail.get("output_info", {}).get("issues", [])), None)
+            if isinstance(first_issue, dict):
+                guardrail_block_reasons.append(str(first_issue.get("message") or "Input blocked by guardrail."))
+            else:
+                guardrail_block_reasons.append("Input blocked by guardrail policy.")
+
+    if blocked_terms or guardrail_block_reasons:
+        run_status: Literal["Running", "Blocked", "Needs Review", "Done", "Failed"] = "Blocked"
+        store.runs[run_id] = WorkflowRunSummary(
+            id=run_id,
+            title=title,
+            status=run_status,
+            updatedAt="just now",
+            progressLabel="Blocked by policy",
+        )
+        summary_parts: list[str] = []
+        if blocked_terms:
+            summary_parts.append(f"Prompt blocked by platform policy keywords: {', '.join(blocked_terms)}")
+        summary_parts.extend(guardrail_block_reasons)
+        summary = " ; ".join(summary_parts)
+        store.run_events[run_id] = [
+            WorkflowRunEvent(
+                id=f"evt-{uuid4()}",
+                type="guardrail_result",
+                title="Prompt blocked",
+                summary=summary,
+                createdAt=_now_iso(),
+                metadata={
+                    "blocked_keywords": blocked_terms,
+                    "guardrail_reasons": guardrail_block_reasons,
+                    "selected_agent_id": selected_agent_id,
+                },
+            )
+        ]
+        store.run_details[run_id] = {
+            "artifacts": [],
+            "status": "Blocked",
+            "graph": {"nodes": [], "links": []},
+            "agent_traces": [],
+            "approvals": {
+                "required": False,
+                "pending": False,
+            },
+        }
+        store.inbox.insert(
+            0,
+            InboxItem(
+                id=str(uuid4()),
+                runId=run_id,
+                runName=title,
+                artifactType="Policy Check",
+                reason=summary,
+                queue="Blocked by Guardrails",
+            ),
+        )
+        _persist_store_state()
+        _append_audit_event(
+            "workflow.run.create",
+            actor,
+            "blocked",
+            {"run_id": run_id, "status": "blocked_by_guardrail_or_keyword"},
+        )
+        return {"id": run_id, "status": "blocked"}
+
+    system_prompt_source = "direct-openai"
+    if selected_agent_definition:
+        system_prompt, system_prompt_source = _resolve_agent_system_prompt(
+            selected_agent_definition,
+            requested_token=selected_agent_token,
+        )
+    else:
+        system_prompt = ""
+
+    selected_model = _resolve_agent_chat_model(selected_agent_definition)
+    request_prompt = _with_architecture_contract(
+        model_prompt or "Execute the requested workflow task.",
+        enabled=_should_enforce_architecture_contract(selected_agent=selected_agent_definition, prompt_text=model_prompt),
+    )
+
+    response_text, model_meta = _run_openai_chat(
+        system_prompt=system_prompt,
+        user_prompt=request_prompt,
+        model=selected_model,
+        temperature=0.2,
+    )
+
+    if selected_agent_definition and str(model_meta.get("mode") or "") != "live":
+        reason = str(model_meta.get("reason") or "Agent execution provider is not available.")
+        failure_artifact = ArtifactSummary(
+            id=str(uuid4()),
+            name="Agent Execution Failure Report",
+            status="Blocked",
+            version=1,
+        )
+        _upsert_artifact_summary(failure_artifact)
+        store.runs[run_id] = WorkflowRunSummary(
+            id=run_id,
+            title=title,
+            status="Failed",
+            updatedAt="just now",
+            progressLabel="Provider configuration error",
+        )
+        store.run_events[run_id] = [
+            WorkflowRunEvent(
+                id=f"evt-{uuid4()}",
+                type="error",
+                title="Agent execution failed",
+                summary=reason,
+                createdAt=_now_iso(),
+                metadata={
+                    "selected_agent_id": selected_agent_id,
+                    "selected_agent_name": selected_agent,
+                    "model": model_meta,
+                    "system_prompt_source": system_prompt_source,
+                },
+            ),
+            WorkflowRunEvent(
+                id=f"evt-{uuid4()}",
+                type="artifact_created",
+                title="Failure artifact created",
+                summary="Captured provider/auth configuration failure details.",
+                createdAt=_now_iso(),
+                metadata={"artifact_id": failure_artifact.id, "artifact_name": failure_artifact.name},
+            ),
+        ]
+        store.run_details[run_id] = {
+            "artifacts": [failure_artifact.model_dump()],
+            "status": "Failed",
+            "graph": {
+                "nodes": [
+                    {"id": "n-trigger", "title": "Trigger", "type": "trigger", "x": 80, "y": 110},
+                    {
+                        "id": "n-agent",
+                        "title": selected_agent or "Agent",
+                        "type": "agent",
+                        "x": 360,
+                        "y": 110,
+                        "config": {"agent_id": selected_agent_id or selected_agent},
+                    },
+                    {"id": "n-output", "title": "Output", "type": "output", "x": 660, "y": 110},
+                ],
+                "links": [
+                    {"from": "n-trigger", "to": "n-agent", "from_port": "output", "to_port": "in"},
+                    {"from": "n-agent", "to": "n-output", "from_port": "out", "to_port": "in"},
+                ],
+            },
+            "agent_traces": [
+                {
+                    "agent": selected_agent or "unknown-agent",
+                    "reasoningSummary": "Execution halted due to provider authentication/configuration error.",
+                    "actions": ["Parsed kickoff prompt", "Resolved agent prompt", "Failed provider auth/config check"],
+                    "output": reason,
+                }
+            ],
+            "response_text": reason,
+            "approvals": {
+                "required": False,
+                "pending": False,
+            },
+        }
+        _persist_store_state()
+        _append_audit_event(
+            "workflow.run.create",
+            actor,
+            "error",
+            {"run_id": run_id, "status": "failed_provider"},
+        )
+        return {"id": run_id, "status": "failed"}
+
+    guardrail_output_triggered = False
+    guardrail_output_summary = ""
+    if selected_agent_definition and chat_guardrail_config:
+        output_guardrail = _evaluate_guardrail(
+            response_text,
+            {
+                **chat_guardrail_config,
+                "stage": "output",
+                "tripwire_action": str(chat_guardrail_config.get("tripwire_action") or "reject_content"),
+            },
+            stage="output",
+        )
+        if output_guardrail.get("tripwire_triggered"):
+            guardrail_output_triggered = True
+            behavior = str(output_guardrail.get("behavior") or "reject_content")
+            if behavior in {"reject_content", "raise_exception"}:
+                response_text = str(
+                    chat_guardrail_config.get("reject_message")
+                    or "Response blocked by guardrail policy."
+                )
+            first_issue = next(iter(output_guardrail.get("output_info", {}).get("issues", [])), None)
+            if isinstance(first_issue, dict):
+                guardrail_output_summary = str(first_issue.get("message") or "Output blocked by guardrail.")
+            else:
+                guardrail_output_summary = "Output blocked by guardrail."
+
+    approval_required = store.platform_settings.require_human_approval or any(tag in {"need-review", "approval", "needs-approval"} for tag in requested_tags)
+    artifact_id = str(uuid4())
+    artifact_status: Literal["Draft", "Needs Review", "Approved", "Blocked"] = "Blocked" if guardrail_output_triggered else ("Needs Review" if approval_required else "Draft")
+    artifacts = [
+        ArtifactSummary(
+            id=artifact_id,
+            name="Task Response",
+            status=artifact_status,
+            version=1,
+        )
+    ]
+    _upsert_artifact_summary(artifacts[0])
+
+    graph_nodes = [
+        {"id": "n-trigger", "title": "Trigger", "type": "trigger", "x": 80, "y": 110},
+        {
+            "id": "n-agent",
+            "title": selected_agent or "OpenAI API",
+            "type": "agent",
+            "x": 360,
+            "y": 110,
+            "config": {"agent_id": selected_agent_id or selected_agent} if selected_agent else {},
+        },
+        {"id": "n-output", "title": "Output", "type": "output", "x": 660, "y": 110},
+    ]
+    graph_links = [
+        {"from": "n-trigger", "to": "n-agent", "from_port": "output", "to_port": "in"},
+        {"from": "n-agent", "to": "n-output", "from_port": "output", "to_port": "in"},
+    ]
+
+    run_status: Literal["Running", "Blocked", "Needs Review", "Done", "Failed"] = "Blocked" if guardrail_output_triggered else ("Needs Review" if approval_required else "Running")
+
+    store.runs[run_id] = WorkflowRunSummary(
+        id=run_id,
+        title=title,
+        status=run_status,
+        updatedAt="just now",
+        progressLabel="Step 2/3",
+    )
+    event_response_text = response_text
+    if store.platform_settings.mask_secrets_in_events:
+        event_response_text = _redact_sensitive_text(event_response_text)
+    event_response_summary = _truncate_event_summary(event_response_text)
+
+    reasoning_meta = model_meta.get("reasoning") if isinstance(model_meta.get("reasoning"), dict) else {}
+    reasoning_summaries = reasoning_meta.get("summaries") if isinstance(reasoning_meta.get("summaries"), list) else []
+    reasoning_summary_text = ""
+    for item in reasoning_summaries:
+        candidate = str(item or "").strip()
+        if candidate:
+            reasoning_summary_text = candidate
+            break
+    if not reasoning_summary_text:
+        reasoning_summary_text = "Processed the task prompt and generated a response."
+
+    store.run_events[run_id] = [
+        WorkflowRunEvent(
+            id=f"evt-{uuid4()}",
+            type="step_started",
+            title="Run started",
+            summary="Workflow execution started.",
+            createdAt=_now_iso(),
+            metadata={"payload": payload},
+        ),
+        WorkflowRunEvent(
+            id=f"evt-{uuid4()}",
+            type="user_message",
+            title="User task",
+            summary=(prompt_text or "Task kickoff submitted.")[:500],
+            createdAt=_now_iso(),
+            metadata={"tokens": tokens_raw},
+        ),
+        WorkflowRunEvent(
+            id=f"evt-{uuid4()}",
+            type="agent_message",
+            title=f"{selected_agent or 'openai-direct'} response",
+            summary=event_response_summary,
+            createdAt=_now_iso(),
+            metadata={
+                "model": model_meta,
+                "selected_agent_id": selected_agent_id,
+                "selected_agent_name": selected_agent,
+                "system_prompt_source": system_prompt_source,
+                "summary_truncated": event_response_summary != event_response_text,
+            },
+        ),
+        WorkflowRunEvent(
+            id=f"evt-{uuid4()}",
+            type="artifact_created",
+            title="Artifact created",
+            summary="Task response artifact generated.",
+            createdAt=_now_iso(),
+            metadata={"artifact_id": artifact_id},
+        ),
+    ]
+
+    if guardrail_output_triggered:
+        store.run_events[run_id].append(
+            WorkflowRunEvent(
+                id=f"evt-{uuid4()}",
+                type="guardrail_result",
+                title="Output blocked",
+                summary=guardrail_output_summary or "Output blocked by guardrail.",
+                createdAt=_now_iso(),
+                metadata={
+                    "selected_agent_id": selected_agent_id,
+                    "selected_agent_name": selected_agent,
+                },
+            )
+        )
+
+    if approval_required and not guardrail_output_triggered:
+        store.run_events[run_id].append(
+            WorkflowRunEvent(
+                id=f"evt-{uuid4()}",
+                type="approval_required",
+                title="Approval required",
+                summary="Run requires human approval before completion.",
+                createdAt=_now_iso(),
+                metadata={"artifact_id": artifact_id, "version": 1},
+            )
+        )
+
+    store.run_details[run_id] = {
+        "artifacts": [artifact.model_dump() for artifact in artifacts],
+        "status": run_status,
+        "graph": {
+            "nodes": graph_nodes,
+            "links": graph_links,
+        },
+        "agent_traces": [
+            {
+                "agent": selected_agent or "openai-direct",
+                "reasoningSummary": reasoning_summary_text if selected_agent else "Processed prompt directly with OpenAI API (no agent system prompt).",
+                "actions": [
+                    "Parsed kickoff prompt",
+                    "Executed agent response" if selected_agent else "Called OpenAI directly",
+                    "Emitted response artifact",
+                ],
+                "output": response_text,
+            }
+        ],
+        "approvals": {
+            "required": approval_required and not guardrail_output_triggered,
+            "pending": approval_required and not guardrail_output_triggered,
+            "artifact_id": artifact_id,
+            "version": 1,
+            "scope": "final send/export",
+        },
+        "runtime": model_meta,
+        "response_text": response_text,
+    }
+
+    if approval_required:
+        store.inbox.insert(
+            0,
+            InboxItem(
+                id=str(uuid4()),
+                runId=run_id,
+                runName=title,
+                artifactType="Task Response",
+                reason="Approval required before task completion.",
+                queue="Needs Approval",
+            ),
+        )
+
+    _NEO4J_GRAPH.record_run(
+        run_id=run_id,
+        title=title,
+        agent=selected_agent,
+        workflow=requested_workflows[0] if requested_workflows else None,
+    )
+    _append_audit_event("workflow.run.create", actor, "allowed", {"run_id": run_id, "status": "started"})
+    _persist_store_state()
+    return {"id": run_id, "status": "started"}
+
+
+@app.get("/workflow-runs")
+def get_workflow_runs(status: str | None = None) -> list[dict[str, Any]]:
+    items = list(store.runs.values())
+    if status:
+        items = [item for item in items if item.status.lower() == status.lower()]
+    return [item.model_dump() for item in items]
+
+
+@app.get("/workflow-runs/{run_id}")
+def get_workflow_run(run_id: str) -> dict[str, Any]:
+    if run_id not in store.runs:
+        raise HTTPException(status_code=404, detail="run not found")
+    detail = store.run_details.get(run_id)
+    if detail:
+        detail_changed = False
+        detail_status = str(detail.get("status") or "").strip().lower()
+        if detail_status == "failed":
+            graph = detail.get("graph") if isinstance(detail.get("graph"), dict) else {"nodes": [], "links": []}
+            nodes = graph.get("nodes") if isinstance(graph.get("nodes"), list) else []
+            links = graph.get("links") if isinstance(graph.get("links"), list) else []
+
+            has_output_node = any(isinstance(node, dict) and str(node.get("id") or "") == "n-output" for node in nodes)
+            if not has_output_node:
+                nodes = [*nodes, {"id": "n-output", "title": "Output", "type": "output", "x": 660, "y": 110}]
+                detail_changed = True
+
+            has_agent_to_output = any(
+                isinstance(link, dict)
+                and str(link.get("from") or "") == "n-agent"
+                and str(link.get("to") or "") == "n-output"
+                for link in links
+            )
+            if not has_agent_to_output:
+                links = [*links, {"from": "n-agent", "to": "n-output", "from_port": "out", "to_port": "in"}]
+                detail_changed = True
+
+            if detail_changed:
+                detail["graph"] = {"nodes": nodes, "links": links}
+
+            artifacts_payload = detail.get("artifacts") if isinstance(detail.get("artifacts"), list) else []
+            if len(artifacts_payload) == 0:
+                failure_artifact = ArtifactSummary(
+                    id=str(uuid4()),
+                    name="Agent Execution Failure Report",
+                    status="Blocked",
+                    version=1,
+                )
+                _upsert_artifact_summary(failure_artifact)
+                detail["artifacts"] = [failure_artifact.model_dump()]
+                detail_changed = True
+
+                has_artifact_event = any(
+                    event.type == "artifact_created"
+                    and isinstance(event.metadata, dict)
+                    and str(event.metadata.get("artifact_id") or "") == failure_artifact.id
+                    for event in store.run_events.get(run_id, [])
+                )
+                if not has_artifact_event:
+                    store.run_events.setdefault(run_id, []).append(
+                        WorkflowRunEvent(
+                            id=f"evt-{uuid4()}",
+                            type="artifact_created",
+                            title="Failure artifact created",
+                            summary="Captured provider/auth configuration failure details.",
+                            createdAt=_now_iso(),
+                            metadata={"artifact_id": failure_artifact.id, "artifact_name": failure_artifact.name},
+                        )
+                    )
+
+        full_response = str(detail.get("response_text") or "")
+        if full_response:
+            traces = detail.get("agent_traces")
+            if isinstance(traces, list):
+                for trace in traces:
+                    if isinstance(trace, dict):
+                        trace["output"] = full_response
+                detail["agent_traces"] = traces
+                store.run_details[run_id] = detail
+                detail_changed = True
+
+        if detail_changed:
+            store.run_details[run_id] = detail
+            _persist_store_state()
+        return detail
+
+    payload: dict[str, Any] = {}
+    for event in store.run_events.get(run_id, []):
+        if isinstance(event.metadata, dict) and isinstance(event.metadata.get("payload"), dict):
+            payload = event.metadata.get("payload", {})
+            break
+
+    tokens_raw = payload.get("tokens") if isinstance(payload.get("tokens"), list) else []
+    prompt_text = str(payload.get("prompt") or "").strip()
+    requested_agents = [
+        str(token.get("value", "")).strip()
+        for token in tokens_raw
+        if isinstance(token, dict) and str(token.get("kind")) == "agent" and str(token.get("value", "")).strip()
+    ]
+    requested_tags = [
+        str(token.get("value", "")).strip().lower()
+        for token in tokens_raw
+        if isinstance(token, dict) and str(token.get("kind")) == "tag" and str(token.get("value", "")).strip()
+    ]
+    published_agent_keys: set[str] = set()
+    for agent in store.agent_definitions.values():
+        if agent.status != "published":
+            continue
+        published_agent_keys.add(agent.id.lower())
+        if _slugify(agent.name):
+            published_agent_keys.add(_slugify(agent.name))
+
+    selected_agent: str | None = None
+    for token in requested_agents:
+        normalized = token.lower()
+        if normalized in published_agent_keys:
+            selected_agent = token
+            break
+        token_slug = _slugify(token)
+        if token_slug and token_slug in published_agent_keys:
+            selected_agent = token_slug
+            break
+    approval_required = any(tag in {"need-review", "approval", "needs-approval"} for tag in requested_tags)
+
+    response_text = ""
+    for event in store.run_events.get(run_id, []):
+        if event.type == "agent_message" and event.summary:
+            response_text = event.summary
+            break
+    if not response_text:
+        system_prompt = _load_agent_system_prompt(selected_agent) if selected_agent else ""
+        if selected_agent and not system_prompt:
+            system_prompt = "You are a helpful execution agent."
+        response_text, _ = _run_openai_chat(
+            system_prompt=system_prompt,
+            user_prompt=prompt_text or "Execute the requested workflow task.",
+            model=_default_openai_model(),
+            temperature=0.2,
+        )
+
+    artifact_id = str(uuid5(NAMESPACE_URL, f"legacy-artifact:{run_id}"))
+    detail = {
+        "artifacts": [
+            {
+                "id": artifact_id,
+                "name": "Task Response",
+                "status": "Needs Review" if approval_required else "Draft",
+                "version": 1,
+            }
+        ],
+        "status": "Needs Review" if approval_required else store.runs[run_id].status,
+        "graph": {
+            "nodes": [
+                {"id": "n-trigger", "title": "Trigger", "type": "trigger", "x": 80, "y": 110},
+                {
+                    "id": "n-agent",
+                    "title": selected_agent or "OpenAI API",
+                    "type": "agent",
+                    "x": 360,
+                    "y": 110,
+                    "config": {"agent_id": selected_agent} if selected_agent else {},
+                },
+                {"id": "n-output", "title": "Output", "type": "output", "x": 660, "y": 110},
+            ],
+            "links": [
+                {"from": "n-trigger", "to": "n-agent", "from_port": "output", "to_port": "in"},
+                {"from": "n-agent", "to": "n-output", "from_port": "output", "to_port": "in"},
+            ],
+        },
+        "agent_traces": [
+            {
+                "agent": selected_agent or "openai-direct",
+                "reasoningSummary": "Reconstructed from run payload metadata.",
+                "actions": ["Parsed kickoff payload", "Resolved route", "Generated task response"],
+                "output": response_text[:800],
+            }
+        ],
+        "approvals": {
+            "required": approval_required,
+            "pending": approval_required,
+            "artifact_id": artifact_id,
+            "version": 1,
+            "scope": "final send/export",
+        },
+    }
+    store.run_details[run_id] = detail
+
+    return detail
+
+
+@app.get("/workflow-runs/{run_id}/events")
+def get_workflow_run_events(run_id: str) -> list[dict[str, Any]]:
+    return [event.model_dump() for event in store.run_events.get(run_id, [])]
+
+
+@app.post("/workflow-runs/{run_id}/archive")
+def archive_workflow_run(run_id: str) -> dict[str, bool]:
+    run = store.runs.get(run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail="run not found")
+
+    run.status = "Done"
+    run.progressLabel = "Archived"
+    run.updatedAt = "just now"
+    store.runs[run_id] = run
+
+    if run_id in store.run_details and isinstance(store.run_details[run_id], dict):
+        detail = store.run_details[run_id]
+        detail["status"] = "Done"
+        approvals = detail.get("approvals")
+        if isinstance(approvals, dict):
+            approvals["pending"] = False
+            detail["approvals"] = approvals
+        store.run_details[run_id] = detail
+
+    store.inbox = [item for item in store.inbox if item.runId != run_id]
+
+    store.run_events.setdefault(run_id, []).append(
+        WorkflowRunEvent(
+            id=f"evt-{uuid4()}",
+            type="step_completed",
+            title="Run archived",
+            summary="Run archived from UI.",
+            createdAt=_now_iso(),
+            metadata={"source": "ui"},
+        )
+    )
+
+    _persist_store_state()
+
+    return {"ok": True}
+
+
+@app.post("/artifacts/{artifact_id}/versions")
+def create_artifact_version(artifact_id: str, _payload: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
+    return {"ok": True, "artifactId": artifact_id}
+
+
+@app.post("/approvals")
+def submit_approval(request: Request, _payload: dict[str, Any] = Body(default_factory=dict)) -> dict[str, bool]:
+    actor = _enforce_request_authn(request, payload=_payload, action="approval.submit")
+    _enforce_emergency_write_policy("approval.submit", actor)
+    run_id = str(_payload.get("run_id") or "")
+    decision = str(_payload.get("decision") or "")
+    if run_id and run_id in store.run_details:
+        details = store.run_details[run_id]
+        approvals = details.get("approvals") if isinstance(details.get("approvals"), dict) else {}
+        if decision == "approved":
+            approvals["pending"] = False
+            details["status"] = "Done"
+            if run_id in store.runs:
+                store.runs[run_id].status = "Done"
+                store.runs[run_id].progressLabel = "Complete"
+            store.inbox = [item for item in store.inbox if item.runId != run_id]
+        elif decision == "changes_requested":
+            approvals["pending"] = True
+            details["status"] = "Needs Review"
+            if run_id in store.runs:
+                store.runs[run_id].status = "Needs Review"
+                store.runs[run_id].progressLabel = "Awaiting updates"
+        details["approvals"] = approvals
+        store.run_details[run_id] = details
+    _persist_store_state()
+    _append_audit_event("approval.submit", actor, "allowed", {"run_id": run_id, "decision": decision})
+    return {"ok": True}
+
+
+@app.get("/inbox")
+def get_inbox() -> list[dict[str, Any]]:
+    return [item.model_dump() for item in store.inbox]
+
+
+@app.get("/integrations")
+def get_integrations() -> list[dict[str, Any]]:
+    return [_integration_response_payload(item) for item in store.integrations.values()]
+
+
+@app.post("/integrations")
+def save_integration(payload: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
+    integration_id = str(payload.get("id") or uuid4())
+    existing = store.integrations.get(integration_id)
+
+    integration_type = str(payload.get("type") or (existing.type if existing else "custom"))
+    if integration_type not in {"http", "database", "queue", "vector", "custom"}:
+        integration_type = "custom"
+
+    integration_status = str(payload.get("status") or (existing.status if existing else "draft"))
+    if integration_status not in {"draft", "configured", "error", "archived"}:
+        integration_status = "draft"
+
+    auth_type = str(payload.get("auth_type") or (existing.auth_type if existing else "none"))
+    if auth_type not in {"none", "api_key", "bearer", "oauth2", "basic"}:
+        auth_type = "none"
+
+    incoming_metadata = payload.get("metadata_json")
+    if isinstance(incoming_metadata, dict):
+        metadata_json = dict(incoming_metadata)
+    elif existing:
+        metadata_json = dict(existing.metadata_json)
+    else:
+        metadata_json = {}
+
+    raw_secret_ref = payload.get("secret_ref") if "secret_ref" in payload else (existing.secret_ref if existing else "")
+
+    capabilities = _normalize_string_list(payload.get("capabilities") if "capabilities" in payload else (existing.capabilities if existing else []))
+    permission_scopes = _normalize_string_list(payload.get("permission_scopes") if "permission_scopes" in payload else (existing.permission_scopes if existing else []))
+    data_access = _normalize_string_list(payload.get("data_access") if "data_access" in payload else (existing.data_access if existing else []))
+    egress_allowlist = _normalize_string_list(payload.get("egress_allowlist") if "egress_allowlist" in payload else (existing.egress_allowlist if existing else []))
+
+    publisher = str(payload.get("publisher") or (existing.publisher if existing else "custom"))
+    if publisher not in {"first_party", "third_party", "custom"}:
+        publisher = "custom"
+
+    execution_mode = str(payload.get("execution_mode") or (existing.execution_mode if existing else "local"))
+    if execution_mode not in {"local", "sandboxed"}:
+        execution_mode = "local"
+
+    signature_verified_raw = payload.get("signature_verified") if "signature_verified" in payload else (existing.signature_verified if existing else False)
+    approved_for_marketplace_raw = payload.get("approved_for_marketplace") if "approved_for_marketplace" in payload else (existing.approved_for_marketplace if existing else False)
+
+    integration = IntegrationDefinition(
+        id=integration_id,
+        name=str(payload.get("name") or existing.name if existing else "Untitled Integration"),
+        type=integration_type,
+        status=integration_status,
+        base_url=str(payload.get("base_url") or existing.base_url if existing else ""),
+        auth_type=auth_type,
+        secret_ref=_normalize_secret_ref(str(raw_secret_ref), auth_type),
+        metadata_json=metadata_json,
+        capabilities=capabilities,
+        permission_scopes=permission_scopes,
+        data_access=data_access,
+        egress_allowlist=egress_allowlist,
+        publisher=publisher,  # type: ignore[arg-type]
+        execution_mode=execution_mode,  # type: ignore[arg-type]
+        signature_verified=bool(signature_verified_raw),
+        approved_for_marketplace=bool(approved_for_marketplace_raw),
+    )
+
+    policy = _evaluate_integration_policy(integration, store.platform_settings)
+    if store.platform_settings.enforce_integration_policies and policy["violations"]:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "message": "Integration rejected by platform policy",
+                "policy": policy,
+            },
+        )
+
+    metadata_json["policy"] = policy
+    integration.metadata_json = metadata_json
+
+    store.integrations[integration_id] = integration
+    _persist_store_state()
+    return {"ok": True, "id": integration_id, "policy": policy}
+
+
+@app.post("/integrations/{integration_id}/test")
+def test_integration(integration_id: str) -> dict[str, Any]:
+    integration = store.integrations.get(integration_id)
+    if not integration:
+        raise HTTPException(status_code=404, detail="integration not found")
+
+    diagnostics = _build_integration_diagnostics(integration)
+    checks = diagnostics.get("checks", {})
+    policy = diagnostics.get("policy", {"ok": True, "warnings": [], "violations": []})
+    is_valid = bool(
+        checks.get("has_base_url")
+        and checks.get("no_embedded_credentials")
+        and (
+            not checks.get("secret_required")
+            or checks.get("has_secret_ref")
+        )
+    )
+    if store.platform_settings.enforce_integration_policies and not bool(policy.get("ok", True)):
+        is_valid = False
+
+    metadata = dict(integration.metadata_json)
+    metadata["last_test"] = {
+        "at": _now_iso(),
+        "ok": is_valid,
+        "warnings": diagnostics.get("warnings", []),
+        "checks": checks,
+    }
+    integration.metadata_json = metadata
+
+    integration.status = "configured" if is_valid else "error"
+    store.integrations[integration_id] = integration
+    _persist_store_state()
+    return {
+        "ok": is_valid,
+        "id": integration_id,
+        "status": integration.status,
+        "message": "Connectivity check simulated successfully" if is_valid else "Integration test failed one or more policy checks",
+        "diagnostics": diagnostics,
+    }
+
+
+@app.get("/integrations/{integration_id}/policy")
+def evaluate_integration_policy(integration_id: str) -> dict[str, Any]:
+    integration = store.integrations.get(integration_id)
+    if not integration:
+        raise HTTPException(status_code=404, detail="integration not found")
+    return {
+        "id": integration_id,
+        "policy": _evaluate_integration_policy(integration, store.platform_settings),
+    }
+
+
+@app.delete("/integrations/{integration_id}")
+def delete_integration(integration_id: str) -> dict[str, bool]:
+    store.integrations.pop(integration_id, None)
+    _persist_store_state()
+    return {"ok": True}
+
+
+@app.get("/templates/agents")
+def get_agent_templates() -> list[dict[str, Any]]:
+    return [item.model_dump() for item in store.agent_templates.values()]
+
+
+@app.get("/templates/catalog")
+def get_template_catalog() -> list[dict[str, Any]]:
+    return [item.model_dump() for item in _build_template_catalog()]
+
+
+@app.post("/templates/agents/{template_id}/instantiate")
+def instantiate_agent_template(template_id: str, payload: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
+    template = store.agent_templates.get(template_id)
+    if not template:
+        raise HTTPException(status_code=404, detail="agent template not found")
+
+    new_agent_id = str(payload.get("agent_id") or uuid4())
+    agent_name = str(payload.get("name") or f"{template.name} Instance")
+
+    config_json = dict(template.config_json)
+    override_config = payload.get("config_json") if isinstance(payload.get("config_json"), dict) else {}
+    config_json.update(override_config)
+
+    store.agent_definitions[new_agent_id] = AgentDefinition(
+        id=new_agent_id,
+        name=agent_name,
+        version=1,
+        status="draft",
+        type="graph",
+        config_json=config_json,
+    )
+    _persist_store_state()
+    return {"ok": True, "id": new_agent_id}
+
+
+@app.post("/templates/workflows/{workflow_id}/instantiate")
+def instantiate_workflow_template(workflow_id: str, payload: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
+    workflow = store.workflow_definitions.get(workflow_id)
+    if not workflow:
+        raise HTTPException(status_code=404, detail="workflow template not found")
+
+    if workflow.status == "archived":
+        raise HTTPException(status_code=400, detail="archived workflow definitions cannot be instantiated as templates")
+
+    new_workflow_id = str(payload.get("workflow_id") or uuid4())
+    workflow_name = str(payload.get("name") or f"{workflow.name} Instance")
+    workflow_description = str(payload.get("description") or workflow.description)
+
+    graph_json = dict(workflow.graph_json)
+    override_graph = payload.get("graph_json") if isinstance(payload.get("graph_json"), dict) else {}
+    if override_graph:
+        graph_json.update(override_graph)
+
+    store.workflow_definitions[new_workflow_id] = WorkflowDefinition(
+        id=new_workflow_id,
+        name=workflow_name,
+        description=workflow_description,
+        version=1,
+        status="draft",
+        graph_json=graph_json,
+        security_config=dict(workflow.security_config),
+    )
+    _persist_store_state()
+    return {"ok": True, "id": new_workflow_id}
+
+
+@app.get("/playbooks")
+def get_playbooks() -> list[dict[str, Any]]:
+    return [item.model_dump(exclude={"graph_json"}) for item in store.playbooks.values()]
+
+
+@app.get("/playbooks/{playbook_id}")
+def get_playbook(playbook_id: str) -> dict[str, Any]:
+    item = store.playbooks.get(playbook_id)
+    if not item:
+        raise HTTPException(status_code=404, detail="playbook not found")
+    return item.model_dump()
+
+
+@app.post("/playbooks/{playbook_id}/instantiate")
+def instantiate_playbook(playbook_id: str, payload: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
+    playbook = store.playbooks.get(playbook_id)
+    if not playbook:
+        raise HTTPException(status_code=404, detail="playbook not found")
+
+    workflow_id = str(payload.get("workflow_id") or uuid4())
+    workflow_name = str(payload.get("name") or f"{playbook.name} Workflow")
+    workflow_description = str(payload.get("description") or playbook.description)
+
+    graph_json = dict(playbook.graph_json)
+    override_graph = payload.get("graph_json") if isinstance(payload.get("graph_json"), dict) else {}
+    if override_graph:
+        graph_json.update(override_graph)
+
+    store.workflow_definitions[workflow_id] = WorkflowDefinition(
+        id=workflow_id,
+        name=workflow_name,
+        description=workflow_description,
+        version=1,
+        status="draft",
+        graph_json=graph_json,
+    )
+    _persist_store_state()
+    return {"ok": True, "id": workflow_id}
+
+
+@app.get("/observability/runs/{run_id}/trace")
+def get_observability_run_trace(run_id: str) -> dict[str, Any]:
+    if run_id not in store.runs:
+        raise HTTPException(status_code=404, detail="run not found")
+    trace = _build_observability_trace(run_id)
+    return trace.model_dump()
+
+
+@app.get("/observability/dashboard")
+def get_observability_dashboard(limit: int = 20) -> dict[str, Any]:
+    traces: list[ObservabilityRunTrace] = []
+    for run_id in list(store.runs.keys())[: max(1, min(limit, 200))]:
+        traces.append(_build_observability_trace(run_id))
+
+    total_runs = len(traces)
+    total_tokens = sum(item.token_estimate or 0 for item in traces)
+    total_cost = round(sum(item.cost_estimate_usd or 0 for item in traces), 6)
+    avg_latency = int(sum(item.duration_ms or 0 for item in traces) / total_runs) if total_runs > 0 else 0
+    failed_runs = len([item for item in traces if str(item.status).lower() in {"failed", "blocked"}])
+
+    return {
+        "summary": {
+            "total_runs": total_runs,
+            "failed_or_blocked_runs": failed_runs,
+            "token_estimate": total_tokens,
+            "cost_estimate_usd": total_cost,
+            "average_latency_ms": avg_latency,
+        },
+        "runs": [item.model_dump() for item in traces],
+    }
+
+
+@app.get("/audit/events")
+def get_audit_events(limit: int = 200) -> dict[str, Any]:
+    bounded_limit = max(1, min(1000, int(limit)))
+    return {
+        "count": min(len(store.audit_events), bounded_limit),
+        "events": [item.model_dump() for item in store.audit_events[:bounded_limit]],
+    }
+
+
+@app.get("/audit/atf-alignment-report")
+def get_atf_alignment_report() -> dict[str, Any]:
+    return _build_atf_alignment_report()
+
+
+@app.post("/collab/sessions/join")
+def join_collaboration_session(payload: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
+    entity_type = str(payload.get("entity_type") or "").strip()
+    entity_id = str(payload.get("entity_id") or "").strip()
+    user_id = str(payload.get("user_id") or "anonymous").strip()
+    display_name = str(payload.get("display_name") or user_id or "anonymous").strip()
+    requested_role = str(payload.get("role") or "editor").strip()
+
+    if entity_type not in {"agent", "workflow"}:
+        raise HTTPException(status_code=400, detail="entity_type must be 'agent' or 'workflow'")
+    if not entity_id:
+        raise HTTPException(status_code=400, detail="entity_id is required")
+    if requested_role not in {"owner", "editor", "viewer"}:
+        requested_role = "editor"
+
+    session_id = _collab_session_key(entity_type, entity_id)
+    session = store.collaboration_sessions.get(session_id)
+    if not session:
+        graph = _resolve_entity_graph(entity_type, entity_id)
+        session = CollaborationSession(
+            id=session_id,
+            entity_type=entity_type,  # type: ignore[arg-type]
+            entity_id=entity_id,
+            graph_json=graph,
+            version=1,
+            updated_at=_now_iso(),
+            participants=[],
+        )
+
+    participants = session.participants
+    if not participants:
+        effective_role: Literal["owner", "editor", "viewer"] = "owner"
+    else:
+        effective_role = requested_role if requested_role in {"owner", "editor", "viewer"} else "editor"
+        if effective_role == "owner" and not any(participant.role == "owner" for participant in participants):
+            effective_role = "owner"
+
+    session.participants = _upsert_collaboration_participant(session.participants, user_id, display_name, effective_role)
+    session.updated_at = _now_iso()
+    store.collaboration_sessions[session_id] = session
+    _persist_store_state()
+
+    return {
+        "ok": True,
+        "session": session.model_dump(),
+        "participant": {
+            "user_id": user_id,
+            "display_name": display_name,
+            "role": effective_role,
+        },
+    }
+
+
+@app.get("/collab/sessions/{session_id}")
+def get_collaboration_session(session_id: str) -> dict[str, Any]:
+    session = store.collaboration_sessions.get(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="collaboration session not found")
+    return session.model_dump()
+
+
+@app.post("/collab/sessions/{session_id}/sync")
+def sync_collaboration_session(session_id: str, payload: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
+    session = store.collaboration_sessions.get(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="collaboration session not found")
+
+    user_id = str(payload.get("user_id") or "").strip()
+    if not user_id:
+        raise HTTPException(status_code=400, detail="user_id is required")
+
+    participant = next((item for item in session.participants if item.user_id == user_id), None)
+    if not participant:
+        raise HTTPException(status_code=403, detail="participant has not joined this session")
+    if participant.role == "viewer":
+        raise HTTPException(status_code=403, detail="viewer participants cannot modify graph state")
+
+    base_version = int(payload.get("base_version") or session.version)
+    incoming_graph = payload.get("graph_json") if isinstance(payload.get("graph_json"), dict) else None
+    force = bool(payload.get("force", False))
+
+    if incoming_graph is None:
+        return {
+            "ok": True,
+            "version": session.version,
+            "graph_json": session.graph_json,
+            "updated_at": session.updated_at,
+        }
+
+    if base_version != session.version and not force:
+        return {
+            "ok": False,
+            "conflict": True,
+            "message": "version conflict",
+            "version": session.version,
+            "graph_json": session.graph_json,
+            "updated_at": session.updated_at,
+        }
+
+    session.graph_json = incoming_graph
+    session.version += 1
+    session.updated_at = _now_iso()
+    session.participants = _upsert_collaboration_participant(session.participants, participant.user_id, participant.display_name, participant.role)
+
+    store.collaboration_sessions[session_id] = session
+    _persist_store_state()
+    return {
+        "ok": True,
+        "version": session.version,
+        "graph_json": session.graph_json,
+        "updated_at": session.updated_at,
+    }
+
+
+@app.post("/collab/sessions/{session_id}/permissions")
+def update_collaboration_permissions(session_id: str, payload: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
+    session = store.collaboration_sessions.get(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="collaboration session not found")
+
+    actor_user_id = str(payload.get("actor_user_id") or "").strip()
+    target_user_id = str(payload.get("target_user_id") or "").strip()
+    next_role = str(payload.get("role") or "").strip()
+    if not actor_user_id or not target_user_id:
+        raise HTTPException(status_code=400, detail="actor_user_id and target_user_id are required")
+    if next_role not in {"owner", "editor", "viewer"}:
+        raise HTTPException(status_code=400, detail="role must be owner/editor/viewer")
+
+    actor = next((item for item in session.participants if item.user_id == actor_user_id), None)
+    if not actor or actor.role != "owner":
+        raise HTTPException(status_code=403, detail="only session owner can update permissions")
+
+    target = next((item for item in session.participants if item.user_id == target_user_id), None)
+    if not target:
+        raise HTTPException(status_code=404, detail="target participant not found")
+
+    if target.user_id == actor.user_id and next_role != "owner":
+        raise HTTPException(status_code=400, detail="owner cannot demote themselves")
+
+    updated: list[CollaborationParticipant] = []
+    for participant in session.participants:
+        if participant.user_id == target_user_id:
+            updated.append(
+                CollaborationParticipant(
+                    user_id=participant.user_id,
+                    display_name=participant.display_name,
+                    role=next_role,  # type: ignore[arg-type]
+                    last_seen_at=_now_iso(),
+                )
+            )
+        else:
+            updated.append(participant)
+
+    session.participants = updated
+    session.updated_at = _now_iso()
+    store.collaboration_sessions[session_id] = session
+    _persist_store_state()
+    return {"ok": True, "session": session.model_dump()}
+
+
+@app.get("/artifacts")
+def get_artifacts() -> list[dict[str, Any]]:
+    deduped: dict[str, ArtifactSummary] = {item.id: item for item in store.artifacts}
+    for artifact in _iter_generated_artifacts():
+        deduped[artifact.id] = ArtifactSummary(
+            id=artifact.id,
+            name=artifact.name,
+            status=artifact.status,
+            version=artifact.version,
+        )
+    return [item.model_dump() for item in deduped.values()]
+
+
+@app.get("/artifacts/{artifact_id}")
+def get_artifact(artifact_id: str) -> dict[str, Any]:
+    generated_artifact = _find_generated_artifact(artifact_id)
+    if generated_artifact is not None:
+        return {
+            "id": generated_artifact.id,
+            "name": generated_artifact.name,
+            "status": generated_artifact.status,
+            "version": generated_artifact.version,
+            "run_id": None,
+            "run_title": None,
+            "createdAt": generated_artifact.generated_at,
+            "content": generated_artifact.content,
+            "framework": generated_artifact.framework,
+            "language": generated_artifact.language,
+            "path": generated_artifact.path,
+            "summary": generated_artifact.summary,
+            "entity_type": generated_artifact.entity_type,
+            "entity_id": generated_artifact.entity_id,
+            "generated_at": generated_artifact.generated_at,
+        }
+
+    artifact_summary: ArtifactSummary | None = None
+    run_id: str | None = None
+
+    for candidate_run_id, detail in store.run_details.items():
+        if not isinstance(detail, dict):
+            continue
+        artifacts = detail.get("artifacts") if isinstance(detail.get("artifacts"), list) else []
+        for artifact in artifacts:
+            if not isinstance(artifact, dict):
+                continue
+            if str(artifact.get("id") or "").strip() != artifact_id:
+                continue
+            try:
+                artifact_summary = ArtifactSummary.model_validate(artifact)
+            except Exception:  # noqa: BLE001
+                artifact_summary = ArtifactSummary(
+                    id=artifact_id,
+                    name=str(artifact.get("name") or "Artifact"),
+                    status="Draft",
+                    version=int(artifact.get("version") or 1),
+                )
+            run_id = candidate_run_id
+            break
+        if artifact_summary is not None:
+            break
+
+    if artifact_summary is None:
+        artifact_summary = next((item for item in store.artifacts if item.id == artifact_id), None)
+
+    if artifact_summary is None:
+        raise HTTPException(status_code=404, detail="artifact not found")
+
+    response_text = ""
+    created_at = ""
+    if run_id is not None:
+        detail = store.run_details.get(run_id) if isinstance(store.run_details.get(run_id), dict) else {}
+        response_text = str(detail.get("response_text") or "")
+        if not response_text:
+            traces = detail.get("agent_traces") if isinstance(detail.get("agent_traces"), list) else []
+            for trace in traces:
+                if isinstance(trace, dict) and str(trace.get("output") or "").strip():
+                    response_text = str(trace.get("output") or "")
+                    break
+
+        run_events = store.run_events.get(run_id, [])
+        for event in run_events:
+            metadata = event.metadata if isinstance(event.metadata, dict) else {}
+            if event.type == "artifact_created" and str(metadata.get("artifact_id") or "") == artifact_id:
+                created_at = event.createdAt
+                break
+        if not created_at and run_events:
+            created_at = run_events[-1].createdAt
+
+    if not response_text:
+        response_text = f"Artifact '{artifact_summary.name}' has no captured output body."
+
+    return {
+        **artifact_summary.model_dump(),
+        "run_id": run_id,
+        "run_title": store.runs[run_id].title if run_id and run_id in store.runs else None,
+        "createdAt": created_at or _now_iso(),
+        "content": response_text,
+    }
+
+
+@app.get("/workflow-definitions")
+def get_workflow_definitions() -> list[dict[str, Any]]:
+    return [item.model_dump(exclude={"graph_json", "generated_artifacts"}) for item in store.workflow_definitions.values()]
+
+
+@app.get("/workflow-definitions/{item_id}")
+def get_workflow_definition(item_id: str) -> dict[str, Any]:
+    item = store.workflow_definitions.get(item_id)
+    if not item:
+        raise HTTPException(status_code=404, detail="workflow definition not found")
+    return item.model_dump()
+
+
+@app.get("/workflow-definitions/{item_id}/security-policy")
+def get_workflow_security_policy(item_id: str) -> dict[str, Any]:
+    item = store.workflow_definitions.get(item_id)
+    if not item:
+        raise HTTPException(status_code=404, detail="workflow definition not found")
+    return _resolve_effective_security_policy(
+        platform=store.platform_settings,
+        workflow_config=item.security_config,
+    )
+
+
+@app.post("/workflow-definitions")
+def save_workflow_definition(payload: dict[str, Any] = Body(default_factory=dict)) -> dict[str, bool]:
+    item_id = str(payload.get("id") or uuid4())
+    existing = store.workflow_definitions.get(item_id)
+    security_config = _normalize_security_scope_config(
+        payload.get("security_config")
+        if "security_config" in payload
+        else (existing.security_config if existing else {})
+    )
+    _validate_security_guardrail_reference(security_config, label="Workflow security policy")
+    store.workflow_definitions[item_id] = WorkflowDefinition(
+        id=item_id,
+        name=str(payload.get("name") or existing.name if existing else "Untitled Workflow"),
+        description=str(payload.get("description") or existing.description if existing else ""),
+        version=(existing.version if existing else 0) + 1,
+        status=existing.status if existing else "draft",
+        graph_json=dict(payload.get("graph_json") or payload.get("config_json", {}).get("graph_json") or {}),
+        security_config=security_config,
+    )
+    _persist_store_state()
+    return {"ok": True}
+
+
+@app.post("/workflow-definitions/{item_id}/publish")
+def publish_workflow_definition(item_id: str) -> dict[str, Any]:
+    item = store.workflow_definitions.get(item_id)
+    if not item:
+        raise HTTPException(status_code=404, detail="workflow definition not found")
+
+    graph_json = item.graph_json if isinstance(item.graph_json, dict) else {}
+    if graph_json.get("nodes") or graph_json.get("links"):
+        try:
+            payload = GraphPayload(
+                nodes=graph_json.get("nodes") or [],
+                links=graph_json.get("links") or [],
+            )
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(status_code=400, detail={"message": "Invalid workflow graph payload", "reason": str(exc)})
+        validation = _validate_graph(payload)
+        if not validation.valid:
+            raise HTTPException(
+                status_code=400,
+                detail={"message": "Workflow graph failed validation", "issues": [issue.model_dump() for issue in validation.issues]},
+            )
+
+    _validate_security_guardrail_reference(item.security_config, label="Workflow security policy")
+
+    next_version = item.version + 1
+    generated_artifacts = _build_generated_artifacts_for_workflow(item, version=next_version)
+    item.status = "published"
+    item.version = next_version
+    item.generated_artifacts = generated_artifacts
+    store.workflow_definitions[item_id] = item
+    _upsert_generated_artifact_summaries(generated_artifacts)
+    _persist_store_state()
+    return {"ok": True, "generated_artifacts": [artifact.model_dump() for artifact in generated_artifacts]}
+
+
+@app.post("/workflow-definitions/{item_id}/archive")
+def archive_workflow_definition(item_id: str) -> dict[str, bool]:
+    item = store.workflow_definitions.get(item_id)
+    if not item:
+        raise HTTPException(status_code=404, detail="workflow definition not found")
+    item.status = "archived"
+    item.version += 1
+    store.workflow_definitions[item_id] = item
+    _persist_store_state()
+    return {"ok": True}
+
+
+@app.delete("/workflow-definitions/{item_id}")
+def delete_workflow_definition(item_id: str) -> dict[str, bool]:
+    store.workflow_definitions.pop(item_id, None)
+    _persist_store_state()
+    return {"ok": True}
+
+
+@app.get("/agent-definitions")
+def get_agent_definitions() -> list[dict[str, Any]]:
+    return [item.model_dump(exclude={"config_json", "generated_artifacts"}) for item in store.agent_definitions.values()]
+
+
+@app.get("/agent-definitions/{item_id}")
+def get_agent_definition(item_id: str) -> dict[str, Any]:
+    item = store.agent_definitions.get(item_id)
+    if not item:
+        raise HTTPException(status_code=404, detail="agent definition not found")
+    return item.model_dump()
+
+
+@app.get("/agent-definitions/{item_id}/security-policy")
+def get_agent_security_policy(item_id: str) -> dict[str, Any]:
+    item = store.agent_definitions.get(item_id)
+    if not item:
+        raise HTTPException(status_code=404, detail="agent definition not found")
+    config_json = item.config_json if isinstance(item.config_json, dict) else {}
+    workflow_id = str(config_json.get("workflow_definition_id") or "").strip()
+    workflow = store.workflow_definitions.get(workflow_id) if workflow_id else None
+    return _resolve_effective_security_policy(
+        platform=store.platform_settings,
+        workflow_config=workflow.security_config if workflow else None,
+        agent_config=config_json.get("security") if isinstance(config_json.get("security"), dict) else None,
+    )
+
+
+@app.post("/agent-definitions")
+def save_agent_definition(payload: dict[str, Any] = Body(default_factory=dict)) -> dict[str, bool]:
+    item_id = str(payload.get("id") or uuid4())
+    existing = store.agent_definitions.get(item_id)
+    incoming_config = payload.get("config_json")
+    if isinstance(incoming_config, dict):
+        merged_config = dict(existing.config_json) if existing and isinstance(existing.config_json, dict) else {}
+        merged_config.update(incoming_config)
+    else:
+        merged_config = dict(existing.config_json) if existing and isinstance(existing.config_json, dict) else {}
+
+    if "security_config" in payload or "security" in merged_config:
+        merged_config["security"] = _normalize_security_scope_config(
+            payload.get("security_config")
+            if "security_config" in payload
+            else merged_config.get("security")
+        )
+    _validate_security_guardrail_reference(
+        merged_config.get("security") if isinstance(merged_config.get("security"), dict) else {},
+        label="Agent security policy",
+    )
+
+    canonical_config = _canonicalize_agent_config(
+        merged_config,
+        agent_id=item_id,
+        agent_name=str(payload.get("name") or existing.name if existing else "Untitled Agent"),
+        source_agent_id=str(merged_config.get("source_agent_id") or item_id),
+        system_prompt=str(merged_config.get("system_prompt") or ""),
+        model_defaults=merged_config.get("model_defaults") if isinstance(merged_config.get("model_defaults"), dict) else None,
+        tags=_normalize_text_list(merged_config.get("tags")),
+        capabilities=_normalize_text_list(merged_config.get("capabilities")),
+        owners=_normalize_text_list(merged_config.get("owners")),
+        tools=merged_config.get("tools") if isinstance(merged_config.get("tools"), list) else None,
+        seed_source=str(merged_config.get("seed_source") or "") or None,
+        prompt_file=str(merged_config.get("prompt_file") or "") or None,
+        url_manifest=str(merged_config.get("url_manifest") or "") or None,
+    )
+
+    store.agent_definitions[item_id] = AgentDefinition(
+        id=item_id,
+        name=str(payload.get("name") or existing.name if existing else "Untitled Agent"),
+        version=(existing.version if existing else 0) + 1,
+        status=existing.status if existing else "draft",
+        type="graph",
+        config_json=canonical_config,
+    )
+    _persist_store_state()
+    return {"ok": True}
+
+
+@app.post("/agent-definitions/{item_id}/publish")
+def publish_agent_definition(item_id: str) -> dict[str, Any]:
+    item = store.agent_definitions.get(item_id)
+    if not item:
+        raise HTTPException(status_code=404, detail="agent definition not found")
+
+    config_json = item.config_json if isinstance(item.config_json, dict) else {}
+    _validate_security_guardrail_reference(
+        config_json.get("security") if isinstance(config_json.get("security"), dict) else {},
+        label="Agent security policy",
+    )
+    graph_json = config_json.get("graph_json") if isinstance(config_json.get("graph_json"), dict) else {}
+    if graph_json.get("nodes") or graph_json.get("links"):
+        try:
+            payload = GraphPayload(
+                nodes=graph_json.get("nodes") or [],
+                links=graph_json.get("links") or [],
+            )
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(status_code=400, detail={"message": "Invalid agent graph payload", "reason": str(exc)})
+        validation = _validate_graph(payload)
+        if not validation.valid:
+            raise HTTPException(
+                status_code=400,
+                detail={"message": "Agent graph failed validation", "issues": [issue.model_dump() for issue in validation.issues]},
+            )
+
+    next_version = item.version + 1
+    generated_artifacts = _build_generated_artifacts_for_agent(item, version=next_version)
+    item.status = "published"
+    item.version = next_version
+    item.generated_artifacts = generated_artifacts
+    store.agent_definitions[item_id] = item
+    _upsert_generated_artifact_summaries(generated_artifacts)
+    _persist_store_state()
+    return {"ok": True, "generated_artifacts": [artifact.model_dump() for artifact in generated_artifacts]}
+
+
+@app.delete("/agent-definitions/{item_id}")
+def delete_agent_definition(item_id: str) -> dict[str, bool]:
+    store.agent_definitions.pop(item_id, None)
+    _persist_store_state()
+    return {"ok": True}
+
+
+@app.get("/node-definitions")
+def get_node_definitions() -> list[dict[str, Any]]:
+    base_nodes: list[NodeDefinition] = [
+        NodeDefinition(type_key="frontier/trigger", title="Trigger", description="Workflow entrypoint for user kickoff, schedule, or external event.", category="Core", color="#6ca0ff"),
+        NodeDefinition(type_key="frontier/agent", title="Agent", description="Execute a delegated objective with a selected specialist agent.", category="Agent", color="#1f7f53"),
+        NodeDefinition(type_key="frontier/prompt", title="Prompt", description="Compose reusable system prompt instructions and pass them to agent nodes.", category="Agent", color="#5f4bb6"),
+        NodeDefinition(type_key="frontier/tool-call", title="Tool / API Call", description="Invoke external APIs or internal tools with schema-validated IO.", category="Integration", color="#6fd3ff"),
+        NodeDefinition(type_key="frontier/retrieval", title="Retrieval", description="Retrieve and rank context from vector DB, docs, or KB sources.", category="Knowledge", color="#8a6717"),
+        NodeDefinition(type_key="frontier/memory", title="Memory", description="Read/write short-term or long-term memory scoped to tenant/run.", category="Knowledge", color="#4f5966"),
+        NodeDefinition(type_key="frontier/guardrail", title="Guardrail", description="Apply safety, policy, and quality controls to input/output content.", category="Control", color="#9f3550"),
+        NodeDefinition(type_key="frontier/human-review", title="Human Review", description="Approval or clarification gate with feedback loop and audit trail.", category="Control", color="#8d5c1a"),
+        NodeDefinition(type_key="frontier/manifold", title="Manifold", description="Consolidate multiple inbound flows using AND/OR logic into a single output.", category="Logic", color="#7863d3"),
+        NodeDefinition(type_key="frontier/output", title="Output", description="Finalize artifacts, emit events, and publish run outcomes.", category="Core", color="#69a3ff"),
+    ]
+    return [node.model_dump() for node in base_nodes]
+
+
+@app.get("/guardrail-rulesets")
+def get_guardrail_rulesets() -> list[dict[str, Any]]:
+    return [item.model_dump() for item in store.guardrail_rulesets.values()]
+
+
+@app.post("/guardrail-rulesets")
+def save_guardrail_ruleset(payload: dict[str, Any] = Body(default_factory=dict)) -> dict[str, bool]:
+    item_id = str(payload.get("id") or uuid4())
+    existing = store.guardrail_rulesets.get(item_id)
+    incoming_config = payload.get("config_json")
+    if isinstance(incoming_config, dict):
+        config_json = dict(incoming_config)
+    elif existing:
+        config_json = dict(existing.config_json)
+    else:
+        config_json = {}
+
+    store.guardrail_rulesets[item_id] = GuardrailRuleSet(
+        id=item_id,
+        name=str(payload.get("name") or existing.name if existing else "Untitled Guardrail"),
+        version=(existing.version if existing else 0) + 1,
+        status=existing.status if existing else "draft",
+        config_json=config_json,
+    )
+    _persist_store_state()
+    return {"ok": True}
+
+
+@app.post("/guardrail-rulesets/{item_id}/publish")
+def publish_guardrail_ruleset(item_id: str) -> dict[str, bool]:
+    item = store.guardrail_rulesets.get(item_id)
+    if not item:
+        raise HTTPException(status_code=404, detail="guardrail ruleset not found")
+    item.status = "published"
+    item.version += 1
+    store.guardrail_rulesets[item_id] = item
+    _persist_store_state()
+    return {"ok": True}
+
+
+@app.delete("/guardrail-rulesets/{item_id}")
+def delete_guardrail_ruleset(item_id: str) -> dict[str, bool]:
+    store.guardrail_rulesets.pop(item_id, None)
+    _persist_store_state()
+    return {"ok": True}
+
+
+@app.delete("/node-definitions/{_item_id}")
+def delete_node_definition(_item_id: str) -> dict[str, bool]:
+    return {"ok": True}
+
+
+@app.post("/graph/validate")
+def validate_graph(payload: GraphPayload) -> dict[str, Any]:
+    result = _validate_graph(payload)
+    return result.model_dump()
+
+
+@app.post("/graph/runs")
+def run_graph(request: Request, payload: GraphPayload) -> dict[str, Any]:
+    actor = _enforce_request_authn(request, payload=payload.input if isinstance(payload.input, dict) else {}, action="graph.run")
+    _enforce_emergency_write_policy("graph.run", actor)
+    if store.platform_settings.block_graph_runs:
+        _append_audit_event("graph.run", actor, "blocked", {"reason": "block_graph_runs"})
+        raise HTTPException(status_code=423, detail="Graph runs are temporarily blocked by policy")
+
+    validation = _validate_graph(payload)
+    if not validation.valid:
+        raise HTTPException(status_code=400, detail={"message": "Graph validation failed", "validation": validation.model_dump()})
+
+    max_collaborators = max(1, int(store.platform_settings.collaboration_max_agents))
+    collaborating_agents = [node for node in payload.nodes if _normalize_node_type(node.type).startswith("frontier/agent")]
+    if len(collaborating_agents) > max_collaborators:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "message": "Graph exceeds collaboration limit",
+                "collaborating_agents": len(collaborating_agents),
+                "max_collaborators": max_collaborators,
+            },
+        )
+
+    order = _topological_order([node.id for node in payload.nodes], payload.links) or []
+    node_by_id = {node.id: node for node in payload.nodes}
+    node_results: dict[str, dict[str, Any]] = {}
+    events: list[GraphRunEvent] = []
+    run_id = str(uuid4())
+    runtime = payload.input.get("runtime") if isinstance(payload.input, dict) else {}
+    if not isinstance(runtime, dict):
+        runtime = {}
+    runtime_info = _resolve_runtime_engine(payload.input, store.platform_settings)
+    session_id = str(runtime.get("session_id") or payload.input.get("session_id") or f"session:{run_id}")
+    execution_state: dict[str, Any] = {
+        "run_id": run_id,
+        "runtime": runtime,
+        "session_id": session_id,
+        "runtime_info": runtime_info,
+    }
+
+    events.append(
+        GraphRunEvent(
+            id=f"evt-{uuid4()}",
+            node_id="runtime",
+            type="node_started",
+            title="Runtime selected",
+            summary=(
+                f"Selected={runtime_info['selected_engine']} Executed={runtime_info['executed_engine']} "
+                f"Mode={runtime_info['mode']} Strategy={runtime_info.get('strategy', 'single')}"
+            ),
+            created_at=_now_iso(),
+        )
+    )
+
+    if runtime_info.get("strategy") == "hybrid":
+        hybrid_routing = runtime_info.get("hybrid_effective_routing") if isinstance(runtime_info.get("hybrid_effective_routing"), dict) else {}
+        if hybrid_routing:
+            routing_summary = ", ".join(f"{role}:{engine}" for role, engine in hybrid_routing.items())
+            events.append(
+                GraphRunEvent(
+                    id=f"evt-{uuid4()}",
+                    node_id="runtime",
+                    type="node_completed",
+                    title="Hybrid routing plan",
+                    summary=routing_summary,
+                    created_at=_now_iso(),
+                )
+            )
+
+    for node_id in order:
+        node = node_by_id[node_id]
+        var_context = _build_runtime_var_context(payload.input, execution_state, node_results)
+        resolved_config = _resolve_runtime_value(node.config, var_context)
+        if not isinstance(resolved_config, dict):
+            resolved_config = node.config
+        resolved_node = GraphNode(
+            id=node.id,
+            type=node.type,
+            title=node.title,
+            x=node.x,
+            y=node.y,
+            config=resolved_config,
+        )
+        events.append(
+            GraphRunEvent(
+                id=f"evt-{uuid4()}",
+                node_id=node_id,
+                type="node_started",
+                title=f"{resolved_node.title} started",
+                summary=f"Executing {resolved_node.type}",
+                created_at=_now_iso(),
+            )
+        )
+        try:
+            incoming = _incoming_values(node_id, payload.links, node_results)
+            incoming_by_port = _incoming_values_by_port(node_id, payload.links, node_results)
+            node_results[node_id] = _execute_node(
+                node=resolved_node,
+                incoming=incoming,
+                incoming_by_port=incoming_by_port,
+                run_input=payload.input,
+                execution_state=execution_state,
+                mem_store=store.memory_by_session,
+            )
+            node_type = _normalize_node_type(resolved_node.type)
+            node_role = _infer_graph_node_runtime_role(
+                resolved_node,
+                node_type=node_type,
+                incoming_by_port=incoming_by_port,
+                execution_state=execution_state,
+            )
+            node_runtime = _resolve_node_runtime_engine(runtime_info, node_role)
+            node_runtime_meta = {
+                "role": node_role,
+                "requested_engine": _normalize_runtime_engine(node_runtime.get("selected_engine") or "native"),
+                "executed_engine": _normalize_runtime_engine(node_runtime.get("executed_engine") or "native"),
+                "mode": str(node_runtime.get("mode") or "native"),
+                "strategy": str(runtime_info.get("strategy") or "single"),
+            }
+            if isinstance(node_results[node_id], dict):
+                node_results[node_id]["runtime"] = node_runtime_meta
+
+            runtime_dispatches = execution_state.setdefault("runtime_dispatches", [])
+            if isinstance(runtime_dispatches, list):
+                existing = any(isinstance(item, dict) and item.get("node_id") == node_id for item in runtime_dispatches)
+                if not existing:
+                    runtime_dispatches.append(
+                        {
+                            "node_id": node_id,
+                            "node_title": resolved_node.title,
+                            "role": node_runtime_meta["role"],
+                            "requested_engine": node_runtime_meta["requested_engine"],
+                            "executed_engine": node_runtime_meta["executed_engine"],
+                            "mode": node_runtime_meta["mode"],
+                        }
+                    )
+            events.append(
+                GraphRunEvent(
+                    id=f"evt-{uuid4()}",
+                    node_id=node_id,
+                    type="node_completed",
+                    title=f"{resolved_node.title} completed",
+                    summary="Execution completed successfully.",
+                    created_at=_now_iso(),
+                )
+            )
+        except Exception as exc:  # noqa: BLE001
+            events.append(
+                GraphRunEvent(
+                    id=f"evt-{uuid4()}",
+                    node_id=node_id,
+                    type="node_failed",
+                    title=f"{resolved_node.title} failed",
+                    summary=str(exc),
+                    created_at=_now_iso(),
+                )
+            )
+            runtime_snapshot = dict(runtime_info)
+            runtime_snapshot["node_dispatches"] = execution_state.get("runtime_dispatches", [])
+            result = GraphRunResult(
+                run_id=run_id,
+                status="failed",
+                execution_order=order,
+                node_results=node_results,
+                events=events,
+                validation=validation,
+                runtime=runtime_snapshot,
+            )
+            _append_audit_event("graph.run", actor, "error", {"run_id": run_id, "status": result.status})
+            return result.model_dump()
+
+    runtime_snapshot = dict(runtime_info)
+    runtime_snapshot["node_dispatches"] = execution_state.get("runtime_dispatches", [])
+    result = GraphRunResult(
+        run_id=run_id,
+        status="completed",
+        execution_order=order,
+        node_results=node_results,
+        events=events,
+        validation=validation,
+        runtime=runtime_snapshot,
+    )
+    _append_audit_event("graph.run", actor, "allowed", {"run_id": run_id, "status": result.status})
+    return result.model_dump()

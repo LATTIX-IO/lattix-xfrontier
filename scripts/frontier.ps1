@@ -214,7 +214,7 @@ function Assert-DockerReady {
 }
 
 function Show-Help {
-    Write-Host "Lattix Frontier Windows helper"
+    Write-Host "Lattix xFrontier Windows helper"
     Write-Host ""
     Write-Host "Usage: .\scripts\frontier.ps1 <command>"
     Write-Host ""

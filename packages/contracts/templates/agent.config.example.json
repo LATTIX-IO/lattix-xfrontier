@@ -1,0 +1,24 @@
+{
+  "schema_version": "1.0.0",
+  "id": "example-agent",
+  "name": "Example Agent",
+  "description": "Describe the agent’s purpose and boundaries.",
+  "version": "0.1.0",
+  "status": "draft",
+  "owners": ["owner@example.com"],
+  "tags": ["example", "demo"],
+  "capabilities": ["summarization", "classification"],
+  "prompt_file": "system-prompt.md",
+  "url_manifest": "url-manifest-example.json",
+  "model_defaults": {
+    "provider": "openai",
+    "model": "gpt-5",
+    "temperature": 0.2,
+    "max_tokens": 2048
+  },
+  "tools": [
+    { "name": "web-search", "type": "http", "config": { "baseUrl": "https://…" } }
+  ],
+  "created_at": "2025-01-01T00:00:00Z",
+  "updated_at": "2025-01-01T00:00:00Z"
+}

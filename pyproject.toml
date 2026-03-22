@@ -5,10 +5,10 @@ build-backend = "hatchling.build"
 [project]
 name = "lattix-frontier"
 version = "0.1.0"
-description = "Lattix Frontier root orchestration and control plane"
+description = "Lattix xFrontier open-source orchestration and control plane"
 readme = "README.md"
 requires-python = ">=3.12"
-license = { text = "Proprietary" }
+license = { file = "LICENSE" }
 authors = [
   { name = "Lattix" }
 ]

@@ -1,0 +1,8 @@
+project:
+  environment: prod
+  name: lattix-frontier-prod
+  endpoint: https://REPLACE-PROD-ENDPOINT.services.ai.azure.com/api/projects/REPLACE-PROD-PROJECT
+  region: eastus2
+  auth:
+    api_key_secret: FOUNDRY_API_KEY_PROD
+

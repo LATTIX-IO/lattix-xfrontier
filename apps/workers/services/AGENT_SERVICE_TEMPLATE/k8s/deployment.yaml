@@ -1,0 +1,40 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: agent-service
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: agent-service
+  template:
+    metadata:
+      labels:
+        app: agent-service
+    spec:
+      containers:
+        - name: agent-service
+          image: ghcr.io/your-org/agent-service:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8080
+          env:
+            - name: A2A_JWT_ALG
+              value: "HS256"
+            - name: A2A_JWT_ISS
+              value: "lattix-frontier"
+            - name: A2A_JWT_AUD
+              value: "agents"
+            - name: A2A_JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: a2a-shared-secret
+                  key: secret
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: a2a-shared-secret
+type: Opaque
+stringData:
+  secret: "REPLACE_ME_WITH_SECURE_VALUE"
