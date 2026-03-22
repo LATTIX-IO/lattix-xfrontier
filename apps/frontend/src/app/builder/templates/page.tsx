@@ -72,18 +72,18 @@ export default function TemplatesPage() {
     try {
       if (item.template_type === "agent") {
         const created = await instantiateAgentTemplate(item.source_id, { name: `${item.name} Instance` });
-        router.push(`/builder/agent/${created.id}`);
+        router.push(`/builder/agents/${created.id}`);
         return;
       }
 
       if (item.template_type === "workflow") {
         const created = await instantiateWorkflowTemplate(item.source_id, { name: `${item.name} Instance` });
-        router.push(`/builder/workflow/${created.id}`);
+        router.push(`/builder/workflows/${created.id}`);
         return;
       }
 
       const created = await instantiatePlaybook(item.source_id, { name: `${item.name} Instance` });
-      router.push(`/builder/workflow/${created.id}`);
+      router.push(`/builder/workflows/${created.id}`);
     } catch {
       setError(`Failed to instantiate ${item.name}.`);
     } finally {

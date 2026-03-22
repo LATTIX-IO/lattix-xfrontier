@@ -35,6 +35,7 @@ type Props = {
   entityType: StudioEntityType;
   entityId: string;
   entityName: string;
+  builderMode?: "standard" | "internal";
   description: string;
   initialNodes: GraphNode[];
   initialLinks: GraphLink[];
@@ -48,6 +49,7 @@ export function StudioFullCanvas({
   entityType,
   entityId,
   entityName,
+  builderMode = "standard",
   description,
   initialNodes,
   initialLinks,
@@ -120,6 +122,7 @@ export function StudioFullCanvas({
   const [selectedTrace, setSelectedTrace] = useState<ObservabilityRunTrace | null>(null);
   const [collabUserId, setCollabUserId] = useState("local-user");
   const [runtimePanelCollapsed, setRuntimePanelCollapsed] = useState(false);
+  const isInternalBuilderMode = builderMode === "internal";
 
   const isReadOnly = collabRole === "viewer";
 
@@ -254,7 +257,7 @@ export function StudioFullCanvas({
     let cancelled = false;
 
     async function loadNodeDefinitions() {
-      const nodeDefinitions = await getNodeDefinitions();
+      const nodeDefinitions = await getNodeDefinitions({ includeInternal: isInternalBuilderMode });
       if (cancelled) {
         return;
       }
@@ -276,7 +279,7 @@ export function StudioFullCanvas({
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [isInternalBuilderMode]);
 
   useEffect(() => {
     const storageKey = `frontier:collab:${entityType}:${entityId}:user`;
@@ -702,6 +705,12 @@ export function StudioFullCanvas({
               <span className="font-semibold text-[var(--foreground)]">{collabRole}</span>
               <span className="fx-muted">sync:</span>
               <span className="font-semibold text-[var(--foreground)]">{collabSyncState}</span>
+                {isInternalBuilderMode && (
+                  <>
+                    <span className="fx-muted">mode:</span>
+                    <span className="font-semibold text-[var(--foreground)]">internal</span>
+                  </>
+                )}
             </div>
           </div>
 
@@ -853,7 +862,7 @@ export function StudioFullCanvas({
             <div className="mt-1 border border-[var(--fx-border)] bg-[var(--fx-surface-elevated)] p-1 text-[10px]">
               <div className="fx-muted">run_id</div>
               <div className="font-mono text-[var(--foreground)]">{runResult.run_id}</div>
-              {runResult.runtime && (
+              {isInternalBuilderMode && runResult.runtime && (
                 <>
                   <div className="mt-1 fx-muted">runtime engine</div>
                   <div className="font-mono text-[var(--foreground)]">
@@ -898,214 +907,226 @@ export function StudioFullCanvas({
             </div>
           )}
 
-          <div className="mt-2 fx-panel p-1.5 text-[10px]">
-            <div className="mb-1 fx-muted">Model Runtime</div>
-            <div className="mb-1 text-[var(--foreground)]">
-              openai={providerStatus?.configured ? "configured" : "not-configured"} mode={providerStatus?.mode ?? "simulated"}
-            </div>
-            <div className="mb-1 flex items-center justify-between gap-2 text-[9px]">
-              <span className="fx-muted">engine_override={runtimePolicy.allow_runtime_engine_override ? "enabled" : "disabled"}</span>
-              <span className="fx-muted">effective={effectiveRuntimeEngine}</span>
-            </div>
-            <div className="mb-1 text-[9px] fx-muted">allowed={(runtimePolicy.allowed_runtime_engines ?? []).join(", ") || "native"}</div>
-            <div className="mb-1 text-[9px] fx-muted">Framework adapters</div>
-            <ul className="mb-1 max-h-20 overflow-auto border border-[var(--fx-border)] bg-[var(--fx-surface-elevated)] p-1">
-              {frameworkAdapterRows.length === 0 ? (
-                <li className="fx-muted">No adapter probe data.</li>
-              ) : (
-                frameworkAdapterRows.map((row) => (
-                  <li key={row.engine} className="mb-1 border-b border-[var(--fx-border)] pb-1 last:mb-0 last:border-b-0 last:pb-0">
-                    <div className="flex items-center justify-between gap-2">
-                      <span className="text-[var(--foreground)]">{row.engine}</span>
-                      <span
-                        className={`rounded border px-1.5 py-0.5 text-[9px] font-semibold ${row.available ? "border-[color-mix(in_srgb,var(--fx-success)_60%,var(--fx-border)_40%)] bg-[color-mix(in_srgb,var(--fx-success)_20%,transparent)] text-[var(--foreground)]" : "border-[color-mix(in_srgb,var(--fx-warning)_60%,var(--fx-border)_40%)] bg-[color-mix(in_srgb,var(--fx-warning)_18%,transparent)] text-[var(--foreground)]"}`}
-                        aria-label={`Runtime adapter ${row.engine} ${row.available ? "ready" : "missing dependencies"}`}
-                        title={row.available ? "Adapter dependencies detected" : "Adapter dependencies missing"}
+          {isInternalBuilderMode ? (
+            <div className="mt-2 fx-panel p-1.5 text-[10px]">
+              <div className="mb-1 fx-muted">Model Runtime</div>
+              <div className="mb-1 text-[var(--foreground)]">
+                openai={providerStatus?.configured ? "configured" : "not-configured"} mode={providerStatus?.mode ?? "simulated"}
+              </div>
+              <div className="mb-1 flex items-center justify-between gap-2 text-[9px]">
+                <span className="fx-muted">engine_override={runtimePolicy.allow_runtime_engine_override ? "enabled" : "disabled"}</span>
+                <span className="fx-muted">effective={effectiveRuntimeEngine}</span>
+              </div>
+              <div className="mb-1 text-[9px] fx-muted">allowed={(runtimePolicy.allowed_runtime_engines ?? []).join(", ") || "native"}</div>
+              <div className="mb-1 text-[9px] fx-muted">Framework adapters</div>
+              <ul className="mb-1 max-h-20 overflow-auto border border-[var(--fx-border)] bg-[var(--fx-surface-elevated)] p-1">
+                {frameworkAdapterRows.length === 0 ? (
+                  <li className="fx-muted">No adapter probe data.</li>
+                ) : (
+                  frameworkAdapterRows.map((row) => (
+                    <li key={row.engine} className="mb-1 border-b border-[var(--fx-border)] pb-1 last:mb-0 last:border-b-0 last:pb-0">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-[var(--foreground)]">{row.engine}</span>
+                        <span
+                          className={`rounded border px-1.5 py-0.5 text-[9px] font-semibold ${row.available ? "border-[color-mix(in_srgb,var(--fx-success)_60%,var(--fx-border)_40%)] bg-[color-mix(in_srgb,var(--fx-success)_20%,transparent)] text-[var(--foreground)]" : "border-[color-mix(in_srgb,var(--fx-warning)_60%,var(--fx-border)_40%)] bg-[color-mix(in_srgb,var(--fx-warning)_18%,transparent)] text-[var(--foreground)]"}`}
+                          aria-label={`Runtime adapter ${row.engine} ${row.available ? "ready" : "missing dependencies"}`}
+                          title={row.available ? "Adapter dependencies detected" : "Adapter dependencies missing"}
+                        >
+                          {row.available ? "READY" : "MISSING"}
+                        </span>
+                      </div>
+                      {!row.available && row.missingModules.length > 0 && (
+                        <div className="mt-0.5 break-all text-[9px] fx-muted">{row.missingModules.join(", ")}</div>
+                      )}
+                    </li>
+                  ))
+                )}
+              </ul>
+              <div className="grid grid-cols-2 gap-1">
+                <label className="col-span-2 flex flex-col gap-0.5 fx-muted">
+                  <span>runtime_strategy</span>
+                  <select
+                    aria-label="Runtime strategy"
+                    value={runtimeStrategy}
+                    onChange={(event) => setRuntimeStrategy(event.target.value as RuntimeStrategyName)}
+                    className="fx-field px-1 py-0.5 text-[10px]"
+                  >
+                    <option value="single">single</option>
+                    <option value="hybrid">hybrid (task-routed)</option>
+                  </select>
+                </label>
+                <label className="col-span-2 flex flex-col gap-0.5 fx-muted">
+                  <span>runtime_engine</span>
+                  <select
+                    aria-label="Runtime engine"
+                    value={runtimeEngine}
+                    onChange={(event) => setRuntimeEngine(event.target.value as RuntimeEngineName)}
+                    className="fx-field px-1 py-0.5 text-[10px]"
+                    disabled={!runtimePolicy.allow_runtime_engine_override || runtimeStrategy === "hybrid"}
+                  >
+                    {runtimeEngineOptions.map((engine) => {
+                      const probe = frameworkAdapters[engine];
+                      const depsReady = engine === "native" || Boolean(probe?.available);
+                      const allowed = (runtimePolicy.allowed_runtime_engines ?? []).includes(engine);
+                      const blockedByAllowlist = runtimePolicy.enforce_runtime_engine_allowlist && !allowed;
+                      const label = `${engine}${depsReady ? "" : " (deps missing)"}${blockedByAllowlist ? " (not allowed)" : ""}`;
+                      return (
+                        <option key={engine} value={engine}>
+                          {label}
+                        </option>
+                      );
+                    })}
+                  </select>
+                </label>
+                {runtimeStrategy === "hybrid" && (
+                  <>
+                    <label className="flex flex-col gap-0.5 fx-muted">
+                      <span>route.default</span>
+                      <select
+                        aria-label="Hybrid route default"
+                        value={hybridRouting.default ?? "native"}
+                        onChange={(event) => setHybridRoleEngine("default", event.target.value as RuntimeEngineName)}
+                        className="fx-field px-1 py-0.5 text-[10px]"
                       >
-                        {row.available ? "READY" : "MISSING"}
-                      </span>
-                    </div>
-                    {!row.available && row.missingModules.length > 0 && (
-                      <div className="mt-0.5 break-all text-[9px] fx-muted">{row.missingModules.join(", ")}</div>
-                    )}
-                  </li>
-                ))
+                        {runtimeEngineOptions.map((engine) => (
+                          <option key={`hy-default-${engine}`} value={engine}>{engine}</option>
+                        ))}
+                      </select>
+                    </label>
+                    <label className="flex flex-col gap-0.5 fx-muted">
+                      <span>route.retrieval</span>
+                      <select
+                        aria-label="Hybrid route retrieval"
+                        value={hybridRouting.retrieval ?? hybridRouting.default ?? "native"}
+                        onChange={(event) => setHybridRoleEngine("retrieval", event.target.value as RuntimeEngineName)}
+                        className="fx-field px-1 py-0.5 text-[10px]"
+                      >
+                        {runtimeEngineOptions.map((engine) => (
+                          <option key={`hy-retrieval-${engine}`} value={engine}>{engine}</option>
+                        ))}
+                      </select>
+                    </label>
+                    <label className="flex flex-col gap-0.5 fx-muted">
+                      <span>route.tooling</span>
+                      <select
+                        aria-label="Hybrid route tooling"
+                        value={hybridRouting.tooling ?? hybridRouting.default ?? "native"}
+                        onChange={(event) => setHybridRoleEngine("tooling", event.target.value as RuntimeEngineName)}
+                        className="fx-field px-1 py-0.5 text-[10px]"
+                      >
+                        {runtimeEngineOptions.map((engine) => (
+                          <option key={`hy-tooling-${engine}`} value={engine}>{engine}</option>
+                        ))}
+                      </select>
+                    </label>
+                    <label className="flex flex-col gap-0.5 fx-muted">
+                      <span>route.orchestration</span>
+                      <select
+                        aria-label="Hybrid route orchestration"
+                        value={hybridRouting.orchestration ?? hybridRouting.default ?? "native"}
+                        onChange={(event) => setHybridRoleEngine("orchestration", event.target.value as RuntimeEngineName)}
+                        className="fx-field px-1 py-0.5 text-[10px]"
+                      >
+                        {runtimeEngineOptions.map((engine) => (
+                          <option key={`hy-orchestration-${engine}`} value={engine}>{engine}</option>
+                        ))}
+                      </select>
+                    </label>
+                    <label className="col-span-2 flex flex-col gap-0.5 fx-muted">
+                      <span>route.collaboration</span>
+                      <select
+                        aria-label="Hybrid route collaboration"
+                        value={hybridRouting.collaboration ?? hybridRouting.default ?? "native"}
+                        onChange={(event) => setHybridRoleEngine("collaboration", event.target.value as RuntimeEngineName)}
+                        className="fx-field px-1 py-0.5 text-[10px]"
+                      >
+                        {runtimeEngineOptions.map((engine) => (
+                          <option key={`hy-collaboration-${engine}`} value={engine}>{engine}</option>
+                        ))}
+                      </select>
+                    </label>
+                  </>
+                )}
+                <label className="flex flex-col gap-0.5 fx-muted">
+                  <span>model</span>
+                  <input
+                    aria-label="Runtime model"
+                    value={runtimeModel}
+                    onChange={(event) => setRuntimeModel(event.target.value)}
+                    className="fx-field px-1 py-0.5 text-[10px]"
+                  />
+                </label>
+                <label className="flex flex-col gap-0.5 fx-muted">
+                  <span>temperature</span>
+                  <input
+                    aria-label="Runtime temperature"
+                    value={runtimeTemperature}
+                    onChange={(event) => setRuntimeTemperature(event.target.value)}
+                    className="fx-field px-1 py-0.5 text-[10px]"
+                  />
+                </label>
+                <label className="col-span-2 flex flex-col gap-0.5 fx-muted">
+                  <span>session_id</span>
+                  <input
+                    aria-label="Runtime session id"
+                    value={sessionId}
+                    onChange={(event) => setSessionId(event.target.value)}
+                    className="fx-field px-1 py-0.5 text-[10px]"
+                  />
+                </label>
+              </div>
+              <label className="mt-1 flex items-center gap-1 text-[var(--foreground)]">
+                <input type="checkbox" checked={useMemory} onChange={(event) => setUseMemory(event.target.checked)} />
+                <span>Enable memory context</span>
+              </label>
+              {!runtimePolicy.allow_runtime_engine_override && (
+                <div className="mt-1 text-[9px] fx-muted">
+                  Engine override is disabled by platform policy; runs will use default engine ({runtimePolicy.default_runtime_engine}).
+                </div>
               )}
-            </ul>
-            <div className="grid grid-cols-2 gap-1">
-              <label className="col-span-2 flex flex-col gap-0.5 fx-muted">
-                <span>runtime_strategy</span>
-                <select
-                  aria-label="Runtime strategy"
-                  value={runtimeStrategy}
-                  onChange={(event) => setRuntimeStrategy(event.target.value as RuntimeStrategyName)}
-                  className="fx-field px-1 py-0.5 text-[10px]"
-                >
-                  <option value="single">single</option>
-                  <option value="hybrid">hybrid (task-routed)</option>
-                </select>
-              </label>
-              <label className="col-span-2 flex flex-col gap-0.5 fx-muted">
-                <span>runtime_engine</span>
-                <select
-                  aria-label="Runtime engine"
-                  value={runtimeEngine}
-                  onChange={(event) => setRuntimeEngine(event.target.value as RuntimeEngineName)}
-                  className="fx-field px-1 py-0.5 text-[10px]"
-                  disabled={!runtimePolicy.allow_runtime_engine_override || runtimeStrategy === "hybrid"}
-                >
-                  {runtimeEngineOptions.map((engine) => {
-                    const probe = frameworkAdapters[engine];
-                    const depsReady = engine === "native" || Boolean(probe?.available);
-                    const allowed = (runtimePolicy.allowed_runtime_engines ?? []).includes(engine);
-                    const blockedByAllowlist = runtimePolicy.enforce_runtime_engine_allowlist && !allowed;
-                    const label = `${engine}${depsReady ? "" : " (deps missing)"}${blockedByAllowlist ? " (not allowed)" : ""}`;
-                    return (
-                      <option key={engine} value={engine}>
-                        {label}
-                      </option>
-                    );
-                  })}
-                </select>
-              </label>
               {runtimeStrategy === "hybrid" && (
-                <>
-                  <label className="flex flex-col gap-0.5 fx-muted">
-                    <span>route.default</span>
-                    <select
-                      aria-label="Hybrid route default"
-                      value={hybridRouting.default ?? "native"}
-                      onChange={(event) => setHybridRoleEngine("default", event.target.value as RuntimeEngineName)}
-                      className="fx-field px-1 py-0.5 text-[10px]"
-                    >
-                      {runtimeEngineOptions.map((engine) => (
-                        <option key={`hy-default-${engine}`} value={engine}>{engine}</option>
-                      ))}
-                    </select>
-                  </label>
-                  <label className="flex flex-col gap-0.5 fx-muted">
-                    <span>route.retrieval</span>
-                    <select
-                      aria-label="Hybrid route retrieval"
-                      value={hybridRouting.retrieval ?? hybridRouting.default ?? "native"}
-                      onChange={(event) => setHybridRoleEngine("retrieval", event.target.value as RuntimeEngineName)}
-                      className="fx-field px-1 py-0.5 text-[10px]"
-                    >
-                      {runtimeEngineOptions.map((engine) => (
-                        <option key={`hy-retrieval-${engine}`} value={engine}>{engine}</option>
-                      ))}
-                    </select>
-                  </label>
-                  <label className="flex flex-col gap-0.5 fx-muted">
-                    <span>route.tooling</span>
-                    <select
-                      aria-label="Hybrid route tooling"
-                      value={hybridRouting.tooling ?? hybridRouting.default ?? "native"}
-                      onChange={(event) => setHybridRoleEngine("tooling", event.target.value as RuntimeEngineName)}
-                      className="fx-field px-1 py-0.5 text-[10px]"
-                    >
-                      {runtimeEngineOptions.map((engine) => (
-                        <option key={`hy-tooling-${engine}`} value={engine}>{engine}</option>
-                      ))}
-                    </select>
-                  </label>
-                  <label className="flex flex-col gap-0.5 fx-muted">
-                    <span>route.orchestration</span>
-                    <select
-                      aria-label="Hybrid route orchestration"
-                      value={hybridRouting.orchestration ?? hybridRouting.default ?? "native"}
-                      onChange={(event) => setHybridRoleEngine("orchestration", event.target.value as RuntimeEngineName)}
-                      className="fx-field px-1 py-0.5 text-[10px]"
-                    >
-                      {runtimeEngineOptions.map((engine) => (
-                        <option key={`hy-orchestration-${engine}`} value={engine}>{engine}</option>
-                      ))}
-                    </select>
-                  </label>
-                  <label className="col-span-2 flex flex-col gap-0.5 fx-muted">
-                    <span>route.collaboration</span>
-                    <select
-                      aria-label="Hybrid route collaboration"
-                      value={hybridRouting.collaboration ?? hybridRouting.default ?? "native"}
-                      onChange={(event) => setHybridRoleEngine("collaboration", event.target.value as RuntimeEngineName)}
-                      className="fx-field px-1 py-0.5 text-[10px]"
-                    >
-                      {runtimeEngineOptions.map((engine) => (
-                        <option key={`hy-collaboration-${engine}`} value={engine}>{engine}</option>
-                      ))}
-                    </select>
-                  </label>
-                </>
+                <div className="mt-1 text-[9px] fx-muted">
+                  Hybrid mode routes agent tasks by role: retrieval/tooling/orchestration/collaboration/default.
+                </div>
               )}
-              <label className="flex flex-col gap-0.5 fx-muted">
-                <span>model</span>
-                <input
-                  aria-label="Runtime model"
-                  value={runtimeModel}
-                  onChange={(event) => setRuntimeModel(event.target.value)}
-                  className="fx-field px-1 py-0.5 text-[10px]"
-                />
-              </label>
-              <label className="flex flex-col gap-0.5 fx-muted">
-                <span>temperature</span>
-                <input
-                  aria-label="Runtime temperature"
-                  value={runtimeTemperature}
-                  onChange={(event) => setRuntimeTemperature(event.target.value)}
-                  className="fx-field px-1 py-0.5 text-[10px]"
-                />
-              </label>
-              <label className="col-span-2 flex flex-col gap-0.5 fx-muted">
-                <span>session_id</span>
-                <input
-                  aria-label="Runtime session id"
-                  value={sessionId}
-                  onChange={(event) => setSessionId(event.target.value)}
-                  className="fx-field px-1 py-0.5 text-[10px]"
-                />
-              </label>
-            </div>
-            <label className="mt-1 flex items-center gap-1 text-[var(--foreground)]">
-              <input type="checkbox" checked={useMemory} onChange={(event) => setUseMemory(event.target.checked)} />
-              <span>Enable memory context</span>
-            </label>
-            {!runtimePolicy.allow_runtime_engine_override && (
-              <div className="mt-1 text-[9px] fx-muted">
-                Engine override is disabled by platform policy; runs will use default engine ({runtimePolicy.default_runtime_engine}).
-              </div>
-            )}
-            {runtimeStrategy === "hybrid" && (
-              <div className="mt-1 text-[9px] fx-muted">
-                Hybrid mode routes agent tasks by role: retrieval/tooling/orchestration/collaboration/default.
-              </div>
-            )}
-            {runtimePolicy.allow_runtime_engine_override && effectiveRuntimeEngine !== "native" && selectedEngineProbe && !selectedEngineProbe.available && (
-              <div className="mt-1 text-[9px] text-[var(--fx-warning)]">
-                Selected engine dependencies are missing; runtime may fall back to compatibility mode or fail in strict mode.
-              </div>
-            )}
-            <div className="mt-1 flex items-center justify-between">
-              <span className="fx-muted">memory entries: {memoryCount}</span>
-              <div className="flex items-center gap-1">
-                <button
-                  onClick={handleRefreshMemory}
-                  className="fx-btn-secondary px-2 py-0.5 text-[10px]"
-                  disabled={memoryBusy}
-                  aria-busy={memoryBusy}
-                >
-                  Refresh
-                </button>
-                <button
-                  onClick={handleClearMemory}
-                  className="fx-btn-warning px-2 py-0.5 text-[10px]"
-                  disabled={memoryBusy}
-                  aria-busy={memoryBusy}
-                >
-                  Clear
-                </button>
+              {runtimePolicy.allow_runtime_engine_override && effectiveRuntimeEngine !== "native" && selectedEngineProbe && !selectedEngineProbe.available && (
+                <div className="mt-1 text-[9px] text-[var(--fx-warning)]">
+                  Selected engine dependencies are missing; runtime may fall back to compatibility mode or fail in strict mode.
+                </div>
+              )}
+              <div className="mt-1 flex items-center justify-between">
+                <span className="fx-muted">memory entries: {memoryCount}</span>
+                <div className="flex items-center gap-1">
+                  <button
+                    onClick={handleRefreshMemory}
+                    className="fx-btn-secondary px-2 py-0.5 text-[10px]"
+                    disabled={memoryBusy}
+                    aria-busy={memoryBusy}
+                  >
+                    Refresh
+                  </button>
+                  <button
+                    onClick={handleClearMemory}
+                    className="fx-btn-warning px-2 py-0.5 text-[10px]"
+                    disabled={memoryBusy}
+                    aria-busy={memoryBusy}
+                  >
+                    Clear
+                  </button>
+                </div>
               </div>
             </div>
-          </div>
+          ) : (
+            <div className="mt-2 fx-panel p-1.5 text-[10px]">
+              <div className="mb-1 fx-muted">Execution Profile</div>
+              <div className="text-[var(--foreground)]">
+                Runs use platform-managed runtime defaults and internal memory policies.
+              </div>
+              <div className="mt-1 text-[9px] fx-muted">
+                Use validation and test runs here; advanced routing and memory controls stay internal by design.
+              </div>
+            </div>
+          )}
 
           <div className="mt-2 fx-panel p-1.5 text-[10px]">
             <div className="mb-1 flex items-center justify-between">

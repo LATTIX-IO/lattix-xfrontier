@@ -33,7 +33,7 @@ export default async function BuilderWorkflowsPage() {
                 <td className="fx-muted px-3 py-2">{workflow.description}</td>
                 <td className="px-3 py-2 text-right">
                   <div className="flex justify-end gap-2">
-                    <Link className="fx-btn-primary px-2.5 py-1 text-xs font-medium" href={`/builder/workflow/${workflow.id}`}>
+                    <Link className="fx-btn-primary px-2.5 py-1 text-xs font-medium" href={`/builder/workflows/${workflow.id}`}>
                       Open
                     </Link>
                     <WorkflowStatusButton workflowId={workflow.id} status={workflow.status} />

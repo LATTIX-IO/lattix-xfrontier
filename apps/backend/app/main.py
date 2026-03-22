@@ -7,7 +7,7 @@ import asyncio
 import ipaddress
 import socket
 import importlib.util
-from collections import defaultdict, deque
+from collections import Counter, defaultdict, deque
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from pprint import pformat
@@ -18,7 +18,7 @@ from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 from fastapi import Body, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
-from app.platform_services import Neo4jRunGraph, PostgresStateStore, RedisMemoryStore
+from app.platform_services import Neo4jRunGraph, PostgresLongTermMemoryStore, PostgresStateStore, RedisMemoryStore
 
 try:
     from openai import OpenAI
@@ -390,6 +390,19 @@ def _env_flag(name: str, default: bool) -> bool:
     if normalized in {"0", "false", "no", "off"}:
         return False
     return default
+
+
+def _env_int(name: str, default: int, *, minimum: int | None = None, maximum: int | None = None) -> int:
+    raw = os.getenv(name)
+    try:
+        value = int(str(raw).strip()) if raw is not None else int(default)
+    except Exception:  # noqa: BLE001
+        value = int(default)
+    if minimum is not None:
+        value = max(minimum, value)
+    if maximum is not None:
+        value = min(maximum, value)
+    return value
 
 
 def _slug_to_name(slug: str) -> str:
@@ -1383,6 +1396,51 @@ def _resolve_effective_security_policy(
     }
 
 
+def _resolve_execution_security_policy(run_input: dict[str, Any] | None) -> dict[str, Any]:
+    payload = run_input if isinstance(run_input, dict) else {}
+    entity_type = str(payload.get("entityType") or payload.get("entity_type") or "").strip().lower()
+    entity_id = str(payload.get("entityId") or payload.get("entity_id") or "").strip()
+
+    if entity_type == "workflow" and entity_id:
+        workflow = store.workflow_definitions.get(entity_id)
+        if workflow:
+            return _resolve_effective_security_policy(
+                platform=store.platform_settings,
+                workflow_config=workflow.security_config,
+            )
+
+    if entity_type == "agent" and entity_id:
+        agent = store.agent_definitions.get(entity_id)
+        if agent:
+            config_json = agent.config_json if isinstance(agent.config_json, dict) else {}
+            workflow_id = str(config_json.get("workflow_definition_id") or "").strip()
+            workflow = store.workflow_definitions.get(workflow_id) if workflow_id else None
+            return _resolve_effective_security_policy(
+                platform=store.platform_settings,
+                workflow_config=workflow.security_config if workflow else None,
+                agent_config=config_json.get("security") if isinstance(config_json.get("security"), dict) else None,
+            )
+
+    return _resolve_effective_security_policy(platform=store.platform_settings)
+
+
+def _allowed_memory_scopes_from_policy(policy_payload: dict[str, Any] | None) -> list[str]:
+    policy = policy_payload if isinstance(policy_payload, dict) else {}
+    effective = policy.get("effective") if isinstance(policy.get("effective"), dict) else {}
+    allowed = _normalize_text_list(effective.get("allowed_memory_scopes"))
+    return allowed or ["run", "session", "user", "tenant", "agent", "workflow", "global"]
+
+
+def _enforce_memory_scope_policy(scope: str, execution_state: dict[str, Any], *, node_id: str) -> None:
+    normalized_scope = str(scope or "session").strip().lower() or "session"
+    effective_policy = execution_state.get("effective_security_policy") if isinstance(execution_state.get("effective_security_policy"), dict) else {}
+    allowed_scopes = _allowed_memory_scopes_from_policy(effective_policy)
+    if normalized_scope not in allowed_scopes:
+        raise RuntimeError(
+            f"Memory scope '{normalized_scope}' is not permitted for node '{node_id}'. Allowed scopes: {', '.join(allowed_scopes)}"
+        )
+
+
 def _validate_security_guardrail_reference(config: dict[str, Any], *, label: str) -> None:
     ruleset_id = str(config.get("guardrail_ruleset_id") or "").strip()
     if not ruleset_id:
@@ -1893,6 +1951,7 @@ _OPENAI_CLIENT: Any | None = None
 _PRESIDIO_ANALYZER: Any | None = None
 _POSTGRES_STATE = PostgresStateStore(os.getenv("POSTGRES_DSN", ""))
 _REDIS_MEMORY = RedisMemoryStore(os.getenv("REDIS_URL", ""))
+_POSTGRES_MEMORY = PostgresLongTermMemoryStore(os.getenv("POSTGRES_DSN", ""))
 _NEO4J_GRAPH = Neo4jRunGraph(
     os.getenv("NEO4J_URI", ""),
     os.getenv("NEO4J_USERNAME", ""),
@@ -2605,8 +2664,9 @@ def _run_framework_memory(
     resolved_engine = _normalize_runtime_engine(engine)
 
     def _native_memory_flow() -> dict[str, Any]:
+        runtime_role = str(source_payload.get("runtime_role") or "") if isinstance(source_payload, dict) else ""
         if action == "clear":
-            _memory_clear_entries(bucket_id)
+            _memory_clear_entries(bucket_id, memory_scope=scope)
             return {
                 "memory_state": {
                     "scope": scope,
@@ -2618,7 +2678,14 @@ def _run_framework_memory(
             }
 
         if action == "read":
-            bucket_snapshot = _memory_get_entries(bucket_id, limit=1000)
+            hybrid_context = _memory_get_hybrid_context(
+                bucket_id,
+                limit=1000,
+                memory_scope=scope,
+                query_text=message,
+                runtime_role=runtime_role,
+            )
+            bucket_snapshot = hybrid_context.get("entries") if isinstance(hybrid_context.get("entries"), list) else []
             return {
                 "memory_state": {
                     "scope": scope,
@@ -2629,6 +2696,11 @@ def _run_framework_memory(
                 },
                 "memory_items": bucket_snapshot[-10:],
                 "context": bucket_snapshot[-10:],
+                "world_graph": {
+                    "entries": (hybrid_context.get("world_graph_entries") if isinstance(hybrid_context.get("world_graph_entries"), list) else [])[-10:],
+                    "topics": (hybrid_context.get("world_graph_topics") if isinstance(hybrid_context.get("world_graph_topics"), list) else [])[:10],
+                    "relations": (hybrid_context.get("world_graph_relations") if isinstance(hybrid_context.get("world_graph_relations"), list) else [])[:20],
+                },
                 "memory": {
                     "scope": scope,
                     "bucket_id": bucket_id,
@@ -2648,9 +2720,17 @@ def _run_framework_memory(
             "at": _now_iso(),
             "node_id": node_id,
             "content": str(candidate)[:4000],
+            "memory_scope": scope,
         }
-        _memory_append_entry(bucket_id, entry)
-        bucket_snapshot = _memory_get_entries(bucket_id, limit=1000)
+        _memory_append_entry(bucket_id, entry, memory_scope=scope, source="memory-node")
+        hybrid_context = _memory_get_hybrid_context(
+            bucket_id,
+            limit=1000,
+            memory_scope=scope,
+            query_text=str(candidate),
+            runtime_role=runtime_role,
+        )
+        bucket_snapshot = hybrid_context.get("entries") if isinstance(hybrid_context.get("entries"), list) else []
         return {
             "memory_state": {
                 "scope": scope,
@@ -2659,7 +2739,12 @@ def _run_framework_memory(
                 "action": "append",
                 "session_id": bucket_id,
             },
-            "context": _memory_get_entries(bucket_id, limit=10),
+            "context": bucket_snapshot[-10:],
+            "world_graph": {
+                "entries": (hybrid_context.get("world_graph_entries") if isinstance(hybrid_context.get("world_graph_entries"), list) else [])[-10:],
+                "topics": (hybrid_context.get("world_graph_topics") if isinstance(hybrid_context.get("world_graph_topics"), list) else [])[:10],
+                "relations": (hybrid_context.get("world_graph_relations") if isinstance(hybrid_context.get("world_graph_relations"), list) else [])[:20],
+            },
             "memory": {
                 "scope": scope,
                 "bucket_id": bucket_id,
@@ -4514,8 +4599,33 @@ def _execute_node(
             upstream_message = _safe_json(tool_result_inputs[-1])
         prior_agent_outputs = execution_state.setdefault("agent_outputs", [])
         collaboration_context = "\n".join(f"- {item}" for item in prior_agent_outputs[-4:])
-        memory_items = _memory_get_entries(session_id, limit=100) if runtime.get("use_memory", True) else []
+        runtime_info = execution_state.get("runtime_info") if isinstance(execution_state.get("runtime_info"), dict) else {}
+        role = _infer_agent_runtime_role(
+            node,
+            by_port=by_port,
+            prior_agent_outputs=prior_agent_outputs,
+        )
+        hybrid_memory_context = _memory_get_hybrid_context(
+            session_id,
+            limit=100,
+            memory_scope="session",
+            query_text=str(upstream_message),
+            runtime_role=role,
+        ) if runtime.get("use_memory", True) else {
+            "entries": [],
+            "world_graph_entries": [],
+            "world_graph_topics": [],
+        }
+        memory_items = hybrid_memory_context.get("entries") if isinstance(hybrid_memory_context.get("entries"), list) else []
         memory_context = "\n".join(f"- {item.get('content', '')}" for item in memory_items[-6:])
+        world_graph_entries = hybrid_memory_context.get("world_graph_entries") if isinstance(hybrid_memory_context.get("world_graph_entries"), list) else []
+        world_graph_topics = hybrid_memory_context.get("world_graph_topics") if isinstance(hybrid_memory_context.get("world_graph_topics"), list) else []
+        world_graph_context = "\n".join(f"- {item.get('content', '')}" for item in world_graph_entries[-4:])
+        world_graph_topic_context = ", ".join(
+            str(item.get("name") or "")
+            for item in world_graph_topics[:6]
+            if str(item.get("name") or "")
+        )
         memory_port_context = "\n".join(f"- {_safe_json(item)[:300]}" for item in memory_inputs[-6:])
         retrieval_context = "\n".join(f"- {_safe_json(item)[:300]}" for item in retrieval_inputs[-6:])
 
@@ -4546,14 +4656,10 @@ def _execute_node(
             f"Current input:\n{str(upstream_message)[:2000]}\n\n"
             f"Recent collaborator outputs:\n{collaboration_context or '- none'}\n\n"
             f"Memory context:\n{memory_context or '- none'}\n\n"
+            f"World graph context:\n{world_graph_context or '- none'}\n\n"
+            f"World graph topics:\n{world_graph_topic_context or '- none'}\n\n"
             f"Memory port context:\n{memory_port_context or '- none'}\n\n"
             f"Retrieval context:\n{retrieval_context or '- none'}"
-        )
-        runtime_info = execution_state.get("runtime_info") if isinstance(execution_state.get("runtime_info"), dict) else {}
-        role = _infer_agent_runtime_role(
-            node,
-            by_port=by_port,
-            prior_agent_outputs=prior_agent_outputs,
         )
         node_runtime = _resolve_node_runtime_engine(runtime_info, role)
         selected_engine = _normalize_runtime_engine(node_runtime.get("selected_engine") or "native")
@@ -4599,6 +4705,11 @@ def _execute_node(
             "response": response_text,
             "out": response_text,
             "output": response_text,
+            "hybrid_memory": {
+                "entries": memory_items[-10:],
+                "world_graph_entries": world_graph_entries[-10:],
+                "world_graph_topics": world_graph_topics[:10],
+            },
             "artifacts": [
                 {
                     "name": f"{node.title} artifact",
@@ -4962,9 +5073,12 @@ def _execute_node(
         memory_executed_engine = _normalize_runtime_engine(node_runtime.get("executed_engine") or "native")
         action = str(node.config.get("action") or "append").lower()
         scope = str(node.config.get("scope") or "session")
+        _enforce_memory_scope_policy(scope, execution_state, node_id=node.id)
         bucket_id = _resolve_memory_bucket_id(node.config if isinstance(node.config, dict) else {}, run_input, execution_state)
         write_inputs = _port_values(by_port, "write_payload", "payload")
         source = write_inputs[-1] if write_inputs else (incoming[-1] if incoming else {"message": message})
+        if isinstance(source, dict):
+            source = {**source, "runtime_role": node_role}
         memory_result, memory_meta = _run_framework_memory(
             engine=memory_executed_engine,
             action=action,
@@ -6130,6 +6244,7 @@ def _sync_repo_agents_into_store(*, update_existing: bool = False) -> None:
 @app.on_event("startup")
 def _startup_initialize_state() -> None:
     _POSTGRES_STATE.initialize()
+    _POSTGRES_MEMORY.initialize()
     state = _POSTGRES_STATE.load_state()
     if state:
         _apply_store_state(state)
@@ -6146,7 +6261,22 @@ def _startup_initialize_state() -> None:
     _persist_store_state()
 
 
-def _memory_get_entries(session_id: str, limit: int = 100) -> list[dict[str, Any]]:
+def _merge_memory_entries(*memory_groups: list[dict[str, Any]], limit: int = 100) -> list[dict[str, Any]]:
+    merged: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    for group in memory_groups:
+        for entry in group:
+            if not isinstance(entry, dict):
+                continue
+            key = (str(entry.get("id") or ""), str(entry.get("content") or ""))
+            if key in seen:
+                continue
+            seen.add(key)
+            merged.append(entry)
+    return merged[-max(1, limit):]
+
+
+def _memory_get_short_term_entries(session_id: str, limit: int = 100) -> list[dict[str, Any]]:
     if _REDIS_MEMORY.enabled and _REDIS_MEMORY.healthcheck():
         entries = _REDIS_MEMORY.get_entries(session_id, limit=limit)
         if entries:
@@ -6154,16 +6284,817 @@ def _memory_get_entries(session_id: str, limit: int = 100) -> list[dict[str, Any
     return store.memory_by_session.get(session_id, [])[-limit:]
 
 
-def _memory_clear_entries(session_id: str) -> None:
+def _memory_load_long_term_entries(
+    bucket_id: str,
+    *,
+    memory_scope: str = "session",
+    query_text: str = "",
+    limit: int = 20,
+) -> list[dict[str, Any]]:
+    if not _env_flag("FRONTIER_MEMORY_ENABLE_LONG_TERM", True):
+        return []
+    if not _POSTGRES_MEMORY.enabled or not _POSTGRES_MEMORY.healthcheck():
+        return []
+
+    session_filter = bucket_id if memory_scope == "session" else None
+    if str(query_text or "").strip():
+        return _POSTGRES_MEMORY.search_entries(
+            str(query_text),
+            bucket_id=bucket_id,
+            session_id=session_filter,
+            memory_scope=memory_scope,
+            limit=limit,
+        )
+    return _POSTGRES_MEMORY.get_entries(
+        bucket_id=bucket_id,
+        session_id=session_filter,
+        memory_scope=memory_scope,
+        limit=limit,
+    )
+
+
+def _memory_load_world_graph_entries(
+    bucket_id: str,
+    *,
+    memory_scope: str = "session",
+    query_text: str = "",
+    limit: int = 10,
+) -> dict[str, Any]:
+    if not _env_flag("FRONTIER_MEMORY_GRAPH_PROJECTION_ENABLED", True):
+        return {"memories": [], "topics": [], "relations": []}
+    if not _NEO4J_GRAPH.enabled or not _NEO4J_GRAPH.healthcheck():
+        return {"memories": [], "topics": [], "relations": []}
+    return _NEO4J_GRAPH.query_memory_context(
+        bucket_id=bucket_id,
+        memory_scope=memory_scope,
+        query_text=query_text,
+        limit=limit,
+    )
+
+
+def _memory_token_estimate(text: str) -> int:
+    words = [token for token in re.findall(r"\S+", str(text or "")) if token]
+    if not words:
+        return 0
+    return max(1, int(round(len(words) / 0.75)))
+
+
+def _memory_query_overlap_score(text: str, query_text: str) -> int:
+    text_tokens = {
+        token
+        for token in re.findall(r"[a-z0-9]+", str(text or "").lower())
+        if len(token) >= 3
+    }
+    query_tokens = {
+        token
+        for token in re.findall(r"[a-z0-9]+", str(query_text or "").lower())
+        if len(token) >= 3
+    }
+    if not text_tokens or not query_tokens:
+        return 0
+    return len(text_tokens & query_tokens) * 15
+
+
+def _memory_runtime_role_bonus(entry: dict[str, Any], runtime_role: str) -> int:
+    role = str(runtime_role or "").strip().lower()
+    tier = str(entry.get("tier") or "").strip().lower()
+    candidate_kind = str(entry.get("candidate_kind") or "").strip().lower()
+    bonus = 0
+    if role in {"retrieval", "research"} and tier == "world-graph":
+        bonus += 20
+    if role in {"orchestration", "planner", "coordinator"} and candidate_kind == "task-learning":
+        bonus += 12
+    if role in {"tooling", "implementation"} and "evidence" in str(entry.get("content") or "").lower():
+        bonus += 10
+    return bonus
+
+
+def _rank_hybrid_memory_entries(
+    entries: list[dict[str, Any]],
+    *,
+    query_text: str,
+    runtime_role: str,
+) -> list[dict[str, Any]]:
+    tier_base = {
+        "short-term": 90,
+        "long-term": 70,
+        "world-graph": 80,
+    }
+    ranked: list[dict[str, Any]] = []
+    for index, entry in enumerate(entries):
+        if not isinstance(entry, dict):
+            continue
+        content = str(entry.get("content") or "")
+        score = tier_base.get(str(entry.get("tier") or "").strip().lower(), 50)
+        score += _memory_query_overlap_score(content, query_text)
+        score += _memory_runtime_role_bonus(entry, runtime_role)
+        ranked_entry = dict(entry)
+        ranked_entry["retrieval_score"] = score
+        ranked_entry["retrieval_tokens"] = _memory_token_estimate(content)
+        ranked_entry["_retrieval_index"] = index
+        ranked.append(ranked_entry)
+    ranked.sort(key=lambda item: (-int(item.get("retrieval_score") or 0), int(item.get("_retrieval_index") or 0)))
+    return ranked
+
+
+def _apply_memory_token_budget(entries: list[dict[str, Any]], *, max_tokens: int) -> list[dict[str, Any]]:
+    budget = max(1, max_tokens)
+    kept: list[dict[str, Any]] = []
+    used = 0
+    for entry in entries:
+        tokens = int(entry.get("retrieval_tokens") or _memory_token_estimate(str(entry.get("content") or "")))
+        if kept and used + tokens > budget:
+            continue
+        kept.append(entry)
+        used += max(1, tokens)
+        if used >= budget:
+            break
+    return kept
+
+
+def _memory_seed_short_term(bucket_id: str, entries: list[dict[str, Any]]) -> None:
+    if not entries:
+        return
+    current_entries = list(store.memory_by_session.get(bucket_id, []))
+    seen = {(str(item.get("id") or ""), str(item.get("content") or "")) for item in current_entries if isinstance(item, dict)}
+    additions: list[dict[str, Any]] = []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        candidate = dict(entry)
+        candidate.setdefault("tier", "long-term")
+        key = (str(candidate.get("id") or ""), str(candidate.get("content") or ""))
+        if key in seen:
+            continue
+        seen.add(key)
+        current_entries.append(candidate)
+        additions.append(candidate)
+    store.memory_by_session[bucket_id] = current_entries[-200:]
+    if additions and _REDIS_MEMORY.enabled and _REDIS_MEMORY.healthcheck():
+        _REDIS_MEMORY.load_entries(bucket_id, additions[-20:])
+
+
+def _memory_get_entries(
+    session_id: str,
+    limit: int = 100,
+    *,
+    include_long_term: bool = False,
+    memory_scope: str = "session",
+    query_text: str = "",
+) -> list[dict[str, Any]]:
+    short_term = _memory_get_short_term_entries(session_id, limit=limit)
+    if not include_long_term:
+        return short_term
+
+    long_term = _memory_load_long_term_entries(
+        session_id,
+        memory_scope=memory_scope,
+        query_text=query_text,
+        limit=limit,
+    )
+    _memory_seed_short_term(session_id, long_term)
+    return _merge_memory_entries(short_term, long_term, limit=limit)
+
+
+def _memory_get_hybrid_context(
+    session_id: str,
+    *,
+    limit: int = 100,
+    memory_scope: str = "session",
+    query_text: str = "",
+    runtime_role: str = "",
+) -> dict[str, Any]:
+    if not _env_flag("FRONTIER_MEMORY_HYBRID_RETRIEVAL_ENABLED", True):
+        entries = _memory_get_entries(
+            session_id,
+            limit=limit,
+            include_long_term=True,
+            memory_scope=memory_scope,
+            query_text=query_text,
+        )
+        return {
+            "entries": entries,
+            "short_term_entries": _memory_get_short_term_entries(session_id, limit=limit),
+            "long_term_entries": _memory_load_long_term_entries(
+                session_id,
+                memory_scope=memory_scope,
+                query_text=query_text,
+                limit=limit,
+            ),
+            "world_graph_entries": [],
+            "world_graph_topics": [],
+            "world_graph_relations": [],
+        }
+
+    short_term = _memory_get_short_term_entries(session_id, limit=limit)
+    long_term = _memory_load_long_term_entries(
+        session_id,
+        memory_scope=memory_scope,
+        query_text=query_text,
+        limit=limit,
+    )
+    _memory_seed_short_term(session_id, long_term)
+    world_graph = _memory_load_world_graph_entries(
+        session_id,
+        memory_scope=memory_scope,
+        query_text=query_text,
+        limit=min(limit, 25),
+    )
+    graph_memories = [dict(item, tier=str(item.get("tier") or "world-graph")) for item in (world_graph.get("memories") if isinstance(world_graph.get("memories"), list) else []) if isinstance(item, dict)]
+    short_term_rankable = [dict(item, tier=str(item.get("tier") or "short-term")) for item in short_term if isinstance(item, dict)]
+    long_term_rankable = [dict(item, tier=str(item.get("tier") or "long-term")) for item in long_term if isinstance(item, dict)]
+    merged = _merge_memory_entries(short_term_rankable, long_term_rankable, graph_memories, limit=limit * 3)
+    ranked = _rank_hybrid_memory_entries(merged, query_text=query_text, runtime_role=runtime_role)
+    token_budget = _env_int("FRONTIER_MEMORY_HYBRID_MAX_TOKENS", 1200, minimum=100, maximum=12000)
+    entries = _apply_memory_token_budget(ranked[: max(1, limit * 2)], max_tokens=token_budget)[:limit]
+    topic_limit = _env_int("FRONTIER_MEMORY_HYBRID_MAX_TOPICS", 8, minimum=1, maximum=50)
+    topics = world_graph.get("topics") if isinstance(world_graph.get("topics"), list) else []
+    ranked_topics = sorted(
+        [item for item in topics if isinstance(item, dict)],
+        key=lambda item: (-int(item.get("weight") or 0), str(item.get("name") or "")),
+    )[:topic_limit]
+    return {
+        "entries": entries,
+        "short_term_entries": short_term,
+        "long_term_entries": long_term,
+        "world_graph_entries": graph_memories,
+        "world_graph_topics": ranked_topics,
+        "world_graph_relations": world_graph.get("relations") if isinstance(world_graph.get("relations"), list) else [],
+    }
+
+
+def _memory_clear_entries(session_id: str, *, memory_scope: str = "session", clear_long_term: bool = True) -> None:
     if _REDIS_MEMORY.enabled and _REDIS_MEMORY.healthcheck():
         _REDIS_MEMORY.clear_entries(session_id)
     store.memory_by_session[session_id] = []
+    if clear_long_term and _env_flag("FRONTIER_MEMORY_ENABLE_LONG_TERM", True) and _POSTGRES_MEMORY.enabled and _POSTGRES_MEMORY.healthcheck():
+        _POSTGRES_MEMORY.clear_entries(
+            bucket_id=session_id,
+            session_id=session_id if memory_scope == "session" else None,
+            memory_scope=memory_scope,
+        )
 
 
-def _memory_append_entry(session_id: str, entry: dict[str, Any]) -> None:
+def _memory_append_entry(
+    session_id: str,
+    entry: dict[str, Any],
+    *,
+    memory_scope: str = "session",
+    source: str = "memory-node",
+    task_id: str | None = None,
+    long_term_session_id: str | None = None,
+    persist_long_term: bool = True,
+) -> None:
     if _REDIS_MEMORY.enabled and _REDIS_MEMORY.healthcheck():
         _REDIS_MEMORY.append_entry(session_id, entry)
     store.memory_by_session.setdefault(session_id, []).append(entry)
+    if persist_long_term and _env_flag("FRONTIER_MEMORY_ENABLE_LONG_TERM", True) and _POSTGRES_MEMORY.enabled and _POSTGRES_MEMORY.healthcheck():
+        _POSTGRES_MEMORY.append_entry(
+            bucket_id=session_id,
+            session_id=long_term_session_id or session_id,
+            memory_scope=memory_scope,
+            entry=entry,
+            source=source,
+            task_id=task_id,
+        )
+    _memory_schedule_consolidation(
+        session_id,
+        entry,
+        memory_scope=memory_scope,
+        source=source,
+        task_id=task_id,
+        long_term_session_id=long_term_session_id,
+    )
+
+
+def _memory_should_schedule_consolidation(entry: dict[str, Any], *, memory_scope: str, source: str) -> bool:
+    if not _env_flag("FRONTIER_MEMORY_CONSOLIDATION_ENABLED", True):
+        return False
+    if not _env_flag("FRONTIER_MEMORY_ENABLE_LONG_TERM", True):
+        return False
+    if not _POSTGRES_MEMORY.enabled or not _POSTGRES_MEMORY.healthcheck():
+        return False
+
+    normalized_scope = str(memory_scope or "session").strip().lower() or "session"
+    if normalized_scope not in {"session", "user", "tenant", "agent", "workflow", "global"}:
+        return False
+
+    normalized_source = str(source or "memory-node").strip().lower()
+    if normalized_source in {"memory-consolidation", "consolidation"}:
+        return False
+
+    content = str(entry.get("content") or "").strip()
+    return len(content) >= 20
+
+
+def _memory_schedule_consolidation(
+    session_id: str,
+    entry: dict[str, Any],
+    *,
+    memory_scope: str = "session",
+    source: str = "memory-node",
+    task_id: str | None = None,
+    long_term_session_id: str | None = None,
+    candidate_kind: str = "promotion",
+) -> None:
+    if not isinstance(entry, dict):
+        return
+    if not _memory_should_schedule_consolidation(entry, memory_scope=memory_scope, source=source):
+        return
+
+    candidate_entry = dict(entry)
+    candidate_entry.setdefault("queued_for_consolidation", True)
+    candidate_entry.setdefault("consolidation_kind", candidate_kind)
+    _POSTGRES_MEMORY.enqueue_consolidation_candidate(
+        bucket_id=session_id,
+        session_id=long_term_session_id or session_id,
+        memory_scope=memory_scope,
+        entry=candidate_entry,
+        source=source,
+        task_id=task_id,
+        candidate_kind=candidate_kind,
+    )
+
+
+def _record_task_learning(
+    *,
+    run_id: str,
+    actor: str,
+    prompt_text: str,
+    response_text: str,
+    selected_agent_id: str | None,
+    selected_agent_name: str | None,
+    requested_workflows: list[str],
+    requested_tags: list[str],
+) -> None:
+    if not _env_flag("FRONTIER_MEMORY_LEARNING_ENABLED", True):
+        return
+    if not _env_flag("FRONTIER_MEMORY_ENABLE_LONG_TERM", True):
+        return
+    if not _POSTGRES_MEMORY.enabled or not _POSTGRES_MEMORY.healthcheck():
+        return
+
+    learning_entry = {
+        "id": str(uuid4()),
+        "at": _now_iso(),
+        "content": (
+            f"Task: {prompt_text[:1200]}\n\n"
+            f"Response: {response_text[:2400]}"
+        ).strip(),
+        "actor": actor,
+        "agent_id": selected_agent_id,
+        "agent_name": selected_agent_name,
+        "workflow": requested_workflows[0] if requested_workflows else "",
+        "tags": requested_tags,
+        "kind": "task-learning",
+    }
+
+    if selected_agent_id:
+        _POSTGRES_MEMORY.append_entry(
+            bucket_id=f"agent:{selected_agent_id}",
+            session_id=run_id,
+            memory_scope="agent",
+            entry=learning_entry,
+            source="task-learning",
+            task_id=run_id,
+        )
+        _memory_schedule_consolidation(
+            f"agent:{selected_agent_id}",
+            learning_entry,
+            memory_scope="agent",
+            source="task-learning",
+            task_id=run_id,
+            long_term_session_id=run_id,
+            candidate_kind="task-learning",
+        )
+
+    if requested_workflows:
+        _POSTGRES_MEMORY.append_entry(
+            bucket_id=f"workflow:{requested_workflows[0]}",
+            session_id=run_id,
+            memory_scope="workflow",
+            entry=learning_entry,
+            source="task-learning",
+            task_id=run_id,
+        )
+        _memory_schedule_consolidation(
+            f"workflow:{requested_workflows[0]}",
+            learning_entry,
+            memory_scope="workflow",
+            source="task-learning",
+            task_id=run_id,
+            long_term_session_id=run_id,
+            candidate_kind="task-learning",
+        )
+
+
+def _memory_consolidation_summary_points(candidates: list[dict[str, Any]], *, max_points: int = 5) -> list[str]:
+    lines: list[str] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        content = " ".join(str(candidate.get("content") or "").split()).strip()
+        if not content:
+            continue
+        normalized = content.lower()
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        if len(content) > 220:
+            content = f"{content[:217].rstrip()}..."
+        lines.append(content)
+        if len(lines) >= max(1, max_points):
+            break
+    return lines
+
+
+def _memory_consolidation_min_candidates(candidate_kind: str) -> int:
+    normalized_kind = str(candidate_kind or "promotion").strip().lower() or "promotion"
+    if normalized_kind == "task-learning":
+        return _env_int("FRONTIER_MEMORY_TASK_LEARNING_MIN_CANDIDATES", 1, minimum=1, maximum=20)
+    return _env_int("FRONTIER_MEMORY_CONSOLIDATION_MIN_CANDIDATES", 2, minimum=1, maximum=20)
+
+
+def _memory_consolidation_token_set(text: str) -> set[str]:
+    return {
+        token
+        for token in re.findall(r"[a-z0-9]+", str(text or "").lower())
+        if len(token) >= 3
+    }
+
+
+def _memory_consolidation_overlap_percent(left: str, right: str) -> int:
+    left_tokens = _memory_consolidation_token_set(left)
+    right_tokens = _memory_consolidation_token_set(right)
+    if not left_tokens or not right_tokens:
+        return 0
+    intersection = len(left_tokens & right_tokens)
+    baseline = max(1, min(len(left_tokens), len(right_tokens)))
+    return int(round((intersection / baseline) * 100))
+
+
+_MEMORY_GRAPH_STOPWORDS = {
+    "about", "after", "also", "agent", "agents", "and", "are", "because", "been", "before", "being", "between",
+    "build", "candidate", "compliance", "content", "continue", "drift", "each", "entry", "from", "have", "into",
+    "keep", "memory", "must", "needs", "node", "onto", "over", "project", "recent", "same", "should", "summary",
+    "task", "that", "their", "them", "then", "these", "they", "this", "those", "through", "want", "wants", "weekly",
+    "with", "workflow", "workflows",
+}
+
+
+def _memory_graph_owner_entity(bucket_id: str, memory_scope: str) -> dict[str, Any]:
+    normalized_bucket = str(bucket_id or "").strip() or f"scope:{memory_scope}"
+    prefix, separator, suffix = normalized_bucket.partition(":")
+    owner_type = prefix.title() if separator and prefix else str(memory_scope or "session").title()
+    owner_name = suffix.strip() if separator and suffix.strip() else normalized_bucket
+    return {
+        "id": f"owner:{normalized_bucket}",
+        "type": owner_type,
+        "name": owner_name,
+        "memory_scope": str(memory_scope or "session").strip().lower() or "session",
+    }
+
+
+def _memory_graph_extract_topics(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    max_topics = _env_int("FRONTIER_MEMORY_GRAPH_MAX_TOPICS", 5, minimum=1, maximum=20)
+    min_occurrences = _env_int("FRONTIER_MEMORY_GRAPH_TOPIC_MIN_OCCURRENCES", 2, minimum=1, maximum=10)
+    phrase_counts: Counter[str] = Counter()
+    token_counts: Counter[str] = Counter()
+
+    for candidate in candidates:
+        text = str(candidate.get("content") or "")
+        raw_tokens = [token for token in re.findall(r"[a-z0-9]+", text.lower()) if len(token) >= 3]
+        tokens = [token for token in raw_tokens if token not in _MEMORY_GRAPH_STOPWORDS]
+        token_counts.update(set(tokens))
+        bigrams = {
+            f"{tokens[index]} {tokens[index + 1]}"
+            for index in range(len(tokens) - 1)
+            if tokens[index] != tokens[index + 1]
+        }
+        phrase_counts.update(bigrams)
+
+    ranked_topics: list[tuple[str, int]] = []
+    ranked_topics.extend(sorted(phrase_counts.items(), key=lambda item: (-item[1], item[0])))
+    ranked_topics.extend(sorted(token_counts.items(), key=lambda item: (-item[1], item[0])))
+
+    topics: list[dict[str, Any]] = []
+    seen_names: set[str] = set()
+    for phrase, weight in ranked_topics:
+        if weight < min_occurrences:
+            continue
+        display_name = phrase.strip()
+        normalized_name = display_name.lower()
+        if normalized_name in seen_names:
+            continue
+        seen_names.add(normalized_name)
+        topics.append(
+            {
+                "id": f"topic:{_slugify(display_name)}",
+                "name": _slug_to_name(display_name.replace(" ", "-")),
+                "weight": weight,
+            }
+        )
+        if len(topics) >= max_topics:
+            break
+    return topics
+
+
+def _build_memory_world_graph_projection(consolidated_entry: dict[str, Any], candidates: list[dict[str, Any]]) -> dict[str, Any]:
+    bucket_id = str(consolidated_entry.get("bucket_id") or "").strip()
+    memory_scope = str(consolidated_entry.get("memory_scope") or "session").strip().lower() or "session"
+    owner = _memory_graph_owner_entity(bucket_id, memory_scope)
+    evidences = [
+        {
+            "id": f"evidence:{str(candidate.get('entry_id') or candidate.get('id') or '')}",
+            "name": str(candidate.get("entry_id") or candidate.get("id") or "evidence"),
+            "bucket_id": bucket_id,
+            "memory_scope": memory_scope,
+        }
+        for candidate in candidates
+        if str(candidate.get("entry_id") or candidate.get("id") or "")
+    ]
+    topics = _memory_graph_extract_topics(candidates)
+    entities = [owner, *topics, *evidences]
+    relations = [
+        {"type": "OWNS_MEMORY", "from": owner["id"], "to": str(consolidated_entry.get("id") or "")},
+        *[
+            {"type": "DERIVED_FROM", "from": str(consolidated_entry.get("id") or ""), "to": evidence["id"]}
+            for evidence in evidences
+        ],
+        *[
+            {"type": "MENTIONS_TOPIC", "from": str(consolidated_entry.get("id") or ""), "to": topic["id"]}
+            for topic in topics
+        ],
+    ]
+    return {
+        "owner": owner,
+        "memory": dict(consolidated_entry),
+        "topics": topics,
+        "evidences": evidences,
+        "entities": entities,
+        "relations": relations,
+    }
+
+
+def _project_memory_world_graph(consolidated_entry: dict[str, Any], candidates: list[dict[str, Any]]) -> dict[str, Any] | None:
+    if not _env_flag("FRONTIER_MEMORY_GRAPH_PROJECTION_ENABLED", True):
+        return None
+    if not _NEO4J_GRAPH.enabled or not _NEO4J_GRAPH.healthcheck():
+        return None
+    projection = _build_memory_world_graph_projection(consolidated_entry, candidates)
+    _NEO4J_GRAPH.project_memory_summary(projection=projection)
+    return projection
+
+
+def _run_memory_world_graph_projection(
+    *,
+    actor: str,
+    bucket_id: str | None = None,
+    memory_scope: str | None = None,
+    limit: int = 20,
+) -> dict[str, Any]:
+    bounded_limit = max(1, min(200, int(limit)))
+    if not _env_flag("FRONTIER_MEMORY_GRAPH_PROJECTION_ENABLED", True):
+        result = {"ok": True, "status": "disabled", "projected": 0, "projections": []}
+        _append_audit_event("memory.world_graph.project", actor, "allowed", result)
+        return result
+    if not _NEO4J_GRAPH.enabled or not _NEO4J_GRAPH.healthcheck():
+        result = {"ok": False, "status": "unavailable", "projected": 0, "projections": []}
+        _append_audit_event("memory.world_graph.project", actor, "error", result)
+        return result
+
+    entries = [
+        entry
+        for entry in _POSTGRES_MEMORY.get_entries(bucket_id=bucket_id, memory_scope=memory_scope, limit=bounded_limit)
+        if str(entry.get("kind") or "").strip().lower() == "memory-consolidation"
+    ]
+    projections: list[dict[str, Any]] = []
+    for entry in entries:
+        source_candidate_ids = entry.get("source_candidate_ids") if isinstance(entry.get("source_candidate_ids"), list) else []
+        candidates = [
+            {
+                "id": str(candidate_id),
+                "entry_id": str(candidate_id),
+                "bucket_id": str(entry.get("bucket_id") or ""),
+                "memory_scope": str(entry.get("memory_scope") or "session"),
+                "content": str(entry.get("content") or ""),
+            }
+            for candidate_id in source_candidate_ids
+            if str(candidate_id).strip()
+        ]
+        projection = _project_memory_world_graph(entry, candidates)
+        if projection is not None:
+            projections.append(projection)
+
+    result = {
+        "ok": True,
+        "status": "processed",
+        "projected": len(projections),
+        "projections": projections,
+    }
+    _append_audit_event(
+        "memory.world_graph.project",
+        actor,
+        "allowed",
+        {
+            "projected": len(projections),
+            "bucket_id": bucket_id,
+            "memory_scope": memory_scope,
+            "memory_ids": [str(item.get("memory", {}).get("id") or "") for item in projections],
+        },
+    )
+    return result
+
+
+def _find_duplicate_memory_consolidation(
+    *,
+    bucket_id: str,
+    memory_scope: str,
+    consolidated_content: str,
+) -> dict[str, Any] | None:
+    if not str(consolidated_content or "").strip():
+        return None
+    overlap_threshold = _env_int("FRONTIER_MEMORY_CONSOLIDATION_DUPLICATE_MIN_OVERLAP", 80, minimum=1, maximum=100)
+    history_limit = _env_int("FRONTIER_MEMORY_CONSOLIDATION_DUPLICATE_HISTORY_LIMIT", 25, minimum=1, maximum=200)
+    existing_entries = _POSTGRES_MEMORY.get_entries(bucket_id=bucket_id, memory_scope=memory_scope, limit=history_limit)
+    for entry in reversed(existing_entries):
+        if str(entry.get("kind") or "").strip().lower() != "memory-consolidation":
+            continue
+        overlap = _memory_consolidation_overlap_percent(consolidated_content, str(entry.get("content") or ""))
+        if overlap >= overlap_threshold:
+            return entry
+    return None
+
+
+def _build_memory_consolidation_entry(
+    *,
+    bucket_id: str,
+    session_id: str,
+    memory_scope: str,
+    candidate_kind: str,
+    candidates: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    summary_points = _memory_consolidation_summary_points(
+        candidates,
+        max_points=_env_int("FRONTIER_MEMORY_CONSOLIDATION_MAX_POINTS", 5, minimum=1, maximum=20),
+    )
+    if not summary_points:
+        return None
+
+    heading = "Task learning summary" if candidate_kind == "task-learning" else "Consolidated memory summary"
+    content = "\n".join([f"{heading} for {bucket_id}:", *[f"- {line}" for line in summary_points]])
+    return {
+        "id": str(uuid4()),
+        "at": _now_iso(),
+        "content": content,
+        "kind": "memory-consolidation",
+        "memory_scope": memory_scope,
+        "candidate_kind": candidate_kind,
+        "bucket_id": bucket_id,
+        "session_id": session_id,
+        "source_candidate_ids": [str(item.get("entry_id") or item.get("id") or "") for item in candidates],
+        "source_count": len(candidates),
+        "tier": "long-term",
+    }
+
+
+def _run_memory_consolidation(
+    *,
+    actor: str,
+    bucket_id: str | None = None,
+    memory_scope: str | None = None,
+    limit: int = 20,
+) -> dict[str, Any]:
+    bounded_limit = max(1, min(200, int(limit)))
+    if not _env_flag("FRONTIER_MEMORY_CONSOLIDATION_ENABLED", True):
+        result = {"ok": True, "status": "disabled", "processed_candidates": 0, "generated_entries": []}
+        _append_audit_event("memory.consolidation.run", actor, "allowed", result)
+        return result
+    if not _env_flag("FRONTIER_MEMORY_ENABLE_LONG_TERM", True) or not _POSTGRES_MEMORY.enabled or not _POSTGRES_MEMORY.healthcheck():
+        result = {"ok": False, "status": "unavailable", "processed_candidates": 0, "generated_entries": []}
+        _append_audit_event("memory.consolidation.run", actor, "error", result)
+        return result
+
+    pending = _POSTGRES_MEMORY.list_consolidation_candidates(
+        bucket_id=bucket_id,
+        memory_scope=memory_scope,
+        status="pending",
+        limit=bounded_limit,
+    )
+    if not pending:
+        result = {"ok": True, "status": "idle", "processed_candidates": 0, "generated_entries": []}
+        _append_audit_event("memory.consolidation.run", actor, "allowed", result)
+        return result
+
+    grouped: dict[tuple[str, str, str, str], list[dict[str, Any]]] = {}
+    for candidate in pending:
+        candidate_bucket = str(candidate.get("bucket_id") or "").strip()
+        candidate_session = str(candidate.get("session_id") or candidate_bucket).strip() or candidate_bucket
+        candidate_scope = str(candidate.get("memory_scope") or "session").strip().lower() or "session"
+        candidate_kind = str(candidate.get("candidate_kind") or "promotion").strip().lower() or "promotion"
+        grouped.setdefault((candidate_bucket, candidate_session, candidate_scope, candidate_kind), []).append(candidate)
+
+    generated_entries: list[dict[str, Any]] = []
+    consolidated_candidate_count = 0
+    skipped_candidate_ids: list[str] = []
+    for (candidate_bucket, candidate_session, candidate_scope, candidate_kind), candidates in grouped.items():
+        min_candidates = _memory_consolidation_min_candidates(candidate_kind)
+        if len(candidates) < min_candidates:
+            for candidate in candidates:
+                candidate_id = str(candidate.get("id") or "")
+                if candidate_id:
+                    _POSTGRES_MEMORY.mark_consolidation_candidate(
+                        candidate_id,
+                        status="deferred",
+                        extra_metadata={
+                            "reason": "insufficient_evidence",
+                            "required_candidates": min_candidates,
+                            "candidate_count": len(candidates),
+                        },
+                    )
+            skipped_candidate_ids.extend(str(candidate.get("id") or "") for candidate in candidates if str(candidate.get("id") or ""))
+            continue
+
+        consolidated_entry = _build_memory_consolidation_entry(
+            bucket_id=candidate_bucket,
+            session_id=candidate_session,
+            memory_scope=candidate_scope,
+            candidate_kind=candidate_kind,
+            candidates=candidates,
+        )
+        if consolidated_entry is None:
+            for candidate in candidates:
+                candidate_id = str(candidate.get("id") or "")
+                if candidate_id:
+                    _POSTGRES_MEMORY.mark_consolidation_candidate(candidate_id, status="skipped", extra_metadata={"reason": "empty_summary"})
+                    skipped_candidate_ids.append(candidate_id)
+            continue
+
+        duplicate_entry = _find_duplicate_memory_consolidation(
+            bucket_id=candidate_bucket,
+            memory_scope=candidate_scope,
+            consolidated_content=str(consolidated_entry.get("content") or ""),
+        )
+        if duplicate_entry is not None:
+            for candidate in candidates:
+                candidate_id = str(candidate.get("id") or "")
+                if candidate_id:
+                    _POSTGRES_MEMORY.mark_consolidation_candidate(
+                        candidate_id,
+                        status="duplicate",
+                        extra_metadata={
+                            "reason": "duplicate_consolidation",
+                            "existing_entry_id": str(duplicate_entry.get("id") or ""),
+                        },
+                    )
+                    skipped_candidate_ids.append(candidate_id)
+            continue
+
+        _POSTGRES_MEMORY.append_entry(
+            bucket_id=candidate_bucket,
+            session_id=candidate_session,
+            memory_scope=candidate_scope,
+            entry=consolidated_entry,
+            source="memory-consolidation",
+            task_id=str(candidates[0].get("task_id") or "") or None,
+        )
+        projection = _project_memory_world_graph(consolidated_entry, candidates)
+        if projection is not None:
+            consolidated_entry["world_graph_projection"] = projection
+        generated_entries.append(consolidated_entry)
+        for candidate in candidates:
+            candidate_id = str(candidate.get("id") or "")
+            if candidate_id:
+                _POSTGRES_MEMORY.mark_consolidation_candidate(
+                    candidate_id,
+                    status="consolidated",
+                    extra_metadata={
+                        "consolidated_entry_id": consolidated_entry["id"],
+                        "consolidated_at": consolidated_entry["at"],
+                    },
+                )
+        consolidated_candidate_count += len(candidates)
+
+    result = {
+        "ok": True,
+        "status": "processed",
+        "processed_candidates": len(pending),
+        "consolidated_candidates": consolidated_candidate_count,
+        "skipped_candidates": len(skipped_candidate_ids),
+        "generated_entries": generated_entries,
+    }
+    _append_audit_event(
+        "memory.consolidation.run",
+        actor,
+        "allowed",
+        {
+            "processed_candidates": result["processed_candidates"],
+            "consolidated_candidates": consolidated_candidate_count,
+            "generated_entry_ids": [str(item.get("id") or "") for item in generated_entries],
+            "bucket_id": bucket_id,
+            "memory_scope": memory_scope,
+        },
+    )
+    return result
 
 
 def _build_runtime_l3_parity_report() -> dict[str, Any]:
@@ -6244,12 +7175,17 @@ def _build_runtime_l3_parity_report() -> dict[str, Any]:
 def healthz() -> dict[str, str]:
     postgres_ok = _POSTGRES_STATE.enabled
     redis_ok = _REDIS_MEMORY.healthcheck() if _REDIS_MEMORY.enabled else False
+    long_term_ok = _POSTGRES_MEMORY.healthcheck() if _POSTGRES_MEMORY.enabled else False
     neo4j_ok = _NEO4J_GRAPH.healthcheck() if _NEO4J_GRAPH.enabled else False
     return {
         "status": "ok",
         "timestamp": _now_iso(),
         "postgres": "connected" if postgres_ok else "disabled",
         "redis": "connected" if redis_ok else "disabled",
+        "long_term_memory": "connected" if long_term_ok else "disabled",
+        "memory_consolidation": "enabled" if long_term_ok and _env_flag("FRONTIER_MEMORY_CONSOLIDATION_ENABLED", True) else "disabled",
+        "memory_hybrid_retrieval": "enabled" if long_term_ok and _env_flag("FRONTIER_MEMORY_HYBRID_RETRIEVAL_ENABLED", True) else "disabled",
+        "memory_world_graph": "enabled" if neo4j_ok and _env_flag("FRONTIER_MEMORY_GRAPH_PROJECTION_ENABLED", True) else "disabled",
         "neo4j": "connected" if neo4j_ok else "disabled",
     }
 
@@ -6377,20 +7313,74 @@ def save_platform_settings(request: Request, payload: dict[str, Any] = Body(defa
 
 
 @app.get("/memory/{session_id}")
-def get_memory(session_id: str) -> dict[str, Any]:
-    entries = _memory_get_entries(session_id, limit=100)
+def get_memory(
+    session_id: str,
+    include_long_term: bool = True,
+    scope: str = "session",
+    query: str | None = None,
+) -> dict[str, Any]:
+    short_term_entries = _memory_get_short_term_entries(session_id, limit=100)
+    long_term_entries = (
+        _memory_load_long_term_entries(
+            session_id,
+            memory_scope=scope,
+            query_text=str(query or ""),
+            limit=100,
+        )
+        if include_long_term
+        else []
+    )
+    if include_long_term:
+        _memory_seed_short_term(session_id, long_term_entries)
+    entries = _merge_memory_entries(short_term_entries, long_term_entries, limit=100)
     return {
         "session_id": session_id,
         "count": len(entries),
+        "short_term_count": len(short_term_entries),
+        "long_term_count": len(long_term_entries),
         "entries": entries,
+        "short_term_entries": short_term_entries,
+        "long_term_entries": long_term_entries,
     }
 
 
 @app.delete("/memory/{session_id}")
-def clear_memory(session_id: str) -> dict[str, Any]:
-    _memory_clear_entries(session_id)
+def clear_memory(session_id: str, scope: str = "session") -> dict[str, Any]:
+    _memory_clear_entries(session_id, memory_scope=scope)
     _persist_store_state()
     return {"ok": True, "session_id": session_id}
+
+
+@app.post("/internal/memory/consolidation/run")
+def run_memory_consolidation(request: Request, payload: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
+    actor = _enforce_request_authn(request, payload=payload, action="memory.consolidation.run")
+    _enforce_emergency_write_policy("memory.consolidation.run", actor)
+    raw_limit = payload.get("limit", 20)
+    try:
+        limit = int(raw_limit)
+    except Exception:  # noqa: BLE001
+        limit = 20
+    bucket_id = str(payload.get("bucket_id") or "").strip() or None
+    scope = str(payload.get("scope") or "").strip().lower() or None
+    result = _run_memory_consolidation(actor=actor, bucket_id=bucket_id, memory_scope=scope, limit=limit)
+    _persist_store_state()
+    return result
+
+
+@app.post("/internal/memory/world-graph/project")
+def run_memory_world_graph_projection(request: Request, payload: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
+    actor = _enforce_request_authn(request, payload=payload, action="memory.world_graph.project")
+    _enforce_emergency_write_policy("memory.world_graph.project", actor)
+    raw_limit = payload.get("limit", 20)
+    try:
+        limit = int(raw_limit)
+    except Exception:  # noqa: BLE001
+        limit = 20
+    bucket_id = str(payload.get("bucket_id") or "").strip() or None
+    scope = str(payload.get("scope") or "").strip().lower() or None
+    result = _run_memory_world_graph_projection(actor=actor, bucket_id=bucket_id, memory_scope=scope, limit=limit)
+    _persist_store_state()
+    return result
 
 
 @app.get("/workflows/published")
@@ -6853,6 +7843,17 @@ def create_workflow_run(request: Request, payload: dict[str, Any] = Body(default
         "runtime": model_meta,
         "response_text": response_text,
     }
+
+    _record_task_learning(
+        run_id=run_id,
+        actor=actor,
+        prompt_text=prompt_text,
+        response_text=response_text,
+        selected_agent_id=selected_agent_id,
+        selected_agent_name=selected_agent,
+        requested_workflows=requested_workflows,
+        requested_tags=requested_tags,
+    )
 
     if approval_required:
         store.inbox.insert(
@@ -7930,19 +8931,23 @@ def delete_agent_definition(item_id: str) -> dict[str, bool]:
 
 
 @app.get("/node-definitions")
-def get_node_definitions() -> list[dict[str, Any]]:
+def get_node_definitions(include_internal: bool = False) -> list[dict[str, Any]]:
     base_nodes: list[NodeDefinition] = [
         NodeDefinition(type_key="frontier/trigger", title="Trigger", description="Workflow entrypoint for user kickoff, schedule, or external event.", category="Core", color="#6ca0ff"),
         NodeDefinition(type_key="frontier/agent", title="Agent", description="Execute a delegated objective with a selected specialist agent.", category="Agent", color="#1f7f53"),
         NodeDefinition(type_key="frontier/prompt", title="Prompt", description="Compose reusable system prompt instructions and pass them to agent nodes.", category="Agent", color="#5f4bb6"),
         NodeDefinition(type_key="frontier/tool-call", title="Tool / API Call", description="Invoke external APIs or internal tools with schema-validated IO.", category="Integration", color="#6fd3ff"),
         NodeDefinition(type_key="frontier/retrieval", title="Retrieval", description="Retrieve and rank context from vector DB, docs, or KB sources.", category="Knowledge", color="#8a6717"),
-        NodeDefinition(type_key="frontier/memory", title="Memory", description="Read/write short-term or long-term memory scoped to tenant/run.", category="Knowledge", color="#4f5966"),
         NodeDefinition(type_key="frontier/guardrail", title="Guardrail", description="Apply safety, policy, and quality controls to input/output content.", category="Control", color="#9f3550"),
         NodeDefinition(type_key="frontier/human-review", title="Human Review", description="Approval or clarification gate with feedback loop and audit trail.", category="Control", color="#8d5c1a"),
         NodeDefinition(type_key="frontier/manifold", title="Manifold", description="Consolidate multiple inbound flows using AND/OR logic into a single output.", category="Logic", color="#7863d3"),
         NodeDefinition(type_key="frontier/output", title="Output", description="Finalize artifacts, emit events, and publish run outcomes.", category="Core", color="#69a3ff"),
     ]
+    if include_internal:
+        base_nodes.insert(
+            5,
+            NodeDefinition(type_key="frontier/memory", title="Memory", description="Read/write short-term or long-term memory scoped to tenant/run.", category="Knowledge", color="#4f5966"),
+        )
     return [node.model_dump() for node in base_nodes]
 
 
@@ -8043,6 +9048,7 @@ def run_graph(request: Request, payload: GraphPayload) -> dict[str, Any]:
         "runtime": runtime,
         "session_id": session_id,
         "runtime_info": runtime_info,
+        "effective_security_policy": _resolve_execution_security_policy(payload.input),
     }
 
     events.append(

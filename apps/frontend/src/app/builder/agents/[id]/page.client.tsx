@@ -39,6 +39,7 @@ export function AgentStudioClient({ agentId, agentName, initialGraph }: Props) {
       entityType="agent"
       entityId={agentId}
       entityName={agentName}
+      builderMode="standard"
       description="Model the full execution logic in this canvas; FastAPI consumes serialized node/edge definitions as the source of truth."
       initialNodes={initialNodes}
       initialLinks={initialLinks}
@@ -51,53 +52,6 @@ export function AgentStudioClient({ agentId, agentName, initialGraph }: Props) {
             source_agent_id: agentId,
             meta: {
               name: agentName,
-            },
-            runtime: {
-              model_defaults: {
-                provider: "openai",
-                model: "gpt-5",
-                temperature: 0.2,
-              },
-            },
-            reasoning: {
-              strategy: "plan-execute-review",
-              self_review: true,
-              expose_internal_reasoning: false,
-            },
-            knowledge: {
-              retrieval_mode: "hybrid",
-              sources: ["kb://default"],
-              top_k: 6,
-            },
-            integrations: {
-              framework_runtime_adapters: {
-                langgraph: "orchestration",
-                langchain: "retrieval-and-tools",
-                "semantic-kernel": "plugins-and-mcp",
-                autogen: "multi-agent-collaboration",
-              },
-            },
-            mcp: {
-              enabled: true,
-            },
-            a2a: {
-              enabled: true,
-              require_signed_messages: true,
-            },
-            tools: {
-              require_human_approval_for_high_risk: true,
-            },
-            memory: {
-              default_scope: "session",
-              allow_scopes: ["run", "session", "user", "tenant", "agent", "workflow", "global"],
-            },
-            guardrails: {
-              enable_platform_signals: true,
-              platform_signal_enforcement: "block_high",
-              platform_signal_detect_prompt_injection: true,
-              platform_signal_detect_pii: true,
-              platform_signal_detect_command_injection: true,
-              platform_signal_detect_exfiltration: true,
             },
             graph_json: graph,
           },

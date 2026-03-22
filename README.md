@@ -71,6 +71,31 @@ For the local browser experience, open `http://frontier.localhost` (or your conf
 
 By default, local-first development seeds safe public demo agents from `examples/agents/`. Optional private or proprietary agent definitions can be layered in by setting `FRONTIER_AGENT_ASSETS_ROOT` to an external directory.
 
+Local memory is split by tier:
+
+- **Redis** handles short-term, hot working memory and session caching.
+- **PostgreSQL + pgvector** handles long-term persistent memory and semantic recall.
+- **Consolidation scaffolding** queues durable memory candidates when `FRONTIER_MEMORY_CONSOLIDATION_ENABLED=true`, so selective promotion/summarization can be layered in without exposing internals in the builder.
+- **Hybrid retrieval** can blend short-term session memory, long-term semantic memory, and internal world-graph context when `FRONTIER_MEMORY_HYBRID_RETRIEVAL_ENABLED=true`, with hidden relevance ranking, role-aware boosts, and a bounded token budget.
+- Task outcomes can be promoted into long-term memory automatically when `FRONTIER_MEMORY_LEARNING_ENABLED=true`, allowing agents to build reusable organizational memory over time.
+
+For internal operations and testing, queued consolidation candidates can be processed through the backend-only endpoint `POST /internal/memory/consolidation/run`. This is intended for platform workflows and operators, not the standard ReactFlow builder experience.
+Consolidated memory summaries can also be projected into the internal Neo4j world graph through `POST /internal/memory/world-graph/project`, or automatically during consolidation when graph projection is enabled.
+
+Useful consolidation tuning flags:
+
+- `FRONTIER_MEMORY_CONSOLIDATION_MIN_CANDIDATES` — minimum candidate count before standard memory gets summarized.
+- `FRONTIER_MEMORY_TASK_LEARNING_MIN_CANDIDATES` — lower threshold for task-learning consolidation.
+- `FRONTIER_MEMORY_CONSOLIDATION_MAX_POINTS` — maximum bullet points retained in a synthesized summary.
+- `FRONTIER_MEMORY_CONSOLIDATION_DUPLICATE_MIN_OVERLAP` — token-overlap threshold used to suppress near-duplicate summaries.
+- `FRONTIER_MEMORY_CONSOLIDATION_DUPLICATE_HISTORY_LIMIT` — how many recent summaries are checked when looking for duplicates.
+- `FRONTIER_MEMORY_HYBRID_RETRIEVAL_ENABLED` — blends short-term, long-term, and world-graph context into hidden agent memory retrieval.
+- `FRONTIER_MEMORY_HYBRID_MAX_TOKENS` — caps the approximate token budget for ranked hybrid memory injected into agent execution.
+- `FRONTIER_MEMORY_HYBRID_MAX_TOPICS` — caps how many world-graph topics are surfaced alongside ranked hybrid memory.
+- `FRONTIER_MEMORY_GRAPH_PROJECTION_ENABLED` — enables internal Neo4j projection for consolidated memory summaries.
+- `FRONTIER_MEMORY_GRAPH_MAX_TOPICS` — maximum number of extracted topic nodes linked from each consolidated memory.
+- `FRONTIER_MEMORY_GRAPH_TOPIC_MIN_OCCURRENCES` — minimum repeated occurrences before a topic is projected into the world graph.
+
 Useful follow-ups:
 
 - `lattix health`

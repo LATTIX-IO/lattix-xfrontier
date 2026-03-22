@@ -5,7 +5,8 @@ import { StudioFullCanvas } from "@/components/studio-full-canvas";
 
 const reactFlowCanvasSpy = vi.fn();
 const autoLayoutSpy = vi.fn();
-const { runGraphMock } = vi.hoisted(() => ({
+const { getNodeDefinitionsMock, runGraphMock } = vi.hoisted(() => ({
+  getNodeDefinitionsMock: vi.fn(async () => []),
   runGraphMock: vi.fn(async () => ({
     run_id: "r1",
     status: "completed",
@@ -27,8 +28,30 @@ vi.mock("next/link", () => ({
 }));
 
 vi.mock("@/lib/api", () => ({
-  getNodeDefinitions: vi.fn(async () => []),
+  getNodeDefinitions: getNodeDefinitionsMock,
+  getCollaborationSession: vi.fn(async () => ({
+    id: "collab-1",
+    version: 1,
+    participants: [],
+    graph_json: { nodes: [], links: [] },
+  })),
   getGuardrailRulesets: vi.fn(async () => []),
+  getObservabilityDashboard: vi.fn(async () => ({
+    summary: {
+      total_runs: 0,
+      token_estimate: 0,
+      cost_estimate_usd: 0,
+      average_latency_ms: 0,
+    },
+    runs: [],
+  })),
+  getObservabilityRunTrace: vi.fn(async () => ({
+    run_id: "r1",
+    status: "completed",
+    event_count: 0,
+    node_count: 0,
+    edge_count: 0,
+  })),
   getRuntimeProviders: vi.fn(async () => ({
     providers: [],
     framework_adapters: {
@@ -59,6 +82,11 @@ vi.mock("@/lib/api", () => ({
   })),
   getMemorySession: vi.fn(async () => ({ session_id: "s", count: 0, entries: [] })),
   clearMemorySession: vi.fn(async () => ({ ok: true, session_id: "s" })),
+  joinCollaborationSession: vi.fn(async () => ({
+    session: { id: "collab-1", version: 1, participants: [], graph_json: { nodes: [], links: [] } },
+    participant: { role: "editor" },
+  })),
+  syncCollaborationSession: vi.fn(async () => ({ version: 2 })),
   validateGraph: vi.fn(async () => ({ valid: true, issues: [] })),
   runGraph: runGraphMock,
 }));
@@ -84,6 +112,26 @@ vi.mock("@/components/reactflow-canvas", () => ({
 }));
 
 describe("StudioFullCanvas", () => {
+  it("hides internal runtime controls in standard mode", async () => {
+    render(
+      <StudioFullCanvas
+        entityType="agent"
+        entityId="agent-1"
+        entityName="Agent One"
+        description="desc"
+        initialNodes={[]}
+        initialLinks={[]}
+        onSave={async () => {}}
+        onPublish={async () => {}}
+      />,
+    );
+
+    expect(await screen.findByText(/Execution Profile/i)).toBeInTheDocument();
+    expect(screen.queryByText(/Framework adapters/i)).not.toBeInTheDocument();
+    expect(screen.queryByLabelText(/runtime engine/i)).not.toBeInTheDocument();
+    expect(screen.queryByLabelText(/runtime session id/i)).not.toBeInTheDocument();
+  });
+
   it("applies overflow-safe viewport classes", () => {
     const { container } = render(
       <StudioFullCanvas
@@ -164,6 +212,7 @@ describe("StudioFullCanvas", () => {
         entityType="agent"
         entityId="agent-1"
         entityName="Agent One"
+        builderMode="internal"
         description="desc"
         initialNodes={[]}
         initialLinks={[]}
@@ -176,6 +225,7 @@ describe("StudioFullCanvas", () => {
     expect(await screen.findByLabelText(/runtime engine/i)).toBeInTheDocument();
     const adapterBadges = await screen.findAllByLabelText(/Runtime adapter .* (ready|missing dependencies)/i);
     expect(adapterBadges.length).toBeGreaterThan(0);
+    await waitFor(() => expect(getNodeDefinitionsMock).toHaveBeenCalledWith({ includeInternal: true }));
   });
 
   it("passes selected runtime engine to graph run payload", async () => {
@@ -186,6 +236,7 @@ describe("StudioFullCanvas", () => {
         entityType="agent"
         entityId="agent-1"
         entityName="Agent One"
+        builderMode="internal"
         description="desc"
         initialNodes={[]}
         initialLinks={[]}
@@ -217,6 +268,7 @@ describe("StudioFullCanvas", () => {
         entityType="agent"
         entityId="agent-1"
         entityName="Agent One"
+        builderMode="internal"
         description="desc"
         initialNodes={[]}
         initialLinks={[]}

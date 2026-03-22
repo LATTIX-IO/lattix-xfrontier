@@ -8,8 +8,6 @@ By contributing to this repository, you agree that your contributions are submit
 
 - Keep changes small, reviewable, and well-tested.
 - Do not commit secrets, customer data, or proprietary prompt content.
-- Public contributions must target the FOSS tree only.
-- Private Lattix agent assets belong outside this repository.
 
 ## Local development
 
@@ -32,12 +30,6 @@ Work from `apps/frontend/`:
 ### Backend
 
 Work from `apps/backend/` for the legacy FastAPI backend service.
-
-## Public vs private assets
-
-This repository ships public demo assets under `examples/agents/`.
-
-If you need proprietary or internal agent definitions for local testing, point `FRONTIER_AGENT_ASSETS_ROOT` at an external directory instead of adding those assets to git.
 
 ## Pull requests
 

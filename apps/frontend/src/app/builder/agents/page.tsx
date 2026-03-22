@@ -32,7 +32,7 @@ export default async function BuilderAgentsPage() {
                 <td className="px-3 py-2 text-[var(--foreground)]">v{agent.version}</td>
                 <td className="px-3 py-2 text-right">
                   <div className="flex justify-end gap-2">
-                    <Link className="fx-btn-primary px-2.5 py-1 text-xs font-medium" href={`/builder/agent/${agent.id}`}>
+                    <Link className="fx-btn-primary px-2.5 py-1 text-xs font-medium" href={`/builder/agents/${agent.id}`}>
                       Open
                     </Link>
                     <TypedDeleteButton itemType="agent" itemId={agent.id} itemName={agent.name} />

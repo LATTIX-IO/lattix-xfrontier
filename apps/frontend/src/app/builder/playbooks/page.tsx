@@ -45,7 +45,7 @@ export default function PlaybooksPage() {
       const created = await instantiatePlaybook(playbook.id, {
         name: `${playbook.name} Instance`,
       });
-      router.push(`/builder/workflow/${created.id}`);
+      router.push(`/builder/workflows/${created.id}`);
     } catch {
       setError(`Failed to instantiate playbook ${playbook.name}.`);
     } finally {

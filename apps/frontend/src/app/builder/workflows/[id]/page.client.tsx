@@ -48,6 +48,7 @@ export function WorkflowStudioClient({ workflowId, workflowName, initialGraph, i
       entityType="workflow"
       entityId={workflowId}
       entityName={workflowName}
+      builderMode="standard"
       description="Compose orchestration logic directly on canvas; this graph is persisted and executed by FastAPI orchestration services."
       initialNodes={initialNodes}
       initialLinks={initialLinks}

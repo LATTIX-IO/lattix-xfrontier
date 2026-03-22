@@ -10,8 +10,13 @@ const nextConfig: NextConfig = {
   async redirects() {
     return [
       {
-        source: "/builder/agents/:id",
-        destination: "/builder/agent/:id",
+        source: "/builder/agent/:id",
+        destination: "/builder/agents/:id",
+        permanent: false,
+      },
+      {
+        source: "/builder/workflow/:id",
+        destination: "/builder/workflows/:id",
         permanent: false,
       },
     ];
