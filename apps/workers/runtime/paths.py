@@ -30,10 +30,9 @@ def configured_agent_assets_root() -> Path | None:
 def agent_assets_roots() -> list[Path]:
     roots: list[Path] = []
     examples_root = (repo_root() / "examples" / "agents").resolve()
-    legacy_root = (repo_root() / "lattix-frontier-agents" / "agents").resolve()
     configured_root = configured_agent_assets_root()
 
-    for candidate in [examples_root, legacy_root, configured_root]:
+    for candidate in [examples_root, configured_root]:
         if candidate is None:
             continue
         if candidate not in roots:

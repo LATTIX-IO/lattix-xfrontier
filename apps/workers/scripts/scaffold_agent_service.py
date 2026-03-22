@@ -15,7 +15,6 @@ def _agent_assets_candidates() -> list[Path]:
     configured = str(__import__("os").getenv("FRONTIER_AGENT_ASSETS_ROOT") or "").strip()
     candidates = [
         (REPO_ROOT / "examples" / "agents").resolve(),
-        (REPO_ROOT / "lattix-frontier-agents" / "agents").resolve(),
     ]
     if configured:
         configured_path = Path(configured)

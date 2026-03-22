@@ -29,8 +29,6 @@ The FOSS-ready layout is now organized around first-class app, package, deploy, 
 - `examples/agents/` — public demo agent assets used by default in local-first development
 - `docs/reference/lattix-frontier-docs/` — imported legacy documentation tree for migration/reference
 
-Legacy `lattix-frontier-*` directories are retained temporarily as compatibility mirrors while the repository completes its transition away from submodule-shaped paths.
-
 ## Architecture
 
 Lattix xFrontier is built around four layers:
@@ -166,5 +164,5 @@ helm install lattix ./helm/lattix-frontier -f helm/lattix-frontier/values-prod.y
 
 ## Notes
 
-The public repository intentionally excludes proprietary Lattix agent definitions. The old `lattix-frontier-agents` subrepo remains private; AGPL applies to the public code in this repository, while open-source development should rely on `examples/agents/` or an explicit external `FRONTIER_AGENT_ASSETS_ROOT`.
+The public repository intentionally excludes proprietary Lattix agent definitions. Private agent assets are no longer expected inside this repository; open-source development should rely on `examples/agents/` or an explicit external `FRONTIER_AGENT_ASSETS_ROOT`.
 

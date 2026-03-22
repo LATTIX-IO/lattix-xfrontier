@@ -18,8 +18,6 @@ The public repository now treats the following paths as canonical:
 - `examples/agents/`
 - `lattix_frontier/`
 
-Legacy `lattix-frontier-*` directories remain temporarily as compatibility mirrors during the migration away from submodule-shaped paths.
-
 ## What stays private
 
 The following should remain outside the FOSS tree:
@@ -33,13 +31,12 @@ These private assets are intentionally **not** part of the AGPL-licensed public 
 
 ## Agent asset loading
 
-The legacy backend now loads agent assets in this order:
+The public runtime now loads agent assets in this order:
 
 1. public sample assets from `examples/agents/`
-2. legacy private assets if present in `lattix-frontier-agents/agents`
-3. an explicit override from `FRONTIER_AGENT_ASSETS_ROOT`
+2. an explicit override from `FRONTIER_AGENT_ASSETS_ROOT`
 
-This keeps the local-first platform functional for public users while preserving a secure extension path for private deployments.
+This keeps the local-first platform functional for public users while preserving a secure extension path for private deployments without requiring private repositories to exist inside the local checkout.
 
 ## Local-first security posture
 
@@ -52,7 +49,6 @@ The public migration keeps local-first hosting intact by:
 
 ## Next cleanup steps
 
-- remove legacy `lattix-frontier-*` path usage from any remaining scripts
-- fully decommission submodule tracking once git history migration is complete
+- remove any remaining legacy `lattix-frontier-*` compatibility assumptions from code and docs
 - audit `deploy/infra/` and `deploy/gitops/` contents for public-safe publication
 - add package-level ownership and release automation for the new `apps/` and `packages/` structure
