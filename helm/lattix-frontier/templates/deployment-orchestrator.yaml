@@ -23,6 +23,21 @@ spec:
           ports:
             - containerPort: 8000
           env:
+            - name: FRONTIER_RUNTIME_PROFILE
+              value: {{ .Values.runtime.profile | quote }}
+            - name: FRONTIER_REQUIRE_A2A_RUNTIME_HEADERS
+              value: {{ .Values.runtime.requireA2ARuntimeHeaders | quote }}
+            - name: A2A_JWT_ALG
+              value: {{ .Values.runtime.a2a.jwtAlgorithm | quote }}
+            - name: A2A_JWT_ISS
+              value: {{ .Values.runtime.a2a.jwtIssuer | quote }}
+            - name: A2A_JWT_AUD
+              value: {{ .Values.runtime.a2a.jwtAudience | quote }}
+            - name: A2A_JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.runtime.a2a.sharedSecretName }}
+                  key: {{ .Values.runtime.a2a.sharedSecretKey }}
             - name: FEDERATION_ENABLED
               value: {{ .Values.federation.enabled | quote }}
             - name: FEDERATION_CLUSTER_NAME

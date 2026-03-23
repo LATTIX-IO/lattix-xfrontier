@@ -21,11 +21,37 @@ GitOps control plane for deploying and promoting Lattix xFrontier Microsoft AI F
 ## Pipeline Expectations
 
 1. Validate against `lattix-frontier-contracts`.
-2. Plan and diff against target environment.
-3. Apply infra/config changes.
-4. Run evaluations and guardrail checks.
-5. Promote with approvals.
-6. Support rollback from Git history.
+2. Build a release bundle containing packaged chart, installer assets, promotion plan, and rollback manifest.
+3. Plan and diff against target environment.
+4. Apply infra/config changes.
+5. Run evaluations and guardrail checks.
+6. Promote with environment approvals.
+7. Support rollback from the previous release bundle and Git history.
+
+## Release automation
+
+The root workflow `.github/workflows/release.yml` now performs the Phase 7 release path:
+
+1. build container images,
+2. run the tagged release e2e suite,
+3. package the Helm chart and installer assets,
+4. generate a versioned release bundle via `scripts/build_release_bundle.py`,
+5. publish the bundle as both a workflow artifact and GitHub release assets,
+6. gate promotion through `dev -> stage -> prod` GitHub environments using the existing Foundry secret validation and smoke scripts.
+
+Manual rollback is handled by `.github/workflows/rollback.yml`, which:
+
+- requires an explicit target environment and release tag,
+- downloads the selected release's rollback metadata,
+- validates environment secrets,
+- re-runs the environment smoke gate before the operator applies rollback changes.
+
+Each release bundle includes:
+
+- `manifest.json` — version, repo, git SHA, images, packaged artifacts
+- `promotion-plan.json` — ordered environment gates and approval expectations
+- `rollback-plan.json` — previous-version target and rollback strategy metadata
+- `RELEASE_NOTES.md` — operator-facing release summary
 
 ## Foundry Connection Setup
 

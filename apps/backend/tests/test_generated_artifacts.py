@@ -8,6 +8,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from fastapi.testclient import TestClient
+from frontier_runtime.security import mint_token
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -1665,6 +1666,73 @@ def test_secure_local_mode_uses_expiring_nonce_replay_cache(monkeypatch) -> None
         store.a2a_seen_nonces = original_seen_nonces
 
 
+def test_runtime_profile_local_secure_matches_fail_closed_local_behavior(monkeypatch) -> None:
+    original_require_auth = store.platform_settings.require_authenticated_requests
+    original_audit_events = list(store.audit_events)
+    store.audit_events = []
+
+    try:
+        store.platform_settings.require_authenticated_requests = False
+        monkeypatch.setenv("FRONTIER_RUNTIME_PROFILE", "local-secure")
+        monkeypatch.delenv("FRONTIER_SECURE_LOCAL_MODE", raising=False)
+        monkeypatch.delenv("FRONTIER_REQUIRE_AUTHENTICATED_REQUESTS", raising=False)
+        monkeypatch.delenv("FRONTIER_REQUIRE_A2A_RUNTIME_HEADERS", raising=False)
+
+        public_health = client.get("/healthz")
+        assert public_health.status_code == 200
+        assert public_health.json()["mode"] == "local-secure"
+        assert "postgres" not in public_health.json()
+
+        assert client.get("/platform/security-policy").status_code == 401
+
+        detailed = client.get("/platform/security-policy", headers={"x-frontier-actor": "tester"})
+        assert detailed.status_code == 200
+        body = detailed.json()
+        assert body["runtime_profile"]["name"] == "local-secure"
+        assert body["runtime_profile"]["controls"]["require_authenticated_requests"] is True
+        assert body["runtime_profile"]["controls"]["require_a2a_runtime_headers"] is False
+    finally:
+        store.platform_settings.require_authenticated_requests = original_require_auth
+        store.audit_events = original_audit_events
+
+
+def test_runtime_profile_hosted_is_immutable_and_requires_a2a_headers(monkeypatch) -> None:
+    original_require_auth = store.platform_settings.require_authenticated_requests
+    original_seen_nonces = dict(store.a2a_seen_nonces)
+
+    try:
+        store.platform_settings.require_authenticated_requests = False
+        store.a2a_seen_nonces = {}
+        monkeypatch.setenv("FRONTIER_RUNTIME_PROFILE", "hosted")
+        monkeypatch.setenv("FRONTIER_REQUIRE_AUTHENTICATED_REQUESTS", "false")
+        monkeypatch.setenv("FRONTIER_REQUIRE_A2A_RUNTIME_HEADERS", "false")
+        monkeypatch.delenv("FRONTIER_SECURE_LOCAL_MODE", raising=False)
+
+        public_health = client.get("/healthz")
+        assert public_health.status_code == 200
+        assert public_health.json()["mode"] == "hosted"
+        assert "postgres" not in public_health.json()
+
+        assert client.get("/platform/security-policy").status_code == 401
+        assert client.get("/platform/security-policy", headers={"x-frontier-actor": "tester"}).status_code == 401
+
+        hosted_headers = {
+            "x-frontier-actor": "tester",
+            "x-frontier-subject": "backend",
+            "x-frontier-signature": "signed",
+            "x-frontier-nonce": "hosted-profile-nonce-1",
+        }
+        allowed = client.get("/platform/security-policy", headers=hosted_headers)
+        assert allowed.status_code == 200
+        body = allowed.json()
+        assert body["runtime_profile"]["name"] == "hosted"
+        assert body["runtime_profile"]["controls"]["require_authenticated_requests"] is True
+        assert body["runtime_profile"]["controls"]["require_a2a_runtime_headers"] is True
+    finally:
+        store.platform_settings.require_authenticated_requests = original_require_auth
+        store.a2a_seen_nonces = original_seen_nonces
+
+
 def test_cors_preflight_uses_explicit_methods_and_headers() -> None:
     response = client.options(
         "/healthz",
@@ -1695,6 +1763,15 @@ def test_security_headers_are_applied_from_shared_policy() -> None:
     assert response.headers["content-security-policy"] == "default-src 'none'; frame-ancestors 'none'; base-uri 'none'"
     assert response.headers["referrer-policy"] == "no-referrer"
     assert response.headers["permissions-policy"] == "camera=(), microphone=(), geolocation=(), browsing-topics=()"
+
+
+def test_hosted_runtime_profile_adds_hsts_header(monkeypatch) -> None:
+    monkeypatch.setenv("FRONTIER_RUNTIME_PROFILE", "hosted")
+
+    response = client.get("/healthz")
+
+    assert response.status_code == 200
+    assert response.headers["strict-transport-security"] == "max-age=63072000; includeSubDomains"
 
 
 def test_route_inventory_covers_registered_backend_routes() -> None:
@@ -1762,6 +1839,99 @@ def test_memory_scope_authorization_requires_tenant_claim_for_tenant_bucket() ->
         assert allowed.status_code == 200
     finally:
         store.memory_by_session.pop(bucket_id, None)
+
+
+def test_runtime_bearer_token_supplies_actor_and_tenant_claims() -> None:
+    bucket_id = "tenant:acme"
+    store.memory_by_session[bucket_id] = [{"id": "mem-tenant-jwt", "content": "tenant-scoped memory"}]
+
+    token = mint_token(
+        "tenant-user",
+        ttl_seconds=60,
+        additional_claims={
+            "actor": "tenant-user",
+            "tenant_id": "acme",
+        },
+    )
+
+    try:
+        settings_response = client.get(
+            "/platform/settings",
+            headers={"authorization": f"Bearer {token}"},
+        )
+        assert settings_response.status_code == 200
+
+        memory_response = client.get(
+            f"/memory/{bucket_id}?scope=tenant",
+            headers={"authorization": f"Bearer {token}"},
+        )
+        assert memory_response.status_code == 200
+        assert memory_response.json()["session_id"] == bucket_id
+    finally:
+        store.memory_by_session.pop(bucket_id, None)
+
+
+def test_non_internal_runtime_bearer_token_cannot_access_internal_memory_endpoints() -> None:
+    bucket_id = "agent:runtime-bearer-user"
+    store.memory_by_session[bucket_id] = []
+    main_module._POSTGRES_MEMORY.clear_entries(bucket_id=bucket_id, memory_scope="agent")
+    main_module._memory_append_entry(
+        bucket_id,
+        {"id": "runtime-user-1", "content": "user bearer token should not gain internal access"},
+        memory_scope="agent",
+        source="memory-node",
+    )
+
+    token = mint_token(
+        "member-user",
+        ttl_seconds=60,
+        additional_claims={
+            "actor": "member-user",
+        },
+    )
+
+    try:
+        denied = client.post(
+            "/internal/memory/consolidation/run",
+            json={"bucket_id": bucket_id, "scope": "agent", "limit": 10},
+            headers={"authorization": f"Bearer {token}"},
+        )
+        assert denied.status_code == 403
+    finally:
+        store.memory_by_session.pop(bucket_id, None)
+        main_module._POSTGRES_MEMORY.clear_entries(bucket_id=bucket_id, memory_scope="agent")
+
+
+def test_internal_runtime_bearer_token_can_access_internal_memory_endpoints() -> None:
+    bucket_id = "agent:runtime-bearer-internal"
+    store.memory_by_session[bucket_id] = []
+    main_module._POSTGRES_MEMORY.clear_entries(bucket_id=bucket_id, memory_scope="agent")
+    main_module._memory_append_entry(
+        bucket_id,
+        {"id": "runtime-internal-1", "content": "internal bearer token maintenance target"},
+        memory_scope="agent",
+        source="memory-node",
+    )
+
+    token = mint_token(
+        "backend",
+        ttl_seconds=60,
+        additional_claims={
+            "subject": "backend",
+            "internal_service": True,
+        },
+    )
+
+    try:
+        allowed = client.post(
+            "/internal/memory/consolidation/run",
+            json={"bucket_id": bucket_id, "scope": "agent", "limit": 10},
+            headers={"authorization": f"Bearer {token}"},
+        )
+        assert allowed.status_code == 200
+    finally:
+        store.memory_by_session.pop(bucket_id, None)
+        main_module._POSTGRES_MEMORY.clear_entries(bucket_id=bucket_id, memory_scope="agent")
 
 
 def test_memory_scope_authorization_requires_collaboration_membership_for_agent_bucket() -> None:

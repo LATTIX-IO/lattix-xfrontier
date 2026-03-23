@@ -38,6 +38,14 @@ class CapabilityClaims:
     max_tool_calls: int
 
 
+@dataclass(frozen=True)
+class CapabilityEvaluationRequest:
+    action: str
+    agent_id: str
+    tool_call_count: int | None = None
+    resource_path: str | None = None
+
+
 class CapabilityMinter:
     def __init__(self, keypair: bytes | str) -> None:
         self._key = _secret_bytes(keypair)
@@ -66,7 +74,15 @@ class CapabilityVerifier:
     def __init__(self, keypair: bytes | str) -> None:
         self._key = _secret_bytes(keypair)
 
-    def verify(self, token: bytes | str, action: str, agent_id: str) -> bool:
+    def verify(
+        self,
+        token: bytes | str,
+        action: str,
+        agent_id: str,
+        *,
+        tool_call_count: int | None = None,
+        resource_path: str | None = None,
+    ) -> bool:
         raw = token.encode("utf-8") if isinstance(token, str) else token
         try:
             encoded_payload, encoded_sig = raw.split(b".", 1)
@@ -78,7 +94,36 @@ class CapabilityVerifier:
             payload = json.loads(payload_bytes.decode("utf-8"))
         except Exception:
             return False
-        return payload.get("agent_id") == agent_id and action in (payload.get("allowed_tools") or [])
+        if payload.get("agent_id") != agent_id or action not in (payload.get("allowed_tools") or []):
+            return False
+
+        if tool_call_count is not None:
+            try:
+                max_tool_calls = int(payload.get("max_tool_calls", 0))
+            except (TypeError, ValueError):
+                return False
+            if max_tool_calls > 0 and int(tool_call_count) > max_tool_calls:
+                return False
+
+        if resource_path:
+            normalized_action = str(action or "").strip().lower()
+            if normalized_action.startswith("read"):
+                allowed_paths = [str(item) for item in payload.get("allowed_read_paths", [])]
+                return OPAClient._path_allowed(resource_path, allowed_paths)
+            if normalized_action.startswith("write"):
+                allowed_paths = [str(item) for item in payload.get("allowed_write_paths", [])]
+                return OPAClient._path_allowed(resource_path, allowed_paths)
+
+        return True
+
+    def verify_request(self, token: bytes | str, request: CapabilityEvaluationRequest) -> bool:
+        return self.verify(
+            token,
+            request.action,
+            request.agent_id,
+            tool_call_count=request.tool_call_count,
+            resource_path=request.resource_path,
+        )
 
 
 @dataclass(frozen=True)
@@ -88,9 +133,191 @@ class PolicyDecision:
     details: dict[str, Any] = field(default_factory=dict)
 
 
+@dataclass(frozen=True)
+class PolicyEvaluationRequest:
+    policy_name: str
+    agent_id: str = ""
+    tool: str = ""
+    resource: str = ""
+    action: str = ""
+    classification: str = "internal"
+    provider: str = "local"
+    target: str = ""
+    allowed_tools: tuple[str, ...] = ()
+    allowed_targets: tuple[str, ...] = ()
+    allowed_read_paths: tuple[str, ...] = ()
+    allowed_write_paths: tuple[str, ...] = ()
+    allowed_paths: tuple[str, ...] = ()
+    tool_calls_used: int = 0
+    max_tool_calls: int = 0
+    budget_tokens_used: int = 0
+    budget_max_tokens: int = 0
+    readonly_rootfs: bool = False
+    run_as_user: str = ""
+    require_egress_mediation: bool = False
+    allow_network: bool = False
+
+    @classmethod
+    def from_payload(cls, policy_name: str, payload: dict[str, Any] | None) -> "PolicyEvaluationRequest":
+        data = payload if isinstance(payload, dict) else {}
+        budget = data.get("budget") if isinstance(data.get("budget"), dict) else {}
+        resource = str(
+            data.get("resource")
+            or data.get("target_path")
+            or data.get("resource_path")
+            or data.get("path")
+            or ""
+        ).strip()
+        target = str(
+            data.get("target")
+            or data.get("target_path")
+            or data.get("resource_path")
+            or data.get("path")
+            or ""
+        ).strip()
+
+        def _tuple(key: str) -> tuple[str, ...]:
+            value = data.get(key)
+            if isinstance(value, (list, tuple, set)):
+                return tuple(str(item).strip() for item in value if str(item).strip())
+            return ()
+
+        return cls(
+            policy_name=str(policy_name or "").strip(),
+            agent_id=str(data.get("agent_id") or "").strip(),
+            tool=str(data.get("tool") or data.get("action") or "").strip(),
+            resource=resource,
+            action=str(data.get("action") or data.get("tool") or "").strip(),
+            classification=str(data.get("classification") or "internal").strip() or "internal",
+            provider=str(data.get("provider") or "local").strip() or "local",
+            target=target,
+            allowed_tools=_tuple("allowed_tools"),
+            allowed_targets=_tuple("allowed_targets"),
+            allowed_read_paths=_tuple("allowed_read_paths"),
+            allowed_write_paths=_tuple("allowed_write_paths"),
+            allowed_paths=_tuple("allowed_paths"),
+            tool_calls_used=OPAClient._safe_int(data.get("tool_calls_used", data.get("tool_calls", 0))),
+            max_tool_calls=OPAClient._safe_int(data.get("max_tool_calls", 0)),
+            budget_tokens_used=OPAClient._safe_int(budget.get("tokens_used", 0)),
+            budget_max_tokens=OPAClient._safe_int(budget.get("max_tokens", 0)),
+            readonly_rootfs=bool(data.get("readonly_rootfs")),
+            run_as_user=str(data.get("run_as_user") or "").strip(),
+            require_egress_mediation=bool(data.get("require_egress_mediation")),
+            allow_network=bool(data.get("allow_network")),
+        )
+
+    def to_payload(self) -> dict[str, Any]:
+        return {
+            "agent_id": self.agent_id,
+            "tool": self.tool,
+            "resource": self.resource,
+            "action": self.action,
+            "classification": self.classification,
+            "provider": self.provider,
+            "target": self.target,
+            "allowed_tools": list(self.allowed_tools),
+            "allowed_targets": list(self.allowed_targets),
+            "allowed_read_paths": list(self.allowed_read_paths),
+            "allowed_write_paths": list(self.allowed_write_paths),
+            "allowed_paths": list(self.allowed_paths),
+            "tool_calls_used": self.tool_calls_used,
+            "max_tool_calls": self.max_tool_calls,
+            "budget": {
+                "tokens_used": self.budget_tokens_used,
+                "max_tokens": self.budget_max_tokens,
+            },
+            "readonly_rootfs": self.readonly_rootfs,
+            "run_as_user": self.run_as_user,
+            "require_egress_mediation": self.require_egress_mediation,
+            "allow_network": self.allow_network,
+        }
+
+
+@dataclass(frozen=True)
+class RuntimeTokenIdentity:
+    subject: str
+    actor: str
+    tenant_id: str = ""
+    subject_type: str = "user"
+    internal_service: bool = False
+
+
+def _first_claim_value(claims: dict[str, Any], *keys: str) -> str:
+    for key in keys:
+        value = claims.get(key)
+        if value is None:
+            continue
+        text = str(value).strip()
+        if text:
+            return text
+    return ""
+
+
+def _claim_as_bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    return False
+
+
+def decode_token(token: str) -> dict[str, Any]:
+    return jwt.decode(
+        token,
+        _secret_bytes(),
+        algorithms=["HS256"],
+        audience="frontier-runtime",
+        issuer="lattix-frontier",
+    )
+
+
+def token_identity_from_claims(claims: dict[str, Any] | None) -> RuntimeTokenIdentity:
+    payload = claims if isinstance(claims, dict) else {}
+    subject = _first_claim_value(payload, "subject", "service", "sub")
+    actor = _first_claim_value(payload, "actor", "actor_id", "user_id", "user", "x-frontier-actor")
+    tenant_id = _first_claim_value(payload, "tenant_id", "tenant", "currentTenant", "current_tenant")
+    subject_type = _first_claim_value(payload, "subject_type", "token_type")
+    internal_service = _claim_as_bool(payload.get("internal_service")) or _claim_as_bool(payload.get("internal"))
+
+    resolved_actor = actor or subject or "anonymous"
+    resolved_subject = subject or resolved_actor
+    resolved_subject_type = subject_type or ("service" if internal_service else "user")
+
+    return RuntimeTokenIdentity(
+        subject=resolved_subject,
+        actor=resolved_actor,
+        tenant_id=tenant_id,
+        subject_type=resolved_subject_type,
+        internal_service=internal_service,
+    )
+
+
 class OPAClient:
+    _AGENT_TOOL_ALLOWLIST = {
+        "orchestrator": {"execute_step", "a2a.execute"},
+        "backend": {"execute_step", "a2a.execute"},
+        "research": {"execute_step", "search"},
+        "code": {"execute_step", "generate_code"},
+        "review": {"execute_step", "review_output"},
+    }
+
     def __init__(self, base_url: str) -> None:
         self.base_url = base_url
+
+    @staticmethod
+    def _as_text_set(value: Any) -> set[str]:
+        if isinstance(value, (list, tuple, set)):
+            return {str(item).strip() for item in value if str(item).strip()}
+        return set()
+
+    @staticmethod
+    def _safe_int(value: Any, default: int = 0) -> int:
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return default
 
     @staticmethod
     def _path_allowed(candidate: str, allowed_paths: list[str]) -> bool:
@@ -114,40 +341,68 @@ class OPAClient:
                 return True
         return False
 
-    async def evaluate(self, policy_name: str, payload: dict[str, Any]) -> PolicyDecision:
+    @staticmethod
+    def _decision(allowed: bool, reason: str, *, request: PolicyEvaluationRequest, control: str, extra: dict[str, Any] | None = None) -> PolicyDecision:
+        details = {
+            "policy_name": request.policy_name,
+            "control": control,
+            "agent_id": request.agent_id,
+            "tool": request.tool,
+            "action": request.action,
+        }
+        if isinstance(extra, dict):
+            details.update(extra)
+        return PolicyDecision(allowed=allowed, reason=reason, details=details)
+
+    async def evaluate_request(self, request: PolicyEvaluationRequest) -> PolicyDecision:
         await asyncio.sleep(0)
-        if policy_name == "agent_policy":
-            budget = payload.get("budget") or {}
-            tokens_used = int(budget.get("tokens_used", 0))
-            max_tokens = int(budget.get("max_tokens", 0))
-            if tokens_used > max_tokens:
-                return PolicyDecision(False, "budget overrun")
-            agent_id = str(payload.get("agent_id") or "")
-            tool = str(payload.get("tool") or "")
-            if agent_id in {"orchestrator", "backend"} and tool == "execute_step":
-                return PolicyDecision(True, "allowed by local fallback")
-            return PolicyDecision(False, "agent/tool not allowlisted")
-        if policy_name == "network_egress":
-            target = str(payload.get("target") or "")
-            allowed_targets = {str(item) for item in payload.get("allowed_targets", [])}
-            return PolicyDecision(target in allowed_targets, "target allowed" if target in allowed_targets else "target denied")
-        if policy_name == "tool_jail":
-            run_as_user = str(payload.get("run_as_user") or "")
-            if run_as_user == "0:0":
-                return PolicyDecision(False, "root execution denied")
-            return PolicyDecision(True, "tool jail policy passed")
-        if policy_name == "filesystem_path":
-            action = str(payload.get("action") or "read").lower()
-            target = str(payload.get("target_path") or payload.get("path") or "")
+        if request.policy_name == "agent_policy":
+            if request.budget_tokens_used > request.budget_max_tokens:
+                return self._decision(False, "budget overrun", request=request, control="token_budget", extra={"observed": request.budget_tokens_used, "limit": request.budget_max_tokens})
+            allowed_tools = set(request.allowed_tools) or self._AGENT_TOOL_ALLOWLIST.get(request.agent_id, set())
+
+            if request.tool == "read_file" and request.resource.lower().endswith((".env", ".json", ".key", ".pem", ".ssh")):
+                return self._decision(False, "credential-like file access denied", request=request, control="credential_file")
+            if request.action == "network_egress":
+                allowed_targets = set(request.allowed_targets)
+                if not allowed_targets or request.target not in allowed_targets:
+                    return self._decision(False, "network target denied", request=request, control="network_egress", extra={"target": request.target, "allowed_targets": list(allowed_targets)})
+            if request.action == "llm_call" and request.classification == "restricted" and request.provider != "local":
+                return self._decision(False, "restricted data requires local provider", request=request, control="restricted_provider")
+            if request.max_tool_calls > 0 and request.tool_calls_used > request.max_tool_calls:
+                return self._decision(False, "tool call budget exceeded", request=request, control="tool_budget", extra={"observed": request.tool_calls_used, "limit": request.max_tool_calls})
+            if request.tool in allowed_tools:
+                return self._decision(True, "allowed by policy", request=request, control="allowlisted_tool", extra={"allowed_tools": sorted(allowed_tools)})
+            return self._decision(False, "agent/tool not allowlisted", request=request, control="tool_allowlist", extra={"allowed_tools": sorted(allowed_tools)})
+        if request.policy_name == "network_egress":
+            allowed_targets = set(request.allowed_targets)
+            allowed = request.target in allowed_targets
+            return self._decision(allowed, "target allowed" if allowed else "target denied", request=request, control="network_egress", extra={"target": request.target, "allowed_targets": list(allowed_targets)})
+        if request.policy_name == "tool_jail":
+            network_safe = (request.allow_network is not True) or request.require_egress_mediation is True
+            if not request.readonly_rootfs:
+                return self._decision(False, "readonly rootfs required", request=request, control="readonly_rootfs")
+            if request.run_as_user.startswith("0"):
+                return self._decision(False, "root execution denied", request=request, control="run_as_user")
+            if not network_safe:
+                return self._decision(False, "network egress mediation required", request=request, control="egress_mediation")
+            return self._decision(True, "tool jail policy passed", request=request, control="tool_jail")
+        if request.policy_name == "filesystem_path":
+            action = request.action.lower() or "read"
+            target = request.target or request.resource
             if action.startswith("write"):
-                allowed_paths = [str(item) for item in payload.get("allowed_write_paths", [])]
+                allowed_paths = list(request.allowed_write_paths)
             elif action.startswith("read"):
-                allowed_paths = [str(item) for item in payload.get("allowed_read_paths", [])]
+                allowed_paths = list(request.allowed_read_paths)
             else:
-                allowed_paths = [str(item) for item in payload.get("allowed_paths", [])]
+                allowed_paths = list(request.allowed_paths)
             allowed = self._path_allowed(target, allowed_paths)
-            return PolicyDecision(allowed, "path allowed" if allowed else "path denied")
-        return PolicyDecision(False, "unknown policy")
+            return self._decision(allowed, "path allowed" if allowed else "path denied", request=request, control="filesystem_path", extra={"target": target, "allowed_paths": allowed_paths})
+        return self._decision(False, "unknown policy", request=request, control="unknown_policy")
+
+    async def evaluate(self, policy_name: str, payload: dict[str, Any]) -> PolicyDecision:
+        request = PolicyEvaluationRequest.from_payload(policy_name, payload)
+        return await self.evaluate_request(request)
 
 
 class VaultClient:
@@ -171,13 +426,7 @@ def mint_token(sub: str, ttl_seconds: int = 600, additional_claims: dict[str, An
 
 
 def verify_token(token: str, require_nonce: bool = True) -> dict[str, Any]:
-    claims = jwt.decode(
-        token,
-        _secret_bytes(),
-        algorithms=["HS256"],
-        audience="frontier-runtime",
-        issuer="lattix-frontier",
-    )
+    claims = decode_token(token)
     token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
 
     state = load_state()

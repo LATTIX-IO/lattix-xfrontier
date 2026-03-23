@@ -1,3 +1,7 @@
+runtime:
+  profile: hosted
+  requireA2ARuntimeHeaders: true
+
 orchestrator:
   replicaCount: 2
   resources:

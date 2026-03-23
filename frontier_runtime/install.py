@@ -97,7 +97,7 @@ class FrontierInstaller:
     def _write_env_file(self, answers: InstallerAnswers, secrets_map: dict[str, str]) -> Path:
         generated_dir = self.repo_root / ".installer"
         generated_dir.mkdir(parents=True, exist_ok=True)
-        env_path = generated_dir / "local.env"
+        env_path = generated_dir / "local-secure.env"
         base_lines: list[str] = []
         example_path = self.repo_root / ".env.example"
         if example_path.exists():
@@ -105,7 +105,11 @@ class FrontierInstaller:
         generated_lines = [
             *base_lines,
             f"LOCAL_STACK_HOST={answers.local_hostname}.localhost",
+            "FRONTIER_RUNTIME_PROFILE=local-secure",
             "NEXT_PUBLIC_API_BASE_URL=/api",
+            f"FRONTEND_ORIGIN=http://{answers.local_hostname}.localhost",
+            "A2A_JWT_AUD=frontier-runtime",
+            "A2A_TRUSTED_SUBJECTS=backend,research,code,review,coordinator",
             f"FEDERATION_ENABLED={'true' if answers.federation_enabled else 'false'}",
             f"FEDERATION_CLUSTER_NAME={answers.federation_cluster_name}",
             f"FEDERATION_REGION={answers.federation_region}",

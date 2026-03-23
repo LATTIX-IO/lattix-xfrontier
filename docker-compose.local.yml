@@ -27,8 +27,7 @@ services:
     command: sh -lc "pip install --no-cache-dir -r requirements.txt && if [ \"${FRONTIER_INSTALL_RUNTIME_ENGINES:-0}\" = \"1\" ]; then pip install --no-cache-dir -r requirements-runtime-engines.txt; fi && uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"
     environment:
       FRONTEND_ORIGIN: ${FRONTEND_ORIGIN:-http://localhost:3000}
-      FRONTIER_SECURE_LOCAL_MODE: ${FRONTIER_SECURE_LOCAL_MODE:-false}
-      FRONTIER_REQUIRE_AUTHENTICATED_REQUESTS: ${FRONTIER_REQUIRE_AUTHENTICATED_REQUESTS:-false}
+      FRONTIER_RUNTIME_PROFILE: ${FRONTIER_RUNTIME_PROFILE:-local-lightweight}
       FRONTIER_API_BEARER_TOKEN: ${FRONTIER_API_BEARER_TOKEN:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       OPENAI_MODEL: ${OPENAI_MODEL:-gpt-4o-mini}
@@ -100,6 +99,8 @@ services:
     command: sh -lc "python -m http.server 8010"
     ports:
       - "127.0.0.1:8010:8010"
+    environment:
+      FRONTIER_RUNTIME_PROFILE: ${FRONTIER_RUNTIME_PROFILE:-local-lightweight}
     volumes:
       - ./:/workspace
 

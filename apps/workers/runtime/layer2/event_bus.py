@@ -2,7 +2,9 @@ from __future__ import annotations
 import collections
 import time
 from typing import Callable, DefaultDict, Dict, List
+
 from .contracts import Envelope
+from .reporting import add_trace, increment_metric
 
 
 Subscriber = Callable[[Envelope], None]
@@ -30,14 +32,21 @@ class EventBus:
                 mw(msg)
             except Exception as e:
                 msg.errors.append(str(e))
+            if isinstance(msg.payload, dict) and msg.payload.get("_security_blocked"):
+                increment_metric(msg, "event_bus_delivery_blocked", 1)
+                add_trace(msg, "event_bus.delivery", "blocked", {"reason": "security_blocked", "topic": topic})
+                return
         # Deliver to subscribers with simple budget checks
         subs = list(self._subscribers.get(topic, []))
         for fn in subs:
+            increment_metric(msg, "event_bus_delivery_attempts", 1)
             # Time budget enforcement
             if msg.budget and msg.budget.time_limit_ms is not None:
                 now_ms = int(time.time() * 1000)
                 if now_ms - msg.created_at_ms > msg.budget.time_limit_ms:
                     msg.errors.append("time budget exceeded; stopping delivery")
+                    increment_metric(msg, "event_bus_delivery_blocked", 1)
+                    add_trace(msg, "event_bus.delivery", "blocked", {"reason": "time_budget_exceeded", "topic": topic, "subscriber": _subscriber_name(fn)})
                     break
             # Token budget pre-check (if metrics already present)
             metrics = msg.payload.get("metrics") if isinstance(msg.payload, dict) else None
@@ -45,6 +54,8 @@ class EventBus:
                 used = metrics.get("tokens_used")
                 if isinstance(used, int) and used > msg.budget.cost_limit_tokens:
                     msg.errors.append("token budget exceeded; stopping delivery")
+                    increment_metric(msg, "event_bus_delivery_blocked", 1)
+                    add_trace(msg, "event_bus.delivery", "blocked", {"reason": "token_budget_exceeded_pre", "topic": topic, "subscriber": _subscriber_name(fn)})
                     break
 
             try:
@@ -52,10 +63,21 @@ class EventBus:
             except Exception as e:
                 # Non-fatal; record locally
                 msg.errors.append(str(e))
+                increment_metric(msg, "event_bus_delivery_failures", 1)
+                add_trace(msg, "event_bus.delivery", "error", {"reason": str(e), "topic": topic, "subscriber": _subscriber_name(fn)})
+            else:
+                increment_metric(msg, "event_bus_delivery_successes", 1)
+                add_trace(msg, "event_bus.delivery", "delivered", {"topic": topic, "subscriber": _subscriber_name(fn)})
             # Token budget post-check
             metrics = msg.payload.get("metrics") if isinstance(msg.payload, dict) else None
             if metrics and msg.budget and msg.budget.cost_limit_tokens is not None:
                 used = metrics.get("tokens_used")
                 if isinstance(used, int) and used > msg.budget.cost_limit_tokens:
                     msg.errors.append("token budget exceeded; stopping delivery")
+                    increment_metric(msg, "event_bus_delivery_blocked", 1)
+                    add_trace(msg, "event_bus.delivery", "blocked", {"reason": "token_budget_exceeded_post", "topic": topic, "subscriber": _subscriber_name(fn)})
                     break
+
+
+def _subscriber_name(fn: Subscriber) -> str:
+    return getattr(fn, "__name__", "subscriber") or fn.__class__.__name__

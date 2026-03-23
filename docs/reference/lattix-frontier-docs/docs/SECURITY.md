@@ -1,5 +1,7 @@
 Service-to-Service (A2A) and MCP Security
 
+> Historical reference note: this document captures security guidance imported from an earlier docs tree. For the active repository security baseline and trust-boundary expectations, prefer `THREAT-MODEL.md` and `docs/SECURITY.md`.
+
 Goals
 - Authenticate and authorize calls between agent services.
 - Support autoscaling and identity per service.
@@ -8,8 +10,10 @@ Goals
 A2A (HTTP) — JWT
 - Use signed JWT Bearer tokens for A2A requests.
 - Issuer/audience: configured via env (A2A_JWT_ISS, A2A_JWT_AUD).
+- Shared runtime default audience is `frontier-runtime`; older worker-only `agents` values should be treated as legacy compatibility inputs and normalized forward.
 - Algorithms: HS256 (dev) or RS256/ES256 (prod) using KMS-managed keys.
 - Code: `runtime/security/jwt.py` (issue/verify), `runtime/network/a2a.py` (client).
+- Preferred identity claims across worker and backend boundaries: `actor`, `tenant_id`, `subject`, and `internal_service`.
 - Propagate correlation: include `correlation_id` in the Envelope body; consider also an `X-Correlation-ID` header.
 
 mTLS (optional)

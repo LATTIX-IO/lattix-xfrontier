@@ -17,3 +17,9 @@ test_deny_read_outside_allowed_root if not filesystem_access.allow with input as
   "path": "/etc/passwd",
   "allowed_paths": ["/workspace/project"]
 }
+
+test_deny_prefix_bypass_path if not filesystem_access.allow with input as {
+  "action": "read",
+  "path": "/workspace/project-evil/secrets.txt",
+  "allowed_paths": ["/workspace/project"]
+}

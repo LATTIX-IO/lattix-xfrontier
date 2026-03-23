@@ -48,12 +48,19 @@ function Get-RepoRoot {
 }
 
 function Get-InstallerEnvPath {
+    param(
+        [switch]$LocalProfile
+    )
+
     $repoRoot = Get-RepoRoot
     $installerDir = Join-Path $repoRoot ".installer"
     if (-not (Test-Path $installerDir)) {
         New-Item -ItemType Directory -Path $installerDir | Out-Null
     }
-    return (Join-Path $installerDir "local.env")
+    if ($LocalProfile) {
+        return (Join-Path $installerDir "local-lightweight.env")
+    }
+    return (Join-Path $installerDir "local-secure.env")
 }
 
 function Get-EnvMapFromFile {
@@ -86,11 +93,35 @@ function New-RandomSecret {
     return [Convert]::ToBase64String($bytes).TrimEnd('=')
 }
 
+function Normalize-A2AAudience {
+    param(
+        [string]$Value
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Value) -or $Value -eq "agents") {
+        return "frontier-runtime"
+    }
+
+    return $Value
+}
+
+function Get-HelmCommand {
+    $pathHelm = Get-Command helm -ErrorAction SilentlyContinue
+    if ($pathHelm) {
+        return $pathHelm.Source
+    }
+    throw "Helm was not found. Install it or run validation in CI."
+}
+
 function Ensure-ComposeEnvFile {
+    param(
+        [switch]$LocalProfile
+    )
+
     $repoRoot = Get-RepoRoot
     $envExamplePath = Join-Path $repoRoot ".env.example"
     $envPath = Join-Path $repoRoot ".env"
-    $installerEnvPath = Get-InstallerEnvPath
+    $installerEnvPath = Get-InstallerEnvPath -LocalProfile:$LocalProfile
 
     $envMap = [ordered]@{}
     foreach ($sourcePath in @($envExamplePath, $envPath, $installerEnvPath)) {
@@ -102,7 +133,12 @@ function Ensure-ComposeEnvFile {
 
     if (-not $envMap.Contains("A2A_JWT_SECRET") -or [string]::IsNullOrWhiteSpace($envMap["A2A_JWT_SECRET"])) {
         $envMap["A2A_JWT_SECRET"] = New-RandomSecret
-        Write-Host "Generated local A2A_JWT_SECRET and stored it in .installer\local.env"
+        if ($LocalProfile) {
+            Write-Host "Generated local A2A_JWT_SECRET and stored it in .installer\local-lightweight.env"
+        }
+        else {
+            Write-Host "Generated local A2A_JWT_SECRET and stored it in .installer\local-secure.env"
+        }
     }
 
     if (-not $envMap.Contains("A2A_JWT_ALG") -or [string]::IsNullOrWhiteSpace($envMap["A2A_JWT_ALG"])) {
@@ -112,16 +148,31 @@ function Ensure-ComposeEnvFile {
         $envMap["A2A_JWT_ISS"] = "lattix-frontier"
     }
     if (-not $envMap.Contains("A2A_JWT_AUD") -or [string]::IsNullOrWhiteSpace($envMap["A2A_JWT_AUD"])) {
-        $envMap["A2A_JWT_AUD"] = "agents"
+        $envMap["A2A_JWT_AUD"] = "frontier-runtime"
+    }
+    else {
+        $envMap["A2A_JWT_AUD"] = Normalize-A2AAudience -Value $envMap["A2A_JWT_AUD"]
     }
     if (-not $envMap.Contains("A2A_TRUSTED_SUBJECTS") -or [string]::IsNullOrWhiteSpace($envMap["A2A_TRUSTED_SUBJECTS"])) {
         $envMap["A2A_TRUSTED_SUBJECTS"] = "backend,research,code,review,coordinator"
     }
-    if (-not $envMap.Contains("NEXT_PUBLIC_API_BASE_URL") -or [string]::IsNullOrWhiteSpace($envMap["NEXT_PUBLIC_API_BASE_URL"])) {
-        $envMap["NEXT_PUBLIC_API_BASE_URL"] = "/api"
+    if (-not $envMap.Contains("LOCAL_STACK_HOST") -or [string]::IsNullOrWhiteSpace($envMap["LOCAL_STACK_HOST"])) {
+        $envMap["LOCAL_STACK_HOST"] = "frontier.localhost"
     }
-    if (-not $envMap.Contains("FRONTIER_LOCAL_API_BASE_URL") -or [string]::IsNullOrWhiteSpace($envMap["FRONTIER_LOCAL_API_BASE_URL"])) {
+
+    if ($LocalProfile) {
+        $envMap["FRONTIER_RUNTIME_PROFILE"] = "local-lightweight"
+        $envMap["NEXT_PUBLIC_API_BASE_URL"] = "http://localhost:8000"
+        $envMap["FRONTEND_ORIGIN"] = "http://localhost:3000"
         $envMap["FRONTIER_LOCAL_API_BASE_URL"] = "http://localhost:8000"
+    }
+    else {
+        $envMap["FRONTIER_RUNTIME_PROFILE"] = "local-secure"
+        $envMap["NEXT_PUBLIC_API_BASE_URL"] = "/api"
+        $envMap["FRONTEND_ORIGIN"] = "http://$($envMap['LOCAL_STACK_HOST'])"
+        if (-not $envMap.Contains("FRONTIER_LOCAL_API_BASE_URL") -or [string]::IsNullOrWhiteSpace($envMap["FRONTIER_LOCAL_API_BASE_URL"])) {
+            $envMap["FRONTIER_LOCAL_API_BASE_URL"] = "http://localhost:8000"
+        }
     }
 
     $lines = foreach ($key in $envMap.Keys) {
@@ -132,7 +183,7 @@ function Ensure-ComposeEnvFile {
 }
 
 function Get-ComposeCommandPrefix {
-    $installerEnvPath = Get-InstallerEnvPath
+    $installerEnvPath = Get-InstallerEnvPath -LocalProfile
     if (Test-Path $installerEnvPath) {
         return @("docker", "compose", "--env-file", $installerEnvPath, "-f", "docker-compose.local.yml")
     }
@@ -242,6 +293,8 @@ function Show-Help {
     Write-Host "  test        Run pytest"
     Write-Host "  lint        Run ruff check/format"
     Write-Host "  typecheck   Run mypy"
+    Write-Host "  helm-validate Run Helm lint + template validation for the chart"
+    Write-Host "  install-helm Install Helm via direct download into .tools\helm"
     Write-Host "  install-opa Install repo-local OPA binary"
     Write-Host "  policy-test Run opa tests"
     Write-Host "  health      Query http://localhost:8000/healthz"
@@ -276,7 +329,7 @@ switch ($Command.ToLowerInvariant()) {
     }
     "local-up" {
         Assert-DockerReady
-        $composeEnvFile = Ensure-ComposeEnvFile
+        $composeEnvFile = Ensure-ComposeEnvFile -LocalProfile
         Invoke-ExternalCommand @("docker", "compose", "--env-file", $composeEnvFile, "-f", "docker-compose.local.yml", "up", "-d")
         Write-Host "Lightweight local stack running. Frontend: http://localhost:3000 ; API health: http://localhost:8000/healthz"
     }
@@ -319,6 +372,24 @@ switch ($Command.ToLowerInvariant()) {
     }
     "typecheck" {
         Invoke-ExternalCommand @($python, "-m", "mypy", "frontier_tooling/")
+    }
+    "install-helm" {
+        $repoRoot = Get-RepoRoot
+        $helmDir = Join-Path $repoRoot ".tools\helm"
+        if (-not (Test-Path $helmDir)) {
+            New-Item -ItemType Directory -Force -Path $helmDir | Out-Null
+        }
+        $zipPath = Join-Path $helmDir "helm.zip"
+        $extractDir = Join-Path $helmDir "windows-amd64"
+        Invoke-WebRequest -Uri "https://get.helm.sh/helm-v3.17.3-windows-amd64.zip" -OutFile $zipPath
+        Expand-Archive -LiteralPath $zipPath -DestinationPath $helmDir -Force
+        Invoke-ExternalCommand @((Join-Path $extractDir "helm.exe"), "version")
+    }
+    "helm-validate" {
+        $helm = Get-HelmCommand
+        $repoRoot = Get-RepoRoot
+        Invoke-ExternalCommand @($helm, "lint", (Join-Path $repoRoot "helm\lattix-frontier"))
+        Invoke-ExternalCommand @($helm, "template", "lattix", (Join-Path $repoRoot "helm\lattix-frontier"), "-f", (Join-Path $repoRoot "helm\lattix-frontier\values-prod.yaml"))
     }
     "install-opa" {
         $repoRoot = Get-RepoRoot

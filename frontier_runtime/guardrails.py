@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from frontier_runtime.envelope import Envelope
-from frontier_runtime.security import CapabilityVerifier, build_default_keypair
+from frontier_runtime.security import CapabilityEvaluationRequest, CapabilityVerifier, build_default_keypair
 
 
 @dataclass(frozen=True)
@@ -48,18 +48,34 @@ class PromptRenderFilter:
 
 class _DefaultFilterChain:
     async def run(self, envelope: Envelope, context: FilterContext) -> FilterResult:
-        if envelope.target_agent and envelope.action == "execute_step":
+        if envelope.target_agent:
             token = envelope.capability_token
             if not token:
                 return FilterResult(action="block", envelope=envelope, reason="capability token required")
             verifier = CapabilityVerifier(build_default_keypair())
-            if not verifier.verify(token, envelope.action, envelope.target_agent):
+            metadata = envelope.metadata if isinstance(envelope.metadata, dict) else {}
+            capability_request = CapabilityEvaluationRequest(
+                action=envelope.action,
+                agent_id=envelope.target_agent,
+                tool_call_count=_safe_int(metadata.get("tool_call_count")),
+                resource_path=str(metadata.get("resource_path") or metadata.get("path") or "").strip() or None,
+            )
+            if not verifier.verify_request(token, capability_request):
                 return FilterResult(action="block", envelope=envelope, reason="invalid capability token")
         return FilterResult(action="pass", envelope=envelope)
 
 
 def default_filter_chain() -> _DefaultFilterChain:
     return _DefaultFilterChain()
+
+
+def _safe_int(value: Any) -> int | None:
+    if value in (None, ""):
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _redact_sensitive_text(text: str) -> tuple[str, list[str]]:

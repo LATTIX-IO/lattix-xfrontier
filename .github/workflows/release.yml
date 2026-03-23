@@ -5,22 +5,44 @@ on:
     tags:
       - 'v*'
 
+permissions:
+  contents: write
+
 jobs:
-  release:
+  bundle:
     runs-on: ubuntu-latest
+    outputs:
+      previous_tag: ${{ steps.previous-tag.outputs.previous_tag }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+      - uses: azure/setup-helm@v4.3.0
+        with:
+          version: v3.17.3
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
       - name: Build images
         run: |
           docker build -t lattix-frontier/orchestrator:${GITHUB_REF_NAME} -f Dockerfile .
           docker build -t lattix-frontier/agent-base:${GITHUB_REF_NAME} -f Dockerfile.agent .
       - name: Run e2e tests
         run: pytest tests/e2e/ -v
+      - name: Determine previous release tag
+        id: previous-tag
+        shell: bash
+        run: |
+          PREVIOUS_TAG="$(git tag --sort=-creatordate | grep '^v' | grep -vx "${GITHUB_REF_NAME}" | head -n 1 || true)"
+          echo "previous_tag=${PREVIOUS_TAG}" >> "$GITHUB_OUTPUT"
       - name: Package Helm chart
-        run: helm package helm/lattix-frontier
+        run: |
+          mkdir -p dist/chart
+          helm package helm/lattix-frontier --destination dist/chart
       - name: Package installer assets
         run: |
           mkdir -p dist/installer
@@ -28,5 +50,92 @@ jobs:
           cp install/bootstrap.ps1 dist/installer/
           cp install/frontier-installer.py dist/installer/
           cp install/manifest.json dist/installer/
-      - name: Push release artifacts
-        run: echo "Push images and chart to registries from CI secrets/config here."
+      - name: Build release bundle
+        shell: bash
+        run: |
+          python scripts/build_release_bundle.py \
+            --version "${GITHUB_REF_NAME}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --git-sha "${GITHUB_SHA}" \
+            --chart-dist dist/chart \
+            --installer-dist dist/installer \
+            --output-root dist/release \
+            ${PREVIOUS_TAG:+--previous-version "${PREVIOUS_TAG}"}
+        env:
+          PREVIOUS_TAG: ${{ steps.previous-tag.outputs.previous_tag }}
+      - name: Upload release bundle artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-bundle-${{ github.ref_name }}
+          path: dist/release/${{ github.ref_name }}
+      - name: Publish GitHub release assets
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/release/${{ github.ref_name }}/**
+
+  promote-dev:
+    needs: bundle
+    runs-on: ubuntu-latest
+    environment: dev
+    env:
+      TARGET_ENV: dev
+      FOUNDRY_PROJECT_ENDPOINT_DEV: ${{ secrets.FOUNDRY_PROJECT_ENDPOINT_DEV }}
+      FOUNDRY_API_KEY_DEV: ${{ secrets.FOUNDRY_API_KEY_DEV }}
+      FOUNDRY_PROJECT_REGION_DEV: ${{ secrets.FOUNDRY_PROJECT_REGION_DEV }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-bundle-${{ github.ref_name }}
+          path: dist/release/${{ github.ref_name }}
+      - name: Validate release gate secrets
+        shell: pwsh
+        run: ./deploy/gitops/scripts/validate_required_secrets.ps1 -Environment $env:TARGET_ENV
+      - name: Run Foundry smoke gate
+        shell: pwsh
+        run: ./deploy/gitops/scripts/smoke_foundry.ps1 -Environment $env:TARGET_ENV
+
+  promote-stage:
+    needs: promote-dev
+    runs-on: ubuntu-latest
+    environment: stage
+    env:
+      TARGET_ENV: stage
+      FOUNDRY_PROJECT_ENDPOINT_STAGE: ${{ secrets.FOUNDRY_PROJECT_ENDPOINT_STAGE }}
+      FOUNDRY_API_KEY_STAGE: ${{ secrets.FOUNDRY_API_KEY_STAGE }}
+      FOUNDRY_PROJECT_REGION_STAGE: ${{ secrets.FOUNDRY_PROJECT_REGION_STAGE }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-bundle-${{ github.ref_name }}
+          path: dist/release/${{ github.ref_name }}
+      - name: Validate release gate secrets
+        shell: pwsh
+        run: ./deploy/gitops/scripts/validate_required_secrets.ps1 -Environment $env:TARGET_ENV
+      - name: Run Foundry smoke gate
+        shell: pwsh
+        run: ./deploy/gitops/scripts/smoke_foundry.ps1 -Environment $env:TARGET_ENV
+
+  promote-prod:
+    needs: promote-stage
+    runs-on: ubuntu-latest
+    environment: prod
+    env:
+      TARGET_ENV: prod
+      FOUNDRY_PROJECT_ENDPOINT_PROD: ${{ secrets.FOUNDRY_PROJECT_ENDPOINT_PROD }}
+      FOUNDRY_API_KEY_PROD: ${{ secrets.FOUNDRY_API_KEY_PROD }}
+      FOUNDRY_PROJECT_REGION_PROD: ${{ secrets.FOUNDRY_PROJECT_REGION_PROD }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-bundle-${{ github.ref_name }}
+          path: dist/release/${{ github.ref_name }}
+      - name: Validate release gate secrets
+        shell: pwsh
+        run: ./deploy/gitops/scripts/validate_required_secrets.ps1 -Environment $env:TARGET_ENV
+      - name: Run Foundry smoke gate
+        shell: pwsh
+        run: ./deploy/gitops/scripts/smoke_foundry.ps1 -Environment $env:TARGET_ENV

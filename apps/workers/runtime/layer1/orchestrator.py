@@ -5,6 +5,7 @@ from typing import Dict, Any, Callable, Iterable, Optional
 from ..layer2.contracts import Envelope, Budget
 from ..layer2.event_bus import EventBus
 from ..layer2.registry import AgentsRegistry
+from ..layer2.security import resolve_runtime_auth_context
 from ..layer2.policy import BudgetClock, within_time
 from ..layer2.middleware import attach_default_middlewares
 from ..network.dispatcher import TopicDispatcher
@@ -28,15 +29,31 @@ class Orchestrator:
         done_when: Optional[Callable[[Envelope], bool]] = None,
         dispatch_mode: str = "local",
         remote_map_path: Optional["_Path"] = None,
+        actor: str | None = None,
+        tenant_id: str | None = None,
+        session_id: str | None = None,
+        internal_service: bool = True,
     ) -> Envelope:
         clock = BudgetClock()
+        next_payload = dict(payload or {})
+        auth_context = next_payload.get("auth_context") if isinstance(next_payload.get("auth_context"), dict) else {}
+        if actor:
+            auth_context.setdefault("actor", actor)
+        if tenant_id:
+            auth_context.setdefault("tenant_id", tenant_id)
+        if session_id:
+            auth_context.setdefault("session_id", session_id)
+        auth_context.setdefault("subject", "orchestrator")
+        auth_context.setdefault("internal_service", internal_service)
+        next_payload["auth_context"] = auth_context
         env = Envelope(
             msg_type=f"stage:{name}",
             sender="orchestrator",
             topic=topic,
             budget=Budget(time_limit_ms=budget_ms),
-            payload=payload,
+            payload=next_payload,
         )
+        resolve_runtime_auth_context(env)
         # Deliver locally or dispatch to remote services
         if dispatch_mode == "remote":
             dispatcher = TopicDispatcher(_Path(remote_map_path or topic_endpoints_map_path()).resolve())

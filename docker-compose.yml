@@ -37,14 +37,13 @@ services:
       NATS_URL: nats://nats:4222
       JAEGER_ENDPOINT: http://jaeger:4317
       LOG_LEVEL: ${LOG_LEVEL:-DEBUG}
-      FRONTIER_SECURE_LOCAL_MODE: ${FRONTIER_SECURE_LOCAL_MODE:-true}
-      FRONTIER_REQUIRE_AUTHENTICATED_REQUESTS: ${FRONTIER_REQUIRE_AUTHENTICATED_REQUESTS:-true}
+      FRONTIER_RUNTIME_PROFILE: ${FRONTIER_RUNTIME_PROFILE:-local-secure}
       FRONTIER_API_BEARER_TOKEN: ${FRONTIER_API_BEARER_TOKEN:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-dummy-key}
       OPENAI_MODEL: ${OPENAI_MODEL:-gpt-4o-mini}
       A2A_JWT_ALG: ${A2A_JWT_ALG:-HS256}
       A2A_JWT_ISS: ${A2A_JWT_ISS:-lattix-frontier}
-      A2A_JWT_AUD: ${A2A_JWT_AUD:-agents}
+      A2A_JWT_AUD: ${A2A_JWT_AUD:-frontier-runtime}
       A2A_JWT_SECRET: ${A2A_JWT_SECRET}
       A2A_REQUIRE_NONCE: ${A2A_REQUIRE_NONCE:-true}
       A2A_REPLAY_PROTECTION: ${A2A_REPLAY_PROTECTION:-true}
@@ -75,9 +74,10 @@ services:
       ORCHESTRATOR_URL: http://backend:8000
       VAULT_ADDR: http://vault:8200
       NATS_URL: nats://nats:4222
+      FRONTIER_RUNTIME_PROFILE: ${FRONTIER_RUNTIME_PROFILE:-local-secure}
       A2A_JWT_ALG: ${A2A_JWT_ALG:-HS256}
       A2A_JWT_ISS: ${A2A_JWT_ISS:-lattix-frontier}
-      A2A_JWT_AUD: ${A2A_JWT_AUD:-agents}
+      A2A_JWT_AUD: ${A2A_JWT_AUD:-frontier-runtime}
       A2A_JWT_SECRET: ${A2A_JWT_SECRET}
       A2A_REQUIRE_NONCE: ${A2A_REQUIRE_NONCE:-true}
       A2A_REPLAY_PROTECTION: ${A2A_REPLAY_PROTECTION:-true}
@@ -97,9 +97,10 @@ services:
       ORCHESTRATOR_URL: http://backend:8000
       VAULT_ADDR: http://vault:8200
       NATS_URL: nats://nats:4222
+      FRONTIER_RUNTIME_PROFILE: ${FRONTIER_RUNTIME_PROFILE:-local-secure}
       A2A_JWT_ALG: ${A2A_JWT_ALG:-HS256}
       A2A_JWT_ISS: ${A2A_JWT_ISS:-lattix-frontier}
-      A2A_JWT_AUD: ${A2A_JWT_AUD:-agents}
+      A2A_JWT_AUD: ${A2A_JWT_AUD:-frontier-runtime}
       A2A_JWT_SECRET: ${A2A_JWT_SECRET}
       A2A_REQUIRE_NONCE: ${A2A_REQUIRE_NONCE:-true}
       A2A_REPLAY_PROTECTION: ${A2A_REPLAY_PROTECTION:-true}
@@ -119,9 +120,10 @@ services:
       ORCHESTRATOR_URL: http://backend:8000
       VAULT_ADDR: http://vault:8200
       NATS_URL: nats://nats:4222
+      FRONTIER_RUNTIME_PROFILE: ${FRONTIER_RUNTIME_PROFILE:-local-secure}
       A2A_JWT_ALG: ${A2A_JWT_ALG:-HS256}
       A2A_JWT_ISS: ${A2A_JWT_ISS:-lattix-frontier}
-      A2A_JWT_AUD: ${A2A_JWT_AUD:-agents}
+      A2A_JWT_AUD: ${A2A_JWT_AUD:-frontier-runtime}
       A2A_JWT_SECRET: ${A2A_JWT_SECRET}
       A2A_REQUIRE_NONCE: ${A2A_REQUIRE_NONCE:-true}
       A2A_REPLAY_PROTECTION: ${A2A_REPLAY_PROTECTION:-true}

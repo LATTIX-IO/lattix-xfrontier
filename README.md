@@ -23,7 +23,6 @@ The FOSS-ready layout is now organized around first-class app, package, deploy, 
 - `apps/workers/` — worker and runtime helpers
 - `packages/contracts/` — public schemas and contracts
 - `packages/data/` — public data and seed assets
-- `lattix_frontier/` — transitional legacy package slated for removal once remaining migration cleanup is complete per `THREAT-MODEL.md`
 - `deploy/infra/` — public-safe infrastructure references
 - `deploy/gitops/` — public-safe GitOps references
 - `examples/agents/` — public demo agent assets used by default in local-first development
@@ -31,7 +30,7 @@ The FOSS-ready layout is now organized around first-class app, package, deploy, 
 
 ## Architecture
 
-The target-state architecture is converging on `apps/backend/` as the only canonical backend/control-plane surface and `apps/workers/` as the runtime/worker surface. `lattix_frontier/` still exists in the current tree, but it should be treated as a transitional migration boundary rather than a long-term parallel backend.
+The target-state architecture is now centered on `apps/backend/` as the only canonical backend/control-plane surface and `apps/workers/` as the runtime/worker surface. The old `lattix_frontier/` package is no longer present in the working tree; remaining cleanup is about removing stale legacy assumptions and keeping docs/tooling aligned with the canonical surfaces.
 
 Lattix xFrontier is built around four layers:
 
@@ -74,6 +73,14 @@ For the default secure/full browser experience, open `http://frontier.localhost`
 If you intentionally want the lighter local-only stack, use `make local-up`. That path exposes the frontend directly at `http://localhost:3000` and talks to the backend at `http://localhost:8000` without the gateway-based `/api` path.
 
 The intended default is the **secure full platform stack** via `make dev` / `make up` / `make stack-up`. The lighter `docker-compose.local.yml` stack is still available for quicker local-only iteration through `make local-up`.
+
+Runtime profiles are now explicit:
+
+- `local-lightweight` — permissive local iteration profile used by `docker-compose.local.yml`
+- `local-secure` — fail-closed secure local/full-stack profile used by `docker-compose.yml`
+- `hosted` — non-local profile that requires authenticated operator access and signed A2A runtime headers
+
+Set `FRONTIER_RUNTIME_PROFILE` when you need to pin the backend/runtime security posture explicitly. Legacy flags like `FRONTIER_SECURE_LOCAL_MODE` and `FRONTIER_REQUIRE_AUTHENTICATED_REQUESTS` still exist for compatibility, but the named profile is the canonical contract.
 
 By default, local-first development seeds safe public demo agents from `examples/agents/`. Optional private or proprietary agent definitions can be layered in by setting `FRONTIER_AGENT_ASSETS_ROOT` to an external directory.
 
@@ -123,7 +130,7 @@ Policy tests use a repo-local OPA binary when present at `.tools/opa/opa(.exe)`,
 The public repository currently exposes:
 
 - `frontier_tooling/` — canonical repo CLI and installer entrypoints
-- `lattix_frontier/` — legacy orchestration, agents, security, guardrails, events, API, and observability still present today only as a transitional migration/removal surface in `THREAT-MODEL.md`; new backend/control-plane work should land in `apps/backend/` or `apps/workers/`
+- `frontier_runtime/` — shared runtime/security/config primitives used by canonical backend and worker surfaces
 - `apps/` — public application surfaces
 - `packages/` — public reusable contracts and data assets
 - `deploy/` — public-safe deployment references
@@ -156,6 +163,7 @@ After installation, the `lattix` command supports:
 make lint
 make typecheck
 make policy-test
+make helm-validate
 make test
 ```
 
@@ -165,6 +173,7 @@ Windows PowerShell equivalents:
 .\scripts\frontier.ps1 lint
 .\scripts\frontier.ps1 typecheck
 .\scripts\frontier.ps1 policy-test
+.\scripts\frontier.ps1 helm-validate
 .\scripts\frontier.ps1 test
 ```
 
@@ -197,6 +206,8 @@ Kubernetes deployment uses Helm:
 ```text
 helm install lattix ./helm/lattix-frontier -f helm/lattix-frontier/values-prod.yaml
 ```
+
+The Helm chart is now pinned to the `hosted` runtime profile by default. It deploys the control-plane workloads shown in the chart (`lattix-api`, `lattix-orchestrator`, `lattix-envoy`, `lattix-opa`, `lattix-vault`, `lattix-nats`, `lattix-postgres`, `lattix-jaeger`) and wires `A2A_JWT_SECRET` into the API/orchestrator paths so hosted clusters require the same signed runtime-header contract as the backend profile tests. Replace the placeholder secret before applying the chart.
 
 ## Documentation
 

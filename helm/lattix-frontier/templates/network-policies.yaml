@@ -2,21 +2,19 @@
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
-  name: lattix-default-deny
-spec:
-  podSelector: {}
-  policyTypes: [Ingress, Egress]
----
-apiVersion: networking.k8s.io/v1
-kind: NetworkPolicy
-metadata:
-  name: lattix-orchestrator-allow
+  name: lattix-control-plane-default-deny
 spec:
   podSelector:
-    matchLabels:
-      app: lattix-orchestrator
-  egress:
-    - to:
+    matchExpressions:
+      - key: app
+        operator: In
+        values:
+          - lattix-api
+          - lattix-orchestrator
+  policyTypes:
+    - Ingress
+    - Egress
+---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -33,36 +31,71 @@ spec:
         - podSelector:
             matchLabels:
               app: lattix-orchestrator
-  policyTypes: [Ingress]
+  policyTypes:
+    - Ingress
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
-  name: lattix-agents-egress-allow
+  name: lattix-api-egress-allow
 spec:
   podSelector:
-    matchExpressions:
-      - key: app
-        operator: In
-        values:
-          - lattix-agent-research
-          - lattix-agent-code
-          - lattix-agent-review
+    matchLabels:
+      app: lattix-api
   egress:
     - to:
-        - podSelector:
+        - namespaceSelector:
             matchLabels:
-              app: lattix-api
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    - to:
         - podSelector:
             matchLabels:
               app: lattix-vault
         - podSelector:
             matchLabels:
+              app: lattix-opa
+        - podSelector:
+            matchLabels:
               app: lattix-nats
         - podSelector:
             matchLabels:
-              app: lattix-opa
-  policyTypes: [Egress]
+              app: lattix-postgres
+        - podSelector:
+            matchLabels:
+              app: lattix-jaeger
+  policyTypes:
+    - Egress
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: lattix-orchestrator-egress-allow
+spec:
+  podSelector:
+    matchLabels:
+      app: lattix-orchestrator
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    - to:
         - podSelector:
             matchLabels:
               app: lattix-api
@@ -78,5 +111,9 @@ spec:
         - podSelector:
             matchLabels:
               app: lattix-postgres
-  policyTypes: [Egress]
+        - podSelector:
+            matchLabels:
+              app: lattix-jaeger
+  policyTypes:
+    - Egress
 {{- end }}

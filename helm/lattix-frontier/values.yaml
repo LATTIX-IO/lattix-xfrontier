@@ -2,6 +2,16 @@ global:
   imageRegistry: ""
   imagePullSecrets: []
 
+runtime:
+  profile: hosted
+  requireA2ARuntimeHeaders: true
+  a2a:
+    jwtAlgorithm: HS256
+    jwtIssuer: lattix-frontier
+    jwtAudience: frontier-runtime
+    sharedSecretName: lattix-a2a-jwt
+    sharedSecretKey: secret
+
 orchestrator:
   replicaCount: 1
   image:
@@ -10,26 +20,6 @@ orchestrator:
   resources:
     requests: { cpu: 500m, memory: 512Mi }
     limits: { cpu: "2", memory: 2Gi }
-
-agents:
-  research:
-    enabled: true
-    replicaCount: 1
-    image:
-      repository: lattix-frontier/agent-research
-      tag: 0.1.0
-  code:
-    enabled: true
-    replicaCount: 1
-    image:
-      repository: lattix-frontier/agent-code
-      tag: 0.1.0
-  review:
-    enabled: true
-    replicaCount: 1
-    image:
-      repository: lattix-frontier/agent-review
-      tag: 0.1.0
 
 vault:
   enabled: true

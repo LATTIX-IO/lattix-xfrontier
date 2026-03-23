@@ -1,20 +1,107 @@
 from __future__ import annotations
+import hashlib
+import hmac
 import json
 import os
+from uuid import uuid4
 from typing import Any, Dict, Optional
+from urllib.parse import urlparse
 from urllib import request
 
 from ..layer2.contracts import Envelope
 from ..security.jwt import issue_token
 
 
-def post_envelope(url: str, env: Envelope, sub: str = "orchestrator", token: Optional[str] = None, ca_bundle: Optional[str] = None) -> Dict[str, Any]:
+def _runtime_profile() -> str:
+    value = str(os.getenv("FRONTIER_RUNTIME_PROFILE", "local-lightweight") or "").strip().lower()
+    return value or "local-lightweight"
+
+
+def _strict_transport_required() -> bool:
+    return _runtime_profile() in {"local-secure", "hosted"} or _env_flag("FRONTIER_REQUIRE_A2A_RUNTIME_HEADERS", False)
+
+
+def _env_flag(name: str, default: bool = False) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return str(raw).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _trusted_subjects() -> set[str]:
+    configured = {
+        str(item).strip()
+        for item in str(os.getenv("A2A_TRUSTED_SUBJECTS") or "").split(",")
+        if str(item).strip()
+    }
+    return configured or {"backend", "orchestrator", "research", "code", "review", "coordinator"}
+
+
+def _signing_secret() -> bytes:
+    secret = str(os.getenv("A2A_JWT_SECRET") or "").strip()
+    if not secret:
+        raise RuntimeError("A2A_JWT_SECRET is required for strict runtime transport")
+    return secret.encode("utf-8")
+
+
+def _build_runtime_signature(subject: str, nonce: str, correlation_id: str, body: bytes) -> str:
+    digest = hashlib.sha256(body).hexdigest()
+    message = f"{subject}:{nonce}:{correlation_id}:{digest}".encode("utf-8")
+    return hmac.new(_signing_secret(), message, hashlib.sha256).hexdigest()
+
+
+def _enforce_transport_policy(url: str, *, sub: str, internal_service: bool, explicit_token: bool) -> None:
+    if _strict_transport_required():
+        if not sub:
+            raise ValueError("Strict runtime transport requires a non-empty subject")
+        if sub not in _trusted_subjects():
+            raise ValueError(f"Strict runtime transport requires trusted subject '{sub}'")
+        if not internal_service:
+            raise ValueError("Strict runtime transport requires internal service identity")
+
+    if _runtime_profile() != "hosted":
+        return
+    parsed = urlparse(url)
+    if parsed.scheme.lower() != "https":
+        raise ValueError("Hosted runtime profile requires HTTPS A2A endpoints")
+
+
+def post_envelope(
+    url: str,
+    env: Envelope,
+    sub: str = "orchestrator",
+    token: Optional[str] = None,
+    ca_bundle: Optional[str] = None,
+    *,
+    actor: Optional[str] = None,
+    tenant_id: Optional[str] = None,
+    internal_service: bool = False,
+    additional_claims: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
     data = env.to_json().encode("utf-8")
     headers = {"Content-Type": "application/json"}
-    tok = token or issue_token(sub=sub)
+    claim_overrides: Dict[str, Any] = dict(additional_claims or {})
+    if actor:
+        claim_overrides.setdefault("actor", actor)
+    if tenant_id:
+        claim_overrides.setdefault("tenant_id", tenant_id)
+    if internal_service:
+        claim_overrides.setdefault("internal_service", True)
+        claim_overrides.setdefault("subject", sub)
+    _enforce_transport_policy(url, sub=sub, internal_service=internal_service, explicit_token=bool(token))
+    tok = token or issue_token(sub=sub, additional_claims=claim_overrides or None)
     headers["Authorization"] = f"Bearer {tok}"
     # Propagate correlation id for cross-service tracing
     headers["X-Correlation-ID"] = env.correlation_id
+    headers["X-Frontier-Subject"] = sub
+    if actor:
+        headers["X-Frontier-Actor"] = actor
+    if tenant_id:
+        headers["X-Frontier-Tenant"] = tenant_id
+    if _strict_transport_required():
+        nonce = str(uuid4())
+        headers["X-Frontier-Nonce"] = nonce
+        headers["X-Frontier-Signature"] = _build_runtime_signature(sub, nonce, env.correlation_id, data)
 
     req = request.Request(url, data=data, headers=headers, method="POST")
     # Optional: support custom CA bundle via certifi-style hook
