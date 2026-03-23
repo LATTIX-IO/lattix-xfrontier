@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import argparse
+import subprocess
+import sys
 from pathlib import Path
-
-from lattix_frontier.agents.templates.scaffold import scaffold_agent
 
 
 def main() -> None:
@@ -13,8 +13,12 @@ def main() -> None:
     parser.add_argument("name")
     parser.add_argument("--destination", default="generated-agents")
     args = parser.parse_args()
-    created = scaffold_agent(args.name, Path(args.destination))
-    print(created)  # noqa: T201
+    if Path(args.destination) != Path("generated-agents"):
+        raise SystemExit("Custom destinations are not supported by the apps/workers scaffold. Use the default generated-agents flow or call the worker scaffold script directly.")
+    subprocess.run(
+        [sys.executable, "apps/workers/scripts/scaffold_agent_service.py", args.name],
+        check=True,
+    )
 
 
 if __name__ == "__main__":

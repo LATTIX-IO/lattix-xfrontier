@@ -28,7 +28,7 @@ If a prerequisite is missing and automatic installation is not available, is dec
 
 ## Local vanity URL
 
-The Docker Compose stack now includes `local-gateway` powered by Caddy, which routes `LOCAL_STACK_HOST` to the Frontier frontend over plain HTTP for local development and proxies `/api/*` requests to the Frontier orchestrator.
+The Docker Compose stack now includes `local-gateway` powered by Caddy, which routes `LOCAL_STACK_HOST` to the Frontier frontend over plain HTTP for local development and proxies `/api/*` requests to the canonical backend service.
 
 ## Local secret handling
 

@@ -99,6 +99,7 @@ Reference docs used:
 
 ```json
 {
+  "schema_version": "frontier-graph/1.0",
   "nodes": [],
   "links": [],
   "input": {
@@ -116,6 +117,8 @@ Reference docs used:
   }
 }
 ```
+
+`schema_version` is a required backend contract field for persisted and executed React Flow graphs. The current canonical version is `frontier-graph/1.0`. Backends should default missing values to the canonical version for backward compatibility, but save/publish/run paths must reject unknown or future schema versions unless an explicit migrator has been added.
 
 ---
 
@@ -341,6 +344,14 @@ Rules:
 - same graph structural checks as design-time,
 - guardrail ruleset references must resolve to published rulesets,
 - block publish on invalid graph.
+
+## Release promotion semantics
+
+- **Publish** creates an immutable released revision and updates the published listing for the definition.
+- **Activate** promotes one published revision to the runtime-active revision used by execution paths.
+- First publish may auto-activate for backward compatibility.
+- Later publishes do **not** need to change live runtime behavior until an explicit activate action occurs.
+- Rollback restores authoring state as a draft; runtime activation should be treated as a separate promotion decision.
 
 ---
 

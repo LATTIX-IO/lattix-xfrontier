@@ -35,7 +35,7 @@ static_resources:
               - endpoint:
                   address:
                     socket_address:
-                      address: orchestrator
+                      address: backend
                       port_value: 8000
 admin:
   address:

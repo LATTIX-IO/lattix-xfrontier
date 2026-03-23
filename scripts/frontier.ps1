@@ -115,10 +115,13 @@ function Ensure-ComposeEnvFile {
         $envMap["A2A_JWT_AUD"] = "agents"
     }
     if (-not $envMap.Contains("A2A_TRUSTED_SUBJECTS") -or [string]::IsNullOrWhiteSpace($envMap["A2A_TRUSTED_SUBJECTS"])) {
-        $envMap["A2A_TRUSTED_SUBJECTS"] = "orchestrator,research,code,review,coordinator"
+        $envMap["A2A_TRUSTED_SUBJECTS"] = "backend,research,code,review,coordinator"
     }
-    if (-not $envMap.Contains("NEXT_PUBLIC_API_BASE_URL") -or [string]::IsNullOrWhiteSpace($envMap["NEXT_PUBLIC_API_BASE_URL"]) -or $envMap["NEXT_PUBLIC_API_BASE_URL"] -eq "http://localhost:8000") {
+    if (-not $envMap.Contains("NEXT_PUBLIC_API_BASE_URL") -or [string]::IsNullOrWhiteSpace($envMap["NEXT_PUBLIC_API_BASE_URL"])) {
         $envMap["NEXT_PUBLIC_API_BASE_URL"] = "/api"
+    }
+    if (-not $envMap.Contains("FRONTIER_LOCAL_API_BASE_URL") -or [string]::IsNullOrWhiteSpace($envMap["FRONTIER_LOCAL_API_BASE_URL"])) {
+        $envMap["FRONTIER_LOCAL_API_BASE_URL"] = "http://localhost:8000"
     }
 
     $lines = foreach ($key in $envMap.Keys) {
@@ -129,6 +132,14 @@ function Ensure-ComposeEnvFile {
 }
 
 function Get-ComposeCommandPrefix {
+    $installerEnvPath = Get-InstallerEnvPath
+    if (Test-Path $installerEnvPath) {
+        return @("docker", "compose", "--env-file", $installerEnvPath, "-f", "docker-compose.local.yml")
+    }
+    return @("docker", "compose", "-f", "docker-compose.local.yml")
+}
+
+function Get-FullComposeCommandPrefix {
     $installerEnvPath = Get-InstallerEnvPath
     if (Test-Path $installerEnvPath) {
         return @("docker", "compose", "--env-file", $installerEnvPath)
@@ -223,13 +234,17 @@ function Show-Help {
     Write-Host "  dev         Start docker compose stack"
     Write-Host "  up          Start docker compose stack"
     Write-Host "  down        Stop docker compose stack"
+    Write-Host "  local-up    Start the lightweight local-first stack"
+    Write-Host "  local-down  Stop the lightweight local-first stack"
+    Write-Host "  stack-up    Start the full platform stack"
+    Write-Host "  stack-down  Stop the full platform stack"
     Write-Host "  start-docker Launch Docker Desktop and wait for readiness"
     Write-Host "  test        Run pytest"
     Write-Host "  lint        Run ruff check/format"
     Write-Host "  typecheck   Run mypy"
     Write-Host "  install-opa Install repo-local OPA binary"
     Write-Host "  policy-test Run opa tests"
-    Write-Host "  health      Query http://localhost:8000/health"
+    Write-Host "  health      Query http://localhost:8000/healthz"
     Write-Host "  ps          Show docker compose status"
     Write-Host "  logs        Show docker compose logs"
     Write-Host "  smoke       Alias for health"
@@ -252,16 +267,37 @@ switch ($Command.ToLowerInvariant()) {
         if ([string]::IsNullOrWhiteSpace($localStackHost)) {
             $localStackHost = "frontier.localhost"
         }
-        Write-Host "Stack running. UI: http://$localStackHost ; API health: http://localhost:8000/health"
+        Write-Host "Secure platform stack running. Gateway: http://$localStackHost ; API health: http://localhost:8000/healthz"
     }
     "up" {
         Assert-DockerReady
         $composeEnvFile = Ensure-ComposeEnvFile
         Invoke-ExternalCommand @("docker", "compose", "--env-file", $composeEnvFile, "up", "-d")
     }
+    "local-up" {
+        Assert-DockerReady
+        $composeEnvFile = Ensure-ComposeEnvFile
+        Invoke-ExternalCommand @("docker", "compose", "--env-file", $composeEnvFile, "-f", "docker-compose.local.yml", "up", "-d")
+        Write-Host "Lightweight local stack running. Frontend: http://localhost:3000 ; API health: http://localhost:8000/healthz"
+    }
+    "stack-up" {
+        Assert-DockerReady
+        $composeEnvFile = Ensure-ComposeEnvFile
+        Invoke-ExternalCommand @("docker", "compose", "--env-file", $composeEnvFile, "up", "-d")
+    }
     "down" {
         Assert-DockerReady
+        $composePrefix = Get-FullComposeCommandPrefix
+        Invoke-ExternalCommand ($composePrefix + @("down", "-v"))
+    }
+    "local-down" {
+        Assert-DockerReady
         $composePrefix = Get-ComposeCommandPrefix
+        Invoke-ExternalCommand ($composePrefix + @("down", "-v"))
+    }
+    "stack-down" {
+        Assert-DockerReady
+        $composePrefix = Get-FullComposeCommandPrefix
         Invoke-ExternalCommand ($composePrefix + @("down", "-v"))
     }
     "start-docker" {
@@ -269,14 +305,20 @@ switch ($Command.ToLowerInvariant()) {
         Write-Host "Docker Desktop is ready."
     }
     "test" {
-        Invoke-ExternalCommand @($python, "-m", "pytest", "tests/", "-v", "--cov=lattix_frontier", "--cov-report=term-missing")
+        Push-Location (Join-Path (Get-RepoRoot) "apps\backend")
+        try {
+            Invoke-ExternalCommand @($python, "-m", "pytest", "tests/", "-v", "--cov=app", "--cov-report=term-missing")
+        }
+        finally {
+            Pop-Location
+        }
     }
     "lint" {
         Invoke-ExternalCommand @($python, "-m", "ruff", "check", ".", "--fix")
         Invoke-ExternalCommand @($python, "-m", "ruff", "format", ".")
     }
     "typecheck" {
-        Invoke-ExternalCommand @($python, "-m", "mypy", "lattix_frontier/")
+        Invoke-ExternalCommand @($python, "-m", "mypy", "frontier_tooling/")
     }
     "install-opa" {
         $repoRoot = Get-RepoRoot
@@ -293,20 +335,20 @@ switch ($Command.ToLowerInvariant()) {
         Invoke-ExternalCommand @($opa, "test", "policies/", "-v")
     }
     "health" {
-        Invoke-ExternalCommand @($python, "-c", "import urllib.request;print(urllib.request.urlopen('http://localhost:8000/health', timeout=5).read().decode())")
+        Invoke-ExternalCommand @($python, "-c", "import urllib.request;print(urllib.request.urlopen('http://localhost:8000/healthz', timeout=5).read().decode())")
     }
     "ps" {
         Assert-DockerReady
-        $composePrefix = Get-ComposeCommandPrefix
+        $composePrefix = Get-FullComposeCommandPrefix
         Invoke-ExternalCommand ($composePrefix + @("ps"))
     }
     "logs" {
         Assert-DockerReady
-        $composePrefix = Get-ComposeCommandPrefix
+        $composePrefix = Get-FullComposeCommandPrefix
         Invoke-ExternalCommand ($composePrefix + @("logs", "--tail=200"))
     }
     "smoke" {
-        Invoke-ExternalCommand @($python, "-c", "import urllib.request;print(urllib.request.urlopen('http://localhost:8000/health', timeout=5).read().decode())")
+        Invoke-ExternalCommand @($python, "-c", "import urllib.request;print(urllib.request.urlopen('http://localhost:8000/healthz', timeout=5).read().decode())")
     }
     "help" {
         Show-Help

@@ -42,16 +42,16 @@ jobs:
       - name: Lint
         run: ruff check .
       - name: Type check
-        run: mypy lattix_frontier/
+        run: mypy frontier_tooling/
       - name: Policy tests
         run: opa test policies/ -v
-      - name: Unit tests
-        run: pytest tests/unit/ -v --cov=lattix_frontier --cov-report=xml
-      - name: Integration tests
+      - name: Backend tests
+        working-directory: apps/backend
+        run: pytest tests/ -v --cov=app --cov-report=xml
+      - name: Compose config validation
         run: |
-          docker compose up -d
-          pytest tests/integration/ -v
-          docker compose down -v
+          docker compose config --quiet
+          docker compose -f docker-compose.local.yml config --quiet
       - name: Upload coverage
         uses: actions/upload-artifact@v4
         with:

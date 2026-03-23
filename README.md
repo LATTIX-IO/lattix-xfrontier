@@ -23,13 +23,15 @@ The FOSS-ready layout is now organized around first-class app, package, deploy, 
 - `apps/workers/` — worker and runtime helpers
 - `packages/contracts/` — public schemas and contracts
 - `packages/data/` — public data and seed assets
-- `lattix_frontier/` — root orchestration/control-plane package
+- `lattix_frontier/` — transitional legacy package slated for removal once remaining migration cleanup is complete per `THREAT-MODEL.md`
 - `deploy/infra/` — public-safe infrastructure references
 - `deploy/gitops/` — public-safe GitOps references
 - `examples/agents/` — public demo agent assets used by default in local-first development
 - `docs/reference/lattix-frontier-docs/` — imported legacy documentation tree for migration/reference
 
 ## Architecture
+
+The target-state architecture is converging on `apps/backend/` as the only canonical backend/control-plane surface and `apps/workers/` as the runtime/worker surface. `lattix_frontier/` still exists in the current tree, but it should be treated as a transitional migration boundary rather than a long-term parallel backend.
 
 Lattix xFrontier is built around four layers:
 
@@ -53,7 +55,7 @@ Lattix xFrontier is built around four layers:
 
 1. Copy `.env.example` to `.env` and adjust values as needed.
 2. Bootstrap the Python environment.
-3. Start the local-first stack.
+3. Start the secure default stack.
 
 ```text
 make bootstrap
@@ -67,7 +69,11 @@ lattix dev
 .\scripts\frontier.ps1 dev
 ```
 
-For the local browser experience, open `http://frontier.localhost` (or your configured `LOCAL_STACK_HOST`). The local gateway is intentionally HTTP-only for local development, serves the frontend there, and proxies `/api/*` to the orchestrator.
+For the default secure/full browser experience, open `http://frontier.localhost` (or your configured `LOCAL_STACK_HOST`). That path proxies `/api/*` through the local gateway to the backend at `http://localhost:8000`.
+
+If you intentionally want the lighter local-only stack, use `make local-up`. That path exposes the frontend directly at `http://localhost:3000` and talks to the backend at `http://localhost:8000` without the gateway-based `/api` path.
+
+The intended default is the **secure full platform stack** via `make dev` / `make up` / `make stack-up`. The lighter `docker-compose.local.yml` stack is still available for quicker local-only iteration through `make local-up`.
 
 By default, local-first development seeds safe public demo agents from `examples/agents/`. Optional private or proprietary agent definitions can be layered in by setting `FRONTIER_AGENT_ASSETS_ROOT` to an external directory.
 
@@ -116,7 +122,8 @@ Policy tests use a repo-local OPA binary when present at `.tools/opa/opa(.exe)`,
 
 The public repository currently exposes:
 
-- `lattix_frontier/` — root orchestration, agents, security, guardrails, events, API, observability
+- `frontier_tooling/` — canonical repo CLI and installer entrypoints
+- `lattix_frontier/` — legacy orchestration, agents, security, guardrails, events, API, and observability still present today only as a transitional migration/removal surface in `THREAT-MODEL.md`; new backend/control-plane work should land in `apps/backend/` or `apps/workers/`
 - `apps/` — public application surfaces
 - `packages/` — public reusable contracts and data assets
 - `deploy/` — public-safe deployment references
@@ -139,7 +146,6 @@ After installation, the `lattix` command supports:
 - `lattix policy test`
 - `lattix policy lint`
 - `lattix sandbox backend`
-- `lattix sandbox plan --tool-id python -- python -c "print('hello')"`
 - `lattix install run`
 - `lattix install bootstrap-url`
 - `lattix demo <domain>`
@@ -164,10 +170,26 @@ Windows PowerShell equivalents:
 
 ## Deployment
 
-Local deployment uses Docker Compose:
+Default local deployment uses the secure full Compose stack in `docker-compose.yml`:
 
 ```text
 make dev
+```
+
+This path includes the added security-oriented infrastructure such as the local gateway, sandbox egress boundary, policy services, and supporting runtime components.
+
+If you want the lighter stack for quick local iteration, use:
+
+```text
+make local-up
+```
+
+`make stack-up` is kept as an explicit alias for the same secure full stack.
+
+If you need the heavier full platform stack for gateway/sandbox/policy-infra work, use:
+
+```text
+make stack-up
 ```
 
 Kubernetes deployment uses Helm:
@@ -178,6 +200,7 @@ helm install lattix ./helm/lattix-frontier -f helm/lattix-frontier/values-prod.y
 
 ## Documentation
 
+- `THREAT-MODEL.md`
 - `docs/ARCHITECTURE.md`
 - `docs/SECURITY.md`
 - `docs/DEPLOYMENT.md`

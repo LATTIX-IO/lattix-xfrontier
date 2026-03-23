@@ -1,5 +1,5 @@
 services:
-  orchestrator:
+  backend:
     environment:
       LOG_LEVEL: DEBUG
       FRONTIER_ENV: development

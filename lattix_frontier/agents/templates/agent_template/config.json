@@ -1,6 +1,0 @@
-{
-  "agent_id": "template-agent",
-  "name": "Template Agent",
-  "description": "Scaffolded Frontier agent",
-  "skills": ["template"]
-}

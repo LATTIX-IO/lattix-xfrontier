@@ -29,16 +29,16 @@ def _download_repo_archive(target_dir: Path) -> Path:
 
 def main() -> None:
     cwd = Path.cwd()
-    packaged = cwd / "lattix_frontier" / "install" / "installer.py"
+    packaged = cwd / "frontier_tooling" / "installer.py"
     if packaged.exists():
         runpy.run_path(str(packaged), run_name="__main__")
         return
     temp_root = Path(tempfile.mkdtemp(prefix="frontier-public-installer-"))
     try:
         repo_root = _download_repo_archive(temp_root)
-        packaged = repo_root / "lattix_frontier" / "install" / "installer.py"
+        packaged = repo_root / "frontier_tooling" / "installer.py"
         if not packaged.exists():
-            raise SystemExit("The downloaded archive did not include lattix_frontier/install/installer.py")
+            raise SystemExit("The downloaded archive did not include frontier_tooling/installer.py")
         os.chdir(repo_root)
         runpy.run_path(str(packaged), run_name="__main__")
     finally:

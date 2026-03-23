@@ -376,6 +376,547 @@ def test_publish_workflow_definition_generates_code_artifacts() -> None:
     store.artifacts = [artifact for artifact in store.artifacts if artifact.id not in {item['id'] for item in body['generated_artifacts']}]
 
 
+def test_workflow_definition_defaults_graph_schema_version_when_missing() -> None:
+    workflow_id = str(uuid4())
+    payload = {
+        "id": workflow_id,
+        "name": "Schema Version Workflow",
+        "description": "Workflow save should normalize graph schema version.",
+        "graph_json": _sample_graph(),
+    }
+
+    response = client.post("/workflow-definitions", json=payload)
+    assert response.status_code == 200
+
+    stored = store.workflow_definitions[workflow_id]
+    assert stored.graph_json.get("schema_version") == "frontier-graph/1.0"
+
+    store.workflow_definitions.pop(workflow_id, None)
+
+
+def test_workflow_definition_rejects_unsupported_graph_schema_version() -> None:
+    workflow_id = str(uuid4())
+    payload = {
+        "id": workflow_id,
+        "name": "Unsupported Schema Workflow",
+        "description": "Workflow save should reject unsupported graph schema versions.",
+        "graph_json": {
+            **_sample_graph(),
+            "schema_version": "frontier-graph/9.9",
+        },
+    }
+
+    response = client.post("/workflow-definitions", json=payload)
+    assert response.status_code == 400
+    detail = response.json()["detail"]
+    assert "unsupported graph schema version" in detail["message"].lower()
+    assert detail["issues"][0]["code"] == "GRAPH_SCHEMA_VERSION_UNSUPPORTED"
+    assert workflow_id not in store.workflow_definitions
+
+
+def test_graph_run_rejects_unsupported_graph_schema_version() -> None:
+    response = client.post(
+        "/graph/runs",
+        json={
+            "schema_version": "frontier-graph/2.0",
+            "nodes": _sample_graph()["nodes"],
+            "links": _sample_graph()["links"],
+            "input": {"message": "hello"},
+        },
+    )
+
+    assert response.status_code == 400
+    detail = response.json()["detail"]
+    assert detail["message"] == "Graph validation failed"
+    assert detail["validation"]["issues"][0]["code"] == "GRAPH_SCHEMA_VERSION_UNSUPPORTED"
+
+
+def test_workflow_definition_versions_and_rollback_restore_prior_snapshot() -> None:
+    workflow_id = str(uuid4())
+    original_artifacts = list(store.artifacts)
+
+    try:
+        save_v1 = client.post(
+            "/workflow-definitions",
+            json={
+                "id": workflow_id,
+                "name": "Initial Workflow",
+                "description": "First draft of the workflow.",
+                "graph_json": _sample_graph(),
+            },
+        )
+        assert save_v1.status_code == 200
+
+        updated_graph = _sample_graph()
+        updated_graph["nodes"][1]["config"] = {"system_prompt_text": "Use the updated instructions."}
+        save_v2 = client.post(
+            "/workflow-definitions",
+            json={
+                "id": workflow_id,
+                "name": "Updated Workflow",
+                "description": "Second draft of the workflow.",
+                "graph_json": updated_graph,
+            },
+        )
+        assert save_v2.status_code == 200
+
+        publish = client.post(f"/workflow-definitions/{workflow_id}/publish")
+        assert publish.status_code == 200
+
+        versions_response = client.get(f"/workflow-definitions/{workflow_id}/versions")
+        assert versions_response.status_code == 200
+        versions = versions_response.json()["versions"]
+        assert [item["action"] for item in versions] == ["publish", "save", "save"]
+
+        initial_revision = next(item for item in versions if item["action"] == "save" and item["version"] == 1)
+        revision_detail = client.get(f"/workflow-definitions/{workflow_id}/versions/{initial_revision['id']}")
+        assert revision_detail.status_code == 200
+        assert revision_detail.json()["snapshot"]["name"] == "Initial Workflow"
+
+        rollback = client.post(
+            f"/workflow-definitions/{workflow_id}/rollback",
+            json={"revision_id": initial_revision["id"]},
+        )
+        assert rollback.status_code == 200
+        rollback_body = rollback.json()
+        assert rollback_body["status"] == "draft"
+        assert rollback_body["version"] == 4
+        assert rollback_body["restored_from"]["id"] == initial_revision["id"]
+
+        restored = store.workflow_definitions[workflow_id]
+        assert restored.name == "Initial Workflow"
+        assert restored.description == "First draft of the workflow."
+        assert restored.generated_artifacts == []
+
+        versions_after = client.get(f"/workflow-definitions/{workflow_id}/versions").json()["versions"]
+        assert versions_after[0]["action"] == "rollback"
+        assert versions_after[0]["metadata"]["source_revision_id"] == initial_revision["id"]
+    finally:
+        store.workflow_definitions.pop(workflow_id, None)
+        store.workflow_definition_revisions.pop(workflow_id, None)
+        store.artifacts = original_artifacts
+
+
+def test_agent_definition_versions_and_rollback_clear_generated_artifacts() -> None:
+    agent_id = str(uuid4())
+    original_artifacts = list(store.artifacts)
+
+    try:
+        save_v1 = client.post(
+            "/agent-definitions",
+            json={
+                "id": agent_id,
+                "name": "Versioned Agent",
+                "config_json": {
+                    "system_prompt": "Respond with the original voice.",
+                    "graph_json": _sample_graph(),
+                },
+            },
+        )
+        assert save_v1.status_code == 200
+
+        publish = client.post(f"/agent-definitions/{agent_id}/publish")
+        assert publish.status_code == 200
+        assert len(store.agent_definitions[agent_id].generated_artifacts) == 2
+
+        changed_graph = _sample_graph()
+        changed_graph["nodes"][2]["config"] = {"agent_id": "generated-agent", "model": "gpt-5.4"}
+        save_v2 = client.post(
+            "/agent-definitions",
+            json={
+                "id": agent_id,
+                "name": "Versioned Agent v2",
+                "config_json": {
+                    "system_prompt": "Respond with the updated voice.",
+                    "graph_json": changed_graph,
+                },
+            },
+        )
+        assert save_v2.status_code == 200
+
+        versions_response = client.get(f"/agent-definitions/{agent_id}/versions")
+        assert versions_response.status_code == 200
+        versions = versions_response.json()["versions"]
+        assert [item["action"] for item in versions] == ["save", "publish", "save"]
+
+        published_revision = next(item for item in versions if item["action"] == "publish")
+        rollback = client.post(
+            f"/agent-definitions/{agent_id}/rollback",
+            json={"revision_id": published_revision["id"]},
+        )
+        assert rollback.status_code == 200
+        rollback_body = rollback.json()
+        assert rollback_body["status"] == "draft"
+        assert rollback_body["version"] == 4
+
+        restored = store.agent_definitions[agent_id]
+        assert restored.name == "Versioned Agent"
+        assert restored.generated_artifacts == []
+        assert restored.config_json["system_prompt"] == "Respond with the original voice."
+
+        versions_after = client.get(f"/agent-definitions/{agent_id}/versions").json()["versions"]
+        assert versions_after[0]["action"] == "rollback"
+        assert versions_after[0]["metadata"]["source_revision_id"] == published_revision["id"]
+    finally:
+        store.agent_definitions.pop(agent_id, None)
+        store.agent_definition_revisions.pop(agent_id, None)
+        store.artifacts = original_artifacts
+
+
+def test_guardrail_ruleset_versions_and_rollback_restore_prior_config() -> None:
+    ruleset_id = str(uuid4())
+
+    try:
+        save_v1 = client.post(
+            "/guardrail-rulesets",
+            json={
+                "id": ruleset_id,
+                "name": "Versioned Guardrail",
+                "config_json": {"blocked_keywords": ["secret"], "tripwire_action": "reject_content"},
+            },
+        )
+        assert save_v1.status_code == 200
+
+        publish = client.post(f"/guardrail-rulesets/{ruleset_id}/publish")
+        assert publish.status_code == 200
+
+        save_v2 = client.post(
+            "/guardrail-rulesets",
+            json={
+                "id": ruleset_id,
+                "name": "Versioned Guardrail v2",
+                "config_json": {"blocked_keywords": ["secret", "token"], "tripwire_action": "reject_content"},
+            },
+        )
+        assert save_v2.status_code == 200
+
+        versions_response = client.get(f"/guardrail-rulesets/{ruleset_id}/versions")
+        assert versions_response.status_code == 200
+        versions = versions_response.json()["versions"]
+        assert [item["action"] for item in versions] == ["save", "publish", "save"]
+
+        published_revision = next(item for item in versions if item["action"] == "publish")
+        revision_detail = client.get(f"/guardrail-rulesets/{ruleset_id}/versions/{published_revision['id']}")
+        assert revision_detail.status_code == 200
+        assert revision_detail.json()["snapshot"]["status"] == "published"
+
+        rollback = client.post(
+            f"/guardrail-rulesets/{ruleset_id}/rollback",
+            json={"revision_id": published_revision["id"]},
+        )
+        assert rollback.status_code == 200
+        rollback_body = rollback.json()
+        assert rollback_body["status"] == "draft"
+        assert rollback_body["version"] == 4
+
+        restored = store.guardrail_rulesets[ruleset_id]
+        assert restored.name == "Versioned Guardrail"
+        assert restored.config_json["blocked_keywords"] == ["secret"]
+
+        versions_after = client.get(f"/guardrail-rulesets/{ruleset_id}/versions").json()["versions"]
+        assert versions_after[0]["action"] == "rollback"
+        assert versions_after[0]["metadata"]["source_revision_id"] == published_revision["id"]
+    finally:
+        store.guardrail_rulesets.pop(ruleset_id, None)
+        store.guardrail_ruleset_revisions.pop(ruleset_id, None)
+
+
+def test_workflow_save_after_publish_preserves_active_published_snapshot() -> None:
+    workflow_id = str(uuid4())
+
+    try:
+        create = client.post(
+            "/workflow-definitions",
+            json={
+                "id": workflow_id,
+                "name": "Published Workflow",
+                "description": "First published description.",
+                "graph_json": _sample_graph(),
+            },
+        )
+        assert create.status_code == 200
+
+        publish = client.post(f"/workflow-definitions/{workflow_id}/publish")
+        assert publish.status_code == 200
+        published_pointer = store.workflow_definitions[workflow_id].published_revision_id
+        assert published_pointer
+
+        edit_after_publish = client.post(
+            "/workflow-definitions",
+            json={
+                "id": workflow_id,
+                "name": "Published Workflow Draft",
+                "description": "Unpublished draft change.",
+                "graph_json": _sample_graph(),
+            },
+        )
+        assert edit_after_publish.status_code == 200
+
+        current = store.workflow_definitions[workflow_id]
+        assert current.status == "draft"
+        assert current.published_revision_id == published_pointer
+
+        published_listing = client.get("/workflows/published")
+        assert published_listing.status_code == 200
+        published_workflow = next(item for item in published_listing.json() if item["id"] == workflow_id)
+        assert published_workflow["name"] == "Published Workflow"
+        assert published_workflow["description"] == "First published description."
+    finally:
+        store.workflow_definitions.pop(workflow_id, None)
+        store.workflow_definition_revisions.pop(workflow_id, None)
+
+
+def test_agent_and_guardrail_runtime_resolution_use_pinned_published_revisions() -> None:
+    agent_id = str(uuid4())
+    ruleset_id = str(uuid4())
+
+    try:
+        ruleset_create = client.post(
+            "/guardrail-rulesets",
+            json={
+                "id": ruleset_id,
+                "name": "Pinned Ruleset",
+                "config_json": {"blocked_keywords": ["alpha"], "tripwire_action": "reject_content"},
+            },
+        )
+        assert ruleset_create.status_code == 200
+        ruleset_publish = client.post(f"/guardrail-rulesets/{ruleset_id}/publish")
+        assert ruleset_publish.status_code == 200
+        published_ruleset_pointer = store.guardrail_rulesets[ruleset_id].published_revision_id
+        assert published_ruleset_pointer
+
+        ruleset_draft = client.post(
+            "/guardrail-rulesets",
+            json={
+                "id": ruleset_id,
+                "name": "Pinned Ruleset Draft",
+                "config_json": {"blocked_keywords": ["beta"], "tripwire_action": "reject_content"},
+            },
+        )
+        assert ruleset_draft.status_code == 200
+        assert store.guardrail_rulesets[ruleset_id].status == "draft"
+        assert store.guardrail_rulesets[ruleset_id].published_revision_id == published_ruleset_pointer
+
+        workflow_using_ruleset = client.post(
+            "/workflow-definitions",
+            json={
+                "id": str(uuid4()),
+                "name": "Ruleset Consumer",
+                "description": "Should validate against pinned published ruleset.",
+                "graph_json": _sample_graph(),
+                "security_config": {"guardrail_ruleset_id": ruleset_id},
+            },
+        )
+        assert workflow_using_ruleset.status_code == 200
+
+        agent_create = client.post(
+            "/agent-definitions",
+            json={
+                "id": agent_id,
+                "name": "Pinned Agent",
+                "config_json": {
+                    "system_prompt": "Published system prompt.",
+                    "graph_json": _sample_graph(),
+                },
+            },
+        )
+        assert agent_create.status_code == 200
+        agent_publish = client.post(f"/agent-definitions/{agent_id}/publish")
+        assert agent_publish.status_code == 200
+        published_agent_pointer = store.agent_definitions[agent_id].published_revision_id
+        assert published_agent_pointer
+
+        agent_draft = client.post(
+            "/agent-definitions",
+            json={
+                "id": agent_id,
+                "name": "Pinned Agent Draft",
+                "config_json": {
+                    "system_prompt": "Draft system prompt.",
+                    "graph_json": _sample_graph(),
+                },
+            },
+        )
+        assert agent_draft.status_code == 200
+        assert store.agent_definitions[agent_id].status == "draft"
+        assert store.agent_definitions[agent_id].published_revision_id == published_agent_pointer
+
+        resolved_published_agent = main_module._resolve_published_agent_definition(agent_id)
+        assert resolved_published_agent is not None
+        assert resolved_published_agent.name == "Pinned Agent"
+        assert resolved_published_agent.config_json["system_prompt"] == "Published system prompt."
+    finally:
+        store.agent_definitions.pop(agent_id, None)
+        store.agent_definition_revisions.pop(agent_id, None)
+        store.guardrail_rulesets.pop(ruleset_id, None)
+        store.guardrail_ruleset_revisions.pop(ruleset_id, None)
+        for workflow_key, workflow in list(store.workflow_definitions.items()):
+            if workflow.name == "Ruleset Consumer":
+                store.workflow_definitions.pop(workflow_key, None)
+                store.workflow_definition_revisions.pop(workflow_key, None)
+
+
+def test_republish_requires_explicit_activation_before_runtime_moves_forward() -> None:
+    workflow_id = str(uuid4())
+
+    try:
+        create_v1 = client.post(
+            "/workflow-definitions",
+            json={
+                "id": workflow_id,
+                "name": "Release Workflow v1",
+                "description": "Initial active release.",
+                "graph_json": _sample_graph(),
+            },
+        )
+        assert create_v1.status_code == 200
+
+        publish_v1 = client.post(f"/workflow-definitions/{workflow_id}/publish")
+        assert publish_v1.status_code == 200
+
+        first_release = store.workflow_definitions[workflow_id]
+        first_published_revision_id = first_release.published_revision_id
+        first_active_revision_id = first_release.active_revision_id
+        assert first_published_revision_id
+        assert first_active_revision_id == first_published_revision_id
+
+        create_v2 = client.post(
+            "/workflow-definitions",
+            json={
+                "id": workflow_id,
+                "name": "Release Workflow v2",
+                "description": "Second published release waiting on activation.",
+                "graph_json": _sample_graph(),
+            },
+        )
+        assert create_v2.status_code == 200
+
+        publish_v2 = client.post(f"/workflow-definitions/{workflow_id}/publish")
+        assert publish_v2.status_code == 200
+
+        current = store.workflow_definitions[workflow_id]
+        assert current.published_revision_id
+        assert current.published_revision_id != first_published_revision_id
+        assert current.active_revision_id == first_active_revision_id
+
+        published_listing = client.get("/workflows/published")
+        assert published_listing.status_code == 200
+        published_workflow = next(item for item in published_listing.json() if item["id"] == workflow_id)
+        assert published_workflow["name"] == "Release Workflow v2"
+        assert published_workflow["description"] == "Second published release waiting on activation."
+
+        active_listing = client.get("/workflows/active")
+        assert active_listing.status_code == 200
+        active_workflow = next(item for item in active_listing.json() if item["id"] == workflow_id)
+        assert active_workflow["name"] == "Release Workflow v1"
+        assert active_workflow["description"] == "Initial active release."
+
+        activate = client.post(f"/workflow-definitions/{workflow_id}/activate")
+        assert activate.status_code == 200
+        assert activate.json()["active_revision"]["id"] == current.published_revision_id
+
+        active_listing_after = client.get("/workflows/active")
+        assert active_listing_after.status_code == 200
+        active_workflow_after = next(item for item in active_listing_after.json() if item["id"] == workflow_id)
+        assert active_workflow_after["name"] == "Release Workflow v2"
+    finally:
+        store.workflow_definitions.pop(workflow_id, None)
+        store.workflow_definition_revisions.pop(workflow_id, None)
+
+
+def test_agent_and_guardrail_activation_control_runtime_resolution() -> None:
+    agent_id = str(uuid4())
+    ruleset_id = str(uuid4())
+
+    try:
+        ruleset_v1 = client.post(
+            "/guardrail-rulesets",
+            json={
+                "id": ruleset_id,
+                "name": "Runtime Ruleset v1",
+                "config_json": {"blocked_keywords": ["alpha"], "tripwire_action": "reject_content"},
+            },
+        )
+        assert ruleset_v1.status_code == 200
+        assert client.post(f"/guardrail-rulesets/{ruleset_id}/publish").status_code == 200
+
+        ruleset_v2 = client.post(
+            "/guardrail-rulesets",
+            json={
+                "id": ruleset_id,
+                "name": "Runtime Ruleset v2",
+                "config_json": {"blocked_keywords": ["beta"], "tripwire_action": "reject_content"},
+            },
+        )
+        assert ruleset_v2.status_code == 200
+        assert client.post(f"/guardrail-rulesets/{ruleset_id}/publish").status_code == 200
+
+        guardrail_current = store.guardrail_rulesets[ruleset_id]
+        assert guardrail_current.published_revision_id
+        assert guardrail_current.active_revision_id
+        assert guardrail_current.active_revision_id != guardrail_current.published_revision_id
+
+        resolved_guardrail_before, _, _ = main_module._resolve_guardrail_config({"ruleset_id": ruleset_id})
+        assert resolved_guardrail_before["blocked_keywords"] == ["alpha"]
+
+        activate_ruleset = client.post(f"/guardrail-rulesets/{ruleset_id}/activate")
+        assert activate_ruleset.status_code == 200
+
+        resolved_guardrail_after, _, _ = main_module._resolve_guardrail_config({"ruleset_id": ruleset_id})
+        assert resolved_guardrail_after["blocked_keywords"] == ["beta"]
+
+        agent_v1 = client.post(
+            "/agent-definitions",
+            json={
+                "id": agent_id,
+                "name": "Runtime Agent v1",
+                "config_json": {
+                    "system_prompt": "Use the first runtime prompt.",
+                    "graph_json": _sample_graph(),
+                },
+            },
+        )
+        assert agent_v1.status_code == 200
+        assert client.post(f"/agent-definitions/{agent_id}/publish").status_code == 200
+
+        agent_v2 = client.post(
+            "/agent-definitions",
+            json={
+                "id": agent_id,
+                "name": "Runtime Agent v2",
+                "config_json": {
+                    "system_prompt": "Use the second runtime prompt.",
+                    "graph_json": _sample_graph(),
+                },
+            },
+        )
+        assert agent_v2.status_code == 200
+        assert client.post(f"/agent-definitions/{agent_id}/publish").status_code == 200
+
+        agent_current = store.agent_definitions[agent_id]
+        assert agent_current.published_revision_id
+        assert agent_current.active_revision_id
+        assert agent_current.active_revision_id != agent_current.published_revision_id
+
+        resolved_agent_before = main_module._resolve_published_agent_definition(agent_id)
+        assert resolved_agent_before is not None
+        assert resolved_agent_before.name == "Runtime Agent v1"
+        assert resolved_agent_before.config_json["system_prompt"] == "Use the first runtime prompt."
+
+        activate_agent = client.post(f"/agent-definitions/{agent_id}/activate")
+        assert activate_agent.status_code == 200
+
+        resolved_agent_after = main_module._resolve_published_agent_definition(agent_id)
+        assert resolved_agent_after is not None
+        assert resolved_agent_after.name == "Runtime Agent v2"
+        assert resolved_agent_after.config_json["system_prompt"] == "Use the second runtime prompt."
+    finally:
+        store.agent_definitions.pop(agent_id, None)
+        store.agent_definition_revisions.pop(agent_id, None)
+        store.guardrail_rulesets.pop(ruleset_id, None)
+        store.guardrail_ruleset_revisions.pop(ruleset_id, None)
+
+
 def test_memory_endpoint_loads_long_term_entries_into_short_term() -> None:
     session_id = "session:test-memory"
     store.memory_by_session[session_id] = []
@@ -720,6 +1261,358 @@ def test_memory_scope_policy_rejects_disallowed_scope() -> None:
         raise AssertionError("Expected disallowed memory scope to raise RuntimeError")
 
     main_module._enforce_memory_scope_policy("session", execution_state, node_id="memory-guard")
+
+
+def test_definition_mutations_require_auth_when_enabled_and_emit_audit_events() -> None:
+    original_require_auth = store.platform_settings.require_authenticated_requests
+    workflow_id = str(uuid4())
+    store.workflow_definitions.pop(workflow_id, None)
+    original_audit_events = list(store.audit_events)
+    original_artifacts = list(store.artifacts)
+    store.audit_events = []
+
+    try:
+        store.platform_settings.require_authenticated_requests = True
+
+        unauthorized_response = client.post(
+            "/workflow-definitions",
+            json={
+                "id": workflow_id,
+                "name": "Auth Required Workflow",
+                "description": "Should require authenticated mutation requests.",
+                "graph_json": _sample_graph(),
+            },
+        )
+        assert unauthorized_response.status_code == 401
+        assert any(event.action == "workflow.definition.save" and event.outcome == "blocked" for event in store.audit_events)
+
+        authorized_response = client.post(
+            "/workflow-definitions",
+            json={
+                "id": workflow_id,
+                "name": "Auth Required Workflow",
+                "description": "Should require authenticated mutation requests.",
+                "graph_json": _sample_graph(),
+            },
+            headers={"x-frontier-actor": "tester"},
+        )
+        assert authorized_response.status_code == 200
+
+        publish_response = client.post(
+            f"/workflow-definitions/{workflow_id}/publish",
+            headers={"x-frontier-actor": "tester"},
+        )
+        assert publish_response.status_code == 200
+
+        save_events = [event for event in store.audit_events if event.action == "workflow.definition.save" and event.outcome == "allowed"]
+        publish_events = [event for event in store.audit_events if event.action == "workflow.definition.publish" and event.outcome == "allowed"]
+        assert save_events
+        assert publish_events
+        assert save_events[0].metadata.get("entity_type") == "workflow_definition"
+        assert save_events[0].metadata.get("entity_id") == workflow_id
+        assert publish_events[0].metadata.get("after", {}).get("generated_artifact_count") == 2
+    finally:
+        store.platform_settings.require_authenticated_requests = original_require_auth
+        store.workflow_definitions.pop(workflow_id, None)
+        store.artifacts = original_artifacts
+        store.audit_events = original_audit_events
+
+
+def test_legacy_security_policy_aliases_resolve_to_canonical_endpoints() -> None:
+    workflow_id = str(uuid4())
+    agent_id = str(uuid4())
+    store.workflow_definitions[workflow_id] = main_module.WorkflowDefinition(
+        id=workflow_id,
+        name="Legacy Alias Workflow",
+        description="Workflow for legacy security policy alias coverage.",
+        version=1,
+        status="draft",
+        graph_json=_sample_graph(),
+        security_config={"classification": "restricted"},
+    )
+    store.agent_definitions[agent_id] = main_module.AgentDefinition(
+        id=agent_id,
+        name="Legacy Alias Agent",
+        version=1,
+        status="draft",
+        type="graph",
+        config_json={"security": {"classification": "confidential"}},
+    )
+
+    try:
+        workflow_alias = client.get(f"/workflows/{workflow_id}/security-policy")
+        workflow_canonical = client.get(f"/workflow-definitions/{workflow_id}/security-policy")
+        assert workflow_alias.status_code == 200
+        assert workflow_alias.json() == workflow_canonical.json()
+
+        agent_alias = client.get(f"/agents/{agent_id}/security-policy")
+        agent_canonical = client.get(f"/agent-definitions/{agent_id}/security-policy")
+        assert agent_alias.status_code == 200
+        assert agent_alias.json() == agent_canonical.json()
+    finally:
+        store.workflow_definitions.pop(workflow_id, None)
+        store.agent_definitions.pop(agent_id, None)
+
+
+def test_integration_mutations_require_auth_and_emit_audit_events() -> None:
+    original_require_auth = store.platform_settings.require_authenticated_requests
+    integration_id = str(uuid4())
+    store.integrations.pop(integration_id, None)
+    original_audit_events = list(store.audit_events)
+    store.audit_events = []
+
+    try:
+        store.platform_settings.require_authenticated_requests = True
+
+        unauthorized_response = client.post(
+            "/integrations",
+            json={
+                "id": integration_id,
+                "name": "Secure Integration",
+                "type": "http",
+                "base_url": "http://localhost:9999/test",
+            },
+        )
+        assert unauthorized_response.status_code == 401
+        assert any(event.action == "integration.save" and event.outcome == "blocked" for event in store.audit_events)
+
+        authorized_response = client.post(
+            "/integrations",
+            json={
+                "id": integration_id,
+                "name": "Secure Integration",
+                "type": "http",
+                "base_url": "http://localhost:9999/test",
+            },
+            headers={"x-frontier-actor": "tester"},
+        )
+        assert authorized_response.status_code == 200
+
+        test_response = client.post(
+            f"/integrations/{integration_id}/test",
+            headers={"x-frontier-actor": "tester"},
+        )
+        assert test_response.status_code == 200
+
+        delete_response = client.delete(
+            f"/integrations/{integration_id}",
+            headers={"x-frontier-actor": "tester"},
+        )
+        assert delete_response.status_code == 200
+
+        assert any(event.action == "integration.save" and event.outcome == "allowed" for event in store.audit_events)
+        assert any(event.action == "integration.test" and event.outcome == "allowed" for event in store.audit_events)
+        assert any(event.action == "integration.delete" and event.outcome == "allowed" for event in store.audit_events)
+    finally:
+        store.platform_settings.require_authenticated_requests = original_require_auth
+        store.integrations.pop(integration_id, None)
+        store.audit_events = original_audit_events
+
+
+def test_template_and_collaboration_mutations_require_auth_and_emit_audit_events() -> None:
+    original_require_auth = store.platform_settings.require_authenticated_requests
+    original_audit_events = list(store.audit_events)
+    store.audit_events = []
+
+    template_id = str(uuid4())
+    store.agent_templates[template_id] = main_module.AgentTemplate(
+        id=template_id,
+        name="Secure Template",
+        description="Template for auth coverage.",
+        config_json={"graph_json": _sample_graph()},
+    )
+
+    try:
+        store.platform_settings.require_authenticated_requests = True
+
+        unauthorized_template = client.post(
+            f"/templates/agents/{template_id}/instantiate",
+            json={"name": "Template Instance"},
+        )
+        assert unauthorized_template.status_code == 401
+
+        template_response = client.post(
+            f"/templates/agents/{template_id}/instantiate",
+            json={"name": "Template Instance"},
+            headers={"x-frontier-actor": "tester"},
+        )
+        assert template_response.status_code == 200
+        created_agent_id = template_response.json()["id"]
+
+        unauthorized_join = client.post(
+            "/collab/sessions/join",
+            json={
+                "entity_type": "agent",
+                "entity_id": created_agent_id,
+                "user_id": "tester",
+                "display_name": "Tester",
+            },
+        )
+        assert unauthorized_join.status_code == 401
+
+        join_response = client.post(
+            "/collab/sessions/join",
+            json={
+                "entity_type": "agent",
+                "entity_id": created_agent_id,
+                "user_id": "tester",
+                "display_name": "Tester",
+            },
+            headers={"x-frontier-actor": "tester"},
+        )
+        assert join_response.status_code == 200
+        session_id = join_response.json()["session"]["id"]
+
+        sync_response = client.post(
+            f"/collab/sessions/{session_id}/sync",
+            json={"user_id": "tester", "graph_json": _sample_graph()},
+            headers={"x-frontier-actor": "tester"},
+        )
+        assert sync_response.status_code == 200
+
+        assert any(event.action == "template.agent.instantiate" and event.outcome == "allowed" for event in store.audit_events)
+        assert any(event.action == "collab.session.join" and event.outcome == "allowed" for event in store.audit_events)
+        assert any(event.action == "collab.session.sync" and event.outcome == "allowed" for event in store.audit_events)
+    finally:
+        store.platform_settings.require_authenticated_requests = original_require_auth
+        store.agent_templates.pop(template_id, None)
+        for agent_id in list(store.agent_definitions.keys()):
+            if str(store.agent_definitions[agent_id].name).startswith("Template Instance"):
+                store.agent_definitions.pop(agent_id, None)
+        store.collaboration_sessions = {}
+        store.audit_events = original_audit_events
+
+
+def test_sensitive_read_routes_require_auth_when_enabled() -> None:
+    original_require_auth = store.platform_settings.require_authenticated_requests
+    original_audit_events = list(store.audit_events)
+    store.audit_events = []
+    session_id = "session:auth-read"
+    store.memory_by_session[session_id] = [{"id": "mem-1", "content": "keep this safe"}]
+
+    collab_session = main_module.CollaborationSession(
+        id="agent:auth-read-agent",
+        entity_type="agent",
+        entity_id="auth-read-agent",
+        graph_json=_sample_graph(),
+        version=1,
+        updated_at=main_module._now_iso(),
+        participants=[],
+    )
+    store.collaboration_sessions[collab_session.id] = collab_session
+
+    try:
+        store.platform_settings.require_authenticated_requests = True
+
+        assert client.get("/platform/settings").status_code == 401
+        assert client.get(f"/memory/{session_id}").status_code == 401
+        assert client.get("/audit/events").status_code == 401
+        assert client.get(f"/collab/sessions/{collab_session.id}").status_code == 401
+        assert client.delete(f"/memory/{session_id}").status_code == 401
+
+        headers = {"x-frontier-actor": "tester"}
+        assert client.get("/platform/settings", headers=headers).status_code == 200
+        assert client.get(f"/memory/{session_id}", headers=headers).status_code == 200
+        assert client.get("/audit/events", headers=headers).status_code == 200
+        assert client.get(f"/collab/sessions/{collab_session.id}", headers=headers).status_code == 200
+        assert client.delete(f"/memory/{session_id}", headers=headers).status_code == 200
+
+        assert any(event.action == "platform.settings.read" and event.outcome == "allowed" for event in store.audit_events)
+        assert any(event.action == "memory.read" and event.outcome == "allowed" for event in store.audit_events)
+        assert any(event.action == "audit.events.read" and event.outcome == "allowed" for event in store.audit_events)
+        assert any(event.action == "collab.session.read" and event.outcome == "allowed" for event in store.audit_events)
+        assert any(event.action == "memory.clear" and event.outcome == "allowed" for event in store.audit_events)
+    finally:
+        store.platform_settings.require_authenticated_requests = original_require_auth
+        store.audit_events = original_audit_events
+        store.collaboration_sessions.pop(collab_session.id, None)
+        store.memory_by_session.pop(session_id, None)
+
+
+def test_collaboration_routes_bind_payload_identity_to_authenticated_actor() -> None:
+    original_require_auth = store.platform_settings.require_authenticated_requests
+    original_audit_events = list(store.audit_events)
+    original_sessions = dict(store.collaboration_sessions)
+    store.audit_events = []
+
+    session_id = _collab_session_key = None
+    try:
+        store.platform_settings.require_authenticated_requests = True
+
+        join_mismatch = client.post(
+            "/collab/sessions/join",
+            json={
+                "entity_type": "agent",
+                "entity_id": "secure-agent",
+                "user_id": "spoofed-user",
+                "display_name": "Spoofed",
+            },
+            headers={"x-frontier-actor": "owner-user"},
+        )
+        assert join_mismatch.status_code == 403
+
+        join_owner = client.post(
+            "/collab/sessions/join",
+            json={
+                "entity_type": "agent",
+                "entity_id": "secure-agent",
+                "display_name": "Owner",
+            },
+            headers={"x-frontier-actor": "owner-user"},
+        )
+        assert join_owner.status_code == 200
+        session_id = join_owner.json()["session"]["id"]
+        assert join_owner.json()["participant"]["user_id"] == "owner-user"
+
+        join_member = client.post(
+            "/collab/sessions/join",
+            json={
+                "entity_type": "agent",
+                "entity_id": "secure-agent",
+                "display_name": "Member",
+            },
+            headers={"x-frontier-actor": "member-user"},
+        )
+        assert join_member.status_code == 200
+
+        sync_mismatch = client.post(
+            f"/collab/sessions/{session_id}/sync",
+            json={"user_id": "spoofed-user", "graph_json": _sample_graph()},
+            headers={"x-frontier-actor": "owner-user"},
+        )
+        assert sync_mismatch.status_code == 403
+
+        sync_ok = client.post(
+            f"/collab/sessions/{session_id}/sync",
+            json={"graph_json": _sample_graph()},
+            headers={"x-frontier-actor": "owner-user"},
+        )
+        assert sync_ok.status_code == 200
+
+        permissions_mismatch = client.post(
+            f"/collab/sessions/{session_id}/permissions",
+            json={"actor_user_id": "spoofed-user", "target_user_id": "member-user", "role": "viewer"},
+            headers={"x-frontier-actor": "owner-user"},
+        )
+        assert permissions_mismatch.status_code == 403
+
+        permissions_ok = client.post(
+            f"/collab/sessions/{session_id}/permissions",
+            json={"target_user_id": "member-user", "role": "viewer"},
+            headers={"x-frontier-actor": "owner-user"},
+        )
+        assert permissions_ok.status_code == 200
+
+        updated_session = permissions_ok.json()["session"]
+        member = next(item for item in updated_session["participants"] if item["user_id"] == "member-user")
+        assert member["role"] == "viewer"
+        assert any(event.action == "collab.session.join" and event.outcome == "blocked" for event in store.audit_events)
+        assert any(event.action == "collab.session.sync" and event.outcome == "blocked" for event in store.audit_events)
+        assert any(event.action == "collab.session.permissions.update" and event.outcome == "blocked" for event in store.audit_events)
+    finally:
+        store.platform_settings.require_authenticated_requests = original_require_auth
+        store.audit_events = original_audit_events
+        store.collaboration_sessions = original_sessions
 
 
 def test_rank_hybrid_memory_entries_prefers_query_relevance() -> None:

@@ -1,27 +1,42 @@
-.PHONY: dev up down test lint typecheck policy-test bootstrap health ps logs smoke install-opa
+.PHONY: dev up down local-up local-down test lint typecheck policy-test bootstrap health ps logs smoke install-opa
 
 PYTHON ?= python
 OPA_RUNNER ?= $(PYTHON) scripts/run_opa.py
+LOCAL_COMPOSE ?= docker compose -f docker-compose.local.yml
+FULL_COMPOSE ?= docker compose
 
 dev:            ## Start local stack (Docker Compose)
-	docker compose up -d
-	@echo "Stack running. Admin UI: http://localhost:8000"
+	$(FULL_COMPOSE) up -d
+	@echo "Secure platform stack running. Gateway: http://frontier.localhost  Backend health: http://localhost:8000/healthz"
 
 up:             ## Start all services
-	docker compose up -d
+	$(FULL_COMPOSE) up -d
 
 down:           ## Stop all services
-	docker compose down -v
+	$(FULL_COMPOSE) down -v
+
+local-up:       ## Start the lightweight local-first stack
+	$(LOCAL_COMPOSE) up -d
+	@echo "Lightweight local stack running. Frontend: http://localhost:3000  Backend health: http://localhost:8000/healthz"
+
+stack-up:       ## Start the full platform stack (gateway, sandbox, policy infra)
+	$(FULL_COMPOSE) up -d
+
+stack-down:     ## Stop the full platform stack
+	$(FULL_COMPOSE) down -v
+
+local-down:     ## Stop the lightweight local-first stack
+	$(LOCAL_COMPOSE) down -v
 
 test:           ## Run all tests
-	pytest tests/ -v --cov=lattix_frontier --cov-report=term-missing
+	cd apps/backend && pytest tests/ -v --cov=app --cov-report=term-missing
 
 lint:           ## Lint and format
 	ruff check . --fix
 	ruff format .
 
 typecheck:      ## Type check
-	mypy lattix_frontier/
+	mypy frontier_tooling/
 
 policy-test:    ## Test OPA policies
 	$(OPA_RUNNER) test policies/ -v
@@ -31,18 +46,18 @@ install-opa:    ## Install repo-local OPA binary (Windows helper remains availab
 
 bootstrap:      ## First-time setup
 	$(PYTHON) -m pip install -e ".[dev]" --break-system-packages
-	docker compose pull
+	$(FULL_COMPOSE) pull
 	@echo "Run 'make dev' to start the stack"
 
 health:         ## Check API health endpoint
-	$(PYTHON) -c "import urllib.request;print(urllib.request.urlopen('http://localhost:8000/health', timeout=5).read().decode())"
+	$(PYTHON) -c "import urllib.request;print(urllib.request.urlopen('http://localhost:8000/healthz', timeout=5).read().decode())"
 
 ps:
-	docker compose ps
+	$(FULL_COMPOSE) ps
 
 logs:
-	docker compose logs --tail=200
+	$(FULL_COMPOSE) logs --tail=200
 
 smoke:
-	$(PYTHON) -c "import urllib.request; print(urllib.request.urlopen('http://localhost:8000/health', timeout=5).read().decode())"
+	$(PYTHON) -c "import urllib.request; print(urllib.request.urlopen('http://localhost:8000/healthz', timeout=5).read().decode())"
 

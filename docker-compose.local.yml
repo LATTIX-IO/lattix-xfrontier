@@ -8,7 +8,7 @@ services:
     tty: true
     environment:
       NEXT_TELEMETRY_DISABLED: 1
-      NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL:-http://localhost:8000}
+      NEXT_PUBLIC_API_BASE_URL: ${FRONTIER_LOCAL_API_BASE_URL:-http://localhost:8000}
       API_BASE_URL_INTERNAL: ${API_BASE_URL_INTERNAL:-http://backend:8000}
     ports:
       - "127.0.0.1:3000:3000"

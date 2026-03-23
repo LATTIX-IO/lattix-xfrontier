@@ -1,0 +1,32 @@
+from __future__ import annotations
+
+import os
+from pathlib import Path
+
+from .common import DEFAULT_ARCHIVE_URL, ensure_compose_env_file, print_json, python_executable, repo_root, run_command
+
+
+def bootstrap_url() -> str:
+    return str(os.getenv("FRONTIER_ARCHIVE_URL", DEFAULT_ARCHIVE_URL))
+
+
+def main() -> None:
+    root = repo_root()
+    ensure_compose_env_file()
+    run_command([python_executable(), "-m", "pip", "install", "-e", ".[dev]"], cwd=root)
+    print_json(
+        {
+            "installed": True,
+            "repo_root": str(root),
+            "compose_env": str((root / ".installer" / "local.env").resolve()),
+            "next_steps": [
+                "lattix dev",
+                "lattix health",
+            ],
+            "bootstrap_url": bootstrap_url(),
+        }
+    )
+
+
+if __name__ == "__main__":
+    main()

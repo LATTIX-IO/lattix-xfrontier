@@ -1,5 +1,7 @@
 # Security
 
+See `THREAT-MODEL.md` for the canonical current-state vs target-state security expectations, trust boundaries, deployment-mode assumptions, migration boundary for removing `lattix_frontier/`, and known failure modes.
+
 ## Capability tokens
 
 The current implementation mints signed capability envelopes, supports attenuation, and verifies scope and expiry before agent execution.
@@ -31,7 +33,7 @@ For local tool execution, the sandbox subsystem now uses a dedicated internal Do
 
 ## Audit integrity
 
-Every recorded event is chained through SHA-256 and can be verified with `scripts/verify_event_chain.py`.
+Every recorded event can be chained through SHA-256 and verified with `scripts/verify_event_chain.py` against the repo's configured event-chain artifact.
 
 ## Human gates
 
@@ -39,4 +41,4 @@ Confidential and restricted workflows can require human approval before completi
 
 ## Tool jail
 
-All new secure tool execution should go through `lattix_frontier.sandbox.ToolJailService`, which applies OS-aware backend selection, filesystem staging, OPA checks, and egress mediation.
+All new secure tool execution should go through the worker/runtime sandbox boundary in `apps/workers/`, with egress mediation enforced by the secure Compose topology and platform policies described in `THREAT-MODEL.md`.

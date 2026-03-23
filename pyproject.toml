@@ -38,7 +38,6 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
-  "conftest>=0.1.0",
   "mypy>=1.15.0",
   "pytest>=8.3.0",
   "pytest-asyncio>=0.25.0",
@@ -54,11 +53,11 @@ maf = [
 ]
 
 [project.scripts]
-lattix = "lattix_frontier.cli:cli"
-frontier-installer = "lattix_frontier.install.installer:main"
+lattix = "frontier_tooling.cli:cli"
+frontier-installer = "frontier_tooling.installer:main"
 
 [tool.hatch.build.targets.wheel]
-packages = ["lattix_frontier"]
+packages = ["frontier_tooling"]
 
 [tool.hatch.metadata]
 allow-direct-references = true
@@ -77,4 +76,4 @@ warn_unused_configs = true
 plugins = []
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]
+testpaths = ["apps/backend/tests"]

@@ -5,27 +5,38 @@ services:
       dockerfile: Dockerfile.frontend
       args:
         NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL:-/api}
-    depends_on: [orchestrator]
+    depends_on: [backend]
     ports: ["3000:3000"]
     environment:
       NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL:-/api}
-      API_BASE_URL_INTERNAL: http://orchestrator:8000
+      API_BASE_URL_INTERNAL: http://backend:8000
       NEXT_PUBLIC_ENABLE_MOCK_DATA: ${NEXT_PUBLIC_ENABLE_MOCK_DATA:-false}
 
-  orchestrator:
+  backend:
     build:
       context: .
       dockerfile: Dockerfile
-    depends_on: [postgres, vault, opa, nats, envoy]
+    depends_on: [postgres, redis, neo4j, vault, opa, nats, envoy]
     ports: ["8000:8000"]
     environment:
-      DATABASE_URL: postgresql://lattix:lattix@postgres:5432/lattix
+      FRONTEND_ORIGIN: ${FRONTEND_ORIGIN:-http://frontier.localhost}
+      POSTGRES_DSN: ${POSTGRES_DSN:-postgresql://lattix:lattix@postgres:5432/lattix}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      FRONTIER_MEMORY_ENABLE_LONG_TERM: ${FRONTIER_MEMORY_ENABLE_LONG_TERM:-true}
+      FRONTIER_MEMORY_LEARNING_ENABLED: ${FRONTIER_MEMORY_LEARNING_ENABLED:-true}
+      OPENAI_EMBEDDING_MODEL: ${OPENAI_EMBEDDING_MODEL:-text-embedding-3-small}
+      NEO4J_URI: ${NEO4J_URI:-bolt://neo4j:7687}
+      NEO4J_USERNAME: ${NEO4J_USERNAME:-neo4j}
+      NEO4J_PASSWORD: ${NEO4J_PASSWORD:-neo4jpassword}
+      FRONTIER_AGENT_ASSETS_ROOT: ${FRONTIER_AGENT_ASSETS_ROOT:-/app/examples/agents}
       VAULT_ADDR: http://vault:8200
-      VAULT_TOKEN: dev-root-token
+      VAULT_TOKEN: ${VAULT_TOKEN:-dev-root-token}
       OPA_ADDR: http://opa:8181
       NATS_URL: nats://nats:4222
       JAEGER_ENDPOINT: http://jaeger:4317
-      LOG_LEVEL: DEBUG
+      LOG_LEVEL: ${LOG_LEVEL:-DEBUG}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-dummy-key}
+      OPENAI_MODEL: ${OPENAI_MODEL:-gpt-4o-mini}
       A2A_JWT_ALG: ${A2A_JWT_ALG:-HS256}
       A2A_JWT_ISS: ${A2A_JWT_ISS:-lattix-frontier}
       A2A_JWT_AUD: ${A2A_JWT_AUD:-agents}
@@ -34,13 +45,14 @@ services:
       A2A_REPLAY_PROTECTION: ${A2A_REPLAY_PROTECTION:-true}
       A2A_CLOCK_SKEW_SECONDS: ${A2A_CLOCK_SKEW_SECONDS:-30}
       A2A_REPLAY_TTL_SECONDS: ${A2A_REPLAY_TTL_SECONDS:-900}
-      A2A_TRUSTED_SUBJECTS: ${A2A_TRUSTED_SUBJECTS:-orchestrator,research,code,review,coordinator}
+      A2A_TRUSTED_SUBJECTS: ${A2A_TRUSTED_SUBJECTS:-backend,research,code,review,coordinator}
     volumes:
+      - ./:/app
       - ./policies:/app/policies:ro
 
   local-gateway:
     image: caddy:2.8.4-alpine
-    depends_on: [frontend, orchestrator]
+    depends_on: [frontend, backend]
     environment:
       LOCAL_STACK_HOST: ${LOCAL_STACK_HOST:-frontier.localhost}
     volumes:
@@ -53,8 +65,9 @@ services:
       dockerfile: Dockerfile.agent
     environment:
       AGENT_ID: research
+      SERVICE_NAME: research
       AGENT_PORT: "8081"
-      ORCHESTRATOR_URL: http://orchestrator:8000
+      ORCHESTRATOR_URL: http://backend:8000
       VAULT_ADDR: http://vault:8200
       NATS_URL: nats://nats:4222
       A2A_JWT_ALG: ${A2A_JWT_ALG:-HS256}
@@ -65,7 +78,7 @@ services:
       A2A_REPLAY_PROTECTION: ${A2A_REPLAY_PROTECTION:-true}
       A2A_CLOCK_SKEW_SECONDS: ${A2A_CLOCK_SKEW_SECONDS:-30}
       A2A_REPLAY_TTL_SECONDS: ${A2A_REPLAY_TTL_SECONDS:-900}
-      A2A_TRUSTED_SUBJECTS: ${A2A_TRUSTED_SUBJECTS:-orchestrator,research,code,review,coordinator}
+      A2A_TRUSTED_SUBJECTS: ${A2A_TRUSTED_SUBJECTS:-backend,research,code,review,coordinator}
     ports: ["8081:8081"]
 
   agent-code:
@@ -74,8 +87,9 @@ services:
       dockerfile: Dockerfile.agent
     environment:
       AGENT_ID: code
+      SERVICE_NAME: code
       AGENT_PORT: "8082"
-      ORCHESTRATOR_URL: http://orchestrator:8000
+      ORCHESTRATOR_URL: http://backend:8000
       VAULT_ADDR: http://vault:8200
       NATS_URL: nats://nats:4222
       A2A_JWT_ALG: ${A2A_JWT_ALG:-HS256}
@@ -86,7 +100,7 @@ services:
       A2A_REPLAY_PROTECTION: ${A2A_REPLAY_PROTECTION:-true}
       A2A_CLOCK_SKEW_SECONDS: ${A2A_CLOCK_SKEW_SECONDS:-30}
       A2A_REPLAY_TTL_SECONDS: ${A2A_REPLAY_TTL_SECONDS:-900}
-      A2A_TRUSTED_SUBJECTS: ${A2A_TRUSTED_SUBJECTS:-orchestrator,research,code,review,coordinator}
+      A2A_TRUSTED_SUBJECTS: ${A2A_TRUSTED_SUBJECTS:-backend,research,code,review,coordinator}
     ports: ["8082:8082"]
 
   agent-review:
@@ -95,8 +109,9 @@ services:
       dockerfile: Dockerfile.agent
     environment:
       AGENT_ID: review
+      SERVICE_NAME: review
       AGENT_PORT: "8083"
-      ORCHESTRATOR_URL: http://orchestrator:8000
+      ORCHESTRATOR_URL: http://backend:8000
       VAULT_ADDR: http://vault:8200
       NATS_URL: nats://nats:4222
       A2A_JWT_ALG: ${A2A_JWT_ALG:-HS256}
@@ -107,7 +122,7 @@ services:
       A2A_REPLAY_PROTECTION: ${A2A_REPLAY_PROTECTION:-true}
       A2A_CLOCK_SKEW_SECONDS: ${A2A_CLOCK_SKEW_SECONDS:-30}
       A2A_REPLAY_TTL_SECONDS: ${A2A_REPLAY_TTL_SECONDS:-900}
-      A2A_TRUSTED_SUBJECTS: ${A2A_TRUSTED_SUBJECTS:-orchestrator,research,code,review,coordinator}
+      A2A_TRUSTED_SUBJECTS: ${A2A_TRUSTED_SUBJECTS:-backend,research,code,review,coordinator}
     ports: ["8083:8083"]
 
   vault:
@@ -155,6 +170,17 @@ services:
     ports: ["5432:5432"]
     volumes: [postgres-data:/var/lib/postgresql/data]
 
+  redis:
+    image: redis:7-alpine
+    ports: ["6379:6379"]
+
+  neo4j:
+    image: neo4j:5-community
+    environment:
+      NEO4J_AUTH: neo4j/neo4jpassword
+    ports: ["7474:7474", "7687:7687"]
+    volumes: [neo4j-data:/data]
+
   nats:
     image: nats:2.11-alpine
     command: ["--jetstream", "--store_dir=/data", "--http_port=8222"]
@@ -171,6 +197,7 @@ volumes:
   vault-data:
   postgres-data:
   nats-data:
+  neo4j-data:
 
 networks:
   sandbox-internal:

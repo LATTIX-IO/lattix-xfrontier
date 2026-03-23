@@ -137,6 +137,7 @@ celerybeat.pid
 # Environments
 .env
 .envrc
+.desloppify/
 .installer/
 .frontier/
 .tools/

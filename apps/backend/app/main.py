@@ -18,6 +18,7 @@ from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 from fastapi import Body, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
+from app.generated_artifacts import GeneratedArtifactService
 from app.platform_services import Neo4jRunGraph, PostgresLongTermMemoryStore, PostgresStateStore, RedisMemoryStore
 
 try:
@@ -95,6 +96,10 @@ class WorkflowDefinition(BaseModel):
     description: str
     version: int
     status: Literal["draft", "published", "archived"]
+    published_revision_id: str | None = None
+    published_at: str | None = None
+    active_revision_id: str | None = None
+    active_at: str | None = None
     graph_json: dict[str, Any] = Field(default_factory=dict)
     security_config: dict[str, Any] = Field(default_factory=dict)
     generated_artifacts: list[GeneratedCodeArtifact] = Field(default_factory=list)
@@ -105,6 +110,10 @@ class AgentDefinition(BaseModel):
     name: str
     version: int
     status: Literal["draft", "published", "archived"]
+    published_revision_id: str | None = None
+    published_at: str | None = None
+    active_revision_id: str | None = None
+    active_at: str | None = None
     type: Literal["form", "graph"]
     config_json: dict[str, Any] = Field(default_factory=dict)
     generated_artifacts: list[GeneratedCodeArtifact] = Field(default_factory=list)
@@ -115,6 +124,10 @@ class GuardrailRuleSet(BaseModel):
     name: str
     version: int
     status: Literal["draft", "published", "archived"]
+    published_revision_id: str | None = None
+    published_at: str | None = None
+    active_revision_id: str | None = None
+    active_at: str | None = None
     config_json: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -175,7 +188,7 @@ class PlatformSettings(BaseModel):
     mcp_require_local_server: bool = True
     retrieval_require_local_source_url: bool = True
     a2a_require_signed_messages: bool = True
-    a2a_trusted_subjects: list[str] = Field(default_factory=lambda: ["orchestrator"])
+    a2a_trusted_subjects: list[str] = Field(default_factory=lambda: ["backend"])
     a2a_replay_protection: bool = True
     require_human_approval_for_high_risk_tools: bool = True
     high_risk_tool_patterns: list[str] = Field(default_factory=lambda: ["delete", "send", "execute", "write", "admin"])
@@ -309,6 +322,20 @@ class AuditEvent(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
+class DefinitionRevision(BaseModel):
+    id: str
+    entity_type: Literal["workflow_definition", "agent_definition", "guardrail_ruleset"]
+    entity_id: str
+    revision: int
+    action: str
+    version: int
+    status: str
+    created_at: str
+    actor: str
+    snapshot: dict[str, Any] = Field(default_factory=dict)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
 class GraphNode(BaseModel):
     id: str
     type: str
@@ -328,6 +355,7 @@ class GraphEdge(BaseModel):
 
 
 class GraphPayload(BaseModel):
+    schema_version: str = "frontier-graph/1.0"
     nodes: list[GraphNode] = Field(default_factory=list)
     links: list[GraphEdge] = Field(default_factory=list)
     input: dict[str, Any] = Field(default_factory=dict)
@@ -470,6 +498,8 @@ _L3_NATIVE_CONTROL_PLANE_NODE_TYPES = {
 }
 
 _CANONICAL_AGENT_SCHEMA_VERSION = "frontier-agent-definition/1.0"
+_CANONICAL_GRAPH_SCHEMA_VERSION = "frontier-graph/1.0"
+_SUPPORTED_GRAPH_SCHEMA_VERSIONS = {_CANONICAL_GRAPH_SCHEMA_VERSION}
 
 
 def _default_agent_graph(*, source_agent_id: str, agent_name: str, system_prompt: str, model: str) -> dict[str, Any]:
@@ -478,6 +508,7 @@ def _default_agent_graph(*, source_agent_id: str, agent_name: str, system_prompt
         "Provide safe, policy-aligned, actionable outputs with concise reasoning summaries."
     )
     return {
+        "schema_version": _CANONICAL_GRAPH_SCHEMA_VERSION,
         "nodes": [
             {
                 "id": "trigger",
@@ -530,13 +561,57 @@ def _default_agent_graph(*, source_agent_id: str, agent_name: str, system_prompt
 
 def _normalize_graph_json_payload(candidate: Any) -> dict[str, Any]:
     if not isinstance(candidate, dict):
-        return {"nodes": [], "links": []}
+        return {
+            "schema_version": _CANONICAL_GRAPH_SCHEMA_VERSION,
+            "nodes": [],
+            "links": [],
+        }
+    schema_version = str(candidate.get("schema_version") or "").strip() or _CANONICAL_GRAPH_SCHEMA_VERSION
     nodes = candidate.get("nodes") if isinstance(candidate.get("nodes"), list) else []
     links = candidate.get("links") if isinstance(candidate.get("links"), list) else []
     return {
+        "schema_version": schema_version,
         "nodes": [dict(item) if isinstance(item, dict) else item for item in nodes],
         "links": [dict(item) if isinstance(item, dict) else item for item in links],
     }
+
+
+def _graph_schema_version_supported(schema_version: str) -> bool:
+    return str(schema_version or "").strip() in _SUPPORTED_GRAPH_SCHEMA_VERSIONS
+
+
+def _graph_schema_validation_issue(schema_version: str, *, path: str = "schema_version") -> GraphValidationIssue:
+    return GraphValidationIssue(
+        code="GRAPH_SCHEMA_VERSION_UNSUPPORTED",
+        message=(
+            f"Graph schema_version '{schema_version}' is not supported. "
+            f"Supported versions: {', '.join(sorted(_SUPPORTED_GRAPH_SCHEMA_VERSIONS))}."
+        ),
+        path=path,
+    )
+
+
+def _graph_payload_from_json(graph_json: dict[str, Any]) -> GraphPayload:
+    normalized = _normalize_graph_json_payload(graph_json)
+    return GraphPayload(
+        schema_version=str(normalized.get("schema_version") or _CANONICAL_GRAPH_SCHEMA_VERSION),
+        nodes=normalized.get("nodes") if isinstance(normalized.get("nodes"), list) else [],
+        links=normalized.get("links") if isinstance(normalized.get("links"), list) else [],
+    )
+
+
+def _ensure_supported_graph_json(graph_json: Any, *, context_label: str) -> dict[str, Any]:
+    normalized = _normalize_graph_json_payload(graph_json)
+    schema_version = str(normalized.get("schema_version") or _CANONICAL_GRAPH_SCHEMA_VERSION)
+    if not _graph_schema_version_supported(schema_version):
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "message": f"{context_label} uses an unsupported graph schema version",
+                "issues": [_graph_schema_validation_issue(schema_version).model_dump()],
+            },
+        )
+    return normalized
 
 
 def _normalize_text_list(value: Any) -> list[str]:
@@ -568,10 +643,7 @@ def _artifact_slug(name: str, fallback: str) -> str:
 
 
 def _hydrate_graph_for_codegen(graph_json: dict[str, Any]) -> tuple[list[GraphNode], list[GraphEdge], list[str], dict[str, list[str]]]:
-    payload = GraphPayload(
-        nodes=graph_json.get("nodes") if isinstance(graph_json.get("nodes"), list) else [],
-        links=graph_json.get("links") if isinstance(graph_json.get("links"), list) else [],
-    )
+    payload = _graph_payload_from_json(graph_json)
     node_ids = [node.id for node in payload.nodes]
     order = _topological_order(node_ids, payload.links) or node_ids
     upstream_node_ids: dict[str, list[str]] = defaultdict(list)
@@ -636,307 +708,6 @@ def _agent_runtime_policy_snapshot(agent: AgentDefinition) -> dict[str, Any]:
             default_engine=default_runtime_engine,
         ),
     }
-
-
-def _build_langgraph_artifact(
-    *,
-    entity_type: Literal["agent", "workflow"],
-    entity_id: str,
-    entity_name: str,
-    version: int,
-    graph_json: dict[str, Any],
-    effective_security_policy: dict[str, Any],
-    runtime_policy: dict[str, Any],
-) -> GeneratedCodeArtifact:
-    nodes, links, execution_order, upstream_node_ids = _hydrate_graph_for_codegen(graph_json)
-    blueprints = _node_blueprints_for_codegen(nodes, execution_order, upstream_node_ids)
-    slug = _artifact_slug(entity_name, entity_id)
-    kind_name = "agent" if entity_type == "agent" else "workflow"
-    lines = [
-        'from __future__ import annotations',
-        '',
-        'from typing import Any, TypedDict',
-        '',
-        'from langgraph.graph import END, START, StateGraph',
-        '',
-        f'{entity_type.upper()}_ID = {entity_id!r}',
-        f'{entity_type.upper()}_NAME = {entity_name!r}',
-        f'VERSION = {version}',
-        f'GRAPH_SPEC = {_python_literal(graph_json)}',
-        f'NODE_BLUEPRINTS = {_python_literal(blueprints)}',
-        f'EXECUTION_ORDER = {_python_literal(execution_order)}',
-        f'UPSTREAM_NODE_IDS = {_python_literal(upstream_node_ids)}',
-        f'EFFECTIVE_SECURITY_POLICY = {_python_literal(effective_security_policy)}',
-        f'RUNTIME_POLICY = {_python_literal(runtime_policy)}',
-        '',
-        'class FrontierState(TypedDict, total=False):',
-        '    input: dict[str, Any]',
-        '    node_results: dict[str, dict[str, Any]]',
-        '    last_output: Any',
-        '',
-        'def _record_node_result(state: FrontierState, node_id: str, payload: dict[str, Any]) -> FrontierState:',
-        '    node_results = dict(state.get("node_results", {}))',
-        '    node_results[node_id] = payload',
-        '    next_state = dict(state)',
-        '    next_state["node_results"] = node_results',
-        '    next_state["last_output"] = payload.get("response") or payload.get("published") or payload',
-        '    return next_state',
-        '',
-        'def _execute_generated_node(node_id: str, state: FrontierState) -> FrontierState:',
-        '    blueprint = NODE_BLUEPRINTS[node_id]',
-        '    node_type = blueprint["type"]',
-        '    config = blueprint["config"]',
-        '    upstream_ids = UPSTREAM_NODE_IDS.get(node_id, [])',
-        '    upstream_results = {upstream_id: state.get("node_results", {}).get(upstream_id) for upstream_id in upstream_ids}',
-        '    if node_type == "frontier/trigger":',
-        '        payload = {"trigger": config, "input": state.get("input", {})}',
-        '    elif node_type == "frontier/prompt":',
-        '        payload = {"system_prompt": config.get("system_prompt_text", ""), "profile": config}',
-        '    elif node_type == "frontier/agent":',
-        '        payload = {',
-        '            "agent_id": config.get("agent_id") or node_id,',
-        '            "response": f"Generated LangGraph stub for {blueprint[\"title\"]}",',
-        '            "model": config.get("model") or RUNTIME_POLICY.get("default_runtime_engine"),',
-        '            "upstream": upstream_results,',
-        '        }',
-        '    elif node_type == "frontier/retrieval":',
-        '        payload = {"documents": [], "grounding_context": "Attach retriever implementation here.", "config": config}',
-        '    elif node_type == "frontier/tool-call":',
-        '        payload = {"tool_request": config, "status": "stubbed", "upstream": upstream_results}',
-        '    elif node_type == "frontier/memory":',
-        '        payload = {"memory_state": {"scope": config.get("scope", "session")}, "config": config}',
-        '    elif node_type == "frontier/guardrail":',
-        '        payload = {"decision": "allow", "config": config, "effective_security_policy": EFFECTIVE_SECURITY_POLICY}',
-        '    elif node_type == "frontier/human-review":',
-        '        payload = {"approval_required": True, "reviewer_group": config.get("reviewer_group", "reviewers")}',
-        '    elif node_type == "frontier/manifold":',
-        '        payload = {"logic_mode": config.get("logic_mode", "OR"), "upstream": upstream_results}',
-        '    elif node_type == "frontier/output":',
-        '        payload = {"published": {"destination": config.get("destination", "artifact_store"), "payload": upstream_results}}',
-        '    else:',
-        '        payload = {"note": f"Unhandled node type {node_type}", "upstream": upstream_results}',
-        '    return _record_node_result(state, node_id, payload)',
-        '',
-    ]
-    for node_id in execution_order:
-        function_name = f'node_{_safe_python_identifier(node_id, prefix="node")}'
-        lines.extend([
-            f'def {function_name}(state: FrontierState) -> FrontierState:',
-            f'    return _execute_generated_node({node_id!r}, state)',
-            '',
-        ])
-    lines.extend([
-        'def build_graph() -> Any:',
-        '    builder = StateGraph(FrontierState)',
-    ])
-    for node_id in execution_order:
-        function_name = f'node_{_safe_python_identifier(node_id, prefix="node")}'
-        lines.append(f'    builder.add_node({node_id!r}, {function_name})')
-    lines.extend([
-        '    if EXECUTION_ORDER:',
-        '        builder.add_edge(START, EXECUTION_ORDER[0])',
-        '        for current_node, next_node in zip(EXECUTION_ORDER, EXECUTION_ORDER[1:]):',
-        '            builder.add_edge(current_node, next_node)',
-        '        builder.add_edge(EXECUTION_ORDER[-1], END)',
-        '    return builder.compile()',
-        '',
-        'def run_graph(input_payload: dict[str, Any] | None = None) -> dict[str, Any]:',
-        '    graph = build_graph()',
-        '    return graph.invoke({"input": input_payload or {}, "node_results": {}})',
-        '',
-        'if __name__ == "__main__":',
-        '    result = run_graph({"message": "Generated scaffold smoke test"})',
-        '    print(result)',
-    ])
-
-    return GeneratedCodeArtifact(
-        id=str(uuid5(NAMESPACE_URL, f'generated:{entity_type}:{entity_id}:langgraph:v{version}')),
-        name=f'{entity_name} · LangGraph scaffold',
-        version=version,
-        framework='langgraph',
-        path=f'generated/{entity_type}s/{slug}/v{version}/langgraph_{kind_name}.py',
-        summary=f'LangGraph scaffold generated from {len(nodes)} nodes and {len(links)} links.',
-        content='\n'.join(lines) + '\n',
-        generated_at=_now_iso(),
-        entity_type=entity_type,
-        entity_id=entity_id,
-    )
-
-
-def _build_agent_framework_artifact(
-    *,
-    entity_type: Literal["agent", "workflow"],
-    entity_id: str,
-    entity_name: str,
-    version: int,
-    graph_json: dict[str, Any],
-    effective_security_policy: dict[str, Any],
-    runtime_policy: dict[str, Any],
-) -> GeneratedCodeArtifact:
-    nodes, links, execution_order, upstream_node_ids = _hydrate_graph_for_codegen(graph_json)
-    blueprints = _node_blueprints_for_codegen(nodes, execution_order, upstream_node_ids)
-    slug = _artifact_slug(entity_name, entity_id)
-    kind_name = "agent" if entity_type == "agent" else "workflow"
-    lines = [
-        'from __future__ import annotations',
-        '',
-        'from typing import Any',
-        '',
-        'from agent_framework import Message',
-        'from agent_framework.azure import AzureAIClient',
-        'from azure.identity.aio import DefaultAzureCredential',
-        '',
-        f'{entity_type.upper()}_ID = {entity_id!r}',
-        f'{entity_type.upper()}_NAME = {entity_name!r}',
-        f'VERSION = {version}',
-        f'GRAPH_SPEC = {_python_literal(graph_json)}',
-        f'NODE_BLUEPRINTS = {_python_literal(blueprints)}',
-        f'EXECUTION_ORDER = {_python_literal(execution_order)}',
-        f'UPSTREAM_NODE_IDS = {_python_literal(upstream_node_ids)}',
-        f'EFFECTIVE_SECURITY_POLICY = {_python_literal(effective_security_policy)}',
-        f'RUNTIME_POLICY = {_python_literal(runtime_policy)}',
-        '',
-        'def _node_instructions(blueprint: dict[str, Any]) -> str:',
-        '    config = blueprint.get("config", {})',
-        '    title = blueprint.get("title") or blueprint.get("id") or "Frontier node"',
-        '    return (',
-        '        f"You are the generated executor for {title}. "',
-        '        "Respect EFFECTIVE_SECURITY_POLICY, keep outputs deterministic, and use GRAPH_SPEC as the source of truth. "',
-        '        f"Node config: {config}"',
-        '    )',
-        '',
-        'async def instantiate_frontier_agents() -> dict[str, Any]:',
-        '    credential = DefaultAzureCredential()',
-        '    instantiated: dict[str, Any] = {}',
-        '    for node_id in EXECUTION_ORDER:',
-        '        blueprint = NODE_BLUEPRINTS[node_id]',
-        '        if blueprint.get("type") != "frontier/agent":',
-        '            continue',
-        '        client = AzureAIClient(credential=credential)',
-        '        instantiated[node_id] = client.as_agent(',
-        '            name=f"{blueprint.get(\"title\", node_id)}Agent",',
-        '            instructions=_node_instructions(blueprint),',
-        '        )',
-        '    return instantiated',
-        '',
-        'async def build_frontier_blueprint() -> dict[str, Any]:',
-        '    agents = await instantiate_frontier_agents()',
-        '    return {',
-        f'        "entity_id": {entity_id!r},',
-        f'        "entity_name": {entity_name!r},',
-        '        "graph_spec": GRAPH_SPEC,',
-        '        "execution_order": EXECUTION_ORDER,',
-        '        "security_policy": EFFECTIVE_SECURITY_POLICY,',
-        '        "runtime_policy": RUNTIME_POLICY,',
-        '        "instantiated_agents": list(agents.keys()),',
-        '    }',
-        '',
-        'async def run_frontier_task(task: str) -> dict[str, Any]:',
-        '    blueprint = await build_frontier_blueprint()',
-        '    user_message = Message("user", [task])',
-        '    return {',
-        '        "blueprint": blueprint,',
-        '        "initial_message": user_message,',
-        '        "note": "Wire WorkflowBuilder / custom Executors here using EXECUTION_ORDER and UPSTREAM_NODE_IDS.",',
-        '    }',
-        '',
-        'if __name__ == "__main__":',
-        '    import asyncio',
-        '',
-        '    print(asyncio.run(run_frontier_task("Generated scaffold smoke test")))',
-    ]
-    return GeneratedCodeArtifact(
-        id=str(uuid5(NAMESPACE_URL, f'generated:{entity_type}:{entity_id}:microsoft-agent-framework:v{version}')),
-        name=f'{entity_name} · Microsoft Agent Framework scaffold',
-        version=version,
-        framework='microsoft-agent-framework',
-        path=f'generated/{entity_type}s/{slug}/v{version}/agent_framework_{kind_name}.py',
-        summary=f'Microsoft Agent Framework scaffold generated from {len(nodes)} nodes and {len(links)} links.',
-        content='\n'.join(lines) + '\n',
-        generated_at=_now_iso(),
-        entity_type=entity_type,
-        entity_id=entity_id,
-    )
-
-
-def _build_generated_artifacts_for_workflow(item: WorkflowDefinition, *, version: int) -> list[GeneratedCodeArtifact]:
-    effective_policy = _resolve_effective_security_policy(
-        platform=store.platform_settings,
-        workflow_config=item.security_config,
-    )
-    runtime_policy = _workflow_runtime_policy_snapshot(store.platform_settings)
-    return [
-        _build_langgraph_artifact(
-            entity_type='workflow',
-            entity_id=item.id,
-            entity_name=item.name,
-            version=version,
-            graph_json=item.graph_json if isinstance(item.graph_json, dict) else {},
-            effective_security_policy=effective_policy,
-            runtime_policy=runtime_policy,
-        ),
-        _build_agent_framework_artifact(
-            entity_type='workflow',
-            entity_id=item.id,
-            entity_name=item.name,
-            version=version,
-            graph_json=item.graph_json if isinstance(item.graph_json, dict) else {},
-            effective_security_policy=effective_policy,
-            runtime_policy=runtime_policy,
-        ),
-    ]
-
-
-def _build_generated_artifacts_for_agent(item: AgentDefinition, *, version: int) -> list[GeneratedCodeArtifact]:
-    config_json = item.config_json if isinstance(item.config_json, dict) else {}
-    workflow_id = str(config_json.get('workflow_definition_id') or '').strip()
-    workflow = store.workflow_definitions.get(workflow_id) if workflow_id else None
-    effective_policy = _resolve_effective_security_policy(
-        platform=store.platform_settings,
-        workflow_config=workflow.security_config if workflow else None,
-        agent_config=config_json.get('security') if isinstance(config_json.get('security'), dict) else None,
-    )
-    runtime_policy = _agent_runtime_policy_snapshot(item)
-    graph_json = config_json.get('graph_json') if isinstance(config_json.get('graph_json'), dict) else {}
-    return [
-        _build_langgraph_artifact(
-            entity_type='agent',
-            entity_id=item.id,
-            entity_name=item.name,
-            version=version,
-            graph_json=graph_json,
-            effective_security_policy=effective_policy,
-            runtime_policy=runtime_policy,
-        ),
-        _build_agent_framework_artifact(
-            entity_type='agent',
-            entity_id=item.id,
-            entity_name=item.name,
-            version=version,
-            graph_json=graph_json,
-            effective_security_policy=effective_policy,
-            runtime_policy=runtime_policy,
-        ),
-    ]
-
-
-def _iter_generated_artifacts() -> list[GeneratedCodeArtifact]:
-    artifacts: list[GeneratedCodeArtifact] = []
-    for workflow in store.workflow_definitions.values():
-        artifacts.extend(workflow.generated_artifacts)
-    for agent in store.agent_definitions.values():
-        artifacts.extend(agent.generated_artifacts)
-    return artifacts
-
-
-def _find_generated_artifact(artifact_id: str) -> GeneratedCodeArtifact | None:
-    target = str(artifact_id or '').strip()
-    if not target:
-        return None
-    for artifact in _iter_generated_artifacts():
-        if artifact.id == target:
-            return artifact
-    return None
 
 
 def _default_framework_profiles() -> dict[str, dict[str, Any]]:
@@ -1445,8 +1216,8 @@ def _validate_security_guardrail_reference(config: dict[str, Any], *, label: str
     ruleset_id = str(config.get("guardrail_ruleset_id") or "").strip()
     if not ruleset_id:
         return
-    ruleset = store.guardrail_rulesets.get(ruleset_id)
-    if not ruleset or ruleset.status != "published":
+    ruleset = _resolve_published_guardrail_ruleset(ruleset_id)
+    if not ruleset:
         raise HTTPException(status_code=400, detail=f"{label} requires a published guardrail ruleset")
 
 
@@ -3244,8 +3015,8 @@ def _resolve_published_agent_definition(token: str) -> AgentDefinition | None:
         return None
 
     requested_slug = _slugify(requested)
-    for agent in store.agent_definitions.values():
-        if agent.status != "published":
+    for agent in _iter_active_runtime_definitions("agent_definition"):
+        if not isinstance(agent, AgentDefinition):
             continue
         keys = _agent_lookup_keys(agent)
         if requested in keys or (requested_slug and requested_slug in keys):
@@ -3297,8 +3068,8 @@ def _build_agent_chat_guardrail_config(agent: AgentDefinition | None) -> dict[st
 
     default_ruleset_id = str(store.platform_settings.default_guardrail_ruleset_id or "").strip()
     if default_ruleset_id:
-        default_ruleset = store.guardrail_rulesets.get(default_ruleset_id)
-        if default_ruleset and isinstance(default_ruleset.config_json, dict) and default_ruleset.status == "published":
+        default_ruleset = _resolve_active_guardrail_ruleset(default_ruleset_id)
+        if default_ruleset and isinstance(default_ruleset.config_json, dict):
             merged.update(default_ruleset.config_json)
 
     if agent is None:
@@ -3371,6 +3142,11 @@ def _topological_order(node_ids: list[str], links: list[GraphEdge]) -> list[str]
 
 def _validate_graph(payload: GraphPayload) -> GraphValidationResult:
     issues: list[GraphValidationIssue] = []
+
+    schema_version = str(payload.schema_version or "").strip() or _CANONICAL_GRAPH_SCHEMA_VERSION
+    if not _graph_schema_version_supported(schema_version):
+        issues.append(_graph_schema_validation_issue(schema_version))
+        return GraphValidationResult(valid=False, issues=issues)
 
     if not payload.nodes:
         issues.append(GraphValidationIssue(code="GRAPH_EMPTY", message="Graph has no nodes.", path="nodes"))
@@ -3637,20 +3413,12 @@ def _validate_graph(payload: GraphPayload) -> GraphValidationResult:
                 )
             configured_ruleset_id = str(node.config.get("ruleset_id") or "").strip()
             if configured_ruleset_id:
-                ruleset = store.guardrail_rulesets.get(configured_ruleset_id)
+                ruleset = _resolve_published_guardrail_ruleset(configured_ruleset_id)
                 if not ruleset:
                     issues.append(
                         GraphValidationIssue(
                             code="GUARDRAIL_RULESET_NOT_FOUND",
                             message=f"Guardrail ruleset '{configured_ruleset_id}' does not exist.",
-                            path=f"{node_path}.config.ruleset_id",
-                        )
-                    )
-                elif ruleset.status != "published":
-                    issues.append(
-                        GraphValidationIssue(
-                            code="GUARDRAIL_RULESET_NOT_PUBLISHED",
-                            message=f"Guardrail ruleset '{configured_ruleset_id}' must be published before use.",
                             path=f"{node_path}.config.ruleset_id",
                         )
                     )
@@ -4267,11 +4035,9 @@ def _resolve_guardrail_config(node_config: dict[str, Any]) -> tuple[dict[str, An
     if not ruleset_id:
         return config, None, None
 
-    ruleset = store.guardrail_rulesets.get(ruleset_id)
+    ruleset = _resolve_active_guardrail_ruleset(ruleset_id)
     if not ruleset:
         return config, ruleset_id, "not_found"
-    if ruleset.status != "published":
-        return config, ruleset_id, "not_published"
 
     merged = dict(ruleset.config_json if isinstance(ruleset.config_json, dict) else {})
     merged.update(config)
@@ -5367,7 +5133,7 @@ class InMemoryStore:
             mcp_require_local_server=True,
             retrieval_require_local_source_url=True,
             a2a_require_signed_messages=True,
-            a2a_trusted_subjects=["orchestrator"],
+            a2a_trusted_subjects=["backend"],
             a2a_replay_protection=True,
             require_human_approval_for_high_risk_tools=True,
             high_risk_tool_patterns=["delete", "send", "execute", "write", "admin"],
@@ -5673,6 +5439,9 @@ class InMemoryStore:
         self.collaboration_sessions: dict[str, CollaborationSession] = {}
         self.audit_events: list[AuditEvent] = []
         self.a2a_seen_nonces: dict[str, str] = {}
+        self.workflow_definition_revisions: dict[str, list[DefinitionRevision]] = {}
+        self.agent_definition_revisions: dict[str, list[DefinitionRevision]] = {}
+        self.guardrail_ruleset_revisions: dict[str, list[DefinitionRevision]] = {}
 
 
 store = InMemoryStore()
@@ -5729,6 +5498,11 @@ def _enforce_request_authn(request: Request | None, *, payload: dict[str, Any] |
         _append_audit_event(action, actor, "blocked", {"reason": "missing_request_context"})
         raise HTTPException(status_code=401, detail="Request context required for authenticated operation")
 
+    header_actor = (
+        str(request.headers.get("x-frontier-actor") or "").strip()
+        or str(request.headers.get("x-user-id") or "").strip()
+    )
+
     configured_token = str(os.getenv("FRONTIER_API_BEARER_TOKEN", "")).strip()
     auth_header = str(request.headers.get("authorization") or "").strip()
     bearer_prefix = "bearer "
@@ -5738,7 +5512,7 @@ def _enforce_request_authn(request: Request | None, *, payload: dict[str, Any] |
         if provided_token != configured_token:
             _append_audit_event(action, actor, "blocked", {"reason": "invalid_bearer_token"})
             raise HTTPException(status_code=401, detail="Invalid bearer token")
-    elif actor == "anonymous":
+    elif not header_actor:
         _append_audit_event(action, actor, "blocked", {"reason": "anonymous_actor"})
         raise HTTPException(status_code=401, detail="Authenticated actor header required (x-frontier-actor)")
 
@@ -5769,10 +5543,511 @@ def _enforce_request_authn(request: Request | None, *, payload: dict[str, Any] |
     return actor
 
 
+def _resolve_authenticated_payload_identity(
+    actor: str,
+    *,
+    payload: dict[str, Any] | None,
+    action: str,
+    field_names: tuple[str, ...],
+) -> str:
+    payload_dict = payload if isinstance(payload, dict) else {}
+    payload_identities: list[tuple[str, str]] = []
+    for field_name in field_names:
+        candidate = str(payload_dict.get(field_name) or "").strip()
+        if candidate:
+            payload_identities.append((field_name, candidate))
+
+    if not payload_identities:
+        return actor
+
+    if store.platform_settings.require_authenticated_requests:
+        mismatched = [
+            {"field": field_name, "value": candidate}
+            for field_name, candidate in payload_identities
+            if candidate != actor
+        ]
+        if mismatched:
+            _append_audit_event(
+                action,
+                actor,
+                "blocked",
+                {
+                    "reason": "payload_identity_mismatch",
+                    "payload_identities": mismatched,
+                },
+            )
+            raise HTTPException(status_code=403, detail="Payload identity must match the authenticated actor")
+        return actor
+
+    return payload_identities[0][1]
+
+
 def _enforce_emergency_write_policy(action: str, actor: str) -> None:
     if store.platform_settings.emergency_read_only_mode:
         _append_audit_event(action, actor, "blocked", {"reason": "emergency_read_only_mode"})
         raise HTTPException(status_code=423, detail="Platform is in emergency read-only mode")
+
+
+def _append_config_mutation_audit(
+    action: str,
+    actor: str,
+    *,
+    entity_type: str,
+    entity_id: str,
+    outcome: Literal["allowed", "blocked", "error"] = "allowed",
+    before: dict[str, Any] | None = None,
+    after: dict[str, Any] | None = None,
+    extra: dict[str, Any] | None = None,
+) -> None:
+    metadata: dict[str, Any] = {
+        "entity_type": entity_type,
+        "entity_id": entity_id,
+    }
+    if isinstance(before, dict):
+        metadata["before"] = before
+    if isinstance(after, dict):
+        metadata["after"] = after
+    if isinstance(extra, dict):
+        metadata.update(extra)
+    _append_audit_event(action, actor, outcome, metadata)
+
+
+def _definition_revision_store(entity_type: str) -> dict[str, list[DefinitionRevision]]:
+    if entity_type == "workflow_definition":
+        return store.workflow_definition_revisions
+    if entity_type == "agent_definition":
+        return store.agent_definition_revisions
+    if entity_type == "guardrail_ruleset":
+        return store.guardrail_ruleset_revisions
+    raise ValueError(f"Unsupported definition entity_type '{entity_type}'")
+
+
+def _definition_current_store(entity_type: str) -> dict[str, Any]:
+    if entity_type == "workflow_definition":
+        return store.workflow_definitions
+    if entity_type == "agent_definition":
+        return store.agent_definitions
+    if entity_type == "guardrail_ruleset":
+        return store.guardrail_rulesets
+    raise ValueError(f"Unsupported definition entity_type '{entity_type}'")
+
+
+def _definition_revision_summary(revision: DefinitionRevision) -> dict[str, Any]:
+    return {
+        "id": revision.id,
+        "entity_type": revision.entity_type,
+        "entity_id": revision.entity_id,
+        "revision": revision.revision,
+        "action": revision.action,
+        "version": revision.version,
+        "status": revision.status,
+        "created_at": revision.created_at,
+        "actor": revision.actor,
+        "metadata": revision.metadata,
+    }
+
+
+def _record_definition_revision(
+    *,
+    entity_type: Literal["workflow_definition", "agent_definition", "guardrail_ruleset"],
+    entity_id: str,
+    actor: str,
+    action: str,
+    snapshot: BaseModel | dict[str, Any],
+    metadata: dict[str, Any] | None = None,
+) -> DefinitionRevision:
+    revision_store = _definition_revision_store(entity_type)
+    history = list(revision_store.get(entity_id, []))
+    snapshot_payload = snapshot.model_dump() if isinstance(snapshot, BaseModel) else dict(snapshot)
+    revision = DefinitionRevision(
+        id=str(uuid4()),
+        entity_type=entity_type,
+        entity_id=entity_id,
+        revision=len(history) + 1,
+        action=str(action or "save").strip() or "save",
+        version=_normalize_version(snapshot_payload.get("version")),
+        status=str(snapshot_payload.get("status") or "draft").strip() or "draft",
+        created_at=_now_iso(),
+        actor=str(actor or "system"),
+        snapshot=snapshot_payload,
+        metadata=dict(metadata) if isinstance(metadata, dict) else {},
+    )
+    history.append(revision)
+    revision_store[entity_id] = history
+    return revision
+
+
+def _definition_revision_history(entity_type: str, entity_id: str) -> list[DefinitionRevision]:
+    return list(_definition_revision_store(entity_type).get(entity_id, []))
+
+
+def _select_definition_revision(
+    entity_type: Literal["workflow_definition", "agent_definition", "guardrail_ruleset"],
+    entity_id: str,
+    *,
+    revision_id: str | None = None,
+    revision_number: int | None = None,
+    version: int | None = None,
+) -> DefinitionRevision:
+    history = _definition_revision_history(entity_type, entity_id)
+    if not history:
+        raise HTTPException(status_code=404, detail="definition revision history not found")
+
+    if revision_id:
+        for item in history:
+            if item.id == revision_id:
+                return item
+        raise HTTPException(status_code=404, detail="definition revision not found")
+
+    if revision_number is not None:
+        for item in history:
+            if item.revision == revision_number:
+                return item
+        raise HTTPException(status_code=404, detail="definition revision not found")
+
+    if version is not None:
+        matching = [item for item in history if item.version == version]
+        if matching:
+            return matching[-1]
+        raise HTTPException(status_code=404, detail="definition version not found")
+
+    return history[-1]
+
+
+def _definition_next_version(entity_type: str, entity_id: str) -> int:
+    current = _definition_current_store(entity_type).get(entity_id)
+    history = _definition_revision_history(entity_type, entity_id)
+    version_candidates = [int(item.version) for item in history]
+    if current is not None:
+        version_candidates.append(int(getattr(current, "version", 0) or 0))
+    return max(version_candidates or [0]) + 1
+
+
+def _restore_definition_snapshot(
+    entity_type: Literal["workflow_definition", "agent_definition", "guardrail_ruleset"],
+    snapshot: dict[str, Any],
+    *,
+    next_version: int,
+) -> WorkflowDefinition | AgentDefinition | GuardrailRuleSet:
+    payload = dict(snapshot) if isinstance(snapshot, dict) else {}
+    published_revision_id = str(payload.get("published_revision_id") or "").strip() or None
+    published_at = str(payload.get("published_at") or "").strip() or None
+    active_revision_id = str(payload.get("active_revision_id") or "").strip() or None
+    active_at = str(payload.get("active_at") or "").strip() or None
+
+    if entity_type == "workflow_definition":
+        security_config = _normalize_security_scope_config(payload.get("security_config"))
+        _validate_security_guardrail_reference(security_config, label="Workflow security policy")
+        return WorkflowDefinition(
+            id=str(payload.get("id") or uuid4()),
+            name=str(payload.get("name") or "Untitled Workflow"),
+            description=str(payload.get("description") or ""),
+            version=next_version,
+            status="draft",
+            published_revision_id=published_revision_id,
+            published_at=published_at,
+            active_revision_id=active_revision_id,
+            active_at=active_at,
+            graph_json=_ensure_supported_graph_json(payload.get("graph_json"), context_label="Workflow rollback"),
+            security_config=security_config,
+            generated_artifacts=[],
+        )
+
+    if entity_type == "agent_definition":
+        config_json = payload.get("config_json") if isinstance(payload.get("config_json"), dict) else {}
+        canonical_config = _canonicalize_agent_config(
+            config_json,
+            agent_id=str(payload.get("id") or uuid4()),
+            agent_name=str(payload.get("name") or "Untitled Agent"),
+            source_agent_id=str(config_json.get("source_agent_id") or payload.get("id") or ""),
+            system_prompt=str(config_json.get("system_prompt") or ""),
+            model_defaults=config_json.get("model_defaults") if isinstance(config_json.get("model_defaults"), dict) else None,
+            tags=_normalize_text_list(config_json.get("tags")),
+            capabilities=_normalize_text_list(config_json.get("capabilities")),
+            owners=_normalize_text_list(config_json.get("owners")),
+            tools=config_json.get("tools") if isinstance(config_json.get("tools"), list) else None,
+            seed_source=str(config_json.get("seed_source") or "") or None,
+            prompt_file=str(config_json.get("prompt_file") or "") or None,
+            url_manifest=str(config_json.get("url_manifest") or "") or None,
+        )
+        _validate_security_guardrail_reference(
+            canonical_config.get("security") if isinstance(canonical_config.get("security"), dict) else {},
+            label="Agent security policy",
+        )
+        return AgentDefinition(
+            id=str(payload.get("id") or uuid4()),
+            name=str(payload.get("name") or "Untitled Agent"),
+            version=next_version,
+            status="draft",
+            published_revision_id=published_revision_id,
+            published_at=published_at,
+            active_revision_id=active_revision_id,
+            active_at=active_at,
+            type="graph",
+            config_json=canonical_config,
+            generated_artifacts=[],
+        )
+
+    config_json = payload.get("config_json") if isinstance(payload.get("config_json"), dict) else {}
+    return GuardrailRuleSet(
+        id=str(payload.get("id") or uuid4()),
+        name=str(payload.get("name") or "Untitled Guardrail"),
+        version=next_version,
+        status="draft",
+        published_revision_id=published_revision_id,
+        published_at=published_at,
+        active_revision_id=active_revision_id,
+        active_at=active_at,
+        config_json=config_json,
+    )
+
+
+def _rollback_definition_to_revision(
+    entity_type: Literal["workflow_definition", "agent_definition", "guardrail_ruleset"],
+    entity_id: str,
+    *,
+    actor: str,
+    target_revision: DefinitionRevision,
+) -> tuple[WorkflowDefinition | AgentDefinition | GuardrailRuleSet, DefinitionRevision]:
+    current_store = _definition_current_store(entity_type)
+    restored = _restore_definition_snapshot(
+        entity_type,
+        target_revision.snapshot,
+        next_version=_definition_next_version(entity_type, entity_id),
+    )
+    current_store[entity_id] = restored
+    rollback_revision = _record_definition_revision(
+        entity_type=entity_type,
+        entity_id=entity_id,
+        actor=actor,
+        action="rollback",
+        snapshot=restored,
+        metadata={
+            "source_revision_id": target_revision.id,
+            "source_revision": target_revision.revision,
+            "source_version": target_revision.version,
+            "source_action": target_revision.action,
+        },
+    )
+    return restored, rollback_revision
+
+
+def _definition_model_from_snapshot(
+    entity_type: Literal["workflow_definition", "agent_definition", "guardrail_ruleset"],
+    snapshot: dict[str, Any],
+) -> WorkflowDefinition | AgentDefinition | GuardrailRuleSet:
+    payload = dict(snapshot) if isinstance(snapshot, dict) else {}
+    if entity_type == "workflow_definition":
+        return WorkflowDefinition.model_validate(payload)
+    if entity_type == "agent_definition":
+        model = AgentDefinition.model_validate(payload)
+        if isinstance(model.config_json, dict):
+            model.config_json = _canonicalize_agent_config(
+                model.config_json,
+                agent_id=model.id,
+                agent_name=model.name,
+                source_agent_id=str(model.config_json.get("source_agent_id") or model.id),
+                system_prompt=str(model.config_json.get("system_prompt") or ""),
+                model_defaults=model.config_json.get("model_defaults") if isinstance(model.config_json.get("model_defaults"), dict) else None,
+                tags=_normalize_text_list(model.config_json.get("tags")),
+                capabilities=_normalize_text_list(model.config_json.get("capabilities")),
+                owners=_normalize_text_list(model.config_json.get("owners")),
+                tools=model.config_json.get("tools") if isinstance(model.config_json.get("tools"), list) else None,
+                seed_source=str(model.config_json.get("seed_source") or "") or None,
+                prompt_file=str(model.config_json.get("prompt_file") or "") or None,
+                url_manifest=str(model.config_json.get("url_manifest") or "") or None,
+            )
+        model.type = "graph"
+        return model
+    return GuardrailRuleSet.model_validate(payload)
+
+
+def _definition_latest_publish_revision(
+    entity_type: Literal["workflow_definition", "agent_definition", "guardrail_ruleset"],
+    entity_id: str,
+) -> DefinitionRevision | None:
+    history = _definition_revision_history(entity_type, entity_id)
+    for revision in reversed(history):
+        if str(revision.metadata.get("published_pointer") or "").lower() == "true":
+            return revision
+        if revision.action in {"publish", "bootstrap"} and revision.status == "published":
+            return revision
+    for revision in reversed(history):
+        if revision.status == "published":
+            return revision
+    return None
+
+
+def _backfill_definition_published_pointer(
+    entity_type: Literal["workflow_definition", "agent_definition", "guardrail_ruleset"],
+    item: WorkflowDefinition | AgentDefinition | GuardrailRuleSet,
+) -> DefinitionRevision | None:
+    revision = None
+    published_revision_id = str(getattr(item, "published_revision_id", "") or "").strip()
+    pointer_was_missing = not bool(published_revision_id)
+    if published_revision_id:
+        try:
+            revision = _select_definition_revision(entity_type, item.id, revision_id=published_revision_id)
+        except HTTPException:
+            revision = None
+
+    if revision is None and str(getattr(item, "status", "") or "") == "published":
+        revision = _definition_latest_publish_revision(entity_type, item.id)
+
+    if revision is None:
+        return None
+
+    item.published_revision_id = revision.id
+    item.published_at = revision.created_at
+    if pointer_was_missing and str(getattr(item, "status", "") or "") == "published":
+        revision.metadata["published_pointer"] = True
+        revision.snapshot = item.model_dump()
+    return revision
+
+
+def _backfill_definition_active_pointer(
+    entity_type: Literal["workflow_definition", "agent_definition", "guardrail_ruleset"],
+    item: WorkflowDefinition | AgentDefinition | GuardrailRuleSet,
+) -> DefinitionRevision | None:
+    revision = None
+    active_revision_id = str(getattr(item, "active_revision_id", "") or "").strip()
+    if active_revision_id:
+        try:
+            revision = _select_definition_revision(entity_type, item.id, revision_id=active_revision_id)
+        except HTTPException:
+            revision = None
+
+    if revision is None:
+        revision = _backfill_definition_published_pointer(entity_type, item)
+
+    if revision is None:
+        return None
+
+    item.active_revision_id = revision.id
+    item.active_at = str(getattr(item, "active_at", "") or "").strip() or revision.created_at
+    return revision
+
+
+def _resolve_active_published_definition(
+    entity_type: Literal["workflow_definition", "agent_definition", "guardrail_ruleset"],
+    entity_id: str,
+) -> WorkflowDefinition | AgentDefinition | GuardrailRuleSet | None:
+    current = _definition_current_store(entity_type).get(entity_id)
+    if current is None:
+        return None
+
+    revision = _backfill_definition_published_pointer(entity_type, current)
+    if revision is not None:
+        return _definition_model_from_snapshot(entity_type, revision.snapshot)
+
+    if str(getattr(current, "status", "") or "") == "published":
+        return current
+
+    return None
+
+
+def _resolve_active_runtime_definition(
+    entity_type: Literal["workflow_definition", "agent_definition", "guardrail_ruleset"],
+    entity_id: str,
+) -> WorkflowDefinition | AgentDefinition | GuardrailRuleSet | None:
+    current = _definition_current_store(entity_type).get(entity_id)
+    if current is None:
+        return None
+
+    revision = _backfill_definition_active_pointer(entity_type, current)
+    if revision is not None:
+        return _definition_model_from_snapshot(entity_type, revision.snapshot)
+
+    return _resolve_active_published_definition(entity_type, entity_id)
+
+
+def _iter_active_published_definitions(
+    entity_type: Literal["workflow_definition", "agent_definition", "guardrail_ruleset"],
+) -> list[WorkflowDefinition | AgentDefinition | GuardrailRuleSet]:
+    resolved: list[WorkflowDefinition | AgentDefinition | GuardrailRuleSet] = []
+    for entity_id in _definition_current_store(entity_type).keys():
+        published = _resolve_active_published_definition(entity_type, entity_id)
+        if published is not None:
+            resolved.append(published)
+    return resolved
+
+
+def _iter_active_runtime_definitions(
+    entity_type: Literal["workflow_definition", "agent_definition", "guardrail_ruleset"],
+) -> list[WorkflowDefinition | AgentDefinition | GuardrailRuleSet]:
+    resolved: list[WorkflowDefinition | AgentDefinition | GuardrailRuleSet] = []
+    for entity_id in _definition_current_store(entity_type).keys():
+        active = _resolve_active_runtime_definition(entity_type, entity_id)
+        if active is not None:
+            resolved.append(active)
+    return resolved
+
+
+def _resolve_published_guardrail_ruleset(ruleset_id: str) -> GuardrailRuleSet | None:
+    published = _resolve_active_published_definition("guardrail_ruleset", ruleset_id)
+    return published if isinstance(published, GuardrailRuleSet) else None
+
+
+def _resolve_active_guardrail_ruleset(ruleset_id: str) -> GuardrailRuleSet | None:
+    active = _resolve_active_runtime_definition("guardrail_ruleset", ruleset_id)
+    return active if isinstance(active, GuardrailRuleSet) else None
+
+
+def _ensure_definition_history_seeded() -> None:
+    for entity_type, definitions in (
+        ("workflow_definition", store.workflow_definitions),
+        ("agent_definition", store.agent_definitions),
+        ("guardrail_ruleset", store.guardrail_rulesets),
+    ):
+        revision_store = _definition_revision_store(entity_type)
+        for entity_id, item in definitions.items():
+            if entity_id in revision_store and revision_store[entity_id]:
+                continue
+            _record_definition_revision(
+                entity_type=entity_type,  # type: ignore[arg-type]
+                entity_id=entity_id,
+                actor="system/bootstrap",
+                action="bootstrap",
+                snapshot=item,
+                metadata={"seeded": True},
+            )
+        for item in definitions.values():
+            _backfill_definition_published_pointer(entity_type, item)  # type: ignore[arg-type]
+            _backfill_definition_active_pointer(entity_type, item)  # type: ignore[arg-type]
+
+
+def _activate_definition_revision(
+    entity_type: Literal["workflow_definition", "agent_definition", "guardrail_ruleset"],
+    entity_id: str,
+    *,
+    actor: str,
+    target_revision: DefinitionRevision,
+) -> tuple[WorkflowDefinition | AgentDefinition | GuardrailRuleSet, DefinitionRevision]:
+    if target_revision.status != "published":
+        raise HTTPException(status_code=400, detail="Only published revisions can be activated for runtime use")
+
+    current_store = _definition_current_store(entity_type)
+    current = current_store.get(entity_id)
+    if current is None:
+        raise HTTPException(status_code=404, detail="definition not found")
+
+    current.active_revision_id = target_revision.id
+    current.active_at = _now_iso()
+    current_store[entity_id] = current
+    activation_revision = _record_definition_revision(
+        entity_type=entity_type,
+        entity_id=entity_id,
+        actor=actor,
+        action="activate",
+        snapshot=current,
+        metadata={
+            "target_revision_id": target_revision.id,
+            "target_revision": target_revision.revision,
+            "target_version": target_revision.version,
+            "target_action": target_revision.action,
+        },
+    )
+    return current, activation_revision
 
 
 def _collab_session_key(entity_type: str, entity_id: str) -> str:
@@ -6002,6 +6277,18 @@ def _serialize_store_state() -> dict[str, Any]:
         "workflow_definitions": [item.model_dump() for item in store.workflow_definitions.values()],
         "agent_definitions": [item.model_dump() for item in store.agent_definitions.values()],
         "guardrail_rulesets": [item.model_dump() for item in store.guardrail_rulesets.values()],
+        "workflow_definition_revisions": {
+            entity_id: [revision.model_dump() for revision in revisions]
+            for entity_id, revisions in store.workflow_definition_revisions.items()
+        },
+        "agent_definition_revisions": {
+            entity_id: [revision.model_dump() for revision in revisions]
+            for entity_id, revisions in store.agent_definition_revisions.items()
+        },
+        "guardrail_ruleset_revisions": {
+            entity_id: [revision.model_dump() for revision in revisions]
+            for entity_id, revisions in store.guardrail_ruleset_revisions.items()
+        },
         "runs": [item.model_dump() for item in store.runs.values()],
         "run_events": {run_id: [event.model_dump() for event in events] for run_id, events in store.run_events.items()},
         "run_details": store.run_details,
@@ -6032,6 +6319,21 @@ def _apply_store_state(payload: dict[str, Any]) -> None:
             except Exception:  # noqa: BLE001
                 continue
 
+    workflow_revisions_payload = payload.get("workflow_definition_revisions")
+    if isinstance(workflow_revisions_payload, dict):
+        store.workflow_definition_revisions = {}
+        for entity_id, revisions in workflow_revisions_payload.items():
+            if not isinstance(revisions, list):
+                continue
+            hydrated: list[DefinitionRevision] = []
+            for revision in revisions:
+                try:
+                    hydrated.append(DefinitionRevision.model_validate(revision))
+                except Exception:  # noqa: BLE001
+                    continue
+            if hydrated:
+                store.workflow_definition_revisions[str(entity_id)] = hydrated
+
     agent_defs = payload.get("agent_definitions")
     if isinstance(agent_defs, list):
         store.agent_definitions = {}
@@ -6058,6 +6360,21 @@ def _apply_store_state(payload: dict[str, Any]) -> None:
             except Exception:  # noqa: BLE001
                 continue
 
+    agent_revisions_payload = payload.get("agent_definition_revisions")
+    if isinstance(agent_revisions_payload, dict):
+        store.agent_definition_revisions = {}
+        for entity_id, revisions in agent_revisions_payload.items():
+            if not isinstance(revisions, list):
+                continue
+            hydrated = []
+            for revision in revisions:
+                try:
+                    hydrated.append(DefinitionRevision.model_validate(revision))
+                except Exception:  # noqa: BLE001
+                    continue
+            if hydrated:
+                store.agent_definition_revisions[str(entity_id)] = hydrated
+
     guardrail_defs = payload.get("guardrail_rulesets")
     if isinstance(guardrail_defs, list):
         store.guardrail_rulesets = {}
@@ -6067,6 +6384,21 @@ def _apply_store_state(payload: dict[str, Any]) -> None:
                 store.guardrail_rulesets[model.id] = model
             except Exception:  # noqa: BLE001
                 continue
+
+    guardrail_revisions_payload = payload.get("guardrail_ruleset_revisions")
+    if isinstance(guardrail_revisions_payload, dict):
+        store.guardrail_ruleset_revisions = {}
+        for entity_id, revisions in guardrail_revisions_payload.items():
+            if not isinstance(revisions, list):
+                continue
+            hydrated = []
+            for revision in revisions:
+                try:
+                    hydrated.append(DefinitionRevision.model_validate(revision))
+                except Exception:  # noqa: BLE001
+                    continue
+            if hydrated:
+                store.guardrail_ruleset_revisions[str(entity_id)] = hydrated
 
     runs_payload = payload.get("runs")
     if isinstance(runs_payload, list):
@@ -6257,6 +6589,7 @@ def _startup_initialize_state() -> None:
         _sync_repo_agents_into_store(update_existing=sync_repo_updates_existing)
 
     _canonicalize_all_agent_definitions()
+    _ensure_definition_history_seeded()
 
     _persist_store_state()
 
@@ -7247,7 +7580,9 @@ def get_local_integration_readiness() -> dict[str, Any]:
 
 
 @app.get("/platform/settings")
-def get_platform_settings() -> dict[str, Any]:
+def get_platform_settings(request: Request) -> dict[str, Any]:
+    actor = _enforce_request_authn(request, action="platform.settings.read")
+    _append_audit_event("platform.settings.read", actor, "allowed")
     return store.platform_settings.model_dump()
 
 
@@ -7315,10 +7650,12 @@ def save_platform_settings(request: Request, payload: dict[str, Any] = Body(defa
 @app.get("/memory/{session_id}")
 def get_memory(
     session_id: str,
+    request: Request,
     include_long_term: bool = True,
     scope: str = "session",
     query: str | None = None,
 ) -> dict[str, Any]:
+    actor = _enforce_request_authn(request, action="memory.read")
     short_term_entries = _memory_get_short_term_entries(session_id, limit=100)
     long_term_entries = (
         _memory_load_long_term_entries(
@@ -7333,7 +7670,7 @@ def get_memory(
     if include_long_term:
         _memory_seed_short_term(session_id, long_term_entries)
     entries = _merge_memory_entries(short_term_entries, long_term_entries, limit=100)
-    return {
+    response = {
         "session_id": session_id,
         "count": len(entries),
         "short_term_count": len(short_term_entries),
@@ -7342,11 +7679,21 @@ def get_memory(
         "short_term_entries": short_term_entries,
         "long_term_entries": long_term_entries,
     }
+    _append_audit_event(
+        "memory.read",
+        actor,
+        "allowed",
+        {"session_id": session_id, "scope": scope, "include_long_term": include_long_term},
+    )
+    return response
 
 
 @app.delete("/memory/{session_id}")
-def clear_memory(session_id: str, scope: str = "session") -> dict[str, Any]:
+def clear_memory(session_id: str, request: Request, scope: str = "session") -> dict[str, Any]:
+    actor = _enforce_request_authn(request, action="memory.clear")
+    _enforce_emergency_write_policy("memory.clear", actor)
     _memory_clear_entries(session_id, memory_scope=scope)
+    _append_audit_event("memory.clear", actor, "allowed", {"session_id": session_id, "scope": scope})
     _persist_store_state()
     return {"ok": True, "session_id": session_id}
 
@@ -7385,7 +7732,20 @@ def run_memory_world_graph_projection(request: Request, payload: dict[str, Any] 
 
 @app.get("/workflows/published")
 def get_published_workflows() -> list[dict[str, Any]]:
-    return [item.model_dump(exclude={"graph_json"}) for item in store.workflow_definitions.values() if item.status == "published"]
+    return [
+        item.model_dump(exclude={"graph_json"})
+        for item in _iter_active_published_definitions("workflow_definition")
+        if isinstance(item, WorkflowDefinition)
+    ]
+
+
+@app.get("/workflows/active")
+def get_active_workflows() -> list[dict[str, Any]]:
+    return [
+        item.model_dump(exclude={"graph_json"})
+        for item in _iter_active_runtime_definitions("workflow_definition")
+        if isinstance(item, WorkflowDefinition)
+    ]
 
 
 @app.post("/workflow-runs")
@@ -7419,8 +7779,8 @@ def create_workflow_run(request: Request, payload: dict[str, Any] = Body(default
     ]
 
     published_agent_keys: set[str] = set()
-    for agent in store.agent_definitions.values():
-        if agent.status != "published":
+    for agent in _iter_active_runtime_definitions("agent_definition"):
+        if not isinstance(agent, AgentDefinition):
             continue
         published_agent_keys.add(agent.id.lower())
         if _slugify(agent.name):
@@ -7432,8 +7792,8 @@ def create_workflow_run(request: Request, payload: dict[str, Any] = Body(default
                 published_agent_keys.add(_slugify(source_agent_id))
 
     published_workflow_keys: set[str] = set()
-    for workflow in store.workflow_definitions.values():
-        if workflow.status != "published":
+    for workflow in _iter_active_runtime_definitions("workflow_definition"):
+        if not isinstance(workflow, WorkflowDefinition):
             continue
         published_workflow_keys.add(workflow.id.lower())
         if _slugify(workflow.name):
@@ -8074,10 +8434,13 @@ def get_workflow_run_events(run_id: str) -> list[dict[str, Any]]:
 
 
 @app.post("/workflow-runs/{run_id}/archive")
-def archive_workflow_run(run_id: str) -> dict[str, bool]:
+def archive_workflow_run(run_id: str, request: Request) -> dict[str, bool]:
+    actor = _enforce_request_authn(request, action="workflow.run.archive")
+    _enforce_emergency_write_policy("workflow.run.archive", actor)
     run = store.runs.get(run_id)
     if not run:
         raise HTTPException(status_code=404, detail="run not found")
+    previous_status = run.status
 
     run.status = "Done"
     run.progressLabel = "Archived"
@@ -8106,13 +8469,27 @@ def archive_workflow_run(run_id: str) -> dict[str, bool]:
         )
     )
 
+    _append_audit_event(
+        "workflow.run.archive",
+        actor,
+        "allowed",
+        {"run_id": run_id, "before_status": previous_status, "after_status": "Done"},
+    )
     _persist_store_state()
 
     return {"ok": True}
 
 
 @app.post("/artifacts/{artifact_id}/versions")
-def create_artifact_version(artifact_id: str, _payload: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
+def create_artifact_version(artifact_id: str, request: Request, _payload: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
+    actor = _enforce_request_authn(request, payload=_payload, action="artifact.version.create")
+    _enforce_emergency_write_policy("artifact.version.create", actor)
+    _append_audit_event(
+        "artifact.version.create",
+        actor,
+        "allowed",
+        {"artifact_id": artifact_id},
+    )
     return {"ok": True, "artifactId": artifact_id}
 
 
@@ -8156,9 +8533,12 @@ def get_integrations() -> list[dict[str, Any]]:
 
 
 @app.post("/integrations")
-def save_integration(payload: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
+def save_integration(request: Request, payload: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
+    actor = _enforce_request_authn(request, payload=payload, action="integration.save")
+    _enforce_emergency_write_policy("integration.save", actor)
     integration_id = str(payload.get("id") or uuid4())
     existing = store.integrations.get(integration_id)
+    previous_state = existing.model_dump() if existing else None
 
     integration_type = str(payload.get("type") or (existing.type if existing else "custom"))
     if integration_type not in {"http", "database", "queue", "vector", "custom"}:
@@ -8197,13 +8577,15 @@ def save_integration(payload: dict[str, Any] = Body(default_factory=dict)) -> di
 
     signature_verified_raw = payload.get("signature_verified") if "signature_verified" in payload else (existing.signature_verified if existing else False)
     approved_for_marketplace_raw = payload.get("approved_for_marketplace") if "approved_for_marketplace" in payload else (existing.approved_for_marketplace if existing else False)
+    integration_name = str(payload.get("name") or (existing.name if existing else "Untitled Integration"))
+    integration_base_url = str(payload.get("base_url") or (existing.base_url if existing else ""))
 
     integration = IntegrationDefinition(
         id=integration_id,
-        name=str(payload.get("name") or existing.name if existing else "Untitled Integration"),
+        name=integration_name,
         type=integration_type,
         status=integration_status,
-        base_url=str(payload.get("base_url") or existing.base_url if existing else ""),
+        base_url=integration_base_url,
         auth_type=auth_type,
         secret_ref=_normalize_secret_ref(str(raw_secret_ref), auth_type),
         metadata_json=metadata_json,
@@ -8231,12 +8613,27 @@ def save_integration(payload: dict[str, Any] = Body(default_factory=dict)) -> di
     integration.metadata_json = metadata_json
 
     store.integrations[integration_id] = integration
+    _append_config_mutation_audit(
+        "integration.save",
+        actor,
+        entity_type="integration",
+        entity_id=integration_id,
+        before=previous_state,
+        after={
+            "status": integration.status,
+            "type": integration.type,
+            "name": integration.name,
+        },
+        extra={"policy_ok": bool(policy.get("ok", True))},
+    )
     _persist_store_state()
     return {"ok": True, "id": integration_id, "policy": policy}
 
 
 @app.post("/integrations/{integration_id}/test")
-def test_integration(integration_id: str) -> dict[str, Any]:
+def test_integration(integration_id: str, request: Request) -> dict[str, Any]:
+    actor = _enforce_request_authn(request, action="integration.test")
+    _enforce_emergency_write_policy("integration.test", actor)
     integration = store.integrations.get(integration_id)
     if not integration:
         raise HTTPException(status_code=404, detail="integration not found")
@@ -8266,6 +8663,12 @@ def test_integration(integration_id: str) -> dict[str, Any]:
 
     integration.status = "configured" if is_valid else "error"
     store.integrations[integration_id] = integration
+    _append_audit_event(
+        "integration.test",
+        actor,
+        "allowed",
+        {"integration_id": integration_id, "ok": is_valid, "status": integration.status},
+    )
     _persist_store_state()
     return {
         "ok": is_valid,
@@ -8288,8 +8691,18 @@ def evaluate_integration_policy(integration_id: str) -> dict[str, Any]:
 
 
 @app.delete("/integrations/{integration_id}")
-def delete_integration(integration_id: str) -> dict[str, bool]:
-    store.integrations.pop(integration_id, None)
+def delete_integration(integration_id: str, request: Request) -> dict[str, bool]:
+    actor = _enforce_request_authn(request, action="integration.delete")
+    _enforce_emergency_write_policy("integration.delete", actor)
+    deleted = store.integrations.pop(integration_id, None)
+    _append_config_mutation_audit(
+        "integration.delete",
+        actor,
+        entity_type="integration",
+        entity_id=integration_id,
+        before=deleted.model_dump() if deleted else None,
+        after={"deleted": deleted is not None},
+    )
     _persist_store_state()
     return {"ok": True}
 
@@ -8305,7 +8718,9 @@ def get_template_catalog() -> list[dict[str, Any]]:
 
 
 @app.post("/templates/agents/{template_id}/instantiate")
-def instantiate_agent_template(template_id: str, payload: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
+def instantiate_agent_template(template_id: str, request: Request, payload: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
+    actor = _enforce_request_authn(request, payload=payload, action="template.agent.instantiate")
+    _enforce_emergency_write_policy("template.agent.instantiate", actor)
     template = store.agent_templates.get(template_id)
     if not template:
         raise HTTPException(status_code=404, detail="agent template not found")
@@ -8325,12 +8740,29 @@ def instantiate_agent_template(template_id: str, payload: dict[str, Any] = Body(
         type="graph",
         config_json=config_json,
     )
+    _record_definition_revision(
+        entity_type="agent_definition",
+        entity_id=new_agent_id,
+        actor=actor,
+        action="instantiate",
+        snapshot=store.agent_definitions[new_agent_id],
+        metadata={"template_id": template_id},
+    )
+    _append_config_mutation_audit(
+        "template.agent.instantiate",
+        actor,
+        entity_type="agent_definition",
+        entity_id=new_agent_id,
+        after={"status": "draft", "name": agent_name, "template_id": template_id},
+    )
     _persist_store_state()
     return {"ok": True, "id": new_agent_id}
 
 
 @app.post("/templates/workflows/{workflow_id}/instantiate")
-def instantiate_workflow_template(workflow_id: str, payload: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
+def instantiate_workflow_template(workflow_id: str, request: Request, payload: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
+    actor = _enforce_request_authn(request, payload=payload, action="template.workflow.instantiate")
+    _enforce_emergency_write_policy("template.workflow.instantiate", actor)
     workflow = store.workflow_definitions.get(workflow_id)
     if not workflow:
         raise HTTPException(status_code=404, detail="workflow template not found")
@@ -8342,10 +8774,11 @@ def instantiate_workflow_template(workflow_id: str, payload: dict[str, Any] = Bo
     workflow_name = str(payload.get("name") or f"{workflow.name} Instance")
     workflow_description = str(payload.get("description") or workflow.description)
 
-    graph_json = dict(workflow.graph_json)
+    graph_json = _normalize_graph_json_payload(dict(workflow.graph_json))
     override_graph = payload.get("graph_json") if isinstance(payload.get("graph_json"), dict) else {}
     if override_graph:
         graph_json.update(override_graph)
+    graph_json = _ensure_supported_graph_json(graph_json, context_label="Workflow template instantiation")
 
     store.workflow_definitions[new_workflow_id] = WorkflowDefinition(
         id=new_workflow_id,
@@ -8355,6 +8788,21 @@ def instantiate_workflow_template(workflow_id: str, payload: dict[str, Any] = Bo
         status="draft",
         graph_json=graph_json,
         security_config=dict(workflow.security_config),
+    )
+    _record_definition_revision(
+        entity_type="workflow_definition",
+        entity_id=new_workflow_id,
+        actor=actor,
+        action="instantiate",
+        snapshot=store.workflow_definitions[new_workflow_id],
+        metadata={"template_id": workflow_id},
+    )
+    _append_config_mutation_audit(
+        "template.workflow.instantiate",
+        actor,
+        entity_type="workflow_definition",
+        entity_id=new_workflow_id,
+        after={"status": "draft", "name": workflow_name, "template_id": workflow_id},
     )
     _persist_store_state()
     return {"ok": True, "id": new_workflow_id}
@@ -8374,7 +8822,9 @@ def get_playbook(playbook_id: str) -> dict[str, Any]:
 
 
 @app.post("/playbooks/{playbook_id}/instantiate")
-def instantiate_playbook(playbook_id: str, payload: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
+def instantiate_playbook(playbook_id: str, request: Request, payload: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
+    actor = _enforce_request_authn(request, payload=payload, action="playbook.instantiate")
+    _enforce_emergency_write_policy("playbook.instantiate", actor)
     playbook = store.playbooks.get(playbook_id)
     if not playbook:
         raise HTTPException(status_code=404, detail="playbook not found")
@@ -8383,10 +8833,11 @@ def instantiate_playbook(playbook_id: str, payload: dict[str, Any] = Body(defaul
     workflow_name = str(payload.get("name") or f"{playbook.name} Workflow")
     workflow_description = str(payload.get("description") or playbook.description)
 
-    graph_json = dict(playbook.graph_json)
+    graph_json = _normalize_graph_json_payload(dict(playbook.graph_json))
     override_graph = payload.get("graph_json") if isinstance(payload.get("graph_json"), dict) else {}
     if override_graph:
         graph_json.update(override_graph)
+    graph_json = _ensure_supported_graph_json(graph_json, context_label="Playbook instantiation")
 
     store.workflow_definitions[workflow_id] = WorkflowDefinition(
         id=workflow_id,
@@ -8395,6 +8846,21 @@ def instantiate_playbook(playbook_id: str, payload: dict[str, Any] = Body(defaul
         version=1,
         status="draft",
         graph_json=graph_json,
+    )
+    _record_definition_revision(
+        entity_type="workflow_definition",
+        entity_id=workflow_id,
+        actor=actor,
+        action="instantiate",
+        snapshot=store.workflow_definitions[workflow_id],
+        metadata={"playbook_id": playbook_id},
+    )
+    _append_config_mutation_audit(
+        "playbook.instantiate",
+        actor,
+        entity_type="workflow_definition",
+        entity_id=workflow_id,
+        after={"status": "draft", "name": workflow_name, "playbook_id": playbook_id},
     )
     _persist_store_state()
     return {"ok": True, "id": workflow_id}
@@ -8433,12 +8899,15 @@ def get_observability_dashboard(limit: int = 20) -> dict[str, Any]:
 
 
 @app.get("/audit/events")
-def get_audit_events(limit: int = 200) -> dict[str, Any]:
+def get_audit_events(request: Request, limit: int = 200) -> dict[str, Any]:
+    actor = _enforce_request_authn(request, action="audit.events.read")
     bounded_limit = max(1, min(1000, int(limit)))
-    return {
+    response = {
         "count": min(len(store.audit_events), bounded_limit),
         "events": [item.model_dump() for item in store.audit_events[:bounded_limit]],
     }
+    _append_audit_event("audit.events.read", actor, "allowed", {"limit": bounded_limit})
+    return response
 
 
 @app.get("/audit/atf-alignment-report")
@@ -8447,10 +8916,17 @@ def get_atf_alignment_report() -> dict[str, Any]:
 
 
 @app.post("/collab/sessions/join")
-def join_collaboration_session(payload: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
+def join_collaboration_session(request: Request, payload: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
+    actor = _enforce_request_authn(request, payload=payload, action="collab.session.join")
+    _enforce_emergency_write_policy("collab.session.join", actor)
     entity_type = str(payload.get("entity_type") or "").strip()
     entity_id = str(payload.get("entity_id") or "").strip()
-    user_id = str(payload.get("user_id") or "anonymous").strip()
+    user_id = _resolve_authenticated_payload_identity(
+        actor,
+        payload=payload,
+        action="collab.session.join",
+        field_names=("user_id",),
+    )
     display_name = str(payload.get("display_name") or user_id or "anonymous").strip()
     requested_role = str(payload.get("role") or "editor").strip()
 
@@ -8486,6 +8962,12 @@ def join_collaboration_session(payload: dict[str, Any] = Body(default_factory=di
     session.participants = _upsert_collaboration_participant(session.participants, user_id, display_name, effective_role)
     session.updated_at = _now_iso()
     store.collaboration_sessions[session_id] = session
+    _append_audit_event(
+        "collab.session.join",
+        actor,
+        "allowed",
+        {"session_id": session_id, "entity_type": entity_type, "entity_id": entity_id, "participant_user_id": user_id, "role": effective_role},
+    )
     _persist_store_state()
 
     return {
@@ -8500,22 +8982,29 @@ def join_collaboration_session(payload: dict[str, Any] = Body(default_factory=di
 
 
 @app.get("/collab/sessions/{session_id}")
-def get_collaboration_session(session_id: str) -> dict[str, Any]:
+def get_collaboration_session(session_id: str, request: Request) -> dict[str, Any]:
+    actor = _enforce_request_authn(request, action="collab.session.read")
     session = store.collaboration_sessions.get(session_id)
     if not session:
         raise HTTPException(status_code=404, detail="collaboration session not found")
+    _append_audit_event("collab.session.read", actor, "allowed", {"session_id": session_id})
     return session.model_dump()
 
 
 @app.post("/collab/sessions/{session_id}/sync")
-def sync_collaboration_session(session_id: str, payload: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
+def sync_collaboration_session(session_id: str, request: Request, payload: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
+    actor = _enforce_request_authn(request, payload=payload, action="collab.session.sync")
+    _enforce_emergency_write_policy("collab.session.sync", actor)
     session = store.collaboration_sessions.get(session_id)
     if not session:
         raise HTTPException(status_code=404, detail="collaboration session not found")
 
-    user_id = str(payload.get("user_id") or "").strip()
-    if not user_id:
-        raise HTTPException(status_code=400, detail="user_id is required")
+    user_id = _resolve_authenticated_payload_identity(
+        actor,
+        payload=payload,
+        action="collab.session.sync",
+        field_names=("user_id",),
+    )
 
     participant = next((item for item in session.participants if item.user_id == user_id), None)
     if not participant:
@@ -8545,12 +9034,18 @@ def sync_collaboration_session(session_id: str, payload: dict[str, Any] = Body(d
             "updated_at": session.updated_at,
         }
 
-    session.graph_json = incoming_graph
+    session.graph_json = _ensure_supported_graph_json(incoming_graph, context_label="Collaboration session graph")
     session.version += 1
     session.updated_at = _now_iso()
     session.participants = _upsert_collaboration_participant(session.participants, participant.user_id, participant.display_name, participant.role)
 
     store.collaboration_sessions[session_id] = session
+    _append_audit_event(
+        "collab.session.sync",
+        actor,
+        "allowed",
+        {"session_id": session_id, "user_id": user_id, "version": session.version, "force": force},
+    )
     _persist_store_state()
     return {
         "ok": True,
@@ -8561,16 +9056,23 @@ def sync_collaboration_session(session_id: str, payload: dict[str, Any] = Body(d
 
 
 @app.post("/collab/sessions/{session_id}/permissions")
-def update_collaboration_permissions(session_id: str, payload: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
+def update_collaboration_permissions(session_id: str, request: Request, payload: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
+    actor_user = _enforce_request_authn(request, payload=payload, action="collab.session.permissions.update")
+    _enforce_emergency_write_policy("collab.session.permissions.update", actor_user)
     session = store.collaboration_sessions.get(session_id)
     if not session:
         raise HTTPException(status_code=404, detail="collaboration session not found")
 
-    actor_user_id = str(payload.get("actor_user_id") or "").strip()
+    actor_user_id = _resolve_authenticated_payload_identity(
+        actor_user,
+        payload=payload,
+        action="collab.session.permissions.update",
+        field_names=("actor_user_id",),
+    )
     target_user_id = str(payload.get("target_user_id") or "").strip()
     next_role = str(payload.get("role") or "").strip()
-    if not actor_user_id or not target_user_id:
-        raise HTTPException(status_code=400, detail="actor_user_id and target_user_id are required")
+    if not target_user_id:
+        raise HTTPException(status_code=400, detail="target_user_id is required")
     if next_role not in {"owner", "editor", "viewer"}:
         raise HTTPException(status_code=400, detail="role must be owner/editor/viewer")
 
@@ -8602,8 +9104,45 @@ def update_collaboration_permissions(session_id: str, payload: dict[str, Any] = 
     session.participants = updated
     session.updated_at = _now_iso()
     store.collaboration_sessions[session_id] = session
+    _append_audit_event(
+        "collab.session.permissions.update",
+        actor_user,
+        "allowed",
+        {"session_id": session_id, "target_user_id": target_user_id, "role": next_role},
+    )
     _persist_store_state()
     return {"ok": True, "session": session.model_dump()}
+
+
+_GENERATED_ARTIFACT_SERVICE = GeneratedArtifactService(
+    store=store,
+    artifact_factory=GeneratedCodeArtifact,
+    now_iso=_now_iso,
+    python_literal=_python_literal,
+    safe_python_identifier=lambda value: _safe_python_identifier(value, prefix="node"),
+    artifact_slug=_artifact_slug,
+    hydrate_graph_for_codegen=_hydrate_graph_for_codegen,
+    node_blueprints_for_codegen=_node_blueprints_for_codegen,
+    resolve_effective_security_policy=_resolve_effective_security_policy,
+    workflow_runtime_policy_snapshot=_workflow_runtime_policy_snapshot,
+    agent_runtime_policy_snapshot=_agent_runtime_policy_snapshot,
+)
+
+
+def _build_generated_artifacts_for_workflow(item: WorkflowDefinition, *, version: int) -> list[GeneratedCodeArtifact]:
+    return _GENERATED_ARTIFACT_SERVICE.build_generated_artifacts_for_workflow(item, version=version)
+
+
+def _build_generated_artifacts_for_agent(item: AgentDefinition, *, version: int) -> list[GeneratedCodeArtifact]:
+    return _GENERATED_ARTIFACT_SERVICE.build_generated_artifacts_for_agent(item, version=version)
+
+
+def _iter_generated_artifacts() -> list[GeneratedCodeArtifact]:
+    return _GENERATED_ARTIFACT_SERVICE.iter_generated_artifacts()
+
+
+def _find_generated_artifact(artifact_id: str) -> GeneratedCodeArtifact | None:
+    return _GENERATED_ARTIFACT_SERVICE.find_generated_artifact(artifact_id)
 
 
 @app.get("/artifacts")
@@ -8719,6 +9258,23 @@ def get_workflow_definition(item_id: str) -> dict[str, Any]:
     return item.model_dump()
 
 
+@app.get("/workflow-definitions/{item_id}/versions")
+def get_workflow_definition_versions(item_id: str) -> dict[str, Any]:
+    if item_id not in store.workflow_definitions and item_id not in store.workflow_definition_revisions:
+        raise HTTPException(status_code=404, detail="workflow definition not found")
+    versions = [
+        _definition_revision_summary(revision)
+        for revision in reversed(_definition_revision_history("workflow_definition", item_id))
+    ]
+    return {"count": len(versions), "versions": versions}
+
+
+@app.get("/workflow-definitions/{item_id}/versions/{revision_id}")
+def get_workflow_definition_version(item_id: str, revision_id: str) -> dict[str, Any]:
+    revision = _select_definition_revision("workflow_definition", item_id, revision_id=revision_id)
+    return revision.model_dump()
+
+
 @app.get("/workflow-definitions/{item_id}/security-policy")
 def get_workflow_security_policy(item_id: str) -> dict[str, Any]:
     item = store.workflow_definitions.get(item_id)
@@ -8730,42 +9286,84 @@ def get_workflow_security_policy(item_id: str) -> dict[str, Any]:
     )
 
 
+@app.get("/workflows/{item_id}/security-policy")
+def get_workflow_security_policy_legacy_alias(item_id: str) -> dict[str, Any]:
+    return get_workflow_security_policy(item_id)
+
+
 @app.post("/workflow-definitions")
-def save_workflow_definition(payload: dict[str, Any] = Body(default_factory=dict)) -> dict[str, bool]:
+def save_workflow_definition(request: Request, payload: dict[str, Any] = Body(default_factory=dict)) -> dict[str, bool]:
+    actor = _enforce_request_authn(request, payload=payload, action="workflow.definition.save")
+    _enforce_emergency_write_policy("workflow.definition.save", actor)
     item_id = str(payload.get("id") or uuid4())
     existing = store.workflow_definitions.get(item_id)
+    previous_state = existing.model_dump() if existing else None
     security_config = _normalize_security_scope_config(
         payload.get("security_config")
         if "security_config" in payload
         else (existing.security_config if existing else {})
     )
+    workflow_name = str(payload.get("name") or (existing.name if existing else "Untitled Workflow"))
+    workflow_description = str(payload.get("description") or (existing.description if existing else ""))
     _validate_security_guardrail_reference(security_config, label="Workflow security policy")
+    normalized_graph_json = _ensure_supported_graph_json(
+        payload.get("graph_json") or payload.get("config_json", {}).get("graph_json") or {},
+        context_label="Workflow definition",
+    )
     store.workflow_definitions[item_id] = WorkflowDefinition(
         id=item_id,
-        name=str(payload.get("name") or existing.name if existing else "Untitled Workflow"),
-        description=str(payload.get("description") or existing.description if existing else ""),
+        name=workflow_name,
+        description=workflow_description,
         version=(existing.version if existing else 0) + 1,
-        status=existing.status if existing else "draft",
-        graph_json=dict(payload.get("graph_json") or payload.get("config_json", {}).get("graph_json") or {}),
+        status="draft" if existing and (existing.status == "published" or existing.published_revision_id) else (existing.status if existing else "draft"),
+        published_revision_id=existing.published_revision_id if existing else None,
+        published_at=existing.published_at if existing else None,
+        active_revision_id=existing.active_revision_id if existing else None,
+        active_at=existing.active_at if existing else None,
+        graph_json=normalized_graph_json,
         security_config=security_config,
+    )
+    saved_item = store.workflow_definitions[item_id]
+    _record_definition_revision(
+        entity_type="workflow_definition",
+        entity_id=item_id,
+        actor=actor,
+        action="save",
+        snapshot=saved_item,
+        metadata={"previous_version": previous_state.get("version") if isinstance(previous_state, dict) else None},
+    )
+    _append_config_mutation_audit(
+        "workflow.definition.save",
+        actor,
+        entity_type="workflow_definition",
+        entity_id=item_id,
+        before=previous_state,
+        after={
+            "version": saved_item.version,
+            "status": saved_item.status,
+            "name": saved_item.name,
+        },
     )
     _persist_store_state()
     return {"ok": True}
 
 
 @app.post("/workflow-definitions/{item_id}/publish")
-def publish_workflow_definition(item_id: str) -> dict[str, Any]:
+def publish_workflow_definition(item_id: str, request: Request) -> dict[str, Any]:
+    actor = _enforce_request_authn(request, action="workflow.definition.publish")
+    _enforce_emergency_write_policy("workflow.definition.publish", actor)
     item = store.workflow_definitions.get(item_id)
     if not item:
         raise HTTPException(status_code=404, detail="workflow definition not found")
+    previous_state = item.model_dump()
 
-    graph_json = item.graph_json if isinstance(item.graph_json, dict) else {}
+    graph_json = _ensure_supported_graph_json(
+        item.graph_json if isinstance(item.graph_json, dict) else {},
+        context_label="Workflow definition",
+    )
     if graph_json.get("nodes") or graph_json.get("links"):
         try:
-            payload = GraphPayload(
-                nodes=graph_json.get("nodes") or [],
-                links=graph_json.get("links") or [],
-            )
+            payload = _graph_payload_from_json(graph_json)
         except Exception as exc:  # noqa: BLE001
             raise HTTPException(status_code=400, detail={"message": "Invalid workflow graph payload", "reason": str(exc)})
         validation = _validate_graph(payload)
@@ -8782,29 +9380,194 @@ def publish_workflow_definition(item_id: str) -> dict[str, Any]:
     item.status = "published"
     item.version = next_version
     item.generated_artifacts = generated_artifacts
+    item.published_at = _now_iso()
     store.workflow_definitions[item_id] = item
     _upsert_generated_artifact_summaries(generated_artifacts)
+    published_revision = _record_definition_revision(
+        entity_type="workflow_definition",
+        entity_id=item_id,
+        actor=actor,
+        action="publish",
+        snapshot=item,
+        metadata={"generated_artifact_count": len(generated_artifacts)},
+    )
+    item.published_revision_id = published_revision.id
+    item.published_at = published_revision.created_at
+    if not str(item.active_revision_id or "").strip():
+        item.active_revision_id = published_revision.id
+        item.active_at = published_revision.created_at
+    published_revision.metadata["published_pointer"] = True
+    published_revision.snapshot = item.model_dump()
+    store.workflow_definitions[item_id] = item
+    _append_config_mutation_audit(
+        "workflow.definition.publish",
+        actor,
+        entity_type="workflow_definition",
+        entity_id=item_id,
+        before={
+            "version": previous_state.get("version"),
+            "status": previous_state.get("status"),
+        },
+        after={
+            "version": item.version,
+            "status": item.status,
+            "generated_artifact_count": len(generated_artifacts),
+        },
+    )
     _persist_store_state()
     return {"ok": True, "generated_artifacts": [artifact.model_dump() for artifact in generated_artifacts]}
 
 
 @app.post("/workflow-definitions/{item_id}/archive")
-def archive_workflow_definition(item_id: str) -> dict[str, bool]:
+def archive_workflow_definition(item_id: str, request: Request) -> dict[str, bool]:
+    actor = _enforce_request_authn(request, action="workflow.definition.archive")
+    _enforce_emergency_write_policy("workflow.definition.archive", actor)
     item = store.workflow_definitions.get(item_id)
     if not item:
         raise HTTPException(status_code=404, detail="workflow definition not found")
+    previous_state = item.model_dump()
     item.status = "archived"
     item.version += 1
+    item.published_revision_id = None
+    item.published_at = None
+    item.active_revision_id = None
+    item.active_at = None
     store.workflow_definitions[item_id] = item
+    _record_definition_revision(
+        entity_type="workflow_definition",
+        entity_id=item_id,
+        actor=actor,
+        action="archive",
+        snapshot=item,
+    )
+    _append_config_mutation_audit(
+        "workflow.definition.archive",
+        actor,
+        entity_type="workflow_definition",
+        entity_id=item_id,
+        before={
+            "version": previous_state.get("version"),
+            "status": previous_state.get("status"),
+        },
+        after={
+            "version": item.version,
+            "status": item.status,
+        },
+    )
     _persist_store_state()
     return {"ok": True}
 
 
 @app.delete("/workflow-definitions/{item_id}")
-def delete_workflow_definition(item_id: str) -> dict[str, bool]:
-    store.workflow_definitions.pop(item_id, None)
+def delete_workflow_definition(item_id: str, request: Request) -> dict[str, bool]:
+    actor = _enforce_request_authn(request, action="workflow.definition.delete")
+    _enforce_emergency_write_policy("workflow.definition.delete", actor)
+    deleted = store.workflow_definitions.pop(item_id, None)
+    if deleted is not None:
+        _record_definition_revision(
+            entity_type="workflow_definition",
+            entity_id=item_id,
+            actor=actor,
+            action="delete",
+            snapshot=deleted,
+            metadata={"deleted": True},
+        )
+    _append_config_mutation_audit(
+        "workflow.definition.delete",
+        actor,
+        entity_type="workflow_definition",
+        entity_id=item_id,
+        before=deleted.model_dump() if deleted else None,
+        after={"deleted": deleted is not None},
+    )
     _persist_store_state()
     return {"ok": True}
+
+
+@app.post("/workflow-definitions/{item_id}/rollback")
+def rollback_workflow_definition(item_id: str, request: Request, payload: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
+    actor = _enforce_request_authn(request, payload=payload, action="workflow.definition.rollback")
+    _enforce_emergency_write_policy("workflow.definition.rollback", actor)
+    target_revision = _select_definition_revision(
+        "workflow_definition",
+        item_id,
+        revision_id=str(payload.get("revision_id") or "").strip() or None,
+        revision_number=_normalize_optional_positive_int(payload.get("revision")),
+        version=_normalize_optional_positive_int(payload.get("version")),
+    )
+    current = store.workflow_definitions.get(item_id)
+    restored, rollback_revision = _rollback_definition_to_revision(
+        "workflow_definition",
+        item_id,
+        actor=actor,
+        target_revision=target_revision,
+    )
+    _append_config_mutation_audit(
+        "workflow.definition.rollback",
+        actor,
+        entity_type="workflow_definition",
+        entity_id=item_id,
+        before=current.model_dump() if current else None,
+        after={
+            "version": restored.version,
+            "status": restored.status,
+            "restored_from_revision": target_revision.revision,
+            "restored_from_version": target_revision.version,
+        },
+    )
+    _persist_store_state()
+    return {
+        "ok": True,
+        "id": item_id,
+        "version": restored.version,
+        "status": restored.status,
+        "restored_from": _definition_revision_summary(target_revision),
+        "revision": _definition_revision_summary(rollback_revision),
+    }
+
+
+@app.post("/workflow-definitions/{item_id}/activate")
+def activate_workflow_definition(item_id: str, request: Request, payload: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
+    actor = _enforce_request_authn(request, payload=payload, action="workflow.definition.activate")
+    _enforce_emergency_write_policy("workflow.definition.activate", actor)
+    item = store.workflow_definitions.get(item_id)
+    if not item:
+        raise HTTPException(status_code=404, detail="workflow definition not found")
+    previous_state = item.model_dump()
+    target_revision = _select_definition_revision(
+        "workflow_definition",
+        item_id,
+        revision_id=str(payload.get("revision_id") or item.published_revision_id or "").strip() or None,
+        revision_number=_normalize_optional_positive_int(payload.get("revision")),
+        version=_normalize_optional_positive_int(payload.get("version")),
+    )
+    activated, activation_revision = _activate_definition_revision(
+        "workflow_definition",
+        item_id,
+        actor=actor,
+        target_revision=target_revision,
+    )
+    _append_config_mutation_audit(
+        "workflow.definition.activate",
+        actor,
+        entity_type="workflow_definition",
+        entity_id=item_id,
+        before=previous_state,
+        after={
+            "version": activated.version,
+            "status": activated.status,
+            "active_revision_id": activated.active_revision_id,
+            "active_at": activated.active_at,
+        },
+        extra={"target_revision_id": target_revision.id, "target_version": target_revision.version},
+    )
+    _persist_store_state()
+    return {
+        "ok": True,
+        "id": item_id,
+        "active_revision": _definition_revision_summary(target_revision),
+        "activation_revision": _definition_revision_summary(activation_revision),
+    }
 
 
 @app.get("/agent-definitions")
@@ -8818,6 +9581,23 @@ def get_agent_definition(item_id: str) -> dict[str, Any]:
     if not item:
         raise HTTPException(status_code=404, detail="agent definition not found")
     return item.model_dump()
+
+
+@app.get("/agent-definitions/{item_id}/versions")
+def get_agent_definition_versions(item_id: str) -> dict[str, Any]:
+    if item_id not in store.agent_definitions and item_id not in store.agent_definition_revisions:
+        raise HTTPException(status_code=404, detail="agent definition not found")
+    versions = [
+        _definition_revision_summary(revision)
+        for revision in reversed(_definition_revision_history("agent_definition", item_id))
+    ]
+    return {"count": len(versions), "versions": versions}
+
+
+@app.get("/agent-definitions/{item_id}/versions/{revision_id}")
+def get_agent_definition_version(item_id: str, revision_id: str) -> dict[str, Any]:
+    revision = _select_definition_revision("agent_definition", item_id, revision_id=revision_id)
+    return revision.model_dump()
 
 
 @app.get("/agent-definitions/{item_id}/security-policy")
@@ -8835,10 +9615,18 @@ def get_agent_security_policy(item_id: str) -> dict[str, Any]:
     )
 
 
+@app.get("/agents/{item_id}/security-policy")
+def get_agent_security_policy_legacy_alias(item_id: str) -> dict[str, Any]:
+    return get_agent_security_policy(item_id)
+
+
 @app.post("/agent-definitions")
-def save_agent_definition(payload: dict[str, Any] = Body(default_factory=dict)) -> dict[str, bool]:
+def save_agent_definition(request: Request, payload: dict[str, Any] = Body(default_factory=dict)) -> dict[str, bool]:
+    actor = _enforce_request_authn(request, payload=payload, action="agent.definition.save")
+    _enforce_emergency_write_policy("agent.definition.save", actor)
     item_id = str(payload.get("id") or uuid4())
     existing = store.agent_definitions.get(item_id)
+    previous_state = existing.model_dump() if existing else None
     incoming_config = payload.get("config_json")
     if isinstance(incoming_config, dict):
         merged_config = dict(existing.config_json) if existing and isinstance(existing.config_json, dict) else {}
@@ -8852,6 +9640,7 @@ def save_agent_definition(payload: dict[str, Any] = Body(default_factory=dict)) 
             if "security_config" in payload
             else merged_config.get("security")
         )
+    agent_name = str(payload.get("name") or (existing.name if existing else "Untitled Agent"))
     _validate_security_guardrail_reference(
         merged_config.get("security") if isinstance(merged_config.get("security"), dict) else {},
         label="Agent security policy",
@@ -8860,7 +9649,7 @@ def save_agent_definition(payload: dict[str, Any] = Body(default_factory=dict)) 
     canonical_config = _canonicalize_agent_config(
         merged_config,
         agent_id=item_id,
-        agent_name=str(payload.get("name") or existing.name if existing else "Untitled Agent"),
+        agent_name=agent_name,
         source_agent_id=str(merged_config.get("source_agent_id") or item_id),
         system_prompt=str(merged_config.get("system_prompt") or ""),
         model_defaults=merged_config.get("model_defaults") if isinstance(merged_config.get("model_defaults"), dict) else None,
@@ -8875,34 +9664,62 @@ def save_agent_definition(payload: dict[str, Any] = Body(default_factory=dict)) 
 
     store.agent_definitions[item_id] = AgentDefinition(
         id=item_id,
-        name=str(payload.get("name") or existing.name if existing else "Untitled Agent"),
+        name=agent_name,
         version=(existing.version if existing else 0) + 1,
-        status=existing.status if existing else "draft",
+        status="draft" if existing and (existing.status == "published" or existing.published_revision_id) else (existing.status if existing else "draft"),
+        published_revision_id=existing.published_revision_id if existing else None,
+        published_at=existing.published_at if existing else None,
+        active_revision_id=existing.active_revision_id if existing else None,
+        active_at=existing.active_at if existing else None,
         type="graph",
         config_json=canonical_config,
+    )
+    saved_item = store.agent_definitions[item_id]
+    _record_definition_revision(
+        entity_type="agent_definition",
+        entity_id=item_id,
+        actor=actor,
+        action="save",
+        snapshot=saved_item,
+        metadata={"previous_version": previous_state.get("version") if isinstance(previous_state, dict) else None},
+    )
+    _append_config_mutation_audit(
+        "agent.definition.save",
+        actor,
+        entity_type="agent_definition",
+        entity_id=item_id,
+        before=previous_state,
+        after={
+            "version": saved_item.version,
+            "status": saved_item.status,
+            "name": saved_item.name,
+        },
     )
     _persist_store_state()
     return {"ok": True}
 
 
 @app.post("/agent-definitions/{item_id}/publish")
-def publish_agent_definition(item_id: str) -> dict[str, Any]:
+def publish_agent_definition(item_id: str, request: Request) -> dict[str, Any]:
+    actor = _enforce_request_authn(request, action="agent.definition.publish")
+    _enforce_emergency_write_policy("agent.definition.publish", actor)
     item = store.agent_definitions.get(item_id)
     if not item:
         raise HTTPException(status_code=404, detail="agent definition not found")
+    previous_state = item.model_dump()
 
     config_json = item.config_json if isinstance(item.config_json, dict) else {}
     _validate_security_guardrail_reference(
         config_json.get("security") if isinstance(config_json.get("security"), dict) else {},
         label="Agent security policy",
     )
-    graph_json = config_json.get("graph_json") if isinstance(config_json.get("graph_json"), dict) else {}
+    graph_json = _ensure_supported_graph_json(
+        config_json.get("graph_json") if isinstance(config_json.get("graph_json"), dict) else {},
+        context_label="Agent definition",
+    )
     if graph_json.get("nodes") or graph_json.get("links"):
         try:
-            payload = GraphPayload(
-                nodes=graph_json.get("nodes") or [],
-                links=graph_json.get("links") or [],
-            )
+            payload = _graph_payload_from_json(graph_json)
         except Exception as exc:  # noqa: BLE001
             raise HTTPException(status_code=400, detail={"message": "Invalid agent graph payload", "reason": str(exc)})
         validation = _validate_graph(payload)
@@ -8917,17 +9734,154 @@ def publish_agent_definition(item_id: str) -> dict[str, Any]:
     item.status = "published"
     item.version = next_version
     item.generated_artifacts = generated_artifacts
+    item.published_at = _now_iso()
     store.agent_definitions[item_id] = item
     _upsert_generated_artifact_summaries(generated_artifacts)
+    published_revision = _record_definition_revision(
+        entity_type="agent_definition",
+        entity_id=item_id,
+        actor=actor,
+        action="publish",
+        snapshot=item,
+        metadata={"generated_artifact_count": len(generated_artifacts)},
+    )
+    item.published_revision_id = published_revision.id
+    item.published_at = published_revision.created_at
+    if not str(item.active_revision_id or "").strip():
+        item.active_revision_id = published_revision.id
+        item.active_at = published_revision.created_at
+    published_revision.metadata["published_pointer"] = True
+    published_revision.snapshot = item.model_dump()
+    store.agent_definitions[item_id] = item
+    _append_config_mutation_audit(
+        "agent.definition.publish",
+        actor,
+        entity_type="agent_definition",
+        entity_id=item_id,
+        before={
+            "version": previous_state.get("version"),
+            "status": previous_state.get("status"),
+        },
+        after={
+            "version": item.version,
+            "status": item.status,
+            "generated_artifact_count": len(generated_artifacts),
+        },
+    )
     _persist_store_state()
     return {"ok": True, "generated_artifacts": [artifact.model_dump() for artifact in generated_artifacts]}
 
 
 @app.delete("/agent-definitions/{item_id}")
-def delete_agent_definition(item_id: str) -> dict[str, bool]:
-    store.agent_definitions.pop(item_id, None)
+def delete_agent_definition(item_id: str, request: Request) -> dict[str, bool]:
+    actor = _enforce_request_authn(request, action="agent.definition.delete")
+    _enforce_emergency_write_policy("agent.definition.delete", actor)
+    deleted = store.agent_definitions.pop(item_id, None)
+    if deleted is not None:
+        _record_definition_revision(
+            entity_type="agent_definition",
+            entity_id=item_id,
+            actor=actor,
+            action="delete",
+            snapshot=deleted,
+            metadata={"deleted": True},
+        )
+    _append_config_mutation_audit(
+        "agent.definition.delete",
+        actor,
+        entity_type="agent_definition",
+        entity_id=item_id,
+        before=deleted.model_dump() if deleted else None,
+        after={"deleted": deleted is not None},
+    )
     _persist_store_state()
     return {"ok": True}
+
+
+@app.post("/agent-definitions/{item_id}/rollback")
+def rollback_agent_definition(item_id: str, request: Request, payload: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
+    actor = _enforce_request_authn(request, payload=payload, action="agent.definition.rollback")
+    _enforce_emergency_write_policy("agent.definition.rollback", actor)
+    target_revision = _select_definition_revision(
+        "agent_definition",
+        item_id,
+        revision_id=str(payload.get("revision_id") or "").strip() or None,
+        revision_number=_normalize_optional_positive_int(payload.get("revision")),
+        version=_normalize_optional_positive_int(payload.get("version")),
+    )
+    current = store.agent_definitions.get(item_id)
+    restored, rollback_revision = _rollback_definition_to_revision(
+        "agent_definition",
+        item_id,
+        actor=actor,
+        target_revision=target_revision,
+    )
+    _append_config_mutation_audit(
+        "agent.definition.rollback",
+        actor,
+        entity_type="agent_definition",
+        entity_id=item_id,
+        before=current.model_dump() if current else None,
+        after={
+            "version": restored.version,
+            "status": restored.status,
+            "restored_from_revision": target_revision.revision,
+            "restored_from_version": target_revision.version,
+        },
+    )
+    _persist_store_state()
+    return {
+        "ok": True,
+        "id": item_id,
+        "version": restored.version,
+        "status": restored.status,
+        "restored_from": _definition_revision_summary(target_revision),
+        "revision": _definition_revision_summary(rollback_revision),
+    }
+
+
+@app.post("/agent-definitions/{item_id}/activate")
+def activate_agent_definition(item_id: str, request: Request, payload: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
+    actor = _enforce_request_authn(request, payload=payload, action="agent.definition.activate")
+    _enforce_emergency_write_policy("agent.definition.activate", actor)
+    item = store.agent_definitions.get(item_id)
+    if not item:
+        raise HTTPException(status_code=404, detail="agent definition not found")
+    previous_state = item.model_dump()
+    target_revision = _select_definition_revision(
+        "agent_definition",
+        item_id,
+        revision_id=str(payload.get("revision_id") or item.published_revision_id or "").strip() or None,
+        revision_number=_normalize_optional_positive_int(payload.get("revision")),
+        version=_normalize_optional_positive_int(payload.get("version")),
+    )
+    activated, activation_revision = _activate_definition_revision(
+        "agent_definition",
+        item_id,
+        actor=actor,
+        target_revision=target_revision,
+    )
+    _append_config_mutation_audit(
+        "agent.definition.activate",
+        actor,
+        entity_type="agent_definition",
+        entity_id=item_id,
+        before=previous_state,
+        after={
+            "version": activated.version,
+            "status": activated.status,
+            "active_revision_id": activated.active_revision_id,
+            "active_at": activated.active_at,
+        },
+        extra={"target_revision_id": target_revision.id, "target_version": target_revision.version},
+    )
+    _persist_store_state()
+    return {
+        "ok": True,
+        "id": item_id,
+        "active_revision": _definition_revision_summary(target_revision),
+        "activation_revision": _definition_revision_summary(activation_revision),
+    }
 
 
 @app.get("/node-definitions")
@@ -8957,9 +9911,12 @@ def get_guardrail_rulesets() -> list[dict[str, Any]]:
 
 
 @app.post("/guardrail-rulesets")
-def save_guardrail_ruleset(payload: dict[str, Any] = Body(default_factory=dict)) -> dict[str, bool]:
+def save_guardrail_ruleset(request: Request, payload: dict[str, Any] = Body(default_factory=dict)) -> dict[str, bool]:
+    actor = _enforce_request_authn(request, payload=payload, action="guardrail.ruleset.save")
+    _enforce_emergency_write_policy("guardrail.ruleset.save", actor)
     item_id = str(payload.get("id") or uuid4())
     existing = store.guardrail_rulesets.get(item_id)
+    previous_state = existing.model_dump() if existing else None
     incoming_config = payload.get("config_json")
     if isinstance(incoming_config, dict):
         config_json = dict(incoming_config)
@@ -8967,35 +9924,256 @@ def save_guardrail_ruleset(payload: dict[str, Any] = Body(default_factory=dict))
         config_json = dict(existing.config_json)
     else:
         config_json = {}
+    guardrail_name = str(payload.get("name") or (existing.name if existing else "Untitled Guardrail"))
 
     store.guardrail_rulesets[item_id] = GuardrailRuleSet(
         id=item_id,
-        name=str(payload.get("name") or existing.name if existing else "Untitled Guardrail"),
+        name=guardrail_name,
         version=(existing.version if existing else 0) + 1,
-        status=existing.status if existing else "draft",
+        status="draft" if existing and (existing.status == "published" or existing.published_revision_id) else (existing.status if existing else "draft"),
+        published_revision_id=existing.published_revision_id if existing else None,
+        published_at=existing.published_at if existing else None,
+        active_revision_id=existing.active_revision_id if existing else None,
+        active_at=existing.active_at if existing else None,
         config_json=config_json,
+    )
+    saved_item = store.guardrail_rulesets[item_id]
+    _record_definition_revision(
+        entity_type="guardrail_ruleset",
+        entity_id=item_id,
+        actor=actor,
+        action="save",
+        snapshot=saved_item,
+        metadata={"previous_version": previous_state.get("version") if isinstance(previous_state, dict) else None},
+    )
+    _append_config_mutation_audit(
+        "guardrail.ruleset.save",
+        actor,
+        entity_type="guardrail_ruleset",
+        entity_id=item_id,
+        before=previous_state,
+        after={
+            "version": saved_item.version,
+            "status": saved_item.status,
+            "name": saved_item.name,
+        },
     )
     _persist_store_state()
     return {"ok": True}
 
 
 @app.post("/guardrail-rulesets/{item_id}/publish")
-def publish_guardrail_ruleset(item_id: str) -> dict[str, bool]:
+def publish_guardrail_ruleset(item_id: str, request: Request) -> dict[str, bool]:
+    actor = _enforce_request_authn(request, action="guardrail.ruleset.publish")
+    _enforce_emergency_write_policy("guardrail.ruleset.publish", actor)
     item = store.guardrail_rulesets.get(item_id)
     if not item:
         raise HTTPException(status_code=404, detail="guardrail ruleset not found")
+    previous_state = item.model_dump()
     item.status = "published"
     item.version += 1
+    item.published_at = _now_iso()
     store.guardrail_rulesets[item_id] = item
+    published_revision = _record_definition_revision(
+        entity_type="guardrail_ruleset",
+        entity_id=item_id,
+        actor=actor,
+        action="publish",
+        snapshot=item,
+    )
+    item.published_revision_id = published_revision.id
+    item.published_at = published_revision.created_at
+    if not str(item.active_revision_id or "").strip():
+        item.active_revision_id = published_revision.id
+        item.active_at = published_revision.created_at
+    published_revision.metadata["published_pointer"] = True
+    published_revision.snapshot = item.model_dump()
+    store.guardrail_rulesets[item_id] = item
+    _append_config_mutation_audit(
+        "guardrail.ruleset.publish",
+        actor,
+        entity_type="guardrail_ruleset",
+        entity_id=item_id,
+        before={
+            "version": previous_state.get("version"),
+            "status": previous_state.get("status"),
+        },
+        after={
+            "version": item.version,
+            "status": item.status,
+        },
+    )
     _persist_store_state()
     return {"ok": True}
 
 
 @app.delete("/guardrail-rulesets/{item_id}")
-def delete_guardrail_ruleset(item_id: str) -> dict[str, bool]:
-    store.guardrail_rulesets.pop(item_id, None)
+def delete_guardrail_ruleset(item_id: str, request: Request) -> dict[str, bool]:
+    actor = _enforce_request_authn(request, action="guardrail.ruleset.delete")
+    _enforce_emergency_write_policy("guardrail.ruleset.delete", actor)
+    deleted = store.guardrail_rulesets.pop(item_id, None)
+    if deleted is not None:
+        _record_definition_revision(
+            entity_type="guardrail_ruleset",
+            entity_id=item_id,
+            actor=actor,
+            action="delete",
+            snapshot=deleted,
+            metadata={"deleted": True},
+        )
+    _append_config_mutation_audit(
+        "guardrail.ruleset.delete",
+        actor,
+        entity_type="guardrail_ruleset",
+        entity_id=item_id,
+        before=deleted.model_dump() if deleted else None,
+        after={"deleted": deleted is not None},
+    )
     _persist_store_state()
     return {"ok": True}
+
+
+@app.post("/guardrail-rulesets/{item_id}/archive")
+def archive_guardrail_ruleset(item_id: str, request: Request) -> dict[str, bool]:
+    actor = _enforce_request_authn(request, action="guardrail.ruleset.archive")
+    _enforce_emergency_write_policy("guardrail.ruleset.archive", actor)
+    item = store.guardrail_rulesets.get(item_id)
+    if not item:
+        raise HTTPException(status_code=404, detail="guardrail ruleset not found")
+    previous_state = item.model_dump()
+    item.status = "archived"
+    item.version += 1
+    item.published_revision_id = None
+    item.published_at = None
+    item.active_revision_id = None
+    item.active_at = None
+    store.guardrail_rulesets[item_id] = item
+    _record_definition_revision(
+        entity_type="guardrail_ruleset",
+        entity_id=item_id,
+        actor=actor,
+        action="archive",
+        snapshot=item,
+    )
+    _append_config_mutation_audit(
+        "guardrail.ruleset.archive",
+        actor,
+        entity_type="guardrail_ruleset",
+        entity_id=item_id,
+        before={
+            "version": previous_state.get("version"),
+            "status": previous_state.get("status"),
+        },
+        after={
+            "version": item.version,
+            "status": item.status,
+        },
+    )
+    _persist_store_state()
+    return {"ok": True}
+
+
+@app.post("/guardrail-rulesets/{item_id}/activate")
+def activate_guardrail_ruleset(item_id: str, request: Request, payload: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
+    actor = _enforce_request_authn(request, payload=payload, action="guardrail.ruleset.activate")
+    _enforce_emergency_write_policy("guardrail.ruleset.activate", actor)
+    item = store.guardrail_rulesets.get(item_id)
+    if not item:
+        raise HTTPException(status_code=404, detail="guardrail ruleset not found")
+    previous_state = item.model_dump()
+    target_revision = _select_definition_revision(
+        "guardrail_ruleset",
+        item_id,
+        revision_id=str(payload.get("revision_id") or item.published_revision_id or "").strip() or None,
+        revision_number=_normalize_optional_positive_int(payload.get("revision")),
+        version=_normalize_optional_positive_int(payload.get("version")),
+    )
+    activated, activation_revision = _activate_definition_revision(
+        "guardrail_ruleset",
+        item_id,
+        actor=actor,
+        target_revision=target_revision,
+    )
+    _append_config_mutation_audit(
+        "guardrail.ruleset.activate",
+        actor,
+        entity_type="guardrail_ruleset",
+        entity_id=item_id,
+        before=previous_state,
+        after={
+            "version": activated.version,
+            "status": activated.status,
+            "active_revision_id": activated.active_revision_id,
+            "active_at": activated.active_at,
+        },
+        extra={"target_revision_id": target_revision.id, "target_version": target_revision.version},
+    )
+    _persist_store_state()
+    return {
+        "ok": True,
+        "id": item_id,
+        "active_revision": _definition_revision_summary(target_revision),
+        "activation_revision": _definition_revision_summary(activation_revision),
+    }
+
+
+@app.get("/guardrail-rulesets/{item_id}/versions")
+def get_guardrail_ruleset_versions(item_id: str) -> dict[str, Any]:
+    if item_id not in store.guardrail_rulesets and item_id not in store.guardrail_ruleset_revisions:
+        raise HTTPException(status_code=404, detail="guardrail ruleset not found")
+    versions = [
+        _definition_revision_summary(revision)
+        for revision in reversed(_definition_revision_history("guardrail_ruleset", item_id))
+    ]
+    return {"count": len(versions), "versions": versions}
+
+
+@app.get("/guardrail-rulesets/{item_id}/versions/{revision_id}")
+def get_guardrail_ruleset_version(item_id: str, revision_id: str) -> dict[str, Any]:
+    revision = _select_definition_revision("guardrail_ruleset", item_id, revision_id=revision_id)
+    return revision.model_dump()
+
+
+@app.post("/guardrail-rulesets/{item_id}/rollback")
+def rollback_guardrail_ruleset(item_id: str, request: Request, payload: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
+    actor = _enforce_request_authn(request, payload=payload, action="guardrail.ruleset.rollback")
+    _enforce_emergency_write_policy("guardrail.ruleset.rollback", actor)
+    target_revision = _select_definition_revision(
+        "guardrail_ruleset",
+        item_id,
+        revision_id=str(payload.get("revision_id") or "").strip() or None,
+        revision_number=_normalize_optional_positive_int(payload.get("revision")),
+        version=_normalize_optional_positive_int(payload.get("version")),
+    )
+    current = store.guardrail_rulesets.get(item_id)
+    restored, rollback_revision = _rollback_definition_to_revision(
+        "guardrail_ruleset",
+        item_id,
+        actor=actor,
+        target_revision=target_revision,
+    )
+    _append_config_mutation_audit(
+        "guardrail.ruleset.rollback",
+        actor,
+        entity_type="guardrail_ruleset",
+        entity_id=item_id,
+        before=current.model_dump() if current else None,
+        after={
+            "version": restored.version,
+            "status": restored.status,
+            "restored_from_revision": target_revision.revision,
+            "restored_from_version": target_revision.version,
+        },
+    )
+    _persist_store_state()
+    return {
+        "ok": True,
+        "id": item_id,
+        "version": restored.version,
+        "status": restored.status,
+        "restored_from": _definition_revision_summary(target_revision),
+        "revision": _definition_revision_summary(rollback_revision),
+    }
 
 
 @app.delete("/node-definitions/{_item_id}")

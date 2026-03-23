@@ -5,5 +5,5 @@
     "powershell": "install/bootstrap.ps1"
   },
   "publicRepo": "https://github.com/LATTIX-IO/lattix-xfrontier",
-  "entrypoint": "lattix_frontier/install/installer.py"
+  "entrypoint": "frontier_tooling/installer.py"
 }
