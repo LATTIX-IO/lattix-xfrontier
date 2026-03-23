@@ -1,8 +1,7 @@
 import asyncio
 
-from lattix_frontier.events.event_models import AgentEvent
-from lattix_frontier.events.nats_client import get_event_bus
-from lattix_frontier.security.event_signing import verify_event_signature
+from frontier_runtime.events import AgentEvent, get_event_bus
+from frontier_runtime.security import verify_event_signature
 
 
 def test_event_bus_signs_events() -> None:

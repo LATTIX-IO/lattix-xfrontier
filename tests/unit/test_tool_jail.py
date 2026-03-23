@@ -3,9 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from lattix_frontier.sandbox.executor import ExecutionSpec
-from lattix_frontier.sandbox.manager import ToolJailService
-from lattix_frontier.sandbox.policy import HostPlatform, SandboxPolicy
+from frontier_runtime.sandbox import ExecutionSpec, HostPlatform, SandboxPolicy, ToolJailService
 
 
 def test_tool_jail_plans_linux_hardened_execution(tmp_path: Path) -> None:

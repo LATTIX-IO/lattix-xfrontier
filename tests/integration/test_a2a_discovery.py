@@ -1,6 +1,6 @@
 import asyncio
 
-from lattix_frontier.agents.discovery import discover_agents
+from frontier_runtime.agents import discover_agents
 
 
 def test_discovery_finds_builtin_agents() -> None:

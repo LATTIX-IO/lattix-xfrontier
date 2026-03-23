@@ -1,11 +1,10 @@
 import asyncio
 from pathlib import Path
 
-from lattix_frontier.events.event_models import AgentEvent
-from lattix_frontier.events.nats_client import get_event_bus, reset_event_bus
-from lattix_frontier.orchestrator.approvals import get_approval_store, reset_approval_store
-from lattix_frontier.persistence.state_backend import reset_shared_state_backend
-from lattix_frontier.security.jwt_auth import mint_token, reset_token_caches, verify_token
+from frontier_runtime.events import AgentEvent, get_event_bus, reset_event_bus
+from frontier_runtime.orchestrator import get_approval_store, reset_approval_store
+from frontier_runtime.persistence import reset_shared_state_backend
+from frontier_runtime.security import mint_token, reset_token_caches, verify_token
 
 
 def test_approval_store_persists_across_singleton_reset(monkeypatch, tmp_path: Path) -> None:

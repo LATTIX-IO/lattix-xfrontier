@@ -1,4 +1,4 @@
-from lattix_frontier.orchestrator.state import OrchestratorState
+from frontier_runtime.orchestrator import OrchestratorState
 
 
 def test_state_defaults() -> None:

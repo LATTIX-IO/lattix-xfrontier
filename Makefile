@@ -29,14 +29,14 @@ local-down:     ## Stop the lightweight local-first stack
 	$(LOCAL_COMPOSE) down -v
 
 test:           ## Run all tests
-	cd apps/backend && pytest tests/ -v --cov=app --cov-report=term-missing
+	pytest apps/backend/tests tests -v --cov=app --cov=frontier_runtime --cov-report=term-missing
 
 lint:           ## Lint and format
 	ruff check . --fix
 	ruff format .
 
 typecheck:      ## Type check
-	mypy frontier_tooling/
+	mypy frontier_tooling/ frontier_runtime/
 
 policy-test:    ## Test OPA policies
 	$(OPA_RUNNER) test policies/ -v

@@ -858,102 +858,102 @@ class Neo4jRunGraph:
 							],
 						},
 					)
-			except Exception:  # noqa: BLE001
+		except Exception:  # noqa: BLE001
 			return
 
-		def query_memory_context(
-			self,
-			*,
-			bucket_id: str,
-			memory_scope: str,
-			query_text: str = "",
-			limit: int = 10,
-		) -> dict[str, Any]:
-			if not self.enabled or self._driver is None:
-				return {"memories": [], "topics": [], "relations": []}
+	def query_memory_context(
+		self,
+		*,
+		bucket_id: str,
+		memory_scope: str,
+		query_text: str = "",
+		limit: int = 10,
+	) -> dict[str, Any]:
+		if not self.enabled or self._driver is None:
+			return {"memories": [], "topics": [], "relations": []}
 
-			owner_id = f"owner:{str(bucket_id or '').strip()}"
-			bounded_limit = max(1, int(limit))
-			query = str(query_text or "").strip().lower()
-			memory_rows: list[dict[str, Any]] = []
-			topic_rows: list[dict[str, Any]] = []
+		owner_id = f"owner:{str(bucket_id or '').strip()}"
+		bounded_limit = max(1, int(limit))
+		query = str(query_text or "").strip().lower()
+		memory_rows: list[dict[str, Any]] = []
+		topic_rows: list[dict[str, Any]] = []
 
-			try:
-				with self._driver.session() as session:
-					memory_result = session.run(
-						"""
-						MATCH (owner:KnowledgeOwner {id: $owner_id})-[:OWNS_MEMORY]->(memory:KnowledgeMemory)
-						WHERE memory.memory_scope = $memory_scope
-						  AND ($query = '' OR toLower(memory.content) CONTAINS $query)
-						RETURN memory.id AS id,
-						       memory.content AS content,
-						       memory.kind AS kind,
-						       memory.candidate_kind AS candidate_kind,
-						       memory.bucket_id AS bucket_id,
-						       memory.session_id AS session_id,
-						       memory.source_count AS source_count,
-						       memory.created_at AS created_at
-						ORDER BY memory.created_at DESC
-						LIMIT $limit
-						""",
+		try:
+			with self._driver.session() as session:
+				memory_result = session.run(
+					"""
+					MATCH (owner:KnowledgeOwner {id: $owner_id})-[:OWNS_MEMORY]->(memory:KnowledgeMemory)
+					WHERE memory.memory_scope = $memory_scope
+					  AND ($query = '' OR toLower(memory.content) CONTAINS $query)
+					RETURN memory.id AS id,
+					       memory.content AS content,
+					       memory.kind AS kind,
+					       memory.candidate_kind AS candidate_kind,
+					       memory.bucket_id AS bucket_id,
+					       memory.session_id AS session_id,
+					       memory.source_count AS source_count,
+					       memory.created_at AS created_at
+					ORDER BY memory.created_at DESC
+					LIMIT $limit
+					""",
+					{
+						"owner_id": owner_id,
+						"memory_scope": str(memory_scope or "session"),
+						"query": query,
+						"limit": bounded_limit,
+					},
+				)
+				for row in memory_result:
+					memory_rows.append(
 						{
-							"owner_id": owner_id,
-							"memory_scope": str(memory_scope or "session"),
-							"query": query,
-							"limit": bounded_limit,
-						},
+							"id": str(row.get("id") or ""),
+							"content": str(row.get("content") or ""),
+							"kind": str(row.get("kind") or "memory-consolidation"),
+							"candidate_kind": str(row.get("candidate_kind") or "promotion"),
+							"bucket_id": str(row.get("bucket_id") or bucket_id),
+							"session_id": str(row.get("session_id") or bucket_id),
+							"source_count": int(row.get("source_count") or 0),
+							"tier": "world-graph",
+							"at": str(row.get("created_at") or ""),
+						}
 					)
-					for row in memory_result:
-						memory_rows.append(
-							{
-								"id": str(row.get("id") or ""),
-								"content": str(row.get("content") or ""),
-								"kind": str(row.get("kind") or "memory-consolidation"),
-								"candidate_kind": str(row.get("candidate_kind") or "promotion"),
-								"bucket_id": str(row.get("bucket_id") or bucket_id),
-								"session_id": str(row.get("session_id") or bucket_id),
-								"source_count": int(row.get("source_count") or 0),
-								"tier": "world-graph",
-								"at": str(row.get("created_at") or ""),
-							}
-						)
 
-					topic_result = session.run(
-						"""
-						MATCH (owner:KnowledgeOwner {id: $owner_id})-[:RELATES_TO_TOPIC]->(topic:KnowledgeTopic)
-						RETURN topic.id AS id,
-						       topic.name AS name,
-						       topic.weight AS weight
-						ORDER BY topic.weight DESC, topic.name ASC
-						LIMIT $limit
-						""",
+				topic_result = session.run(
+					"""
+					MATCH (owner:KnowledgeOwner {id: $owner_id})-[:RELATES_TO_TOPIC]->(topic:KnowledgeTopic)
+					RETURN topic.id AS id,
+					       topic.name AS name,
+					       topic.weight AS weight
+					ORDER BY topic.weight DESC, topic.name ASC
+					LIMIT $limit
+					""",
+					{
+						"owner_id": owner_id,
+						"limit": bounded_limit,
+					},
+				)
+				for row in topic_result:
+					topic_rows.append(
 						{
-							"owner_id": owner_id,
-							"limit": bounded_limit,
-						},
+							"id": str(row.get("id") or ""),
+							"name": str(row.get("name") or ""),
+							"weight": int(row.get("weight") or 0),
+						}
 					)
-					for row in topic_result:
-						topic_rows.append(
-							{
-								"id": str(row.get("id") or ""),
-								"name": str(row.get("name") or ""),
-								"weight": int(row.get("weight") or 0),
-							}
-						)
-				except Exception:  # noqa: BLE001
-				return {"memories": [], "topics": [], "relations": []}
+		except Exception:  # noqa: BLE001
+			return {"memories": [], "topics": [], "relations": []}
 
-			relations = [
-				{
-					"type": "RELATES_TO_TOPIC",
-					"from": owner_id,
-					"to": str(topic.get("id") or ""),
-				}
-				for topic in topic_rows
-				if str(topic.get("id") or "")
-			]
-			return {
-				"memories": memory_rows,
-				"topics": topic_rows,
-				"relations": relations,
+		relations = [
+			{
+				"type": "RELATES_TO_TOPIC",
+				"from": owner_id,
+				"to": str(topic.get("id") or ""),
 			}
+			for topic in topic_rows
+			if str(topic.get("id") or "")
+		]
+		return {
+			"memories": memory_rows,
+			"topics": topic_rows,
+			"relations": relations,
+		}

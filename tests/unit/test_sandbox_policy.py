@@ -1,4 +1,4 @@
-from lattix_frontier.sandbox.policy import HostPlatform, IsolationStrategy, SandboxPolicy, detect_host_platform
+from frontier_runtime.sandbox import HostPlatform, IsolationStrategy, SandboxPolicy, detect_host_platform
 
 
 def test_detect_host_platform_macos() -> None:

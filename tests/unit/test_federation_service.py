@@ -1,5 +1,5 @@
-from lattix_frontier.config import Settings
-from lattix_frontier.federation.service import FederationTopologyService
+from frontier_runtime.config import Settings
+from frontier_runtime.federation import FederationTopologyService
 
 
 def test_federation_service_parses_peers() -> None:

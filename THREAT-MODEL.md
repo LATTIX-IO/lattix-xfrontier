@@ -38,7 +38,8 @@ Primary file: `apps/backend/app/main.py`
 
 Characteristics:
 
-- route-local auth enforcement via `_enforce_request_authn(...)`
+- central route inventory and middleware-backed request classification in `apps/backend/app/request_security.py`
+- middleware-first auth enforcement with cached request auth context reused by `_enforce_request_authn(...)`
 - configurable policy and guardrail evaluation in application code
 - regex-based safety signals and policy gates
 - local-first runtime assumptions
@@ -50,15 +51,25 @@ Current strengths:
 - audit/event hooks for many mutation paths
 - explicit graph schema contract
 - local-only egress/runtime defaults in several platform settings
+- authenticated operator identity headers are already supported by the frontend API client
+- backend routes now have explicit access classes with startup validation to catch unclassified endpoints
+- security headers are now applied uniformly in `apps/backend`
+- secure/local full-stack mode can now fail closed via environment-backed auth defaults
+- backend CORS now uses explicit local methods and headers instead of wildcards
+- backend A2A replay protection now uses TTL-based expiry with bounded pruning
+- runtime/guardrail execution failures now sanitize caller-facing summaries
+- backend/shared path authorization checks now use canonical containment under approved roots
+- internal-only backend routes now require trusted service-style auth context instead of generic authenticated callers
+- memory API and maintenance paths now validate scope-to-bucket alignment before reading or mutating memory state
+- memory reads/writes now enforce actor, tenant, collaboration-session, or internal-service authorization depending on scope
 
 Current weaknesses:
 
-- auth is not globally fail-closed by default
-- some sensitive introspection endpoints remain too readable
-- CORS is broader than necessary
-- security headers are not uniformly applied in this app
-- replay/nonce handling is weaker than the orchestrator implementation
-- backend errors can leak internal guardrail/runtime details
+- auth still depends on deployment configuration rather than a single immutable runtime profile
+- hosted/internal profile exposure rules are not yet codified as tightly as the secure-local profile
+- some runtime-originated memory flows still rely on local execution context and need the same ownership contract carried into hosted worker/service boundaries
+- policy sources are still split across backend fallback logic and Rego inputs
+- worker/service transport expectations outside local-only mode are not fully hardened yet
 
 ## Target-state architecture
 
@@ -189,19 +200,19 @@ The following must remain true as the system evolves:
 
 | Area | Current issue | Impact | Current mitigation / compensating control | Planned remediation |
 |---|---|---|---|---|
-| Backend auth | `apps/backend` auth is route-local and not fail-closed by default | anonymous or weakly gated access | some routes already use `_enforce_request_authn(...)` | centralize auth model and default to secure/full fail-closed |
-| Security policy disclosure | `/platform/security-policy` is too readable | attacker reconnaissance | none adequate | require auth and classify endpoint visibility |
-| Introspection leakage | `/healthz` and runtime readiness/provider endpoints expose too much detail | service and trust boundary reconnaissance | partial route separation only | minimal public health, detailed authenticated/internal diagnostics |
-| OPA path checks | prefix/path semantics are weak in fallback and policy | possible authorization bypass | sandbox artifact staging has stronger containment checks | align all filesystem checks on canonical containment |
+| Backend auth | `apps/backend` now centralizes route classification and request enforcement, but deployment profiles still decide when authenticated-read/mutate routes are mandatory outside secure/local full-stack mode | anonymous or weakly gated access if weaker profiles are misconfigured | central route inventory, middleware enforcement, startup validation, and secure local fail-closed defaults | make secure/hosted profile behavior immutable and consistently selected |
+| Security policy disclosure | `/platform/security-policy` should not be public in secure/full mode | attacker reconnaissance | central route classification now marks it authenticated-read and secure local mode requires auth | classify endpoint visibility consistently across hosted/internal profiles |
+| Introspection leakage | `/healthz` and runtime readiness/provider endpoints can expose too much detail | service and trust boundary reconnaissance | central route classification plus secure local mode now serves minimal public `/healthz` and authenticated diagnostics endpoints | extend the same contract to all hosted/internal profiles |
+| OPA path checks | canonical containment is now enforced in backend loaders and shared fallback policy, but parity must remain consistent across all policy consumers | residual bypass risk if new callers reintroduce prefix checks | canonical containment checks now guard approved roots | keep parity tests and avoid new prefix-based checks |
 | Policy drift | Rego policy and Python fallback duplicate rules | inconsistent enforcement | fail-closed behavior exists in some paths | parity tests + single source of truth |
 | Static agent allowlists | hardcoded allowed tools in policy/fallback | new agents have no dynamic policy coverage | hardcoded defaults only | move policy inputs to config-backed dynamic model |
 | Capability enforcement | capability claims are minted more richly than enforced | over-permission or false confidence | narrow current usage partially reduces blast radius | enforce read/write/tool-budget claims explicitly |
-| Replay cache | backend nonce/replay handling lacks TTL semantics | replay weakening and memory pressure | orchestrator JWT code is stronger elsewhere | reuse stronger TTL-based replay semantics |
+| Replay cache | backend A2A nonce handling now expires and prunes correctly, but other auth surfaces could still drift if reimplemented independently | reduced replay weakening / memory pressure risk | TTL-based expiry + bounded pruning in backend | converge remaining auth surfaces on shared replay primitive |
 | Worker transport | worker A2A transport is too lightweight for non-local trust | MITM / weak transport assumptions | local mode is often plaintext and loopback-oriented | explicit HTTPS/TLS policy outside local-only mode |
-| Error leakage | backend runtime/guardrail errors expose internals | rule enumeration and recon | logs/audit exist but caller responses still leak details | sanitize caller-facing errors |
-| CORS | backend allows wildcard methods/headers | broader browser attack surface than needed | localhost origin restriction helps | explicit allowlists |
-| Security headers | backend app lacks the stronger header middleware pattern | weaker browser/API hardening | stronger middleware already exists in legacy package | port/reuse in `apps/backend` |
-| Memory boundaries | scopes are labels more than strongly enforced boundaries | cross-scope or cross-tenant data bleed risk | some policy vocabulary exists | implement real memory access control |
+| Error leakage | caller-facing runtime summaries are now sanitized, but other endpoints still need the same discipline when new failure modes are added | reduced rule-enumeration and recon risk | sanitized runtime/guardrail failure summaries + logs/audit retained | extend sanitization review to future hosted/internal APIs |
+| CORS | backend local browser access now uses explicit allowlists | reduced browser attack surface | localhost origin restriction plus explicit method/header allowlists | keep deployment-specific origin config explicit |
+| Security headers | header policy still needs expansion beyond the current baseline | weaker browser/API hardening | backend now sets `nosniff`, `DENY`, and restrictive CSP headers by middleware | extend header set for hosted/TLS profiles |
+| Memory boundaries | backend memory routes now enforce scope-aware access checks, but hosted/runtime identity propagation is still incomplete | reduced cross-scope or cross-tenant bleed risk in backend API paths; remaining risk in broader service propagation | scope-to-bucket validation, actor/user checks, tenant claim checks, collaboration membership checks, and internal-only maintenance auth | carry the same ownership model into worker/runtime and hosted identity propagation |
 | Helm network policies | current template is malformed/broken | false confidence in segmentation | none | repair and validate render/apply path |
 | Deployment drift | docs/defaults around secure vs lightweight modes have been inconsistent | wrong operator assumptions | recent cleanup improved this | codify in docs + threat model + tests |
 | Legacy backend drift | `lattix_frontier/` still contains active security/runtime logic | dual-surface confusion and security drift | documented intent to converge | Stage 0 migration/disconnection boundary |
@@ -260,12 +271,119 @@ Any security-relevant change should update this file if it changes:
 - memory boundary expectations
 - the migration status of any `lattix_frontier/` surface
 
-## Immediate next remediation wave
+## Phase 1 completion status
 
-After Phase 0, the next concrete execution order is:
+Phase 1 secure-local hardening is complete when the following are true, and they are now true in the canonical backend/runtime surfaces:
 
-1. fix OPA/path containment semantics
-2. gate `/platform/security-policy`
-3. default secure/full backend auth to fail closed
-4. minimize public introspection leakage
-5. port/extract stronger auth/security-header/replay primitives from `lattix_frontier` into canonical surfaces
+1. path checks use canonical containment semantics under approved roots
+2. `/platform/security-policy` and sensitive runtime diagnostics are gated in secure/full local mode
+3. secure/full backend auth fails closed by default via deployment-backed profile settings
+4. public introspection is minimized while authenticated diagnostic detail remains available
+5. stronger replay and response-hardening primitives are ported into canonical surfaces
+
+There are no remaining Phase 1 secure-local blocking tasks in the canonical backend/runtime surfaces. Remaining items now belong to Phase 2 and should be treated as the next execution wave rather than as incomplete Phase 1 work.
+
+## Phase 2 focus
+
+Phase 2 is the **hosted-parity and control-convergence** wave.
+
+Its goal is to move from a verified secure-local baseline to a deployment model that remains trustworthy when services are separated, long-lived, and operated beyond a single local machine.
+
+### Phase 2 objectives
+
+1. make auth/profile behavior centrally enforced rather than route-local plus deployment-convention driven
+2. harden non-local worker/service transport expectations
+3. implement real memory access control instead of scope-label trust
+4. converge Python fallback policy behavior and Rego policy behavior onto one verifiable contract
+5. repair deployment-layer controls that currently provide incomplete or misleading protection
+
+### Phase 2 implementation status
+
+The first Phase 2 workstream is now partially complete in the canonical backend.
+
+Implemented:
+
+- explicit backend route inventory in `apps/backend/app/request_security.py`
+- access classes for `public-minimal`, `authenticated-read`, `authenticated-mutate`, and `internal-only`
+- central middleware enforcement in `apps/backend/app/main.py`
+- startup validation that fails if new backend routes are added without classification
+- shared response hardening helper in `apps/backend/app/security_headers.py`
+- regression coverage for shared headers, route inventory completeness, and previously under-protected read surfaces
+- internal-only route enforcement that now requires trusted subject or bearer-backed internal auth context
+- memory scope-to-bucket validation for backend retrieval, consolidation, and world-graph projection paths
+- backend memory authorization checks for session, user, tenant, agent, and workflow scopes
+- regression coverage for cross-scope denial and internal maintenance endpoint protection
+
+Still remaining for this workstream:
+
+- define immutable runtime profiles for hosted/non-local operation rather than environment-convention-driven profile selection
+- narrow any remaining differences between secure-local, local-lightweight, and future hosted endpoint exposure rules
+- move beyond backend-only convergence so workers and service-to-service transport follow the same profile contract
+
+The memory access control workstream is now partially implemented in the canonical backend as well.
+
+Implemented:
+
+- backend memory endpoints reject bucket/scope mismatches instead of trusting caller-supplied scope labels
+- `session` and `user` memory access now binds to the authenticated actor identity
+- `tenant` memory access now requires an explicit tenant claim that matches the bucket
+- `agent` and `workflow` memory access now requires collaboration-session membership for non-internal callers
+- internal consolidation and world-graph projection routes now require internal service authentication
+
+Still remaining for this workstream:
+
+- carry the same ownership and authorization model into worker/runtime execution flows beyond backend route handlers
+- define how hosted identities and tenant claims are minted/verified so tenant authorization is not based on local header conventions alone
+- extend memory authorization parity checks to non-backend consumers and policy sources
+
+### Phase 2 workstreams
+
+#### 1. Identity and profile convergence
+
+- define immutable runtime profiles for `local-lightweight`, `local-secure/full`, and future hosted operation
+- reduce route-by-route auth drift by centralizing profile-driven enforcement where practical
+- ensure diagnostics, health, runtime-provider, and policy endpoints have one visibility policy per profile
+- document the profile contract in deployment docs and examples
+
+#### 2. Service-to-service transport hardening
+
+- define explicit HTTPS/TLS expectations for worker and A2A transport outside local-only mode
+- require stronger subject authentication and transport guarantees for non-local trust boundaries
+- keep local-only exceptions explicit and isolated to the local deployment profiles
+
+#### 3. Memory access control
+
+- implement actual authorization checks for memory reads/writes across session, user, agent, workflow, and tenant-like scopes
+- ensure retrieval, consolidation, and world-graph projection paths respect the same access model
+- add regression coverage for cross-scope denial cases
+
+#### 4. Policy source convergence
+
+- reduce drift between backend fallback policy logic and `policies/*.rego`
+- add parity tests for security-critical decisions such as path access, egress, capability claims, and runtime/tool budgets
+- establish one source of truth for policy inputs and expected deny behavior
+
+#### 5. Deployment control repair
+
+- repair and validate Helm/network-policy artifacts so they provide real segmentation guarantees
+- extend browser/API hardening headers for hosted/TLS profiles where appropriate
+- keep secure/full and lightweight defaults aligned with docs, tests, and deployment manifests
+
+### Definition of done for Phase 2
+
+Phase 2 is complete when:
+
+1. runtime profile behavior is centrally defined and consistently enforced
+2. non-local worker/service transport has explicit hardened expectations and tests
+3. memory operations enforce real access control rather than trusting scope names alone
+4. backend fallback logic and Rego policy are covered by parity tests for security-critical decisions
+5. Helm/network-policy artifacts are valid and verified instead of merely present
+6. docs, manifests, and tests all describe the same hosted-vs-local security posture
+
+### Recommended execution order for Phase 2
+
+1. identity and profile convergence
+2. policy source convergence for critical allow/deny paths
+3. memory access control
+4. service-to-service transport hardening
+5. deployment control repair and hosted-profile documentation cleanup

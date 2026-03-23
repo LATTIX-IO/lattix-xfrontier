@@ -1,8 +1,7 @@
 import asyncio
 
-from lattix_frontier.envelope.models import Envelope
-from lattix_frontier.guardrails.filter_chain import FilterContext
-from lattix_frontier.guardrails.filters.dlp_filter import DLPFilter
+from frontier_runtime.envelope import Envelope
+from frontier_runtime.guardrails import DLPFilter, FilterContext
 
 
 def test_dlp_filter_marks_pii() -> None:

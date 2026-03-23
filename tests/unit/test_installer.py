@@ -4,8 +4,7 @@ import subprocess
 
 import pytest
 
-from lattix_frontier.install.diagnostics import DiagnosticResult
-from lattix_frontier.install.installer import FrontierInstaller, InstallerAnswers, MissingPrerequisite, PrerequisiteDefinition
+from frontier_runtime.install import DiagnosticResult, FrontierInstaller, InstallerAnswers, MissingPrerequisite, PrerequisiteDefinition
 
 
 def test_installer_writes_env_file(tmp_path: Path) -> None:

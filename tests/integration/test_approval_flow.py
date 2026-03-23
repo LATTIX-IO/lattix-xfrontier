@@ -1,7 +1,6 @@
 import asyncio
 
-from lattix_frontier.orchestrator.approvals import get_approval_store
-from lattix_frontier.orchestrator.workflows import get_workflow_catalog
+from frontier_runtime.orchestrator import get_approval_store, get_workflow_catalog
 
 
 def test_confidential_workflow_requires_explicit_approval() -> None:

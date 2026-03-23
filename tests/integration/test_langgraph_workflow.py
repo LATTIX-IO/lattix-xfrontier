@@ -1,6 +1,6 @@
 import asyncio
 
-from lattix_frontier.orchestrator.workflows import get_workflow_catalog
+from frontier_runtime.orchestrator import get_workflow_catalog
 
 
 def test_gtm_workflow_runs() -> None:

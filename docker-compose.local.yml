@@ -10,6 +10,8 @@ services:
       NEXT_TELEMETRY_DISABLED: 1
       NEXT_PUBLIC_API_BASE_URL: ${FRONTIER_LOCAL_API_BASE_URL:-http://localhost:8000}
       API_BASE_URL_INTERNAL: ${API_BASE_URL_INTERNAL:-http://backend:8000}
+      NEXT_PUBLIC_FRONTIER_ACTOR: ${NEXT_PUBLIC_FRONTIER_ACTOR:-frontend-user}
+      NEXT_PUBLIC_FRONTIER_API_TOKEN: ${NEXT_PUBLIC_FRONTIER_API_TOKEN:-}
     ports:
       - "127.0.0.1:3000:3000"
     volumes:
@@ -25,6 +27,9 @@ services:
     command: sh -lc "pip install --no-cache-dir -r requirements.txt && if [ \"${FRONTIER_INSTALL_RUNTIME_ENGINES:-0}\" = \"1\" ]; then pip install --no-cache-dir -r requirements-runtime-engines.txt; fi && uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"
     environment:
       FRONTEND_ORIGIN: ${FRONTEND_ORIGIN:-http://localhost:3000}
+      FRONTIER_SECURE_LOCAL_MODE: ${FRONTIER_SECURE_LOCAL_MODE:-false}
+      FRONTIER_REQUIRE_AUTHENTICATED_REQUESTS: ${FRONTIER_REQUIRE_AUTHENTICATED_REQUESTS:-false}
+      FRONTIER_API_BEARER_TOKEN: ${FRONTIER_API_BEARER_TOKEN:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       OPENAI_MODEL: ${OPENAI_MODEL:-gpt-4o-mini}
       FRONTIER_AGENT_ASSETS_ROOT: ${FRONTIER_AGENT_ASSETS_ROOT:-/workspace/examples/agents}

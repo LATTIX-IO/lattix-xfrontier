@@ -1,7 +1,6 @@
 import asyncio
 
-from lattix_frontier.events.event_models import AgentEvent
-from lattix_frontier.events.nats_client import get_event_bus
+from frontier_runtime.events import AgentEvent, get_event_bus
 
 
 def test_event_bus_publishes() -> None:

@@ -17,9 +17,12 @@ from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
 from fastapi import Body, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from app.generated_artifacts import GeneratedArtifactService
 from app.platform_services import Neo4jRunGraph, PostgresLongTermMemoryStore, PostgresStateStore, RedisMemoryStore
+from app.request_security import RouteAccessCategory, RouteAccessRule, classify_route_access, validate_route_inventory
+from app.security_headers import apply_security_headers
 
 try:
     from openai import OpenAI
@@ -431,6 +434,24 @@ def _env_int(name: str, default: int, *, minimum: int | None = None, maximum: in
     if maximum is not None:
         value = min(maximum, value)
     return value
+
+
+def _secure_local_mode_enabled() -> bool:
+    return _env_flag("FRONTIER_SECURE_LOCAL_MODE", False)
+
+
+def _effective_require_authenticated_requests() -> bool:
+    if os.getenv("FRONTIER_REQUIRE_AUTHENTICATED_REQUESTS") is not None:
+        return _env_flag("FRONTIER_REQUIRE_AUTHENTICATED_REQUESTS", store.platform_settings.require_authenticated_requests)
+    if _secure_local_mode_enabled():
+        return True
+    return store.platform_settings.require_authenticated_requests
+
+
+def _effective_require_a2a_runtime_headers() -> bool:
+    if os.getenv("FRONTIER_REQUIRE_A2A_RUNTIME_HEADERS") is not None:
+        return _env_flag("FRONTIER_REQUIRE_A2A_RUNTIME_HEADERS", store.platform_settings.require_a2a_runtime_headers)
+    return store.platform_settings.require_a2a_runtime_headers
 
 
 def _slug_to_name(slug: str) -> str:
@@ -2867,6 +2888,43 @@ def _configured_agent_assets_root(repo_root: Path) -> Path | None:
     return candidate.resolve()
 
 
+def _path_is_within_allowed_roots(candidate: str | Path, allowed_roots: list[Path]) -> bool:
+    try:
+        candidate_path = Path(candidate).expanduser().resolve(strict=False)
+    except Exception:  # noqa: BLE001
+        return False
+
+    for root in allowed_roots:
+        try:
+            resolved_root = Path(root).expanduser().resolve(strict=False)
+        except Exception:  # noqa: BLE001
+            continue
+        if candidate_path == resolved_root or candidate_path.is_relative_to(resolved_root):
+            return True
+    return False
+
+
+def _resolve_path_within_allowed_roots(path_value: str, allowed_roots: list[Path]) -> Path | None:
+    candidate = str(path_value or "").strip()
+    if not candidate:
+        return None
+
+    raw_path = Path(candidate).expanduser()
+    for root in allowed_roots:
+        try:
+            resolved_root = Path(root).expanduser().resolve(strict=False)
+        except Exception:  # noqa: BLE001
+            continue
+        combined = raw_path if raw_path.is_absolute() else resolved_root / raw_path
+        try:
+            resolved_candidate = combined.resolve(strict=False)
+        except Exception:  # noqa: BLE001
+            continue
+        if _path_is_within_allowed_roots(resolved_candidate, [resolved_root]):
+            return resolved_candidate
+    return None
+
+
 def _agent_assets_roots(repo_root: Path) -> list[Path]:
     roots: list[Path] = []
 
@@ -2977,13 +3035,19 @@ def _load_prompt_from_relative_path(path_value: str) -> str:
         return ""
 
     repo_root = Path(__file__).resolve().parents[2]
-    search_paths = [repo_root / candidate]
+    search_roots = [repo_root]
     for assets_root in _agent_assets_roots(repo_root):
-        search_paths.append(assets_root / candidate)
-        search_paths.append(assets_root.parent / candidate)
+        search_roots.append(assets_root)
+        search_roots.append(assets_root.parent)
 
-    for path in search_paths:
-        if path.exists() and path.is_file():
+    deduped_roots: list[Path] = []
+    for root in search_roots:
+        if root not in deduped_roots:
+            deduped_roots.append(root)
+
+    for root in deduped_roots:
+        path = _resolve_path_within_allowed_roots(candidate, [root])
+        if path is not None and path.exists() and path.is_file():
             try:
                 return path.read_text(encoding="utf-8").strip()
             except Exception:  # noqa: BLE001
@@ -3846,6 +3910,14 @@ def _source_allowed(candidate: str, allowlist: list[str]) -> bool:
     normalized = [str(item).strip() for item in allowlist if str(item).strip()]
     if not normalized:
         return False
+    if "://" in value or any("://" in item for item in normalized):
+        return any(value == item or value.startswith(f"{item}/") for item in normalized)
+    if Path(value).is_absolute() or any(Path(item).is_absolute() for item in normalized) or any(sep in value for sep in ("/", "\\")):
+        try:
+            resolved_value = Path(value).expanduser().resolve(strict=False)
+        except Exception:  # noqa: BLE001
+            return False
+        return _path_is_within_allowed_roots(resolved_value, [Path(item).expanduser() for item in normalized])
     return any(value == item or value.startswith(f"{item}/") for item in normalized)
 
 
@@ -5446,16 +5518,136 @@ class InMemoryStore:
 
 store = InMemoryStore()
 app = FastAPI(title="Lattix xFrontier Backend", version="0.1.0")
+
+
+def _cors_allowed_origins() -> list[str]:
+    configured = [
+        str(item).strip()
+        for item in str(os.getenv("FRONTIER_CORS_ALLOWED_ORIGINS") or "").split(",")
+        if str(item).strip()
+    ]
+    if configured:
+        return configured
+    return ["http://localhost:3000", "http://127.0.0.1:3000"]
+
+
+def _cors_allowed_methods() -> list[str]:
+    return ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"]
+
+
+def _cors_allowed_headers() -> list[str]:
+    return [
+        "authorization",
+        "content-type",
+        "x-frontier-actor",
+        "x-frontier-tenant",
+        "x-user-id",
+        "x-frontier-subject",
+        "x-frontier-signature",
+        "x-frontier-nonce",
+    ]
+
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=_cors_allowed_origins(),
+    allow_methods=_cors_allowed_methods(),
+    allow_headers=_cors_allowed_headers(),
 )
+
+
+@app.middleware("http")
+async def add_security_headers(request: Request, call_next: Any) -> Any:
+    response = await call_next(request)
+    return apply_security_headers(response)
+
+
+def _route_requires_authenticated_request(rule: RouteAccessRule) -> bool:
+    if rule.category == RouteAccessCategory.INTERNAL_ONLY:
+        return True
+    if rule.category in {
+        RouteAccessCategory.AUTHENTICATED_READ,
+        RouteAccessCategory.AUTHENTICATED_MUTATE,
+    }:
+        return _effective_require_authenticated_requests()
+    return False
+
+
+def _request_has_internal_access(request: Request | None) -> bool:
+    if request is None:
+        return False
+    auth_context = getattr(request.state, "frontier_auth_context", None)
+    if not isinstance(auth_context, dict):
+        return False
+    if auth_context.get("used_bearer_token") is True:
+        return True
+    return auth_context.get("trusted_subject_authenticated") is True
+
+
+@app.middleware("http")
+async def enforce_route_access_policy(request: Request, call_next: Any) -> Any:
+    rule = classify_route_access(request.method, request.url.path)
+    request.state.frontier_route_access = rule
+    if rule is not None and _route_requires_authenticated_request(rule):
+        try:
+            _enforce_request_authn(
+                request,
+                action=rule.action or f"{request.method} {request.url.path}",
+                required=True,
+            )
+            if rule.category == RouteAccessCategory.INTERNAL_ONLY and not _request_has_internal_access(request):
+                actor = _extract_actor_from_request(request)
+                _append_audit_event(rule.action or f"{request.method} {request.url.path}", actor, "blocked", {"reason": "internal_access_required"})
+                return apply_security_headers(JSONResponse(status_code=403, content={"detail": "Internal service authentication required"}))
+        except HTTPException as exc:
+            return apply_security_headers(JSONResponse(status_code=exc.status_code, content={"detail": exc.detail}))
+    return await call_next(request)
 
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _parse_iso_datetime(value: str) -> datetime | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _a2a_nonce_ttl_seconds() -> int:
+    raw = str(os.getenv("FRONTIER_A2A_NONCE_TTL_SECONDS") or "").strip()
+    try:
+        ttl = int(raw) if raw else 600
+    except ValueError:
+        ttl = 600
+    return max(1, min(ttl, 86_400))
+
+
+def _prune_expired_a2a_nonces(*, now: datetime | None = None) -> None:
+    current = now or datetime.now(timezone.utc)
+    retained: list[tuple[str, datetime]] = []
+    for nonce, expires_at in store.a2a_seen_nonces.items():
+        parsed = _parse_iso_datetime(expires_at)
+        if parsed is None or parsed <= current:
+            continue
+        retained.append((str(nonce), parsed))
+
+    retained.sort(key=lambda item: item[1], reverse=True)
+    store.a2a_seen_nonces = {nonce: expires_at.isoformat() for nonce, expires_at in retained[:5000]}
+
+
+def _sanitize_runtime_error_message(exc: Exception) -> str:
+    message = str(exc or "").strip().lower()
+    if any(token in message for token in ("guardrail", "tripwire", "policy", "blocked")):
+        return "Execution blocked by runtime policy."
+    return "Runtime execution failed."
 
 
 def _extract_actor_from_request(request: Request | None, payload: dict[str, Any] | None = None) -> str:
@@ -5487,11 +5679,26 @@ def _append_audit_event(action: str, actor: str, outcome: Literal["allowed", "bl
         store.audit_events = store.audit_events[:2000]
 
 
-def _enforce_request_authn(request: Request | None, *, payload: dict[str, Any] | None = None, action: str) -> str:
+def _enforce_request_authn(
+    request: Request | None,
+    *,
+    payload: dict[str, Any] | None = None,
+    action: str,
+    required: bool | None = None,
+) -> str:
     actor = _extract_actor_from_request(request, payload=payload)
     platform = store.platform_settings
 
-    if not platform.require_authenticated_requests:
+    cached_auth_context = None
+    if request is not None:
+        cached_auth_context = getattr(request.state, "frontier_auth_context", None)
+        if isinstance(cached_auth_context, dict) and cached_auth_context.get("authenticated") is True:
+            cached_actor = str(cached_auth_context.get("actor") or "").strip()
+            if cached_actor:
+                return cached_actor
+
+    auth_required = _effective_require_authenticated_requests() if required is None else bool(required)
+    if not auth_required:
         return actor
 
     if request is None:
@@ -5507,16 +5714,19 @@ def _enforce_request_authn(request: Request | None, *, payload: dict[str, Any] |
     auth_header = str(request.headers.get("authorization") or "").strip()
     bearer_prefix = "bearer "
     provided_token = auth_header[len(bearer_prefix):].strip() if auth_header.lower().startswith(bearer_prefix) else ""
+    used_bearer_token = False
 
     if configured_token:
         if provided_token != configured_token:
             _append_audit_event(action, actor, "blocked", {"reason": "invalid_bearer_token"})
             raise HTTPException(status_code=401, detail="Invalid bearer token")
+        used_bearer_token = True
     elif not header_actor:
         _append_audit_event(action, actor, "blocked", {"reason": "anonymous_actor"})
         raise HTTPException(status_code=401, detail="Authenticated actor header required (x-frontier-actor)")
 
-    if platform.a2a_require_signed_messages and platform.require_a2a_runtime_headers:
+    trusted_subject_authenticated = False
+    if platform.a2a_require_signed_messages and _effective_require_a2a_runtime_headers():
         subject = str(request.headers.get("x-frontier-subject") or "").strip()
         signature = str(request.headers.get("x-frontier-signature") or "").strip()
         nonce = str(request.headers.get("x-frontier-nonce") or "").strip()
@@ -5529,16 +5739,32 @@ def _enforce_request_authn(request: Request | None, *, payload: dict[str, Any] |
             raise HTTPException(status_code=401, detail="Missing A2A signature header")
 
         if platform.a2a_replay_protection:
+            now = datetime.now(timezone.utc)
+            _prune_expired_a2a_nonces(now=now)
             if not nonce:
                 _append_audit_event(action, actor, "blocked", {"reason": "missing_nonce"})
                 raise HTTPException(status_code=401, detail="Missing A2A nonce header")
             if nonce in store.a2a_seen_nonces:
                 _append_audit_event(action, actor, "blocked", {"reason": "nonce_replay", "nonce": nonce})
                 raise HTTPException(status_code=409, detail="A2A nonce replay detected")
-            store.a2a_seen_nonces[nonce] = _now_iso()
-            if len(store.a2a_seen_nonces) > 5000:
-                items = list(store.a2a_seen_nonces.items())[:5000]
-                store.a2a_seen_nonces = dict(items)
+            store.a2a_seen_nonces[nonce] = (now + timedelta(seconds=_a2a_nonce_ttl_seconds())).isoformat()
+            _prune_expired_a2a_nonces(now=now)
+        trusted_subject_authenticated = True
+    else:
+        subject = str(request.headers.get("x-frontier-subject") or "").strip()
+        signature = str(request.headers.get("x-frontier-signature") or "").strip()
+        if subject and signature and subject in platform.a2a_trusted_subjects:
+            trusted_subject_authenticated = True
+
+    request.state.frontier_auth_context = {
+        "authenticated": True,
+        "actor": actor,
+        "subject": subject if 'subject' in locals() else "",
+        "used_bearer_token": used_bearer_token,
+        "trusted_subject_authenticated": trusted_subject_authenticated,
+        "a2a_headers_required": _effective_require_a2a_runtime_headers(),
+        "require_authenticated_requests": auth_required,
+    }
 
     return actor
 
@@ -5580,6 +5806,116 @@ def _resolve_authenticated_payload_identity(
         return actor
 
     return payload_identities[0][1]
+
+
+_MEMORY_SCOPE_PREFIXES = {
+    "run": "run:",
+    "session": "session:",
+    "user": "user:",
+    "tenant": "tenant:",
+    "agent": "agent:",
+    "workflow": "workflow:",
+}
+
+
+def _normalize_memory_scope_name(scope: str | None, *, allow_global: bool = True) -> str:
+    normalized = str(scope or "session").strip().lower() or "session"
+    allowed_scopes = set(_MEMORY_SCOPE_PREFIXES.keys())
+    if allow_global:
+        allowed_scopes.add("global")
+    if normalized not in allowed_scopes:
+        raise HTTPException(status_code=400, detail=f"Unsupported memory scope '{normalized}'")
+    return normalized
+
+
+def _memory_bucket_matches_scope(bucket_id: str, memory_scope: str) -> bool:
+    normalized_bucket = str(bucket_id or "").strip()
+    normalized_scope = _normalize_memory_scope_name(memory_scope)
+    if not normalized_bucket:
+        return False
+    if normalized_scope == "global":
+        return normalized_bucket == "global"
+    expected_prefix = _MEMORY_SCOPE_PREFIXES[normalized_scope]
+    if normalized_scope == "session":
+        if normalized_bucket.startswith(expected_prefix):
+            return True
+        return not any(normalized_bucket.startswith(prefix) for name, prefix in _MEMORY_SCOPE_PREFIXES.items() if name != "session") and normalized_bucket != "global"
+    return normalized_bucket.startswith(expected_prefix)
+
+
+def _validate_memory_bucket_scope_pair(bucket_id: str, memory_scope: str) -> tuple[str, str]:
+    normalized_scope = _normalize_memory_scope_name(memory_scope)
+    normalized_bucket = str(bucket_id or "").strip()
+    if not normalized_bucket:
+        raise HTTPException(status_code=400, detail="Memory bucket id is required")
+    if not _memory_bucket_matches_scope(normalized_bucket, normalized_scope):
+        raise HTTPException(
+            status_code=403,
+            detail=f"Memory bucket '{normalized_bucket}' is not valid for scope '{normalized_scope}'",
+        )
+    return normalized_bucket, normalized_scope
+
+
+def _extract_memory_tenant_claim(request: Request | None, payload: dict[str, Any] | None = None) -> str:
+    payload_dict = payload if isinstance(payload, dict) else {}
+    headers = request.headers if request is not None else {}
+    return (
+        str(headers.get("x-frontier-tenant") or "").strip()
+        or str(payload_dict.get("tenant_id") or "").strip()
+        or str(payload_dict.get("currentTenant") or "").strip()
+        or str(payload_dict.get("current_tenant") or "").strip()
+    )
+
+
+def _actor_participates_in_memory_entity(actor: str, bucket_id: str, memory_scope: str) -> bool:
+    normalized_actor = str(actor or "").strip()
+    normalized_bucket, normalized_scope = _validate_memory_bucket_scope_pair(bucket_id, memory_scope)
+    if normalized_scope not in {"agent", "workflow"}:
+        return False
+    session = store.collaboration_sessions.get(normalized_bucket)
+    if not session:
+        return False
+    return any(participant.user_id == normalized_actor for participant in session.participants)
+
+
+def _authorize_memory_bucket_access(
+    request: Request | None,
+    *,
+    actor: str,
+    bucket_id: str,
+    memory_scope: str,
+    action: str,
+    payload: dict[str, Any] | None = None,
+) -> tuple[str, str]:
+    normalized_bucket, normalized_scope = _validate_memory_bucket_scope_pair(bucket_id, memory_scope)
+    normalized_actor = str(actor or "anonymous").strip() or "anonymous"
+
+    if _request_has_internal_access(request):
+        return normalized_bucket, normalized_scope
+
+    allowed = False
+    if normalized_scope == "session":
+        allowed = normalized_bucket in {normalized_actor, f"session:{normalized_actor}"}
+    elif normalized_scope == "user":
+        allowed = normalized_bucket == f"user:{normalized_actor}"
+    elif normalized_scope == "tenant":
+        tenant_claim = _extract_memory_tenant_claim(request, payload=payload)
+        allowed = bool(tenant_claim) and normalized_bucket == f"tenant:{tenant_claim}"
+    elif normalized_scope in {"agent", "workflow"}:
+        allowed = _actor_participates_in_memory_entity(normalized_actor, normalized_bucket, normalized_scope)
+    elif normalized_scope in {"run", "global"}:
+        allowed = False
+
+    if not allowed:
+        _append_audit_event(
+            action,
+            normalized_actor,
+            "blocked",
+            {"reason": "memory_scope_access_denied", "bucket_id": normalized_bucket, "memory_scope": normalized_scope},
+        )
+        raise HTTPException(status_code=403, detail="Access denied for requested memory scope")
+
+    return normalized_bucket, normalized_scope
 
 
 def _enforce_emergency_write_policy(action: str, actor: str) -> None:
@@ -6164,6 +6500,8 @@ def _parse_iso_datetime(value: str) -> datetime | None:
 
 def _build_atf_alignment_report() -> dict[str, Any]:
     platform = store.platform_settings
+    effective_auth_required = _effective_require_authenticated_requests()
+    effective_a2a_headers_required = _effective_require_a2a_runtime_headers()
     now = datetime.now(timezone.utc)
     cutoff = now - timedelta(hours=24)
 
@@ -6180,15 +6518,16 @@ def _build_atf_alignment_report() -> dict[str, Any]:
 
     pillars = {
         "identity": {
-            "status": "strong" if platform.require_authenticated_requests else "partial",
+            "status": "strong" if effective_auth_required else "partial",
             "controls": {
-                "require_authenticated_requests": platform.require_authenticated_requests,
+                "require_authenticated_requests": effective_auth_required,
                 "a2a_require_signed_messages": platform.a2a_require_signed_messages,
-                "require_a2a_runtime_headers": platform.require_a2a_runtime_headers,
+                "require_a2a_runtime_headers": effective_a2a_headers_required,
                 "a2a_replay_protection": platform.a2a_replay_protection,
                 "trusted_subject_count": len(platform.a2a_trusted_subjects),
+                "secure_local_mode": _secure_local_mode_enabled(),
             },
-            "gaps": [] if platform.require_authenticated_requests else ["Enable require_authenticated_requests for strong API identity assurance"],
+            "gaps": [] if effective_auth_required else ["Enable require_authenticated_requests for strong API identity assurance"],
         },
         "behavior_monitoring": {
             "status": "strong",
@@ -6590,6 +6929,7 @@ def _startup_initialize_state() -> None:
 
     _canonicalize_all_agent_definitions()
     _ensure_definition_history_seeded()
+    validate_route_inventory(app)
 
     _persist_store_state()
 
@@ -6624,6 +6964,7 @@ def _memory_load_long_term_entries(
     query_text: str = "",
     limit: int = 20,
 ) -> list[dict[str, Any]]:
+    bucket_id, memory_scope = _validate_memory_bucket_scope_pair(bucket_id, memory_scope)
     if not _env_flag("FRONTIER_MEMORY_ENABLE_LONG_TERM", True):
         return []
     if not _POSTGRES_MEMORY.enabled or not _POSTGRES_MEMORY.healthcheck():
@@ -6653,6 +6994,7 @@ def _memory_load_world_graph_entries(
     query_text: str = "",
     limit: int = 10,
 ) -> dict[str, Any]:
+    bucket_id, memory_scope = _validate_memory_bucket_scope_pair(bucket_id, memory_scope)
     if not _env_flag("FRONTIER_MEMORY_GRAPH_PROJECTION_ENABLED", True):
         return {"memories": [], "topics": [], "relations": []}
     if not _NEO4J_GRAPH.enabled or not _NEO4J_GRAPH.healthcheck():
@@ -6775,6 +7117,7 @@ def _memory_get_entries(
     memory_scope: str = "session",
     query_text: str = "",
 ) -> list[dict[str, Any]]:
+    session_id, memory_scope = _validate_memory_bucket_scope_pair(session_id, memory_scope)
     short_term = _memory_get_short_term_entries(session_id, limit=limit)
     if not include_long_term:
         return short_term
@@ -6797,6 +7140,7 @@ def _memory_get_hybrid_context(
     query_text: str = "",
     runtime_role: str = "",
 ) -> dict[str, Any]:
+    session_id, memory_scope = _validate_memory_bucket_scope_pair(session_id, memory_scope)
     if not _env_flag("FRONTIER_MEMORY_HYBRID_RETRIEVAL_ENABLED", True):
         entries = _memory_get_entries(
             session_id,
@@ -6857,6 +7201,7 @@ def _memory_get_hybrid_context(
 
 
 def _memory_clear_entries(session_id: str, *, memory_scope: str = "session", clear_long_term: bool = True) -> None:
+    session_id, memory_scope = _validate_memory_bucket_scope_pair(session_id, memory_scope)
     if _REDIS_MEMORY.enabled and _REDIS_MEMORY.healthcheck():
         _REDIS_MEMORY.clear_entries(session_id)
     store.memory_by_session[session_id] = []
@@ -6878,6 +7223,7 @@ def _memory_append_entry(
     long_term_session_id: str | None = None,
     persist_long_term: bool = True,
 ) -> None:
+    session_id, memory_scope = _validate_memory_bucket_scope_pair(session_id, memory_scope)
     if _REDIS_MEMORY.enabled and _REDIS_MEMORY.healthcheck():
         _REDIS_MEMORY.append_entry(session_id, entry)
     store.memory_by_session.setdefault(session_id, []).append(entry)
@@ -7185,6 +7531,8 @@ def _run_memory_world_graph_projection(
     memory_scope: str | None = None,
     limit: int = 20,
 ) -> dict[str, Any]:
+    if bucket_id is not None and memory_scope is not None:
+        bucket_id, memory_scope = _validate_memory_bucket_scope_pair(bucket_id, memory_scope)
     bounded_limit = max(1, min(200, int(limit)))
     if not _env_flag("FRONTIER_MEMORY_GRAPH_PROJECTION_ENABLED", True):
         result = {"ok": True, "status": "disabled", "projected": 0, "projections": []}
@@ -7297,6 +7645,8 @@ def _run_memory_consolidation(
     memory_scope: str | None = None,
     limit: int = 20,
 ) -> dict[str, Any]:
+    if bucket_id is not None and memory_scope is not None:
+        bucket_id, memory_scope = _validate_memory_bucket_scope_pair(bucket_id, memory_scope)
     bounded_limit = max(1, min(200, int(limit)))
     if not _env_flag("FRONTIER_MEMORY_CONSOLIDATION_ENABLED", True):
         result = {"ok": True, "status": "disabled", "processed_candidates": 0, "generated_entries": []}
@@ -7504,8 +7854,24 @@ def _build_runtime_l3_parity_report() -> dict[str, Any]:
     }
 
 
+@app.get("/health")
+def health() -> dict[str, str]:
+    return {"status": "ok"}
+
+
 @app.get("/healthz")
 def healthz() -> dict[str, str]:
+    payload = _build_health_payload()
+    if _secure_local_mode_enabled():
+        return {
+            "status": payload["status"],
+            "timestamp": payload["timestamp"],
+            "mode": "secure-local",
+        }
+    return payload
+
+
+def _build_health_payload() -> dict[str, str]:
     postgres_ok = _POSTGRES_STATE.enabled
     redis_ok = _REDIS_MEMORY.healthcheck() if _REDIS_MEMORY.enabled else False
     long_term_ok = _POSTGRES_MEMORY.healthcheck() if _POSTGRES_MEMORY.enabled else False
@@ -7523,8 +7889,30 @@ def healthz() -> dict[str, str]:
     }
 
 
+@app.get("/healthz/details")
+def healthz_details(request: Request) -> dict[str, str]:
+    actor = _enforce_request_authn(request, action="health.details.read")
+    _append_audit_event("health.details.read", actor, "allowed")
+    return _build_health_payload()
+
+
+@app.get("/federation/status")
+def get_federation_status(request: Request) -> dict[str, Any]:
+    actor = _enforce_request_authn(request, action="federation.status.read")
+    _append_audit_event("federation.status.read", actor, "allowed")
+    peers = [item.strip() for item in str(os.getenv("FEDERATION_PEERS", "")).split(",") if item.strip()]
+    return {
+        "enabled": _env_flag("FEDERATION_ENABLED", False),
+        "cluster_name": str(os.getenv("FEDERATION_CLUSTER_NAME", "")).strip(),
+        "region": str(os.getenv("FEDERATION_REGION", "")).strip(),
+        "peers": peers,
+    }
+
+
 @app.get("/runtime/providers")
-def get_runtime_providers() -> dict[str, Any]:
+def get_runtime_providers(request: Request) -> dict[str, Any]:
+    actor = _enforce_request_authn(request, action="runtime.providers.read")
+    _append_audit_event("runtime.providers.read", actor, "allowed")
     status = _openai_status()
     framework_adapters = {
         engine: _framework_runtime_probe(engine)
@@ -7538,12 +7926,16 @@ def get_runtime_providers() -> dict[str, Any]:
 
 
 @app.get("/runtime/l3-parity-report")
-def get_runtime_l3_parity_report() -> dict[str, Any]:
+def get_runtime_l3_parity_report(request: Request) -> dict[str, Any]:
+    actor = _enforce_request_authn(request, action="runtime.l3_parity.read")
+    _append_audit_event("runtime.l3_parity.read", actor, "allowed")
     return _build_runtime_l3_parity_report()
 
 
 @app.get("/runtime/local-integration-readiness")
-def get_local_integration_readiness() -> dict[str, Any]:
+def get_local_integration_readiness(request: Request) -> dict[str, Any]:
+    actor = _enforce_request_authn(request, action="runtime.local_integration_readiness.read")
+    _append_audit_event("runtime.local_integration_readiness.read", actor, "allowed")
     platform = store.platform_settings
     mcp_local_servers = [
         url
@@ -7587,7 +7979,9 @@ def get_platform_settings(request: Request) -> dict[str, Any]:
 
 
 @app.get("/platform/security-policy")
-def get_platform_security_policy() -> dict[str, Any]:
+def get_platform_security_policy(request: Request) -> dict[str, Any]:
+    actor = _enforce_request_authn(request, action="platform.security_policy.read")
+    _append_audit_event("platform.security_policy.read", actor, "allowed")
     resolved = _resolve_effective_security_policy(platform=store.platform_settings)
     resolved["backend_enforced_controls"] = [
         "capability_filter",
@@ -7656,6 +8050,7 @@ def get_memory(
     query: str | None = None,
 ) -> dict[str, Any]:
     actor = _enforce_request_authn(request, action="memory.read")
+    session_id, scope = _authorize_memory_bucket_access(request, actor=actor, bucket_id=session_id, memory_scope=scope, action="memory.read")
     short_term_entries = _memory_get_short_term_entries(session_id, limit=100)
     long_term_entries = (
         _memory_load_long_term_entries(
@@ -7692,6 +8087,7 @@ def get_memory(
 def clear_memory(session_id: str, request: Request, scope: str = "session") -> dict[str, Any]:
     actor = _enforce_request_authn(request, action="memory.clear")
     _enforce_emergency_write_policy("memory.clear", actor)
+    session_id, scope = _authorize_memory_bucket_access(request, actor=actor, bucket_id=session_id, memory_scope=scope, action="memory.clear")
     _memory_clear_entries(session_id, memory_scope=scope)
     _append_audit_event("memory.clear", actor, "allowed", {"session_id": session_id, "scope": scope})
     _persist_store_state()
@@ -7709,6 +8105,15 @@ def run_memory_consolidation(request: Request, payload: dict[str, Any] = Body(de
         limit = 20
     bucket_id = str(payload.get("bucket_id") or "").strip() or None
     scope = str(payload.get("scope") or "").strip().lower() or None
+    if bucket_id is not None and scope is not None:
+        bucket_id, scope = _authorize_memory_bucket_access(
+            request,
+            actor=actor,
+            bucket_id=bucket_id,
+            memory_scope=scope,
+            action="memory.consolidation.run",
+            payload=payload,
+        )
     result = _run_memory_consolidation(actor=actor, bucket_id=bucket_id, memory_scope=scope, limit=limit)
     _persist_store_state()
     return result
@@ -7725,6 +8130,15 @@ def run_memory_world_graph_projection(request: Request, payload: dict[str, Any] 
         limit = 20
     bucket_id = str(payload.get("bucket_id") or "").strip() or None
     scope = str(payload.get("scope") or "").strip().lower() or None
+    if bucket_id is not None and scope is not None:
+        bucket_id, scope = _authorize_memory_bucket_access(
+            request,
+            actor=actor,
+            bucket_id=bucket_id,
+            memory_scope=scope,
+            action="memory.world_graph.project",
+            payload=payload,
+        )
     result = _run_memory_world_graph_projection(actor=actor, bucket_id=bucket_id, memory_scope=scope, limit=limit)
     _persist_store_state()
     return result
@@ -10342,7 +10756,7 @@ def run_graph(request: Request, payload: GraphPayload) -> dict[str, Any]:
                     node_id=node_id,
                     type="node_failed",
                     title=f"{resolved_node.title} failed",
-                    summary=str(exc),
+                    summary=_sanitize_runtime_error_message(exc),
                     created_at=_now_iso(),
                 )
             )

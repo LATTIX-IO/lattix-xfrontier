@@ -1,8 +1,7 @@
 import asyncio
 
-from lattix_frontier.envelope.models import Envelope
-from lattix_frontier.guardrails.filter_chain import FilterContext
-from lattix_frontier.guardrails.filters.prompt_render import PromptRenderFilter
+from frontier_runtime.envelope import Envelope
+from frontier_runtime.guardrails import FilterContext, PromptRenderFilter
 
 
 def test_prompt_render_uses_structured_policy_context() -> None:

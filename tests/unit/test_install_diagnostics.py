@@ -1,7 +1,7 @@
 from pathlib import Path
 import subprocess
 
-from lattix_frontier.install.diagnostics import docker_compose_available, docker_daemon_available, hostname_prefix_valid, port_available, writable_directory
+from frontier_runtime.install import docker_compose_available, docker_daemon_available, hostname_prefix_valid, port_available, writable_directory
 
 
 def test_hostname_prefix_valid_accepts_dns_safe_name() -> None:

@@ -57,7 +57,7 @@ lattix = "frontier_tooling.cli:cli"
 frontier-installer = "frontier_tooling.installer:main"
 
 [tool.hatch.build.targets.wheel]
-packages = ["frontier_tooling"]
+packages = ["frontier_tooling", "frontier_runtime"]
 
 [tool.hatch.metadata]
 allow-direct-references = true
@@ -76,4 +76,4 @@ warn_unused_configs = true
 plugins = []
 
 [tool.pytest.ini_options]
-testpaths = ["apps/backend/tests"]
+testpaths = ["apps/backend/tests", "tests"]

@@ -2,61 +2,54 @@
 
 from __future__ import annotations
 
-import importlib.util
+import importlib
 from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
 
-LEGACY_PACKAGE_AVAILABLE = importlib.util.find_spec("lattix_frontier") is not None
-
-if LEGACY_PACKAGE_AVAILABLE:
-    from lattix_frontier.api.app import create_app
-    from lattix_frontier.config import get_settings
-    from lattix_frontier.events.nats_client import reset_event_bus
-    from lattix_frontier.orchestrator.approvals import reset_approval_store
-    from lattix_frontier.persistence.state_backend import reset_shared_state_backend
-    from lattix_frontier.security.jwt_auth import mint_token
-    from lattix_frontier.security.jwt_auth import reset_token_caches
+from frontier_runtime.events import reset_event_bus
+from frontier_runtime.orchestrator import reset_approval_store
+from frontier_runtime.persistence import reset_shared_state_backend
+from frontier_runtime.security import reset_token_caches
 
 
-def pytest_ignore_collect(collection_path: Path, path: object | None = None, config: object | None = None) -> bool:
-    if LEGACY_PACKAGE_AVAILABLE:
-        return False
-    return True
+def _backend_main_module():
+    return importlib.import_module("app.main")
 
 
 @pytest.fixture(autouse=True)
 def security_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    if not LEGACY_PACKAGE_AVAILABLE:
-        pytest.skip("legacy lattix_frontier test suite is disabled because the legacy package is not installed")
-    monkeypatch.setenv("A2A_JWT_SECRET", "unit-test-super-secret-value")
-    monkeypatch.setenv("A2A_TRUSTED_SUBJECTS", "orchestrator,research,code,review,coordinator,test-admin")
-    monkeypatch.setenv("ALLOWED_EGRESS_HOSTS", "api.example.com,localhost,127.0.0.1")
-    monkeypatch.setenv("FRONTIER_STATE_STORE", str(tmp_path / "frontier-state.db"))
-    get_settings.cache_clear()
+    monkeypatch.setenv("A2A_JWT_SECRET", "unit-test-super-secret-value-32bytes")
+    monkeypatch.setenv("FRONTIER_API_BEARER_TOKEN", "unit-test-bearer")
+    monkeypatch.setenv("FEDERATION_ENABLED", "true")
+    monkeypatch.setenv("FEDERATION_CLUSTER_NAME", "cluster-a")
+    monkeypatch.setenv("FEDERATION_REGION", "us-east")
+    monkeypatch.setenv("FEDERATION_PEERS", "https://peer-a.example.com,https://peer-b.example.com")
+    monkeypatch.setenv("FRONTIER_STATE_STORE", str(tmp_path / "frontier-state.json"))
+    backend_store = _backend_main_module().store
+    previous_authn = backend_store.platform_settings.require_authenticated_requests
+    backend_store.platform_settings.require_authenticated_requests = True
     reset_shared_state_backend()
     reset_approval_store()
     reset_event_bus()
     reset_token_caches()
     yield
+    backend_store.platform_settings.require_authenticated_requests = previous_authn
     reset_shared_state_backend()
     reset_approval_store()
     reset_event_bus()
     reset_token_caches()
-    get_settings.cache_clear()
 
 
 @pytest.fixture()
 def test_client() -> TestClient:
-    if not LEGACY_PACKAGE_AVAILABLE:
-        pytest.skip("legacy lattix_frontier test suite is disabled because the legacy package is not installed")
-    return TestClient(create_app())
+    return TestClient(_backend_main_module().app)
 
 
 @pytest.fixture()
 def auth_headers() -> dict[str, str]:
-    if not LEGACY_PACKAGE_AVAILABLE:
-        pytest.skip("legacy lattix_frontier test suite is disabled because the legacy package is not installed")
-    token = mint_token("test-admin", ttl_seconds=60, additional_claims={"token_use": "admin"})
-    return {"Authorization": f"Bearer {token}"}
+    return {
+        "Authorization": "Bearer unit-test-bearer",
+        "x-frontier-actor": "test-admin",
+    }

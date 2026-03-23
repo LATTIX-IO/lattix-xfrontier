@@ -1,4 +1,4 @@
-from lattix_frontier.security.biscuit_tokens import CapabilityMinter, CapabilityVerifier, build_default_keypair
+from frontier_runtime.security import CapabilityMinter, CapabilityVerifier, build_default_keypair
 
 
 def test_capability_token_round_trip() -> None:

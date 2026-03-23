@@ -1,5 +1,4 @@
-from lattix_frontier.envelope.models import Envelope, EnvelopeStatus
-from lattix_frontier.envelope.serialization import envelope_from_json, envelope_to_json
+from frontier_runtime.envelope import Envelope, EnvelopeStatus, envelope_from_json, envelope_to_json
 
 
 def test_envelope_round_trip() -> None:

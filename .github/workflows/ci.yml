@@ -42,12 +42,11 @@ jobs:
       - name: Lint
         run: ruff check .
       - name: Type check
-        run: mypy frontier_tooling/
+        run: mypy frontier_tooling/ frontier_runtime/
       - name: Policy tests
         run: opa test policies/ -v
       - name: Backend tests
-        working-directory: apps/backend
-        run: pytest tests/ -v --cov=app --cov-report=xml
+        run: pytest apps/backend/tests tests -v --cov=app --cov=frontier_runtime --cov-report=xml
       - name: Compose config validation
         run: |
           docker compose config --quiet

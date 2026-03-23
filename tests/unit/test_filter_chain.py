@@ -1,8 +1,8 @@
 import asyncio
 
-from lattix_frontier.envelope.models import Envelope
-from lattix_frontier.guardrails.filter_chain import FilterContext, default_filter_chain
-from lattix_frontier.security.biscuit_tokens import CapabilityMinter, build_default_keypair
+from frontier_runtime.envelope import Envelope
+from frontier_runtime.guardrails import FilterContext, default_filter_chain
+from frontier_runtime.security import CapabilityMinter, build_default_keypair
 
 
 def test_filter_chain_allows_valid_envelope() -> None:
@@ -14,7 +14,7 @@ def test_filter_chain_allows_valid_envelope() -> None:
         max_tool_calls=1,
     )
     envelope = Envelope(
-        source_agent="orchestrator",
+        source_agent="backend",
         target_agent="research",
         action="execute_step",
         payload={"task": "research foo"},
@@ -25,7 +25,7 @@ def test_filter_chain_allows_valid_envelope() -> None:
 
 
 def test_filter_chain_blocks_targeted_envelope_without_capability_token() -> None:
-    envelope = Envelope(source_agent="orchestrator", target_agent="research", action="execute_step", payload={"task": "research foo"})
+    envelope = Envelope(source_agent="backend", target_agent="research", action="execute_step", payload={"task": "research foo"})
 
     result = asyncio.run(default_filter_chain().run(envelope, FilterContext()))
 

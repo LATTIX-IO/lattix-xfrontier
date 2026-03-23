@@ -1,4 +1,4 @@
-from lattix_frontier.security.vault_client import VaultClient
+from frontier_runtime.security import VaultClient
 
 
 def test_vault_client_development_fallback() -> None:

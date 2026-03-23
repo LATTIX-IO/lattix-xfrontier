@@ -1,5 +1,4 @@
-from lattix_frontier.events.event_models import AgentEvent
-from lattix_frontier.events.hash_chain import HashChain
+from frontier_runtime.events import AgentEvent, HashChain
 
 
 def test_hash_chain_verifies() -> None:
