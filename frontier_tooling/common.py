@@ -15,7 +15,8 @@ from urllib.request import Request, urlopen
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 INSTALLER_DIR = REPO_ROOT / ".installer"
-INSTALLER_ENV_PATH = INSTALLER_DIR / "local.env"
+SECURE_INSTALLER_ENV_PATH = INSTALLER_DIR / "local-secure.env"
+LIGHTWEIGHT_INSTALLER_ENV_PATH = INSTALLER_DIR / "local-lightweight.env"
 DEFAULT_ARCHIVE_URL = "https://github.com/LATTIX-IO/lattix-xfrontier/archive/refs/heads/main.zip"
 
 
@@ -51,25 +52,45 @@ def _random_secret() -> str:
     return base64.b64encode(secrets.token_bytes(48)).decode("ascii").rstrip("=")
 
 
-def ensure_compose_env_file() -> Path:
+def _normalize_a2a_audience(value: str | None) -> str:
+    text = str(value or "").strip()
+    if not text or text == "agents":
+        return "frontier-runtime"
+    return text
+
+
+def _installer_env_path(*, local_profile: bool) -> Path:
+    return LIGHTWEIGHT_INSTALLER_ENV_PATH if local_profile else SECURE_INSTALLER_ENV_PATH
+
+
+def ensure_compose_env_file(*, local_profile: bool = False) -> Path:
     env_map: OrderedDict[str, str] = OrderedDict()
-    for source in (REPO_ROOT / ".env.example", REPO_ROOT / ".env", INSTALLER_ENV_PATH):
+    installer_env_path = _installer_env_path(local_profile=local_profile)
+    for source in (REPO_ROOT / ".env.example", REPO_ROOT / ".env", installer_env_path):
         for key, value in _read_env_map(source).items():
             env_map[key] = value
 
     env_map.setdefault("A2A_JWT_SECRET", _random_secret())
     env_map.setdefault("A2A_JWT_ALG", "HS256")
     env_map.setdefault("A2A_JWT_ISS", "lattix-frontier")
-    env_map.setdefault("A2A_JWT_AUD", "agents")
-    env_map.setdefault("A2A_TRUSTED_SUBJECTS", "backend,research,code,review,coordinator")
-    env_map.setdefault("NEXT_PUBLIC_API_BASE_URL", "/api")
-    env_map.setdefault("FRONTIER_LOCAL_API_BASE_URL", "http://localhost:8000")
+    env_map["A2A_JWT_AUD"] = _normalize_a2a_audience(env_map.get("A2A_JWT_AUD"))
+    env_map["A2A_TRUSTED_SUBJECTS"] = "backend,research,code,review,coordinator"
     env_map.setdefault("LOCAL_STACK_HOST", "frontier.localhost")
-    return _write_env_map(INSTALLER_ENV_PATH, env_map)
+    if local_profile:
+        env_map["FRONTIER_RUNTIME_PROFILE"] = "local-lightweight"
+        env_map["NEXT_PUBLIC_API_BASE_URL"] = "http://localhost:8000"
+        env_map["FRONTEND_ORIGIN"] = "http://localhost:3000"
+        env_map["FRONTIER_LOCAL_API_BASE_URL"] = "http://localhost:8000"
+    else:
+        env_map["FRONTIER_RUNTIME_PROFILE"] = "local-secure"
+        env_map["NEXT_PUBLIC_API_BASE_URL"] = "/api"
+        env_map["FRONTEND_ORIGIN"] = f"http://{env_map['LOCAL_STACK_HOST']}"
+        env_map.setdefault("FRONTIER_LOCAL_API_BASE_URL", "http://localhost:8000")
+    return _write_env_map(installer_env_path, env_map)
 
 
 def compose_prefix(*, local: bool) -> list[str]:
-    env_path = ensure_compose_env_file()
+    env_path = ensure_compose_env_file(local_profile=local)
     base = ["docker", "compose", "--env-file", str(env_path)]
     if local:
         base.extend(["-f", "docker-compose.local.yml"])

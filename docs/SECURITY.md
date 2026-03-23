@@ -1,6 +1,6 @@
 # Security
 
-See `THREAT-MODEL.md` for the canonical current-state vs target-state security expectations, trust boundaries, deployment-mode assumptions, migration boundary for removing `lattix_frontier/`, and known failure modes.
+See `THREAT-MODEL.md` for the canonical current-state vs target-state security expectations, trust boundaries, deployment-mode assumptions, the historical migration record for the removed `lattix_frontier/` package, and known failure modes.
 
 ## Capability tokens
 

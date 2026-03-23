@@ -1,9 +1,11 @@
-.PHONY: dev up down local-up local-down test lint typecheck policy-test bootstrap health ps logs smoke install-opa
+.PHONY: dev up down local-up local-down test lint typecheck policy-test helm-validate release-bundle bootstrap health ps logs smoke install-opa
 
 PYTHON ?= python
 OPA_RUNNER ?= $(PYTHON) scripts/run_opa.py
-LOCAL_COMPOSE ?= docker compose -f docker-compose.local.yml
-FULL_COMPOSE ?= docker compose
+SECURE_ENV_FILE := $(shell $(PYTHON) -c "from frontier_tooling.common import ensure_compose_env_file; print(ensure_compose_env_file(local_profile=False))")
+LIGHTWEIGHT_ENV_FILE := $(shell $(PYTHON) -c "from frontier_tooling.common import ensure_compose_env_file; print(ensure_compose_env_file(local_profile=True))")
+LOCAL_COMPOSE ?= docker compose --env-file $(LIGHTWEIGHT_ENV_FILE) -f docker-compose.local.yml
+FULL_COMPOSE ?= docker compose --env-file $(SECURE_ENV_FILE)
 
 dev:            ## Start local stack (Docker Compose)
 	$(FULL_COMPOSE) up -d
@@ -40,6 +42,20 @@ typecheck:      ## Type check
 
 policy-test:    ## Test OPA policies
 	$(OPA_RUNNER) test policies/ -v
+
+helm-validate:  ## Validate Helm chart manifests (requires helm)
+	helm lint ./helm/lattix-frontier
+	helm template lattix ./helm/lattix-frontier -f helm/lattix-frontier/values-prod.yaml > /dev/null
+
+release-bundle: ## Build a local release bundle (requires VERSION and helm)
+	@test -n "$(VERSION)" || (echo "VERSION is required, e.g. make release-bundle VERSION=v0.1.0" && exit 1)
+	mkdir -p dist/chart dist/installer
+	helm package helm/lattix-frontier --destination dist/chart
+	cp install/bootstrap.sh dist/installer/
+	cp install/bootstrap.ps1 dist/installer/
+	cp install/frontier-installer.py dist/installer/
+	cp install/manifest.json dist/installer/
+	$(PYTHON) scripts/build_release_bundle.py --version "$(VERSION)" --repo "local-worktree" --chart-dist dist/chart --installer-dist dist/installer --output-root dist/release
 
 install-opa:    ## Install repo-local OPA binary (Windows helper remains available too)
 	@echo "Install OPA with .\\scripts\\frontier.ps1 install-opa on Windows, or place the binary at .tools/opa/opa(.exe)."

@@ -12,13 +12,13 @@ def bootstrap_url() -> str:
 
 def main() -> None:
     root = repo_root()
-    ensure_compose_env_file()
+    compose_env = ensure_compose_env_file(local_profile=False)
     run_command([python_executable(), "-m", "pip", "install", "-e", ".[dev]"], cwd=root)
     print_json(
         {
             "installed": True,
             "repo_root": str(root),
-            "compose_env": str((root / ".installer" / "local.env").resolve()),
+            "compose_env": str(compose_env.resolve()),
             "next_steps": [
                 "lattix dev",
                 "lattix health",

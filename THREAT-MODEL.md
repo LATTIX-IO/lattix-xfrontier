@@ -7,7 +7,7 @@ This document is the canonical security expectations and migration-boundary refe
 It serves two jobs:
 
 1. describe the **current-state** security posture and failure modes of the repository as it exists today; and
-2. constrain implementation toward the **target-state** architecture where `apps/backend` is the sole canonical backend surface and `lattix_frontier/` is fully disconnected from active backend/runtime responsibility.
+2. constrain implementation toward the **target-state** architecture where `apps/backend` is the sole canonical backend surface and the removed `lattix_frontier/` package remains fully disconnected from active backend/runtime responsibility.
 
 This file should be updated whenever security-relevant behavior, deployment modes, trust boundaries, or accepted exceptions change.
 
@@ -30,7 +30,7 @@ Out of scope for this document:
 
 ## Current-state architecture
 
-The repository currently contains **two security models**.
+The repository no longer contains the old `lattix_frontier/` package in the working tree, but it still carries historical migration assumptions from that legacy surface. The current active code paths are the canonical backend/runtime surfaces below.
 
 ### 1. Backend model (`apps/backend`)
 
@@ -62,12 +62,24 @@ Current strengths:
 - internal-only backend routes now require trusted service-style auth context instead of generic authenticated callers
 - memory API and maintenance paths now validate scope-to-bucket alignment before reading or mutating memory state
 - memory reads/writes now enforce actor, tenant, collaboration-session, or internal-service authorization depending on scope
+- signed shared-runtime bearer JWTs can now carry actor, tenant, and internal-service identity into backend request auth context
+- worker A2A JWT issuance and verification now understand the same `actor`, `tenant_id`, `subject`, and `internal_service` identity claims used by the canonical backend
+- worker JWT defaults and deployment examples now align on the shared `frontier-runtime` audience and hosted-profile runtime settings used by backend/runtime security policy
+- worker A2A client now rejects non-HTTPS endpoints when `FRONTIER_RUNTIME_PROFILE=hosted`
+- worker service templates now keep `/healthz` minimal in strict profiles, move detailed health/readiness behind authenticated bearer checks, and require `internal_service=true` for hosted/local-secure envelope handling
+- shared fallback and Rego agent policy now honor explicit capability-style `allowed_tools` and `max_tool_calls` inputs instead of relying only on static per-agent allowlists
+- capability token verification now enforces tool-call budgets and canonical read/write path scopes when those claims are supplied to runtime checks
+- worker runtime envelopes now carry a normalized `auth_context`, local bus middleware enforces strict-profile service identity plus scope-aware memory authorization before subscriber delivery, and remote A2A dispatch propagates the same actor/tenant/subject context
+- strict worker A2A transport now signs `X-Frontier-Subject` / `X-Frontier-Nonce` / `X-Frontier-Signature` headers, verifies them at the receiving service, and rejects nonce replay for non-local profiles
+- backend shared security headers now add HSTS automatically when `FRONTIER_RUNTIME_PROFILE=hosted`
+- CI now performs real Helm lint/template validation for `helm/lattix-frontier`, and local helper tooling exposes the same check when Helm is installed
+- backend runtime behavior is now pinned by explicit `FRONTIER_RUNTIME_PROFILE` values for `local-lightweight`, `local-secure`, and `hosted`
 
 Current weaknesses:
 
-- auth still depends on deployment configuration rather than a single immutable runtime profile
-- hosted/internal profile exposure rules are not yet codified as tightly as the secure-local profile
-- some runtime-originated memory flows still rely on local execution context and need the same ownership contract carried into hosted worker/service boundaries
+- some hosted/runtime profile expectations are now codified in Helm defaults, but worker/service handler parity is not fully enforced yet
+- hosted/internal profile exposure rules are not yet codified as tightly across all worker/service surfaces as they are in the canonical backend
+- some runtime-originated memory flows still rely on local execution context, and the converged signed identity claims are not yet enforced uniformly by all worker/service handlers
 - policy sources are still split across backend fallback logic and Rego inputs
 - worker/service transport expectations outside local-only mode are not fully hardened yet
 
@@ -77,15 +89,15 @@ The target architecture is:
 
 - `apps/backend` is the **only** canonical backend/control-plane surface.
 - `apps/workers` remains the worker/runtime surface.
-- logic currently living under `lattix_frontier/` is either:
+- logic that previously lived under `lattix_frontier/` is either:
   - migrated into `apps/backend` or `apps/workers`,
   - extracted into a small shared library with no competing backend surface, or
   - deleted.
 
 ### Target-state rules
 
-1. No new feature work should deepen `lattix_frontier/` as a parallel backend.
-2. Any reusable security primitive from `lattix_frontier/` must be either:
+1. No new feature work should recreate `lattix_frontier/` as a parallel backend.
+2. Any reusable security primitive inherited from `lattix_frontier/` must be either:
    - ported into `apps/backend`, or
    - extracted as a shared primitive with a clearly documented owner.
 3. Deployment docs, runtime wiring, and tests must all point to `apps/backend` as the canonical backend.
@@ -204,22 +216,25 @@ The following must remain true as the system evolves:
 | Security policy disclosure | `/platform/security-policy` should not be public in secure/full mode | attacker reconnaissance | central route classification now marks it authenticated-read and secure local mode requires auth | classify endpoint visibility consistently across hosted/internal profiles |
 | Introspection leakage | `/healthz` and runtime readiness/provider endpoints can expose too much detail | service and trust boundary reconnaissance | central route classification plus secure local mode now serves minimal public `/healthz` and authenticated diagnostics endpoints | extend the same contract to all hosted/internal profiles |
 | OPA path checks | canonical containment is now enforced in backend loaders and shared fallback policy, but parity must remain consistent across all policy consumers | residual bypass risk if new callers reintroduce prefix checks | canonical containment checks now guard approved roots | keep parity tests and avoid new prefix-based checks |
-| Policy drift | Rego policy and Python fallback duplicate rules | inconsistent enforcement | fail-closed behavior exists in some paths | parity tests + single source of truth |
-| Static agent allowlists | hardcoded allowed tools in policy/fallback | new agents have no dynamic policy coverage | hardcoded defaults only | move policy inputs to config-backed dynamic model |
-| Capability enforcement | capability claims are minted more richly than enforced | over-permission or false confidence | narrow current usage partially reduces blast radius | enforce read/write/tool-budget claims explicitly |
+| Policy drift | Rego policy and Python fallback still duplicate logic, but now share a normalized evaluation contract for security-critical decisions | residual inconsistent-enforcement risk if one side evolves without parity updates | parity tests now cover path access, dynamic tool allowlists, and tool budgets across fallback/Rego paths | keep one normalized request contract and expand parity coverage as new controls are added |
+| Static agent allowlists | hardcoded defaults still exist, but policy/fallback now accept explicit per-request `allowed_tools` inputs | reduced new-agent denial/drift risk; defaults can still diverge if overused | dynamic allowlists are now honored by both the Python fallback and Rego policy | move the remaining defaults toward config-backed policy sources |
+| Capability enforcement | capability claims are now enforced for tool membership, tool-call budgets, and canonical read/write path scopes in shared runtime checks | reduced over-permission risk; callers must still consistently provide the correct metadata for evaluation | shared verifier + filter-chain enforcement now validate richer claims before execution | keep extending capability checks to future runtime call sites and metadata producers |
 | Replay cache | backend A2A nonce handling now expires and prunes correctly, but other auth surfaces could still drift if reimplemented independently | reduced replay weakening / memory pressure risk | TTL-based expiry + bounded pruning in backend | converge remaining auth surfaces on shared replay primitive |
-| Worker transport | worker A2A transport is too lightweight for non-local trust | MITM / weak transport assumptions | local mode is often plaintext and loopback-oriented | explicit HTTPS/TLS policy outside local-only mode |
+| Worker transport | worker A2A transport now rejects plaintext endpoints in `hosted` profile, but broader TLS verification and service identity expectations still need fuller enforcement | reduced MITM / weak transport assumptions for hosted A2A helper paths | hosted-profile HTTPS enforcement in worker A2A client; local profiles still allow explicit local-only exceptions | extend TLS verification and service identity policy across remaining runtime/service callers |
+| Runtime observability | worker/runtime enforcement previously had minimal structured telemetry for allow/block/failure decisions | poor incident reconstruction and harder proof of control operation | runtime envelopes now accumulate structured security events, delivery traces, and counters keyed by `correlation_id` | keep wiring the same telemetry into future runtime paths and operator-facing dashboards |
 | Error leakage | caller-facing runtime summaries are now sanitized, but other endpoints still need the same discipline when new failure modes are added | reduced rule-enumeration and recon risk | sanitized runtime/guardrail failure summaries + logs/audit retained | extend sanitization review to future hosted/internal APIs |
 | CORS | backend local browser access now uses explicit allowlists | reduced browser attack surface | localhost origin restriction plus explicit method/header allowlists | keep deployment-specific origin config explicit |
-| Security headers | header policy still needs expansion beyond the current baseline | weaker browser/API hardening | backend now sets `nosniff`, `DENY`, and restrictive CSP headers by middleware | extend header set for hosted/TLS profiles |
-| Memory boundaries | backend memory routes now enforce scope-aware access checks, but hosted/runtime identity propagation is still incomplete | reduced cross-scope or cross-tenant bleed risk in backend API paths; remaining risk in broader service propagation | scope-to-bucket validation, actor/user checks, tenant claim checks, collaboration membership checks, and internal-only maintenance auth | carry the same ownership model into worker/runtime and hosted identity propagation |
-| Helm network policies | current template is malformed/broken | false confidence in segmentation | none | repair and validate render/apply path |
+| Security headers | backend now applies stronger hosted/TLS headers, but browser/API hardening can still expand further if new exposure modes are added | reduced browser/API hardening risk | backend now sets `nosniff`, `DENY`, restrictive CSP headers, and hosted-profile HSTS by middleware | extend header review as new hosted/browser exposure paths are added |
+| Memory boundaries | backend and worker/runtime execution paths now enforce scope-aware access checks, but broader non-backend consumers still need to stay aligned | reduced cross-scope or cross-tenant bleed risk across backend API paths and local worker/runtime delivery; remaining risk is future drift in new consumers | scope-to-bucket validation, actor/user checks, tenant claim checks, collaboration membership checks, internal-only maintenance auth, and runtime envelope authorization middleware | keep propagating the same ownership model into any new runtime/service consumers and policy sources |
+| Tenant context drift | runtime envelopes could previously carry authenticated tenant identity while embedding conflicting payload tenant context | cross-tenant confusion, unsafe fan-out, or weak non-prod isolation evidence | runtime security now rejects conflicting payload tenant assertions and records explicit tenant-isolation audit events | extend the same tenant-consistency checks to future remote/runtime consumers as they are added |
+| Helm network policies | template was previously malformed; repo now has real Helm lint/render validation in CI, though this local machine still lacks a Helm binary for an interactive run | sharply reduced false-confidence risk because PRs/pushes now render the chart | repaired control-plane policy template, selector audit against current chart workloads, and CI Helm lint/template validation | optionally run the same check locally in Helm-capable operator environments before release |
+| Release/promotion drift | release docs previously promised staged promotion and rollback behavior that CI did not implement | unsafe or unverifiable production promotion path | release automation now builds versioned bundles, publishes release assets, gates `dev -> stage -> prod` promotion with environment smoke checks, and exposes a manual rollback workflow driven by rollback metadata | extend the same promotion evidence into deployment apply/reconcile jobs as those surfaces mature |
 | Deployment drift | docs/defaults around secure vs lightweight modes have been inconsistent | wrong operator assumptions | recent cleanup improved this | codify in docs + threat model + tests |
-| Legacy backend drift | `lattix_frontier/` still contains active security/runtime logic | dual-surface confusion and security drift | documented intent to converge | Stage 0 migration/disconnection boundary |
+| Legacy backend drift | the deleted `lattix_frontier/` package is still referenced by some docs and historical migration notes | dual-surface confusion and documentation/operator drift | package removed from the working tree; migration intent documented in this file | complete Phase 3 legacy-surface retirement across docs/tooling/tests |
 
-## Migration boundary for removing `lattix_frontier/`
+## Historical migration record for removed `lattix_frontier/`
 
-The following is the Phase 0 migration matrix.
+The following is the Phase 0 migration matrix preserved as a historical record of how legacy surfaces were intended to be migrated, extracted, or deleted.
 
 | Surface | Current role | Phase 0 disposition | Notes |
 |---|---|---|---|
@@ -240,7 +255,7 @@ The following is the Phase 0 migration matrix.
 
 ### Migration rule
 
-Every live `lattix_frontier/` surface must be assigned one of three dispositions before new security work proceeds beyond Phase 0:
+Every legacy `lattix_frontier/` surface was assigned one of three dispositions before new security work proceeded beyond Phase 0:
 
 - **migrate** — port into `apps/backend` / `apps/workers`
 - **extract** — move into a small shared primitive package with one owner
@@ -254,8 +269,8 @@ Phase 0 is complete when:
 
 1. `THREAT-MODEL.md` exists and is treated as canonical.
 2. Current-state and target-state architectures are both documented.
-3. `lattix_frontier/` is explicitly marked as transitional and bounded.
-4. The migration matrix covers every still-live security/runtime area in `lattix_frontier/`.
+3. the removed `lattix_frontier/` package is explicitly documented as historical/transitional rather than current.
+4. the migration matrix covers every formerly live security/runtime area in `lattix_frontier/`.
 5. New work is guided toward `apps/backend` / `apps/workers`, not legacy backend expansion.
 6. Repo docs point readers to this threat model for security expectations and architecture convergence.
 
@@ -269,7 +284,49 @@ Any security-relevant change should update this file if it changes:
 - token/replay/auth semantics
 - sandbox policy/invariants
 - memory boundary expectations
-- the migration status of any `lattix_frontier/` surface
+- the migration status of any historically referenced `lattix_frontier/` surface
+
+## Phase 3 focus
+
+Phase 3 is the **legacy-surface retirement and documentation convergence** wave.
+
+Its goal is to finish the repo-level cleanup that becomes possible after the functional/security migration work: remove stale references to the deleted `lattix_frontier/` package, keep release/docs/tooling aligned to the canonical surfaces, and prevent drift from reintroducing a phantom second backend.
+
+### Phase 3 objectives
+
+1. remove stale documentation and release references that still describe `lattix_frontier/` as a live in-tree package
+2. add regression coverage for canonical repo structure assumptions so deleted legacy surfaces do not silently reappear in docs/tooling
+3. narrow historical migration notes so they remain useful context without confusing operators about the active architecture
+
+### Phase 3 implementation status
+
+Implemented:
+
+- stale README architecture/layout references to a live `lattix_frontier/` package have been removed
+- `docs/ARCHITECTURE.md` now describes the active canonical surfaces instead of a deleted dual-surface package layout
+- FOSS/security docs now treat `lattix_frontier/` as historical migration context rather than a current canonical path
+
+Still remaining for this workstream:
+
+- audit the broader docs/reference tree for stale legacy-package claims and update only the pieces that still affect operator/developer guidance
+- add codebase guards where helpful so canonical repo structure changes are validated rather than remembered informally
+
+### Phase 3 workstreams
+
+#### 1. Legacy reference retirement
+
+- remove stale references to deleted in-tree legacy packages from docs, release guidance, and operator instructions
+- distinguish historical migration notes from current architecture claims
+
+#### 2. Canonical structure guardrails
+
+- add regression coverage for canonical repo structure expectations
+- prevent tooling/docs drift from reviving removed package assumptions
+
+#### 3. Historical record minimization
+
+- keep only the historical migration context that still explains security or ownership decisions
+- trim or rewrite notes that no longer help current operators or contributors
 
 ## Phase 1 completion status
 
@@ -313,12 +370,21 @@ Implemented:
 - memory scope-to-bucket validation for backend retrieval, consolidation, and world-graph projection paths
 - backend memory authorization checks for session, user, tenant, agent, and workflow scopes
 - regression coverage for cross-scope denial and internal maintenance endpoint protection
+- signed shared-runtime JWT bearer claims now populate backend actor, tenant, and internal-service auth context
+- regression coverage for JWT-backed tenant memory access and internal-route gating
+- worker JWT helpers and A2A envelope posting now emit/consume the same actor, tenant, subject, and internal-service identity claims used by shared runtime auth
+- worker runtime defaults/examples now pin the shared `frontier-runtime` audience and `hosted` profile expectations instead of a divergent worker-only audience
+- regression coverage for worker JWT claim round-tripping and A2A claim propagation
+- backend auth and public health exposure now resolve through explicit runtime profiles, with compose defaults pinned to `local-lightweight` and `local-secure`
+- regression coverage for `local-secure` and `hosted` runtime-profile behavior
+- Helm chart defaults now pin Kubernetes API/orchestrator workloads to the `hosted` runtime profile and require signed A2A runtime headers via chart-managed shared secret wiring
+- Helm control-plane network policies have been repaired to match the workloads the chart actually deploys
 
 Still remaining for this workstream:
 
-- define immutable runtime profiles for hosted/non-local operation rather than environment-convention-driven profile selection
-- narrow any remaining differences between secure-local, local-lightweight, and future hosted endpoint exposure rules
 - move beyond backend-only convergence so workers and service-to-service transport follow the same profile contract
+- align hosted profile behavior with worker/service runtime surfaces rather than just backend request handling
+- validate Helm render/apply behavior in a Helm-capable environment and extend regression coverage for hosted deployment manifests beyond static contract checks
 
 The memory access control workstream is now partially implemented in the canonical backend as well.
 
@@ -326,15 +392,74 @@ Implemented:
 
 - backend memory endpoints reject bucket/scope mismatches instead of trusting caller-supplied scope labels
 - `session` and `user` memory access now binds to the authenticated actor identity
-- `tenant` memory access now requires an explicit tenant claim that matches the bucket
+- `tenant` memory access now requires an explicit tenant claim that matches the bucket, whether provided via header or signed runtime bearer token
 - `agent` and `workflow` memory access now requires collaboration-session membership for non-internal callers
-- internal consolidation and world-graph projection routes now require internal service authentication
+- internal consolidation and world-graph projection routes now require internal service authentication from trusted headers or signed internal-service bearer claims
+- worker service templates now decode and expose the same signed identity claims for downstream handler authorization decisions
 
 Still remaining for this workstream:
 
-- carry the same ownership and authorization model into worker/runtime execution flows beyond backend route handlers
-- define how hosted identities and tenant claims are minted/verified so tenant authorization is not based on local header conventions alone
-- extend memory authorization parity checks to non-backend consumers and policy sources
+- extend memory authorization parity checks to any future non-backend consumers and policy sources so new runtime paths do not drift
+
+The policy source convergence workstream is now partially implemented as well.
+
+Implemented:
+
+- Python fallback policy and `policies/agent_policy.rego` now both honor explicit per-request `allowed_tools`
+- Python fallback policy and Rego policy now both enforce `max_tool_calls` budgets
+- shared policy evaluation now flows through a normalized `PolicyEvaluationRequest` / `PolicyDecision` contract
+- capability verification now enforces canonical read/write path scopes and tool-call budgets rather than only tool-name membership
+- guardrail filter-chain enforcement now evaluates richer capability claims before targeted runtime actions proceed
+- regression coverage now exercises dynamic allowlists, capability budgets, canonical path containment, and structured policy decisions
+
+Still remaining for this workstream:
+
+- keep expanding parity coverage as new policy controls are introduced so fallback/Rego behavior does not drift again
+- continue reducing reliance on hardcoded defaults by moving remaining policy inputs toward configuration-backed sources
+
+The operational traces and failure-drill workstream is now partially implemented for worker/runtime security paths.
+
+Implemented:
+
+- worker/runtime envelopes now collect structured `security_events` with `correlation_id`, outcome, control, reason, and sanitized auth context
+- runtime metrics now count security decisions, event-bus delivery attempts/successes/blocks/failures, and remote dispatch attempts/successes/failures
+- runtime traces now record security, event-bus, and remote-dispatch outcomes in envelope payload logs for later inspection and correlation
+- dispatcher paths now emit delivery attempt/success/failure traces rather than silently forwarding messages
+- focused failure-path tests now cover blocked tenant memory access, time-budget delivery stops, and subscriber exceptions so incident signals are exercised instead of assumed
+
+Still remaining for this workstream:
+
+- surface the new worker/runtime telemetry in operator-facing observability views alongside existing backend audit/readiness data
+- expand failure drills beyond the current local runtime coverage to staged deployment and rollback flows
+
+The release promotion and rollback workstream is now implemented for the canonical repository automation path.
+
+Implemented:
+
+- `.github/workflows/release.yml` now packages Helm and installer artifacts into a versioned release bundle and publishes those assets with tagged releases
+- `scripts/build_release_bundle.py` now generates `manifest.json`, `promotion-plan.json`, `rollback-plan.json`, and release notes with version, image, and previous-release metadata
+- staged promotion now flows through `dev -> stage -> prod` GitHub environments and reuses the existing Foundry secret validation and smoke gates for each step
+- `.github/workflows/rollback.yml` now provides a manual rollback workflow that retrieves rollback metadata for a selected release and re-runs environment smoke checks before rollback application
+- local operators can build the same release bundle shape with `make release-bundle VERSION=vX.Y.Z`
+
+Still remaining for this workstream:
+
+- connect bundle promotion and rollback metadata to future GitOps apply/reconcile jobs so deployment state changes are fully automated end-to-end
+- add regression coverage for workflow-level release metadata consumption once CI/workflow testing is introduced in-repo
+
+The multi-tenant non-prod validation and reliability-proof workstream is now implemented for canonical worker/runtime isolation paths.
+
+Implemented:
+
+- worker/runtime security now rejects conflicting payload tenant assertions when they do not match authenticated tenant identity
+- tenant-isolation allow/block decisions are now recorded as structured runtime security events for correlation and auditability
+- focused regressions now cover blocked mismatched payload tenant context, allowed matching tenant context, and repeated mixed-tenant message delivery without bucket cross-contamination
+- repeated local runtime validation now exercises multiple tenant-scoped messages in one run, providing basic non-prod evidence for isolation and reliability under small burst load
+
+Still remaining for this workstream:
+
+- extend the same proofing into hosted/non-local deployment environments and larger sustained load scenarios
+- add operator-facing summaries for tenant-isolation pass/fail evidence in observability surfaces and release evidence bundles
 
 ### Phase 2 workstreams
 

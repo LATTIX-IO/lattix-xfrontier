@@ -21,9 +21,12 @@ def test_installer_writes_env_file(tmp_path: Path) -> None:
     )
     env_path = installer._write_env_file(answers, {"A2A_JWT_SECRET": secrets.token_urlsafe(32)})
     text = env_path.read_text(encoding="utf-8")
-    assert env_path == tmp_path / ".installer" / "local.env"
+    assert env_path == tmp_path / ".installer" / "local-secure.env"
     assert "LOCAL_STACK_HOST=demo.localhost" in text
+    assert "FRONTIER_RUNTIME_PROFILE=local-secure" in text
     assert "NEXT_PUBLIC_API_BASE_URL=/api" in text
+    assert "FRONTEND_ORIGIN=http://demo.localhost" in text
+    assert "A2A_JWT_AUD=frontier-runtime" in text
     assert "FEDERATION_ENABLED=true" in text
     assert "A2A_JWT_SECRET=" in text
 

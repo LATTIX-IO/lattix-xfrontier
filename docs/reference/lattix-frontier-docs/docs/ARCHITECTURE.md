@@ -1,5 +1,7 @@
 # Lattix xFrontier Architecture
 
+> Historical reference note: this document captures an earlier planning snapshot. Treat it as background context only. The canonical current-state architecture for this repository now lives in `THREAT-MODEL.md` and `docs/ARCHITECTURE.md`.
+
 ## Scope
 This document defines the architecture for Lattix xFrontier with a local-first MVP and a future path to AKS (managed under Rancher Fleet).
 
@@ -161,31 +163,15 @@ Core actions:
 - Start with low-risk integrations first.
 - Introduce policy-enforced action execution and rollback checks.
 
-### Phase 3: Azure + AKS + Rancher Fleet
+### Historical phase 3 direction: Azure + AKS + Rancher Fleet
 
 - Split platform into containerized planes: frontend, backend, workers, data.
 - Deploy on AKS clusters managed via Rancher Fleet GitOps.
 - Add enterprise identity provider integration and environment promotion controls.
 
-## Repository and Submodule Strategy
+## Historical repository strategy note
 
-Current state: single monorepo scaffold.
-
-Target state: this repo remains the control-plane umbrella with submodule repos using `lattix-frontier-*` naming.
-
-Planned submodules:
-
-- `lattix-frontier-frontend` (Next.js UI)
-- `lattix-frontier-backend` (FastAPI APIs/orchestrator)
-- `lattix-frontier-workers` (agent/workflow workers)
-- `lattix-frontier-data` (DB schema/migrations/seed)
-- `lattix-frontier-infra` (local + cloud infra definitions)
-- `lattix-frontier-gitops` (Rancher Fleet manifests/environments)
-
-Migration principle:
-
-- Move existing folders progressively into submodules without breaking top-level architecture contracts.
-- Keep shared schemas/contracts versioned at the umbrella level or dedicated shared-contracts repo.
+This section originally described an umbrella-repo + submodule migration plan. The current repository no longer uses that plan as its canonical structure. Use the live repository layout and migration notes in the root docs instead of treating the submodule strategy here as active guidance.
 
 ## Open Decisions
 

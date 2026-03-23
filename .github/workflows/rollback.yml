@@ -1,0 +1,70 @@
+name: rollback
+
+"on":
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Target environment
+        required: true
+        type: choice
+        options:
+          - dev
+          - stage
+          - prod
+      target_version:
+        description: Release tag to roll back to (for example v0.1.0)
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  rollback:
+    runs-on: ubuntu-latest
+    environment: ${{ github.event.inputs.environment }}
+    env:
+      TARGET_ENV: ${{ github.event.inputs.environment }}
+      TARGET_VERSION: ${{ github.event.inputs.target_version }}
+      GH_TOKEN: ${{ github.token }}
+      FOUNDRY_PROJECT_ENDPOINT_DEV: ${{ secrets.FOUNDRY_PROJECT_ENDPOINT_DEV }}
+      FOUNDRY_API_KEY_DEV: ${{ secrets.FOUNDRY_API_KEY_DEV }}
+      FOUNDRY_PROJECT_REGION_DEV: ${{ secrets.FOUNDRY_PROJECT_REGION_DEV }}
+      FOUNDRY_PROJECT_ENDPOINT_STAGE: ${{ secrets.FOUNDRY_PROJECT_ENDPOINT_STAGE }}
+      FOUNDRY_API_KEY_STAGE: ${{ secrets.FOUNDRY_API_KEY_STAGE }}
+      FOUNDRY_PROJECT_REGION_STAGE: ${{ secrets.FOUNDRY_PROJECT_REGION_STAGE }}
+      FOUNDRY_PROJECT_ENDPOINT_PROD: ${{ secrets.FOUNDRY_PROJECT_ENDPOINT_PROD }}
+      FOUNDRY_API_KEY_PROD: ${{ secrets.FOUNDRY_API_KEY_PROD }}
+      FOUNDRY_PROJECT_REGION_PROD: ${{ secrets.FOUNDRY_PROJECT_REGION_PROD }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate rollback gate secrets
+        shell: pwsh
+        run: ./deploy/gitops/scripts/validate_required_secrets.ps1 -Environment $env:TARGET_ENV
+      - name: Download rollback metadata for target release
+        shell: bash
+        run: |
+          mkdir -p dist/rollback
+          gh release download "${TARGET_VERSION}" --pattern "rollback-plan.json" --pattern "manifest.json" --dir dist/rollback
+          test -f dist/rollback/rollback-plan.json
+      - name: Display rollback target summary
+        shell: python
+        run: |
+          import json
+          from pathlib import Path
+          rollback = json.loads(Path("dist/rollback/rollback-plan.json").read_text(encoding="utf-8"))
+          manifest = json.loads(Path("dist/rollback/manifest.json").read_text(encoding="utf-8"))
+          print(json.dumps({
+              "environment": "${{ github.event.inputs.environment }}",
+              "target_version": rollback.get("target_version") or manifest.get("version"),
+              "requested_release": manifest.get("version"),
+              "strategy": manifest.get("rollback", {}).get("strategy"),
+          }, indent=2))
+      - name: Run Foundry smoke gate before rollback apply
+        shell: pwsh
+        run: ./deploy/gitops/scripts/smoke_foundry.ps1 -Environment $env:TARGET_ENV
+      - name: Upload rollback evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: rollback-evidence-${{ github.event.inputs.environment }}-${{ github.event.inputs.target_version }}
+          path: dist/rollback

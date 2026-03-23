@@ -8,6 +8,7 @@ import ipaddress
 import socket
 import importlib.util
 from collections import Counter, defaultdict, deque
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from pprint import pformat
@@ -23,6 +24,8 @@ from app.generated_artifacts import GeneratedArtifactService
 from app.platform_services import Neo4jRunGraph, PostgresLongTermMemoryStore, PostgresStateStore, RedisMemoryStore
 from app.request_security import RouteAccessCategory, RouteAccessRule, classify_route_access, validate_route_inventory
 from app.security_headers import apply_security_headers
+from frontier_runtime.security import decode_token as decode_runtime_token
+from frontier_runtime.security import token_identity_from_claims
 
 try:
     from openai import OpenAI
@@ -436,19 +439,103 @@ def _env_int(name: str, default: int, *, minimum: int | None = None, maximum: in
     return value
 
 
-def _secure_local_mode_enabled() -> bool:
+@dataclass(frozen=True)
+class RuntimeProfile:
+    name: str
+    require_authenticated_requests: bool
+    require_a2a_runtime_headers: bool
+    public_health_minimal: bool
+    description: str
+
+
+_RUNTIME_PROFILE_ALIASES = {
+    "local-lightweight": "local-lightweight",
+    "local_lightweight": "local-lightweight",
+    "lightweight": "local-lightweight",
+    "local-secure": "local-secure",
+    "local_secure": "local-secure",
+    "secure-local": "local-secure",
+    "secure_local": "local-secure",
+    "secure": "local-secure",
+    "hosted": "hosted",
+    "production": "hosted",
+    "prod": "hosted",
+}
+
+
+_RUNTIME_PROFILES = {
+    "local-lightweight": RuntimeProfile(
+        name="local-lightweight",
+        require_authenticated_requests=False,
+        require_a2a_runtime_headers=False,
+        public_health_minimal=False,
+        description="Quick local iteration profile with direct frontend/backend routing and convenience-first defaults.",
+    ),
+    "local-secure": RuntimeProfile(
+        name="local-secure",
+        require_authenticated_requests=True,
+        require_a2a_runtime_headers=False,
+        public_health_minimal=True,
+        description="Secure local/full-stack profile with fail-closed authenticated surfaces and minimal public health probes.",
+    ),
+    "hosted": RuntimeProfile(
+        name="hosted",
+        require_authenticated_requests=True,
+        require_a2a_runtime_headers=True,
+        public_health_minimal=True,
+        description="Hosted/non-local profile with authenticated operator surfaces and required signed A2A runtime headers.",
+    ),
+}
+
+
+def _normalize_runtime_profile_name(raw: str | None) -> str:
+    normalized = str(raw or "").strip().lower()
+    if not normalized:
+        return ""
+    profile_name = _RUNTIME_PROFILE_ALIASES.get(normalized)
+    if not profile_name:
+        raise ValueError(f"Unsupported FRONTIER_RUNTIME_PROFILE '{raw}'")
+    return profile_name
+
+
+def _legacy_secure_local_mode_enabled() -> bool:
     return _env_flag("FRONTIER_SECURE_LOCAL_MODE", False)
 
 
+def _runtime_profile_source() -> str:
+    if os.getenv("FRONTIER_RUNTIME_PROFILE") is not None:
+        return "env"
+    if _legacy_secure_local_mode_enabled():
+        return "legacy-secure-local"
+    return "default"
+
+
+def _active_runtime_profile() -> RuntimeProfile:
+    explicit_profile = _normalize_runtime_profile_name(os.getenv("FRONTIER_RUNTIME_PROFILE"))
+    if explicit_profile:
+        return _RUNTIME_PROFILES[explicit_profile]
+    if _legacy_secure_local_mode_enabled():
+        return _RUNTIME_PROFILES["local-secure"]
+    return _RUNTIME_PROFILES["local-lightweight"]
+
+
+def _secure_local_mode_enabled() -> bool:
+    return _active_runtime_profile().name == "local-secure"
+
+
 def _effective_require_authenticated_requests() -> bool:
+    if os.getenv("FRONTIER_RUNTIME_PROFILE") is not None:
+        return _active_runtime_profile().require_authenticated_requests
     if os.getenv("FRONTIER_REQUIRE_AUTHENTICATED_REQUESTS") is not None:
         return _env_flag("FRONTIER_REQUIRE_AUTHENTICATED_REQUESTS", store.platform_settings.require_authenticated_requests)
-    if _secure_local_mode_enabled():
+    if _legacy_secure_local_mode_enabled():
         return True
     return store.platform_settings.require_authenticated_requests
 
 
 def _effective_require_a2a_runtime_headers() -> bool:
+    if os.getenv("FRONTIER_RUNTIME_PROFILE") is not None:
+        return _active_runtime_profile().require_a2a_runtime_headers
     if os.getenv("FRONTIER_REQUIRE_A2A_RUNTIME_HEADERS") is not None:
         return _env_flag("FRONTIER_REQUIRE_A2A_RUNTIME_HEADERS", store.platform_settings.require_a2a_runtime_headers)
     return store.platform_settings.require_a2a_runtime_headers
@@ -5579,7 +5666,9 @@ def _request_has_internal_access(request: Request | None) -> bool:
     auth_context = getattr(request.state, "frontier_auth_context", None)
     if not isinstance(auth_context, dict):
         return False
-    if auth_context.get("used_bearer_token") is True:
+    if auth_context.get("bearer_auth_kind") == "static":
+        return True
+    if auth_context.get("internal_service_authenticated") is True:
         return True
     return auth_context.get("trusted_subject_authenticated") is True
 
@@ -5653,6 +5742,12 @@ def _sanitize_runtime_error_message(exc: Exception) -> str:
 def _extract_actor_from_request(request: Request | None, payload: dict[str, Any] | None = None) -> str:
     payload = payload if isinstance(payload, dict) else {}
     headers = request.headers if request is not None else {}
+    if request is not None:
+        auth_context = getattr(request.state, "frontier_auth_context", None)
+        if isinstance(auth_context, dict):
+            cached_actor = str(auth_context.get("actor") or "").strip()
+            if cached_actor:
+                return cached_actor
     actor = (
         str(headers.get("x-frontier-actor") or "").strip()
         or str(headers.get("x-user-id") or "").strip()
@@ -5698,10 +5793,9 @@ def _enforce_request_authn(
                 return cached_actor
 
     auth_required = _effective_require_authenticated_requests() if required is None else bool(required)
-    if not auth_required:
-        return actor
-
     if request is None:
+        if not auth_required:
+            return actor
         _append_audit_event(action, actor, "blocked", {"reason": "missing_request_context"})
         raise HTTPException(status_code=401, detail="Request context required for authenticated operation")
 
@@ -5715,19 +5809,38 @@ def _enforce_request_authn(
     bearer_prefix = "bearer "
     provided_token = auth_header[len(bearer_prefix):].strip() if auth_header.lower().startswith(bearer_prefix) else ""
     used_bearer_token = False
+    bearer_auth_kind = "none"
+    runtime_token_claims: dict[str, Any] = {}
+    runtime_token_identity = None
 
-    if configured_token:
-        if provided_token != configured_token:
-            _append_audit_event(action, actor, "blocked", {"reason": "invalid_bearer_token"})
-            raise HTTPException(status_code=401, detail="Invalid bearer token")
-        used_bearer_token = True
-    elif not header_actor:
+    if provided_token:
+        if configured_token and provided_token == configured_token:
+            used_bearer_token = True
+            bearer_auth_kind = "static"
+        else:
+            try:
+                runtime_token_claims = decode_runtime_token(provided_token)
+                runtime_token_identity = token_identity_from_claims(runtime_token_claims)
+            except Exception:
+                _append_audit_event(action, actor, "blocked", {"reason": "invalid_bearer_token"})
+                raise HTTPException(status_code=401, detail="Invalid bearer token")
+            used_bearer_token = True
+            bearer_auth_kind = "jwt"
+
+    resolved_actor = actor
+    if runtime_token_identity is not None:
+        resolved_actor = str(runtime_token_identity.actor or actor).strip() or actor
+    elif header_actor:
+        resolved_actor = header_actor
+
+    if auth_required and not used_bearer_token and not header_actor:
         _append_audit_event(action, actor, "blocked", {"reason": "anonymous_actor"})
         raise HTTPException(status_code=401, detail="Authenticated actor header required (x-frontier-actor)")
 
     trusted_subject_authenticated = False
+    subject = str(runtime_token_identity.subject).strip() if runtime_token_identity is not None else ""
     if platform.a2a_require_signed_messages and _effective_require_a2a_runtime_headers():
-        subject = str(request.headers.get("x-frontier-subject") or "").strip()
+        subject = str(request.headers.get("x-frontier-subject") or "").strip() or subject
         signature = str(request.headers.get("x-frontier-signature") or "").strip()
         nonce = str(request.headers.get("x-frontier-nonce") or "").strip()
 
@@ -5751,22 +5864,28 @@ def _enforce_request_authn(
             _prune_expired_a2a_nonces(now=now)
         trusted_subject_authenticated = True
     else:
-        subject = str(request.headers.get("x-frontier-subject") or "").strip()
+        subject = str(request.headers.get("x-frontier-subject") or "").strip() or subject
         signature = str(request.headers.get("x-frontier-signature") or "").strip()
         if subject and signature and subject in platform.a2a_trusted_subjects:
             trusted_subject_authenticated = True
 
+    is_authenticated = bool(used_bearer_token or header_actor or trusted_subject_authenticated)
+
     request.state.frontier_auth_context = {
-        "authenticated": True,
-        "actor": actor,
-        "subject": subject if 'subject' in locals() else "",
+        "authenticated": is_authenticated,
+        "actor": resolved_actor,
+        "subject": subject,
         "used_bearer_token": used_bearer_token,
+        "bearer_auth_kind": bearer_auth_kind,
+        "runtime_token_claims": runtime_token_claims,
+        "tenant": str(runtime_token_identity.tenant_id).strip() if runtime_token_identity is not None else "",
+        "internal_service_authenticated": bool(runtime_token_identity.internal_service) if runtime_token_identity is not None else False,
         "trusted_subject_authenticated": trusted_subject_authenticated,
         "a2a_headers_required": _effective_require_a2a_runtime_headers(),
         "require_authenticated_requests": auth_required,
     }
 
-    return actor
+    return resolved_actor
 
 
 def _resolve_authenticated_payload_identity(
@@ -5859,8 +5978,17 @@ def _validate_memory_bucket_scope_pair(bucket_id: str, memory_scope: str) -> tup
 def _extract_memory_tenant_claim(request: Request | None, payload: dict[str, Any] | None = None) -> str:
     payload_dict = payload if isinstance(payload, dict) else {}
     headers = request.headers if request is not None else {}
+    auth_context = getattr(request.state, "frontier_auth_context", None) if request is not None else None
+    tenant_from_auth = ""
+    if isinstance(auth_context, dict):
+        tenant_from_auth = str(auth_context.get("tenant") or "").strip()
+        if not tenant_from_auth:
+            runtime_claims = auth_context.get("runtime_token_claims")
+            if isinstance(runtime_claims, dict):
+                tenant_from_auth = str(runtime_claims.get("tenant_id") or "").strip()
     return (
-        str(headers.get("x-frontier-tenant") or "").strip()
+        tenant_from_auth
+        or str(headers.get("x-frontier-tenant") or "").strip()
         or str(payload_dict.get("tenant_id") or "").strip()
         or str(payload_dict.get("currentTenant") or "").strip()
         or str(payload_dict.get("current_tenant") or "").strip()
@@ -6500,6 +6628,7 @@ def _parse_iso_datetime(value: str) -> datetime | None:
 
 def _build_atf_alignment_report() -> dict[str, Any]:
     platform = store.platform_settings
+    runtime_profile = _active_runtime_profile()
     effective_auth_required = _effective_require_authenticated_requests()
     effective_a2a_headers_required = _effective_require_a2a_runtime_headers()
     now = datetime.now(timezone.utc)
@@ -6526,6 +6655,7 @@ def _build_atf_alignment_report() -> dict[str, Any]:
                 "a2a_replay_protection": platform.a2a_replay_protection,
                 "trusted_subject_count": len(platform.a2a_trusted_subjects),
                 "secure_local_mode": _secure_local_mode_enabled(),
+                "runtime_profile": runtime_profile.name,
             },
             "gaps": [] if effective_auth_required else ["Enable require_authenticated_requests for strong API identity assurance"],
         },
@@ -6914,6 +7044,7 @@ def _sync_repo_agents_into_store(*, update_existing: bool = False) -> None:
 
 @app.on_event("startup")
 def _startup_initialize_state() -> None:
+    _active_runtime_profile()
     _POSTGRES_STATE.initialize()
     _POSTGRES_MEMORY.initialize()
     state = _POSTGRES_STATE.load_state()
@@ -7862,11 +7993,12 @@ def health() -> dict[str, str]:
 @app.get("/healthz")
 def healthz() -> dict[str, str]:
     payload = _build_health_payload()
-    if _secure_local_mode_enabled():
+    runtime_profile = _active_runtime_profile()
+    if runtime_profile.public_health_minimal:
         return {
             "status": payload["status"],
             "timestamp": payload["timestamp"],
-            "mode": "secure-local",
+            "mode": runtime_profile.name,
         }
     return payload
 
@@ -7982,7 +8114,19 @@ def get_platform_settings(request: Request) -> dict[str, Any]:
 def get_platform_security_policy(request: Request) -> dict[str, Any]:
     actor = _enforce_request_authn(request, action="platform.security_policy.read")
     _append_audit_event("platform.security_policy.read", actor, "allowed")
+    runtime_profile = _active_runtime_profile()
     resolved = _resolve_effective_security_policy(platform=store.platform_settings)
+    resolved["runtime_profile"] = {
+        "name": runtime_profile.name,
+        "source": _runtime_profile_source(),
+        "description": runtime_profile.description,
+        "controls": {
+            "require_authenticated_requests": runtime_profile.require_authenticated_requests,
+            "require_a2a_runtime_headers": runtime_profile.require_a2a_runtime_headers,
+            "public_health_minimal": runtime_profile.public_health_minimal,
+        },
+        "legacy_secure_local_mode": _legacy_secure_local_mode_enabled(),
+    }
     resolved["backend_enforced_controls"] = [
         "capability_filter",
         "policy_gate_filter",

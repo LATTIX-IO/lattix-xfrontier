@@ -19,7 +19,7 @@ Lattix xFrontier now includes a public-facing installer flow intended to be publ
 3. Prompts the user for preferred local and/or enterprise configuration.
 4. Checks writable install location, vanity hostname safety, port availability, and enterprise tools (`helm`, `kubectl`) when needed.
 5. Prompts for sensitive local values like `A2A_JWT_SECRET`; if left blank, securely auto-generates them.
-6. Writes an installer-managed local env file at `.installer/local.env` and generated Helm values.
+6. Writes installer-managed env files for the secure local stack at `.installer/local-secure.env` and, when needed for the lightweight path, `.installer/local-lightweight.env`, plus generated Helm values.
 7. Applies best-effort owner-only file permissions to the local env file before optionally launching Docker Compose.
 8. Optionally launches the local stack.
 9. Prints the resulting local `http://<name>.localhost` URL and enterprise Helm command.
@@ -36,8 +36,9 @@ For local deployments, the installer now handles secrets such as `A2A_JWT_SECRET
 
 - Operators can paste a value explicitly.
 - If they leave it blank, the installer generates a strong random secret.
-- The secret is stored in `.installer/local.env`, not in `answers.json`.
-- The installer applies best-effort owner-only permissions to that env file before launching the local stack.
+- The generated secret is written into the installer-managed secure env file (`.installer/local-secure.env`) rather than into `answers.json`.
+- The lightweight path uses its own installer-managed env file (`.installer/local-lightweight.env`) so convenience-mode defaults do not blur into the secure stack.
+- The installer applies best-effort owner-only permissions to the generated env file before launching the local stack.
 
 This keeps required runtime secrets out of the interactive answer manifest and out of the normal repo workflow.
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 from typing import Callable
 
 from .contracts import Envelope
+from .security import runtime_security_middleware
 from .validation import validate_envelope_dict
 
 
@@ -39,4 +40,5 @@ def envelope_validator(strict: bool = False) -> Callable[[Envelope], None]:
 def attach_default_middlewares(bus, strict: bool = False) -> None:
     """Attach default middlewares to the bus (validation now; extend as needed)."""
     bus.use(envelope_validator(strict=strict))
+    bus.use(runtime_security_middleware())
 

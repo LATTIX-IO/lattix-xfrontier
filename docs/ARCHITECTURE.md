@@ -1,15 +1,19 @@
 # Architecture
 
-Lattix xFrontier currently contains a transitional dual-surface architecture while the repository converges on the target state documented in `THREAT-MODEL.md`.
+Lattix xFrontier now uses the canonical repository shape described in `THREAT-MODEL.md`: `apps/backend/` is the control-plane surface, `apps/workers/` is the worker/runtime surface, and the old `lattix_frontier/` package has already been removed from the working tree.
 
 ## Current state
 
-The repository is still organized around four layers: orchestration, guardrails, agent execution, and infrastructure.
+The repository is organized around four layers: orchestration, guardrails, agent execution, and infrastructure.
 
-- `lattix_frontier/orchestrator/` manages workflow state and execution.
-- `lattix_frontier/guardrails/` enforces policy, DLP, capability, and budget checks.
-- `lattix_frontier/agents/` provides built-in agents and A2A interfaces.
-- `docker-compose.yml`, `helm/`, `envoy/`, and `policies/` define runtime infrastructure and controls.
+- `apps/backend/` manages workflow state, execution control, publication, rollback, and authenticated operator-facing APIs.
+- `apps/workers/` provides worker runtime helpers, A2A transport, service templates, and sandbox-facing execution boundaries.
+- `frontier_runtime/` and `frontier_tooling/` hold shared runtime and CLI/installer primitives.
+- `docker-compose.yml`, `docker-compose.local.yml`, `helm/`, `envoy/`, and `policies/` define runtime infrastructure and controls.
+
+## Historical migration note
+
+Some docs still refer to migration history from the removed `lattix_frontier/` package. Treat that material as historical context, not as evidence of a second live backend.
 
 ## Target state
 
@@ -17,11 +21,9 @@ The target architecture is:
 
 - `apps/backend/` as the only canonical backend/control-plane surface
 - `apps/workers/` as the worker/runtime surface
-- `lattix_frontier/` reduced to migrated, extracted, or deleted primitives rather than an active parallel backend
+- shared primitives extracted into `frontier_runtime/` / `frontier_tooling/` or deleted if no longer needed
 
-That means new backend/control-plane features should land in `apps/backend/` or `apps/workers/`, and reusable logic from `lattix_frontier/` should only move forward by migration or extraction.
-
-This repository currently ships a minimal working foundation with extensibility points and TODO markers for the more advanced production integrations.
+That means new backend/control-plane features should land in `apps/backend/` or `apps/workers/`, and future cleanup should remove stale legacy assumptions from docs, tooling, and release guidance rather than reviving a deleted package.
 
 The distribution path now includes:
 

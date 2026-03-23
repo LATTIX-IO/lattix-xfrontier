@@ -16,7 +16,8 @@ The public repository now treats the following paths as canonical:
 - `deploy/infra/`
 - `deploy/gitops/`
 - `examples/agents/`
-- `lattix_frontier/`
+- `frontier_runtime/`
+- `frontier_tooling/`
 
 ## What stays private
 
@@ -49,6 +50,6 @@ The public migration keeps local-first hosting intact by:
 
 ## Next cleanup steps
 
-- remove any remaining legacy `lattix-frontier-*` compatibility assumptions from code and docs
+- remove any remaining legacy `lattix_frontier` or `lattix-frontier-*` compatibility assumptions from code and docs
 - audit `deploy/infra/` and `deploy/gitops/` contents for public-safe publication
 - add package-level ownership and release automation for the new `apps/` and `packages/` structure

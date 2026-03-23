@@ -49,8 +49,15 @@ Install with:
 
 `helm install lattix ./helm/lattix-frontier -f helm/lattix-frontier/values-prod.yaml`
 
-For production, use external Vault and Postgres where appropriate, configure ingress TLS, and replace placeholder secrets.
+The chart defaults Kubernetes workloads to `FRONTIER_RUNTIME_PROFILE=hosted` and `FRONTIER_REQUIRE_A2A_RUNTIME_HEADERS=true` so the API and orchestrator follow the same hosted contract already enforced in backend profile regressions. The chart currently deploys the control-plane services included under `helm/lattix-frontier/templates/`; agent-specific workloads should be deployed separately until dedicated agent templates are added.
+
+For production, use external Vault and Postgres where appropriate, configure ingress TLS, and replace placeholder secrets, especially the shared `A2A_JWT_SECRET` value rendered by the chart.
 The chart now includes federation-related values so enterprise operators can preconfigure multi-region peer metadata even before the collaboration fabric is fully implemented.
+
+Validation paths:
+
+- local: `make helm-validate` or `./scripts/frontier.ps1 helm-validate` when Helm is installed
+- CI: `.github/workflows/ci.yml` now lints and renders the chart on every push/PR
 
 ## Agent development
 
