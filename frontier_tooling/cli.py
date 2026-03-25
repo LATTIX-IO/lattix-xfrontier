@@ -65,22 +65,31 @@ def down_command() -> None:
 @cli.command("remove")
 def remove_command() -> None:
     torn_down: list[str] = []
+    failed_teardowns: list[str] = []
     for local, label in ((False, "secure"), (True, "lightweight")):
         prefix = existing_compose_prefix(local=local)
         if prefix is None:
             continue
-        run_command(prefix + ["down", "-v", "--remove-orphans"], cwd=ROOT, check=False)
-        torn_down.append(label)
+        completed = run_command(prefix + ["down", "-v", "--remove-orphans"], cwd=ROOT, check=False)
+        if completed.returncode == 0:
+            torn_down.append(label)
+        else:
+            failed_teardowns.append(label)
     removed_files = remove_installer_env_files()
+    removed = not failed_teardowns
+    notes = [
+        "Source checkout and .env were left in place.",
+        "Run 'lattix bootstrap' or the public bootstrap script again to reinstall.",
+    ]
+    if failed_teardowns:
+        notes.insert(0, "Some Docker compose environments could not be torn down cleanly.")
     print_json(
         {
-            "removed": True,
+            "removed": removed,
             "torn_down": torn_down,
+            "failed_teardowns": failed_teardowns,
             "deleted_env_files": [str(path) for path in removed_files],
-            "notes": [
-                "Source checkout and .env were left in place.",
-                "Run 'lattix bootstrap' or the public bootstrap script again to reinstall.",
-            ],
+            "notes": notes,
         }
     )
 

@@ -7,6 +7,7 @@ POSTGRES_USER="${CASDOOR_POSTGRES_USER:-${POSTGRES_USER:-frontier}}"
 POSTGRES_PASSWORD="${CASDOOR_POSTGRES_PASSWORD:-${POSTGRES_PASSWORD:-}}"
 POSTGRES_DB="${CASDOOR_POSTGRES_DB:-${POSTGRES_DB:-frontier}}"
 CASDOOR_PUBLIC_URL="${CASDOOR_PUBLIC_URL:-http://casdoor.localhost}"
+CASDOOR_RADIUS_SECRET="${CASDOOR_RADIUS_SECRET:-${POSTGRES_PASSWORD}}"
 
 if [ -z "${POSTGRES_PASSWORD}" ]; then
   echo "CASDOOR_POSTGRES_PASSWORD or POSTGRES_PASSWORD is required" >&2
@@ -42,7 +43,7 @@ enableGzip = true
 inactiveTimeoutMinutes =
 ldapServerPort = 389
 radiusServerPort = 1812
-radiusSecret = "secret"
+radiusSecret = "${CASDOOR_RADIUS_SECRET}"
 quota = {"organization": -1, "user": -1, "application": -1, "provider": -1}
 logConfig = {"filename": "logs/casdoor.log", "maxdays":99999, "perm":"0770"}
 initDataNewOnly = false

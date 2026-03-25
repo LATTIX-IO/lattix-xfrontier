@@ -116,8 +116,10 @@ def remove_installer_env_files() -> list[Path]:
     return removed
 
 
-def run_command(args: list[str], *, cwd: Path | None = None, check: bool = True) -> None:
-    subprocess.run(args, cwd=str(cwd or REPO_ROOT), check=check)
+def run_command(
+    args: list[str], *, cwd: Path | None = None, check: bool = True
+) -> subprocess.CompletedProcess[Any]:
+    return subprocess.run(args, cwd=str(cwd or REPO_ROOT), check=check)
 
 
 def request_json(url: str, *, method: str = "GET", payload: dict[str, Any] | None = None, timeout: int = 10) -> Any:

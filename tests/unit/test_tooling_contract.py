@@ -28,6 +28,9 @@ def test_ci_and_local_tooling_expose_helm_validation() -> None:
     powershell = _read("scripts/frontier.ps1")
 
     assert "azure/setup-helm" in ci
+    assert "Install OPA" in ci
+    assert "opa_linux_amd64_static" in ci
+    assert "python scripts/run_opa.py test policies/ -v" in ci
     assert "helm lint ./helm/lattix-frontier" in ci
     assert "helm template lattix ./helm/lattix-frontier -f helm/lattix-frontier/values-prod.yaml > /dev/null" in ci
     assert "helm-validate:" in makefile
@@ -175,6 +178,8 @@ def test_bootstrap_powershell_script_validates_python_runtime() -> None:
     readme = _read("README.md")
 
     assert "function Test-PythonCommand" in bootstrap_ps1
+    assert "$commandExitCode = $LASTEXITCODE" in bootstrap_ps1
+    assert "$installerExitCode = $LASTEXITCODE" in bootstrap_ps1
     assert "working 'py' or 'python' command" in bootstrap_ps1
     assert "App execution aliases" in bootstrap_ps1
     assert "working Python 3 runtime" in installer_docs
@@ -213,3 +218,13 @@ def test_remove_installer_env_files_deletes_generated_envs(tmp_path: Path, monke
     assert removed == [secure, lightweight]
     assert not secure.exists()
     assert not lightweight.exists()
+
+def test_remove_command_tracks_failed_teardowns_and_radius_secret_is_not_hardcoded() -> None:
+    cli = _read("frontier_tooling/cli.py")
+    casdoor = _read("docker/casdoor/start-casdoor.sh")
+
+    assert '"failed_teardowns": failed_teardowns' in cli
+    assert '"removed": removed' in cli
+    assert 'CASDOOR_RADIUS_SECRET="${CASDOOR_RADIUS_SECRET:-${POSTGRES_PASSWORD}}"' in casdoor
+    assert 'radiusSecret = "${CASDOOR_RADIUS_SECRET}"' in casdoor
+    assert 'radiusSecret = "secret"' not in casdoor

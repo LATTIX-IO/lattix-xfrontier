@@ -19,7 +19,8 @@ function Test-PythonCommand {
         else {
             & $Command.Source -c "import sys" *> $null
         }
-        return $LASTEXITCODE -eq 0
+        $commandExitCode = $LASTEXITCODE
+        return $commandExitCode -eq 0
     }
     catch {
         return $false
@@ -53,4 +54,8 @@ if ($Python.Name -eq 'py.exe' -or $Python.Name -eq 'py') {
     & $Python.Source -3 $InstallerPath
 } else {
     & $Python.Source $InstallerPath
+}
+$installerExitCode = $LASTEXITCODE
+if ($installerExitCode -ne 0) {
+    exit $installerExitCode
 }
