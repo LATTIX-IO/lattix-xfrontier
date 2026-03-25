@@ -188,6 +188,7 @@ def test_bootstrap_powershell_script_validates_python_runtime() -> None:
 def test_public_frontier_installer_imports_packaged_module() -> None:
     public_installer = _read("install/frontier-installer.py")
     tooling_common = _read("frontier_tooling/common.py")
+    packaged_installer = _read("frontier_tooling/installer.py")
 
     assert 'import importlib' in public_installer
     assert 'import sys' in public_installer
@@ -197,8 +198,16 @@ def test_public_frontier_installer_imports_packaged_module() -> None:
     assert 'urlopen(' not in public_installer
     assert '_validated_archive_url' in public_installer
     assert 'http.client.HTTPSConnection' in public_installer
+    assert 'import httpx' not in tooling_common.split('def request_json', 1)[0]
+    assert 'def request_json' in tooling_common
+    assert '    import httpx' in tooling_common
     assert 'httpx.request(' in tooling_common
     assert '_validated_http_url' in tooling_common
+    assert 'return "editable" if (root / ".git").exists() else "wheel"' in packaged_installer
+    assert 'if _install_mode(root) == "editable":' in packaged_installer
+    assert 'args.append("-e")' in packaged_installer
+    assert 'args.append(".[dev]")' in packaged_installer
+    assert '"install_mode": mode' in packaged_installer
 
 
 def test_remove_installer_env_files_deletes_generated_envs(tmp_path: Path, monkeypatch) -> None:

@@ -11,7 +11,6 @@ from collections import OrderedDict
 from pathlib import Path
 from typing import Any
 
-import httpx
 from urllib.parse import urlparse
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -138,6 +137,8 @@ def _validated_http_url(url: str) -> str:
 
 
 def request_json(url: str, *, method: str = "GET", payload: dict[str, Any] | None = None, timeout: int = 10) -> Any:
+    import httpx
+
     headers = {"Accept": "application/json"}
     bearer = str(os.getenv("FRONTIER_API_BEARER_TOKEN", "") or "").strip()
     if bearer:
