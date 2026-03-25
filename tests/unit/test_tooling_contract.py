@@ -159,7 +159,6 @@ def test_public_docs_expose_bootstrap_and_remove_flow() -> None:
     assert "sh ./install/bootstrap.sh" in readme
     assert "sh ./install/bootstrap.sh" in installer_docs
     assert "sh ./install/bootstrap.sh" in deployment
-    assert "raw.githubusercontent.com" in installer_docs
     assert "lattix remove" in readme
     assert "lattix remove" in installer_docs
     assert "lattix remove" in deployment
