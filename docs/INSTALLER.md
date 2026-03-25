@@ -26,6 +26,8 @@ Lattix xFrontier now includes a public-facing installer flow intended to be publ
 
 The PowerShell variant includes `-UseBasicParsing` so it works cleanly in Windows PowerShell 5.1 without the legacy web-parsing prompt.
 
+Both bootstrap variants require a working Python 3 runtime. On Windows, the bootstrap validates that `py -3` or `python` can actually execute Python code and will fail fast with guidance if only the Microsoft Store placeholder alias is present.
+
 A future vanity URL such as `https://install.lattix.io/xfrontier.sh` can safely redirect or proxy to the same bootstrap script.
 
 ## What the installer does

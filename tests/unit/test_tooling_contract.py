@@ -169,6 +169,18 @@ def test_bootstrap_powershell_script_avoids_powershell7_only_syntax() -> None:
     assert "$TempRoot = if ([string]::IsNullOrWhiteSpace($env:TEMP))" in bootstrap_ps1
 
 
+def test_bootstrap_powershell_script_validates_python_runtime() -> None:
+    bootstrap_ps1 = _read("install/bootstrap.ps1")
+    installer_docs = _read("docs/INSTALLER.md")
+    readme = _read("README.md")
+
+    assert "function Test-PythonCommand" in bootstrap_ps1
+    assert "working 'py' or 'python' command" in bootstrap_ps1
+    assert "App execution aliases" in bootstrap_ps1
+    assert "working Python 3 runtime" in installer_docs
+    assert "working Python 3 runtime" in readme
+
+
 def test_remove_installer_env_files_deletes_generated_envs(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr("frontier_tooling.common.INSTALLER_DIR", tmp_path / ".installer")
     monkeypatch.setattr(

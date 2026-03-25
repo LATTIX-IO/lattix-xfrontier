@@ -71,6 +71,8 @@ lattix up
 
 For source-checkout testing, you can still run `pwsh -File .\install\bootstrap.ps1` on Windows or `sh ./install/bootstrap.sh` on POSIX shells.
 
+The bootstrap requires a working Python 3 runtime (`py -3` or `python`) on `PATH`. On Windows, the Microsoft Store placeholder alias is not sufficient by itself.
+
 To remove the local install during testing and start fresh, use:
 
 ```text
