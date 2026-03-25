@@ -18,7 +18,7 @@ from uuid import uuid4
 
 import jwt
 
-from frontier_runtime.persistence import load_state, mutate_state
+from frontier_runtime.persistence import mutate_state
 
 
 def _secret_bytes(key: bytes | str | None = None) -> bytes:
@@ -167,7 +167,8 @@ class PolicyEvaluationRequest:
     @classmethod
     def from_payload(cls, policy_name: str, payload: dict[str, Any] | None) -> "PolicyEvaluationRequest":
         data = payload if isinstance(payload, dict) else {}
-        budget = data.get("budget") if isinstance(data.get("budget"), dict) else {}
+        raw_budget = data.get("budget")
+        budget_data = raw_budget if isinstance(raw_budget, dict) else {}
         resource = str(
             data.get("resource")
             or data.get("target_path")
@@ -205,8 +206,8 @@ class PolicyEvaluationRequest:
             allowed_paths=_tuple("allowed_paths"),
             tool_calls_used=OPAClient._safe_int(data.get("tool_calls_used", data.get("tool_calls", 0))),
             max_tool_calls=OPAClient._safe_int(data.get("max_tool_calls", 0)),
-            budget_tokens_used=OPAClient._safe_int(budget.get("tokens_used", 0)),
-            budget_max_tokens=OPAClient._safe_int(budget.get("max_tokens", 0)),
+            budget_tokens_used=OPAClient._safe_int(budget_data.get("tokens_used", 0)),
+            budget_max_tokens=OPAClient._safe_int(budget_data.get("max_tokens", 0)),
             readonly_rootfs=bool(data.get("readonly_rootfs")),
             run_as_user=str(data.get("run_as_user") or "").strip(),
             require_egress_mediation=bool(data.get("require_egress_mediation")),
@@ -421,8 +422,6 @@ class OPAClient:
             "service-account",
             "service_account",
         )
-        sensitive_directories = {".ssh", ".gnupg", ".aws", ".azure", ".config/gcloud", ".kube"}
-
         if name in sensitive_names or name.endswith(sensitive_suffixes):
             return True
         if any(fragment in name for fragment in sensitive_fragments):

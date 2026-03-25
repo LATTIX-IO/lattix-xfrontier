@@ -1,7 +1,7 @@
 from __future__ import annotations
 import collections
 import time
-from typing import Callable, DefaultDict, Dict, List
+from typing import Callable, DefaultDict, List
 
 from .contracts import Envelope
 from .reporting import add_trace, increment_metric

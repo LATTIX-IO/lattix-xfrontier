@@ -10,7 +10,6 @@ import sys
 from collections import OrderedDict
 from pathlib import Path
 from typing import Any
-from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 REPO_ROOT = Path(__file__).resolve().parents[1]

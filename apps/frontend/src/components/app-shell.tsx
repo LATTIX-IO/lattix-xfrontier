@@ -166,7 +166,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const requestedMode: AppMode = pathname.startsWith("/builder") ? "builder" : "user";
   const inAdmin = pathname.startsWith("/admin");
   const [operatorSession, setOperatorSession] = useState<OperatorSession | null>(null);
-  const [sessionResolved, setSessionResolved] = useState(false);
+  const [sessionResolvedPathname, setSessionResolvedPathname] = useState("");
   const navGroups = useMemo(() => {
     const canBuilder = operatorSession?.capabilities.can_builder ?? false;
     const canAdmin = operatorSession?.capabilities.can_admin ?? false;
@@ -223,7 +223,6 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     let cancelled = false;
-    setSessionResolved(false);
     getOperatorSession()
       .then((session) => {
         if (!cancelled) {
@@ -237,13 +236,15 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       })
       .finally(() => {
         if (!cancelled) {
-          setSessionResolved(true);
+          setSessionResolvedPathname(pathname);
         }
       });
     return () => {
       cancelled = true;
     };
   }, [pathname]);
+
+  const sessionResolved = sessionResolvedPathname === pathname;
 
   useEffect(() => {
     if (!sessionResolved || requestedMode !== "builder") {

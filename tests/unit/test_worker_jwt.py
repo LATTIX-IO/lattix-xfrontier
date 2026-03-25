@@ -208,7 +208,6 @@ def test_worker_service_template_hosted_profile_requires_internal_service_identi
             "internal_service": True,
         },
     )
-    signed = a2a.post_envelope
     allowed = client.post(
         "/v1/envelope",
         content=env.to_json(),

@@ -656,7 +656,7 @@ class PostgresLongTermMemoryStore(_BasePostgresService):
 				cursor.execute(
 					f"""
 					SELECT id, entry_id, bucket_id, session_id, memory_scope, source, task_id,
-					       candidate_kind, status, created_at, updated_at, content, metadata
+					candidate_kind, status, created_at, updated_at, content, metadata
 					FROM frontier_memory_consolidation_queue
 					{where_sql}
 					ORDER BY created_at DESC
@@ -899,15 +899,15 @@ class Neo4jRunGraph:
 					"""
 					MATCH (owner:KnowledgeOwner {id: $owner_id})-[:OWNS_MEMORY]->(memory:KnowledgeMemory)
 					WHERE memory.memory_scope = $memory_scope
-					  AND ($query = '' OR toLower(memory.content) CONTAINS $query)
+					AND ($query = '' OR toLower(memory.content) CONTAINS $query)
 					RETURN memory.id AS id,
-					       memory.content AS content,
-					       memory.kind AS kind,
-					       memory.candidate_kind AS candidate_kind,
-					       memory.bucket_id AS bucket_id,
-					       memory.session_id AS session_id,
-					       memory.source_count AS source_count,
-					       memory.created_at AS created_at
+					memory.content AS content,
+					memory.kind AS kind,
+					memory.candidate_kind AS candidate_kind,
+					memory.bucket_id AS bucket_id,
+					memory.session_id AS session_id,
+					memory.source_count AS source_count,
+					memory.created_at AS created_at
 					ORDER BY memory.created_at DESC
 					LIMIT $limit
 					""",
@@ -937,8 +937,8 @@ class Neo4jRunGraph:
 					"""
 					MATCH (owner:KnowledgeOwner {id: $owner_id})-[:RELATES_TO_TOPIC]->(topic:KnowledgeTopic)
 					RETURN topic.id AS id,
-					       topic.name AS name,
-					       topic.weight AS weight
+					topic.name AS name,
+					topic.weight AS weight
 					ORDER BY topic.weight DESC, topic.name ASC
 					LIMIT $limit
 					""",

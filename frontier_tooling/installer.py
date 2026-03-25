@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import os
-from pathlib import Path
 
 from .common import DEFAULT_ARCHIVE_URL, ensure_compose_env_file, print_json, python_executable, repo_root, run_command
 
