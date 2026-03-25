@@ -1799,11 +1799,43 @@ def _fallback_openai_model() -> str:
     return os.getenv("OPENAI_FALLBACK_MODEL", "gpt-5.1")
 
 
-def _clean_inbox_prompt(text: str) -> str:
+def _strip_leading_agent_mentions(text: str) -> str:
     candidate = str(text or "")
-    # Remove leading @agent mentions used for routing so model receives a clean task instruction.
-    cleaned = re.sub(r"^(?:\s*@[^\s]+\s+)+", "", candidate).strip()
+    cursor = 0
+    consumed = 0
+    length = len(candidate)
+
+    while cursor < length:
+        while cursor < length and candidate[cursor].isspace():
+            cursor += 1
+        if cursor >= length or candidate[cursor] != "@":
+            break
+
+        mention_end = cursor + 1
+        while mention_end < length and not candidate[mention_end].isspace():
+            mention_end += 1
+        if mention_end == cursor + 1:
+            break
+
+        whitespace_end = mention_end
+        while whitespace_end < length and candidate[whitespace_end].isspace():
+            whitespace_end += 1
+        if whitespace_end == mention_end:
+            break
+
+        consumed = whitespace_end
+        cursor = whitespace_end
+
+    cleaned = candidate[consumed:].strip()
     return cleaned or candidate.strip()
+
+
+def _clean_inbox_prompt(text: str) -> str:
+    return _strip_leading_agent_mentions(text)
+
+
+def _public_configuration_error(message: str) -> str:
+    return str(message or "Configuration is invalid.").strip() or "Configuration is invalid."
 
 
 def _truncate_event_summary(text: str, max_chars: int = 700) -> str:
@@ -9153,8 +9185,8 @@ def get_auth_session(request: Request) -> dict[str, Any]:
     oidc_validation_error = ""
     try:
         configured_oidc = _configured_operator_oidc()
-    except Exception as exc:  # noqa: BLE001
-        oidc_validation_error = str(exc)
+    except Exception:  # noqa: BLE001
+        oidc_validation_error = _public_configuration_error("OIDC configuration is invalid.")
 
     allowed_modes = ["user"]
     if capabilities["can_builder"]:
@@ -11260,8 +11292,8 @@ def publish_workflow_definition(item_id: str, request: Request) -> dict[str, Any
     if graph_json.get("nodes") or graph_json.get("links"):
         try:
             payload = _graph_payload_from_json(graph_json)
-        except Exception as exc:  # noqa: BLE001
-            raise HTTPException(status_code=400, detail={"message": "Invalid workflow graph payload", "reason": str(exc)})
+        except Exception:  # noqa: BLE001
+            raise HTTPException(status_code=400, detail={"message": "Invalid workflow graph payload"})
         validation = _validate_graph(payload)
         if not validation.valid:
             raise HTTPException(
