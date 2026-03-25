@@ -3,11 +3,12 @@
 
 from __future__ import annotations
 
+import importlib
 import io
 import os
 from pathlib import Path
-import runpy
 import shutil
+import sys
 import tempfile
 from urllib.request import urlopen
 import zipfile
@@ -27,11 +28,18 @@ def _download_repo_archive(target_dir: Path) -> Path:
     return extracted_roots[0]
 
 
+def _run_packaged_installer(repo_root: Path) -> None:
+    sys.path.insert(0, str(repo_root))
+    importlib.invalidate_caches()
+    module = importlib.import_module("frontier_tooling.installer")
+    module.main()
+
+
 def main() -> None:
     cwd = Path.cwd()
     packaged = cwd / "frontier_tooling" / "installer.py"
     if packaged.exists():
-        runpy.run_path(str(packaged), run_name="__main__")
+        _run_packaged_installer(cwd)
         return
     temp_root = Path(tempfile.mkdtemp(prefix="frontier-public-installer-"))
     try:
@@ -40,7 +48,7 @@ def main() -> None:
         if not packaged.exists():
             raise SystemExit("The downloaded archive did not include frontier_tooling/installer.py")
         os.chdir(repo_root)
-        runpy.run_path(str(packaged), run_name="__main__")
+        _run_packaged_installer(repo_root)
     finally:
         shutil.rmtree(temp_root, ignore_errors=True)
 
