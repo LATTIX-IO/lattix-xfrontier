@@ -461,6 +461,51 @@ def test_workflow_definition_rejects_unsupported_graph_schema_version() -> None:
     assert workflow_id not in store.workflow_definitions
 
 
+def test_clean_inbox_prompt_strips_leading_agent_mentions() -> None:
+    assert main_module._clean_inbox_prompt("@planner   @reviewer   Build the deployment plan") == "Build the deployment plan"
+    assert main_module._clean_inbox_prompt("No mentions here") == "No mentions here"
+
+
+def test_auth_session_hides_oidc_validation_details(monkeypatch) -> None:
+    monkeypatch.setenv("FRONTIER_AUTH_OIDC_ISSUER", "http://example.com")
+    monkeypatch.setenv("FRONTIER_AUTH_OIDC_AUDIENCE", "frontier-ui")
+    monkeypatch.setenv("FRONTIER_AUTH_OIDC_JWKS_URL", "http://example.com/.well-known/jwks.json")
+
+    response = client.get("/auth/session", headers=AUTH_HEADERS)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["oidc"]["validation_error"] == "OIDC configuration is invalid."
+    assert "trusted_issuers" not in body["oidc"]["validation_error"].lower()
+    assert "frontier_auth_oidc_issuer" not in body["oidc"]["validation_error"].lower()
+
+
+def test_publish_workflow_definition_hides_internal_graph_parse_details() -> None:
+    workflow_id = str(uuid4())
+    payload = {
+        "id": workflow_id,
+        "name": "Invalid Publish Workflow",
+        "description": "Workflow publish should not leak parser internals.",
+        "graph_json": {
+            "schema_version": "frontier-graph/1.0",
+            "nodes": [{"id": "trigger", "type": "trigger"}],
+            "links": [],
+        },
+    }
+
+    save_response = client.post("/workflow-definitions", json=payload)
+    assert save_response.status_code == 200
+
+    publish_response = client.post(f"/workflow-definitions/{workflow_id}/publish")
+    assert publish_response.status_code == 400
+    detail = publish_response.json()["detail"]
+    assert detail["message"] == "Invalid workflow graph payload"
+    assert "reason" not in detail
+
+    store.workflow_definitions.pop(workflow_id, None)
+    store.workflow_definition_revisions.pop(workflow_id, None)
+
+
 def test_graph_run_rejects_unsupported_graph_schema_version() -> None:
     response = client.post(
         "/graph/runs",

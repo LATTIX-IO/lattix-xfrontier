@@ -1,6 +1,8 @@
 from __future__ import annotations
-import importlib
+import importlib.util
 import json
+import re
+import sys
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Optional
 
@@ -10,9 +12,44 @@ from ..layer2.registry import AgentsRegistry
 from ..layer2.reporting import add_log
 
 
-def _try_import(module_path: str, function_name: str) -> Optional[Callable[[Envelope], None]]:
+_SAFE_MODULE_PATH_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)*$")
+_WORKERS_ROOT = Path(__file__).resolve().parents[2]
+
+
+def _module_is_allowed(module_path: str, *, agent_id: str) -> bool:
+    if not _SAFE_MODULE_PATH_PATTERN.fullmatch(module_path):
+        return False
+    return (
+        module_path.startswith("runtime.")
+        or module_path.startswith("apps.workers.runtime.")
+        or module_path == agent_id
+        or module_path.startswith(f"{agent_id}.")
+    )
+
+
+def _load_allowed_module(module_path: str, *, agent_id: str, agents_root: Path) -> Any | None:
+    if not _module_is_allowed(module_path, agent_id=agent_id):
+        return None
+    for search_root in (str(_WORKERS_ROOT), str(agents_root)):
+        if search_root not in sys.path:
+            sys.path.insert(0, search_root)
+    existing_module = sys.modules.get(module_path)
+    if existing_module is not None:
+        return existing_module
+    spec = importlib.util.find_spec(module_path)
+    if spec is None or spec.loader is None:
+        return None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[module_path] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def _try_import(module_path: str, function_name: str, *, agent_id: str, agents_root: Path) -> Optional[Callable[[Envelope], None]]:
     try:
-        mod = importlib.import_module(module_path)
+        mod = _load_allowed_module(module_path, agent_id=agent_id, agents_root=agents_root)
+        if mod is None:
+            return None
         fn = getattr(mod, function_name)
         if callable(fn):
             return fn
@@ -69,7 +106,7 @@ def register_agents(
         fn = runtime_cfg.get("function", "handle")
         handler: Optional[Callable[[Envelope], None]] = None
         if mod:
-            handler = _try_import(mod, fn)
+            handler = _try_import(mod, fn, agent_id=agent_id, agents_root=agents_root)
             if handler is None:
                 continue
         if handler is None:

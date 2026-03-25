@@ -8,6 +8,7 @@ import hashlib
 import hmac
 import ipaddress
 import socket
+import importlib
 import importlib.util
 from collections import Counter, defaultdict, deque
 from dataclasses import dataclass
@@ -15,7 +16,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from pprint import pformat
 from threading import Lock
-from typing import Any, Literal
+from typing import Any, Callable, Literal
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
@@ -1799,11 +1800,43 @@ def _fallback_openai_model() -> str:
     return os.getenv("OPENAI_FALLBACK_MODEL", "gpt-5.1")
 
 
-def _clean_inbox_prompt(text: str) -> str:
+def _strip_leading_agent_mentions(text: str) -> str:
     candidate = str(text or "")
-    # Remove leading @agent mentions used for routing so model receives a clean task instruction.
-    cleaned = re.sub(r"^(?:\s*@[^\s]+\s+)+", "", candidate).strip()
+    cursor = 0
+    consumed = 0
+    length = len(candidate)
+
+    while cursor < length:
+        while cursor < length and candidate[cursor].isspace():
+            cursor += 1
+        if cursor >= length or candidate[cursor] != "@":
+            break
+
+        mention_end = cursor + 1
+        while mention_end < length and not candidate[mention_end].isspace():
+            mention_end += 1
+        if mention_end == cursor + 1:
+            break
+
+        whitespace_end = mention_end
+        while whitespace_end < length and candidate[whitespace_end].isspace():
+            whitespace_end += 1
+        if whitespace_end == mention_end:
+            break
+
+        consumed = whitespace_end
+        cursor = whitespace_end
+
+    cleaned = candidate[consumed:].strip()
     return cleaned or candidate.strip()
+
+
+def _clean_inbox_prompt(text: str) -> str:
+    return _strip_leading_agent_mentions(text)
+
+
+def _public_configuration_error(message: str) -> str:
+    return str(message or "Configuration is invalid.").strip() or "Configuration is invalid."
 
 
 def _truncate_event_summary(text: str, max_chars: int = 700) -> str:
@@ -1957,10 +1990,28 @@ def _module_available(module_name: str) -> bool:
         return False
 
 
-def _import_module(module_name: str) -> Any:
-    import importlib
+_OPTIONAL_MODULE_LOADERS: dict[str, Callable[[], Any]] = {
+    "autogen": lambda: importlib.import_module("autogen"),
+    "autogen_agentchat": lambda: importlib.import_module("autogen_agentchat"),
+    "autogen_agentchat.agents": lambda: importlib.import_module("autogen_agentchat.agents"),
+    "autogen_ext.models.openai": lambda: importlib.import_module("autogen_ext.models.openai"),
+    "langchain_core": lambda: importlib.import_module("langchain_core"),
+    "langchain_core.documents": lambda: importlib.import_module("langchain_core.documents"),
+    "langchain_core.messages": lambda: importlib.import_module("langchain_core.messages"),
+    "langchain_core.tools": lambda: importlib.import_module("langchain_core.tools"),
+    "langchain_openai": lambda: importlib.import_module("langchain_openai"),
+    "langgraph": lambda: importlib.import_module("langgraph"),
+    "langgraph.graph": lambda: importlib.import_module("langgraph.graph"),
+    "semantic_kernel": lambda: importlib.import_module("semantic_kernel"),
+    "semantic_kernel.connectors.ai.open_ai": lambda: importlib.import_module("semantic_kernel.connectors.ai.open_ai"),
+}
 
-    return importlib.import_module(module_name)
+
+def _import_module(module_name: str) -> Any:
+    loader = _OPTIONAL_MODULE_LOADERS.get(module_name)
+    if loader is None:
+        raise ValueError(f"Unsupported optional module import '{module_name}'")
+    return loader()
 
 
 def _framework_runtime_probe(engine: str) -> dict[str, Any]:
@@ -9153,8 +9204,8 @@ def get_auth_session(request: Request) -> dict[str, Any]:
     oidc_validation_error = ""
     try:
         configured_oidc = _configured_operator_oidc()
-    except Exception as exc:  # noqa: BLE001
-        oidc_validation_error = str(exc)
+    except Exception:  # noqa: BLE001
+        oidc_validation_error = _public_configuration_error("OIDC configuration is invalid.")
 
     allowed_modes = ["user"]
     if capabilities["can_builder"]:
@@ -11260,8 +11311,8 @@ def publish_workflow_definition(item_id: str, request: Request) -> dict[str, Any
     if graph_json.get("nodes") or graph_json.get("links"):
         try:
             payload = _graph_payload_from_json(graph_json)
-        except Exception as exc:  # noqa: BLE001
-            raise HTTPException(status_code=400, detail={"message": "Invalid workflow graph payload", "reason": str(exc)})
+        except Exception:  # noqa: BLE001
+            raise HTTPException(status_code=400, detail={"message": "Invalid workflow graph payload"})
         validation = _validate_graph(payload)
         if not validation.valid:
             raise HTTPException(

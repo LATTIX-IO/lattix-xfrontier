@@ -4,13 +4,31 @@ Lattix xFrontier now includes a public-facing installer flow intended to be publ
 
 ## Bootstrap commands
 
-### POSIX shells
+### Public raw bootstrap URLs
+
+#### POSIX shells
 
 `curl -fsSL https://raw.githubusercontent.com/LATTIX-IO/lattix-xfrontier/main/install/bootstrap.sh | sh`
 
-### PowerShell
+#### PowerShell
 
-`powershell -ExecutionPolicy Bypass -c "iwr https://raw.githubusercontent.com/LATTIX-IO/lattix-xfrontier/main/install/bootstrap.ps1 | iex"`
+`powershell -ExecutionPolicy Bypass -c "iwr https://raw.githubusercontent.com/LATTIX-IO/lattix-xfrontier/main/install/bootstrap.ps1 -UseBasicParsing | iex"`
+
+### From a local source checkout
+
+#### PowerShell
+
+`pwsh -File .\install\bootstrap.ps1`
+
+#### POSIX shells
+
+`sh ./install/bootstrap.sh`
+
+The PowerShell variant includes `-UseBasicParsing` so it works cleanly in Windows PowerShell 5.1 without the legacy web-parsing prompt.
+
+Both bootstrap variants require a working Python 3 runtime. On Windows, the bootstrap validates that `py -3` or `python` can actually execute Python code and will fail fast with guidance if only the Microsoft Store placeholder alias is present.
+
+A future vanity URL such as `https://install.lattix.io/xfrontier.sh` can safely redirect or proxy to the same bootstrap script.
 
 ## What the installer does
 
@@ -25,6 +43,25 @@ Lattix xFrontier now includes a public-facing installer flow intended to be publ
 9. Prints the resulting local `http://<name>.localhost` URL and enterprise Helm command.
 
 If a prerequisite is missing and automatic installation is not available, is declined, or fails, the installer exits cleanly with a list of missing tools and the next steps to finish setup.
+
+## Removing a local install
+
+For repeated install-testing, the canonical removal path is:
+
+`lattix remove`
+
+Equivalent repo-local helpers:
+
+- `make remove`
+- `./scripts/frontier.ps1 remove`
+
+The remove flow:
+
+1. Stops the secure and lightweight Docker Compose stacks when installer-managed env files are present.
+2. Removes the Compose volumes and orphaned containers for those stacks.
+3. Deletes installer-managed env files under `.installer/`.
+
+It intentionally does **not** delete the repository checkout or your top-level `.env` file.
 
 ## Local vanity URL
 

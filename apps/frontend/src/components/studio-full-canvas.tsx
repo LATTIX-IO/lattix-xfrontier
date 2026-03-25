@@ -45,6 +45,24 @@ type Props = {
   onPublish: () => Promise<void>;
 };
 
+function generateCollaborationUserId(entityType: StudioEntityType, entityId: string): string {
+  const prefix = `${entityType}-${entityId}-`;
+  const cryptoApi = globalThis.crypto;
+
+  if (cryptoApi?.randomUUID) {
+    return `${prefix}${cryptoApi.randomUUID().replace(/-/g, "").slice(0, 7)}`;
+  }
+
+  if (cryptoApi?.getRandomValues) {
+    const bytes = new Uint8Array(4);
+    cryptoApi.getRandomValues(bytes);
+    const suffix = Array.from(bytes, (value) => value.toString(16).padStart(2, "0")).join("").slice(0, 7);
+    return `${prefix}${suffix}`;
+  }
+
+  return `${prefix}${Date.now().toString(36)}`;
+}
+
 export function StudioFullCanvas({
   entityType,
   entityId,
@@ -289,7 +307,7 @@ export function StudioFullCanvas({
       return;
     }
 
-    const generated = `${entityType}-${entityId}-${Math.random().toString(36).slice(2, 9)}`;
+    const generated = generateCollaborationUserId(entityType, entityId);
     if (typeof window !== "undefined") {
       window.localStorage.setItem(storageKey, generated);
     }

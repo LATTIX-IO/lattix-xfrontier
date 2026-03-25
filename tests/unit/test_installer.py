@@ -195,6 +195,32 @@ def test_installer_supports_external_oidc_provider(monkeypatch, tmp_path: Path) 
     assert "FRONTIER_API_BEARER_TOKEN" not in secrets_map
 
 
+def test_installer_rejects_oidc_urls_with_embedded_credentials(tmp_path: Path) -> None:
+    installer = FrontierInstaller(repo_root=tmp_path)
+    answers = InstallerAnswers(
+        installation_root=str(tmp_path),
+        deployment_mode="local",
+        local_auth_provider="oidc",
+        oidc_provider_template="external",
+        oidc_issuer="https://user:pass@login.example.com/realms/frontier",
+        oidc_audience="frontier-api",
+        oidc_jwks_url="https://login.example.com/realms/frontier/protocol/openid-connect/certs",
+        oidc_client_id="frontier-ui",
+        oidc_authorization_url="https://login.example.com/realms/frontier/protocol/openid-connect/auth",
+        oidc_token_url="https://login.example.com/realms/frontier/protocol/openid-connect/token",
+    )
+
+    with pytest.raises(ValueError, match="must not embed credentials"):
+        installer._write_env_file(
+            answers,
+            {
+                "A2A_JWT_SECRET": secrets.token_urlsafe(32),
+                "POSTGRES_PASSWORD": "db-secret",
+                "NEO4J_PASSWORD": "neo-secret",
+            },
+        )
+
+
 def test_installer_shared_token_mode_still_generates_bearer_secret(monkeypatch, tmp_path: Path) -> None:
     installer = FrontierInstaller(repo_root=tmp_path)
     answers = InstallerAnswers(

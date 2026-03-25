@@ -10,8 +10,9 @@ import sys
 from collections import OrderedDict
 from pathlib import Path
 from typing import Any
-from urllib.error import HTTPError, URLError
-from urllib.request import Request, urlopen
+
+import httpx
+from urllib.parse import urlparse
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 INSTALLER_DIR = REPO_ROOT / ".installer"
@@ -70,7 +71,8 @@ def ensure_compose_env_file(*, local_profile: bool = False) -> Path:
         for key, value in _read_env_map(source).items():
             env_map[key] = value
 
-    env_map.setdefault("A2A_JWT_SECRET", _random_secret())
+    if not str(env_map.get("A2A_JWT_SECRET") or "").strip():
+        env_map["A2A_JWT_SECRET"] = _random_secret()
     env_map.setdefault("A2A_JWT_ALG", "HS256")
     env_map.setdefault("A2A_JWT_ISS", "lattix-frontier")
     env_map["A2A_JWT_AUD"] = _normalize_a2a_audience(env_map.get("A2A_JWT_AUD"))
@@ -97,8 +99,42 @@ def compose_prefix(*, local: bool) -> list[str]:
     return base
 
 
-def run_command(args: list[str], *, cwd: Path | None = None) -> None:
-    subprocess.run(args, cwd=str(cwd or REPO_ROOT), check=True)
+def existing_compose_prefix(*, local: bool) -> list[str] | None:
+    env_path = _installer_env_path(local_profile=local)
+    if not env_path.exists():
+        return None
+    base = ["docker", "compose", "--env-file", str(env_path)]
+    if local:
+        base.extend(["-f", "docker-compose.local.yml"])
+    return base
+
+
+def remove_installer_env_files() -> list[Path]:
+    removed: list[Path] = []
+    for path in (SECURE_INSTALLER_ENV_PATH, LIGHTWEIGHT_INSTALLER_ENV_PATH):
+        if path.exists():
+            path.unlink()
+            removed.append(path)
+    return removed
+
+
+def run_command(
+    args: list[str], *, cwd: Path | None = None, check: bool = True
+) -> subprocess.CompletedProcess[Any]:
+    return subprocess.run(args, cwd=str(cwd or REPO_ROOT), check=check)
+
+
+def _validated_http_url(url: str) -> str:
+    parsed = urlparse(str(url or "").strip())
+    if parsed.scheme.lower() not in {"http", "https"}:
+        raise ValueError("Only HTTP and HTTPS URLs are supported")
+    if not parsed.hostname:
+        raise ValueError("A host is required")
+    if parsed.username or parsed.password:
+        raise ValueError("Embedded URL credentials are not supported")
+    if parsed.fragment:
+        raise ValueError("URL fragments are not supported")
+    return parsed.geturl()
 
 
 def request_json(url: str, *, method: str = "GET", payload: dict[str, Any] | None = None, timeout: int = 10) -> Any:
@@ -110,9 +146,16 @@ def request_json(url: str, *, method: str = "GET", payload: dict[str, Any] | Non
     if payload is not None:
         headers["Content-Type"] = "application/json"
         data = json.dumps(payload).encode("utf-8")
-    request = Request(url, data=data, method=method, headers=headers)
-    with urlopen(request, timeout=timeout) as response:  # noqa: S310
-        raw = response.read().decode("utf-8")
+    response = httpx.request(
+        method,
+        _validated_http_url(url),
+        content=data,
+        headers=headers,
+        timeout=float(timeout),
+        follow_redirects=False,
+    )
+    response.raise_for_status()
+    raw = response.text
     return json.loads(raw) if raw else None
 
 

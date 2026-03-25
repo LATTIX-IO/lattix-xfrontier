@@ -16,23 +16,24 @@ def test_vault_client_reads_kv_v2_secret(monkeypatch) -> None:
     captured: dict[str, object] = {}
 
     class _FakeResponse:
-        def __enter__(self) -> "_FakeResponse":
-            return self
+        status_code = 200
+        text = json.dumps({"data": {"data": {"value": "super-secret", "enabled": True}}})
 
-        def __exit__(self, exc_type, exc, tb) -> None:
+        def raise_for_status(self) -> None:
             return None
 
-        def read(self) -> bytes:
-            return json.dumps({"data": {"data": {"value": "super-secret", "enabled": True}}}).encode("utf-8")
+        def json(self) -> dict[str, object]:
+            return json.loads(self.text)
 
-    def _fake_urlopen(request, timeout=0):
-        captured["url"] = request.full_url
-        captured["token"] = request.get_header("X-vault-token")
-        captured["accept"] = request.get_header("Accept")
+    def _fake_get(url, headers=None, timeout=0, follow_redirects=False):
+        captured["url"] = url
+        captured["token"] = headers.get("X-Vault-Token") if headers else None
+        captured["accept"] = headers.get("Accept") if headers else None
         captured["timeout"] = timeout
+        captured["follow_redirects"] = follow_redirects
         return _FakeResponse()
 
-    monkeypatch.setattr("frontier_runtime.security.urlrequest.urlopen", _fake_urlopen)
+    monkeypatch.setattr("frontier_runtime.security.httpx.get", _fake_get)
 
     client = VaultClient(addr="http://vault:8200", token="vault-token", timeout_seconds=7)
     secret = client.read_secret("secret/data/demo/path")

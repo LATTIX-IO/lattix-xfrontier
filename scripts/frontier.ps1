@@ -284,6 +284,7 @@ function Show-Help {
     Write-Host "  bootstrap   Install editable package + dev dependencies"
     Write-Host "  up          Start docker compose stack"
     Write-Host "  down        Stop docker compose stack"
+    Write-Host "  remove      Tear down local install and delete installer-managed env files"
     Write-Host "  local-up    Start the lightweight local-first stack"
     Write-Host "  local-down  Stop the lightweight local-first stack"
     Write-Host "  stack-up    Start the full platform stack"
@@ -330,6 +331,37 @@ switch ($Command.ToLowerInvariant()) {
         Assert-DockerReady
         $composePrefix = Get-FullComposeCommandPrefix
         Invoke-ExternalCommand ($composePrefix + @("down", "-v"))
+    }
+    "remove" {
+        $secureEnvPath = Get-InstallerEnvPath
+        if (Test-Path $secureEnvPath) {
+            try {
+                Assert-DockerReady
+                Invoke-ExternalCommand @("docker", "compose", "--env-file", $secureEnvPath, "down", "-v", "--remove-orphans")
+            }
+            catch {
+                Write-Warning "Could not fully tear down the secure stack automatically: $($_.Exception.Message)"
+            }
+        }
+
+        $lightweightEnvPath = Get-InstallerEnvPath -LocalProfile
+        if (Test-Path $lightweightEnvPath) {
+            try {
+                Assert-DockerReady
+                Invoke-ExternalCommand @("docker", "compose", "--env-file", $lightweightEnvPath, "-f", "docker-compose.local.yml", "down", "-v", "--remove-orphans")
+            }
+            catch {
+                Write-Warning "Could not fully tear down the lightweight stack automatically: $($_.Exception.Message)"
+            }
+        }
+
+        foreach ($installerEnvPath in @($secureEnvPath, $lightweightEnvPath)) {
+            if (Test-Path $installerEnvPath) {
+                Remove-Item -Force $installerEnvPath
+            }
+        }
+
+        Write-Host "Removed installer-managed local stack state. Your repo checkout and .env file were left in place."
     }
     "stack-down" {
         Assert-DockerReady

@@ -19,6 +19,16 @@ def test_agent_dockerfile_uses_pinned_lightweight_python_base() -> None:
     assert "apt-get install --yes --no-install-recommends curl" not in dockerfile
 
 
+def test_backend_and_agent_dockerfiles_copy_license_for_package_metadata() -> None:
+    backend_dockerfile = (REPO_ROOT / "Dockerfile").read_text(encoding="utf-8")
+    agent_dockerfile = (REPO_ROOT / "Dockerfile.agent").read_text(encoding="utf-8")
+
+    for dockerfile in (backend_dockerfile, agent_dockerfile):
+        assert "COPY pyproject.toml README.md LICENSE ./" in dockerfile
+        assert "COPY frontier_tooling ./frontier_tooling" in dockerfile
+        assert "COPY frontier_runtime ./frontier_runtime" in dockerfile
+
+
 def test_full_compose_uses_pinned_default_agent_image() -> None:
     compose = (REPO_ROOT / "docker-compose.yml").read_text(encoding="utf-8")
     assert f"FRONTIER_AGENT_IMAGE:-{PINNED_AGENT_IMAGE}" in compose
@@ -52,6 +62,11 @@ def test_agent_templates_do_not_use_latest_tags() -> None:
     assert ":latest" not in compose_template
     assert "ghcr.io/your-org/agent-service:v0.1.0" in deployment_template
     assert "ghcr.io/your-org/agent-service:v0.1.0" in compose_template
+    assert "USER appuser" in (REPO_ROOT / "apps" / "workers" / "services" / "AGENT_SERVICE_TEMPLATE" / "Dockerfile").read_text(encoding="utf-8")
+    assert "runAsNonRoot: true" in deployment_template
+    assert "allowPrivilegeEscalation: false" in deployment_template
+    assert "no-new-privileges:true" in compose_template
+    assert "read_only: true" in compose_template
 
 
 def test_sandbox_runner_default_is_pinned_lightweight_python_image(monkeypatch) -> None:

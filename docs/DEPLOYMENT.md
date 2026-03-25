@@ -9,11 +9,13 @@ Prerequisites:
 
 Steps:
 
-1. Copy `.env.example` to `.env`.
-2. Run `make bootstrap`.
-3. Run `make up`.
+1. Run `curl -fsSL https://raw.githubusercontent.com/LATTIX-IO/lattix-xfrontier/main/install/bootstrap.sh | sh`, or on Windows run `powershell -ExecutionPolicy Bypass -c "iwr https://raw.githubusercontent.com/LATTIX-IO/lattix-xfrontier/main/install/bootstrap.ps1 -UseBasicParsing | iex"`.
+2. Follow the interactive installer prompts.
+3. If you skip auto-launch, run `lattix up`.
 4. Open `http://frontier.localhost` (or your configured `LOCAL_STACK_HOST`) for the gateway-routed frontend and use the local gateway or host-only admin bindings for health checks.
 5. Validate with `lattix health` and `make test`.
+
+For source-checkout testing, the bootstrap scripts also work directly as `pwsh -File .\install\bootstrap.ps1` and `sh ./install/bootstrap.sh`.
 
 The intended default local deployment path uses the root `docker-compose.yml`. It includes the added security and platform infrastructure needed for the primary local deployment experience.
 
@@ -44,6 +46,15 @@ Secure local defaults now assume:
 - no header-only actor trust or direct lightweight localhost shortcuts
 
 For explicit full-stack startup, `make stack-up` remains available and is equivalent to the default secure path.
+
+To tear the local install back down and remove installer-managed state before a fresh test run, use:
+
+`lattix remove`
+
+Equivalent repo-local helpers:
+
+- `make remove`
+- `./scripts/frontier.ps1 remove`
 
 For interactive setup, you can run:
 

@@ -52,21 +52,36 @@ Lattix xFrontier is built around four layers:
 
 ## Quick start
 
-1. Copy `.env.example` to `.env` and adjust values as needed.
-2. Bootstrap the Python environment.
-3. Start the secure default stack.
+1. Run the public bootstrap installer.
+2. Follow the prompts for local auth, secrets, and hostname.
+3. If you skip auto-launch, start the secure default stack with `lattix up`.
 
 ```text
-make bootstrap
-make up
+curl -fsSL https://raw.githubusercontent.com/LATTIX-IO/lattix-xfrontier/main/install/bootstrap.sh | sh
 ```
 
 On Windows PowerShell, use either the installed CLI or the PowerShell helper:
 
 ```text
+powershell -ExecutionPolicy Bypass -c "iwr https://raw.githubusercontent.com/LATTIX-IO/lattix-xfrontier/main/install/bootstrap.ps1 -UseBasicParsing | iex"
+
 lattix up
 .\scripts\frontier.ps1 up
 ```
+
+For source-checkout testing, you can still run `pwsh -File .\install\bootstrap.ps1` on Windows or `sh ./install/bootstrap.sh` on POSIX shells.
+
+The bootstrap requires a working Python 3 runtime (`py -3` or `python`) on `PATH`. On Windows, the Microsoft Store placeholder alias is not sufficient by itself.
+
+To remove the local install during testing and start fresh, use:
+
+```text
+lattix remove
+make remove
+.\scripts\frontier.ps1 remove
+```
+
+That tears down the local Docker stacks, removes named volumes and networks for those stacks, and deletes installer-managed env files under `.installer/`. It intentionally leaves your repository checkout and `.env` in place.
 
 For the default secure/full browser experience, open `http://frontier.localhost` (or your configured `LOCAL_STACK_HOST`). That path proxies `/api/*` through the local gateway to the backend at `http://localhost:8000`.
 
@@ -114,6 +129,7 @@ Useful consolidation tuning flags:
 
 Useful follow-ups:
 
+- `lattix remove`
 - `lattix health`
 - `lattix agent list`
 - `lattix sandbox backend`
@@ -148,7 +164,10 @@ The public repository currently exposes:
 After installation, the `lattix` command supports:
 
 - `lattix up`
+- `lattix down`
+- `lattix remove`
 - `lattix local-up`
+- `lattix local-down`
 - `lattix health`
 - `lattix agent list`
 - `lattix agent scaffold --name <agent-name>`
@@ -186,13 +205,26 @@ Windows PowerShell equivalents:
 Default local deployment uses the secure full Compose stack in `docker-compose.yml`:
 
 ```text
-make up
+lattix up
 ```
 
 This path includes the added security-oriented infrastructure such as the local gateway, sandbox egress boundary, policy services, and supporting runtime components.
 It also keeps most internal services off the host network by default, generates local database credentials during installer setup, and expects signed internal A2A traffic instead of header-only trust.
 
 `make stack-up` is kept as an explicit alias for the same secure full stack.
+
+To tear down the installed local app and delete installer-managed env files so you can test a clean reinstall, use:
+
+```text
+lattix remove
+```
+
+Equivalent repo-local helpers remain available:
+
+```text
+make remove
+.\scripts\frontier.ps1 remove
+```
 
 If you want the lighter stack for quick local iteration, use:
 

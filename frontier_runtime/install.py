@@ -11,6 +11,7 @@ import shutil
 import socket
 import subprocess
 from typing import Iterable
+from urllib.parse import urlsplit, urlunsplit
 
 
 @dataclass(frozen=True)
@@ -45,6 +46,31 @@ def port_available(port: int) -> DiagnosticResult:
     except OSError as exc:
         return DiagnosticResult(f"port:{port}", False, str(exc))
     return DiagnosticResult(f"port:{port}", True, "available")
+
+
+def _normalize_absolute_http_url(value: str, *, setting_name: str, allow_query: bool = False) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    if any(ord(char) < 32 for char in raw):
+        raise ValueError(f"{setting_name} contains invalid control characters")
+
+    parsed = urlsplit(raw)
+    scheme = str(parsed.scheme or "").lower()
+    if scheme not in {"http", "https"}:
+        raise ValueError(f"{setting_name} must use http or https")
+    if not parsed.netloc or not parsed.hostname:
+        raise ValueError(f"{setting_name} must be an absolute URL")
+    if parsed.username or parsed.password:
+        raise ValueError(f"{setting_name} must not embed credentials")
+    if parsed.fragment:
+        raise ValueError(f"{setting_name} must not include a fragment")
+    if not allow_query and parsed.query:
+        raise ValueError(f"{setting_name} must not include query parameters")
+    if "\\" in parsed.netloc or "\\" in parsed.path:
+        raise ValueError(f"{setting_name} contains invalid path separators")
+
+    return urlunsplit((scheme, parsed.netloc, parsed.path or "", parsed.query if allow_query else "", ""))
 
 
 def docker_daemon_available() -> DiagnosticResult:
@@ -140,31 +166,64 @@ class FrontierInstaller:
     def _resolved_oidc_settings(cls, answers: InstallerAnswers) -> dict[str, str]:
         provider_name = cls._normalized_oidc_provider_name(answers)
         if provider_name == "casdoor":
-            issuer = answers.oidc_issuer or "http://casdoor.localhost"
-            authorization_url = answers.oidc_authorization_url or f"{issuer}/login/oauth/authorize"
+            issuer = _normalize_absolute_http_url(
+                answers.oidc_issuer or "http://casdoor.localhost",
+                setting_name="FRONTIER_AUTH_OIDC_ISSUER",
+            )
+            authorization_url = _normalize_absolute_http_url(
+                answers.oidc_authorization_url or f"{issuer}/login/oauth/authorize",
+                setting_name="FRONTIER_AUTH_OIDC_AUTHORIZATION_URL",
+                allow_query=True,
+            )
             return {
                 "provider": "casdoor",
                 "issuer": issuer,
                 "audience": answers.oidc_audience or "frontier-ui",
-                "jwks_url": answers.oidc_jwks_url or f"{issuer}/.well-known/jwks.json",
+                "jwks_url": _normalize_absolute_http_url(
+                    answers.oidc_jwks_url or f"{issuer}/.well-known/jwks.json",
+                    setting_name="FRONTIER_AUTH_OIDC_JWKS_URL",
+                ),
                 "client_id": answers.oidc_client_id or "frontier-web",
                 "authorization_url": authorization_url,
-                "token_url": answers.oidc_token_url or f"{issuer}/api/login/oauth/access_token",
-                "signin_url": answers.oidc_signin_url or authorization_url,
-                "signup_url": answers.oidc_signup_url or authorization_url,
+                "token_url": _normalize_absolute_http_url(
+                    answers.oidc_token_url or f"{issuer}/api/login/oauth/access_token",
+                    setting_name="FRONTIER_AUTH_OIDC_TOKEN_URL",
+                ),
+                "signin_url": _normalize_absolute_http_url(
+                    answers.oidc_signin_url or authorization_url,
+                    setting_name="FRONTIER_AUTH_OIDC_SIGNIN_URL",
+                    allow_query=True,
+                ),
+                "signup_url": _normalize_absolute_http_url(
+                    answers.oidc_signup_url or authorization_url,
+                    setting_name="FRONTIER_AUTH_OIDC_SIGNUP_URL",
+                    allow_query=True,
+                ),
                 "scopes": cls._oidc_scopes_value(answers),
             }
-        authorization_url = answers.oidc_authorization_url
+        authorization_url = _normalize_absolute_http_url(
+            answers.oidc_authorization_url,
+            setting_name="FRONTIER_AUTH_OIDC_AUTHORIZATION_URL",
+            allow_query=True,
+        )
         return {
             "provider": provider_name,
-            "issuer": answers.oidc_issuer,
+            "issuer": _normalize_absolute_http_url(answers.oidc_issuer, setting_name="FRONTIER_AUTH_OIDC_ISSUER"),
             "audience": answers.oidc_audience,
-            "jwks_url": answers.oidc_jwks_url,
+            "jwks_url": _normalize_absolute_http_url(answers.oidc_jwks_url, setting_name="FRONTIER_AUTH_OIDC_JWKS_URL"),
             "client_id": answers.oidc_client_id,
             "authorization_url": authorization_url,
-            "token_url": answers.oidc_token_url,
-            "signin_url": answers.oidc_signin_url or authorization_url,
-            "signup_url": answers.oidc_signup_url or authorization_url,
+            "token_url": _normalize_absolute_http_url(answers.oidc_token_url, setting_name="FRONTIER_AUTH_OIDC_TOKEN_URL"),
+            "signin_url": _normalize_absolute_http_url(
+                answers.oidc_signin_url or authorization_url,
+                setting_name="FRONTIER_AUTH_OIDC_SIGNIN_URL",
+                allow_query=True,
+            ),
+            "signup_url": _normalize_absolute_http_url(
+                answers.oidc_signup_url or authorization_url,
+                setting_name="FRONTIER_AUTH_OIDC_SIGNUP_URL",
+                allow_query=True,
+            ),
             "scopes": cls._oidc_scopes_value(answers),
         }
 

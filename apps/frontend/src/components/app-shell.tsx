@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { ModeSwitch } from "@/components/mode-switch";
 import { ApiStatusBanner } from "@/components/api-status-banner";
 import { getOperatorSession } from "@/lib/api";
@@ -166,7 +166,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const requestedMode: AppMode = pathname.startsWith("/builder") ? "builder" : "user";
   const inAdmin = pathname.startsWith("/admin");
   const [operatorSession, setOperatorSession] = useState<OperatorSession | null>(null);
-  const [sessionResolved, setSessionResolved] = useState(false);
+  const sessionRequestIdRef = useRef(0);
+  const [activeSessionRequestId, setActiveSessionRequestId] = useState(0);
+  const [resolvedSessionRequestId, setResolvedSessionRequestId] = useState(0);
   const navGroups = useMemo(() => {
     const canBuilder = operatorSession?.capabilities.can_builder ?? false;
     const canAdmin = operatorSession?.capabilities.can_admin ?? false;
@@ -223,7 +225,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     let cancelled = false;
-    setSessionResolved(false);
+    const requestId = sessionRequestIdRef.current + 1;
+    sessionRequestIdRef.current = requestId;
+    setActiveSessionRequestId(requestId);
     getOperatorSession()
       .then((session) => {
         if (!cancelled) {
@@ -237,13 +241,15 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       })
       .finally(() => {
         if (!cancelled) {
-          setSessionResolved(true);
+          setResolvedSessionRequestId(requestId);
         }
       });
     return () => {
       cancelled = true;
     };
   }, [pathname]);
+
+  const sessionResolved = activeSessionRequestId != 0 && resolvedSessionRequestId === activeSessionRequestId;
 
   useEffect(() => {
     if (!sessionResolved || requestedMode !== "builder") {

@@ -8,8 +8,10 @@ from uuid import uuid4
 
 try:
 	import psycopg
+	from psycopg import sql as psycopg_sql
 except Exception:  # pragma: no cover - optional dependency in some local test paths
 	psycopg = None
+	psycopg_sql = None
 
 try:
 	import redis
@@ -48,6 +50,17 @@ def _safe_json_loads(payload: Any) -> Any:
 
 def _vector_literal(values: list[float]) -> str:
 	return "[" + ",".join(f"{float(item):.8f}" for item in values) + "]"
+
+
+def _validated_embedding_dimensions(value: int) -> int:
+	return max(8, min(int(value), 3_072))
+
+
+def _vector_type_sql(dimensions: int) -> Any:
+	assert psycopg_sql is not None
+	return psycopg_sql.SQL("vector({})").format(
+		psycopg_sql.SQL(str(_validated_embedding_dimensions(dimensions)))
+	)
 
 
 class _BasePostgresService:
@@ -212,7 +225,9 @@ class PostgresLongTermMemoryStore(_BasePostgresService):
 	def __init__(self, dsn: str) -> None:
 		super().__init__(dsn)
 		self.vector_enabled = False
-		self.embedding_dimensions = max(8, int(os.getenv("FRONTIER_MEMORY_EMBEDDING_DIMENSIONS", "1536")))
+		self.embedding_dimensions = _validated_embedding_dimensions(
+			int(os.getenv("FRONTIER_MEMORY_EMBEDDING_DIMENSIONS", "1536"))
+		)
 		self.embedding_model = str(os.getenv("OPENAI_EMBEDDING_MODEL", "text-embedding-3-small") or "text-embedding-3-small").strip()
 		self._openai_client: Any | None = None
 
@@ -254,7 +269,9 @@ class PostgresLongTermMemoryStore(_BasePostgresService):
 				)
 				if self.vector_enabled:
 					cursor.execute(
-						f"ALTER TABLE frontier_long_term_memory ADD COLUMN IF NOT EXISTS embedding vector({self.embedding_dimensions})"
+						psycopg_sql.SQL(
+							"ALTER TABLE frontier_long_term_memory ADD COLUMN IF NOT EXISTS embedding {}"
+						).format(_vector_type_sql(self.embedding_dimensions))
 					)
 				cursor.execute(
 					"CREATE INDEX IF NOT EXISTS frontier_long_term_memory_bucket_idx ON frontier_long_term_memory (bucket_id, created_at DESC)"
@@ -367,21 +384,6 @@ class PostgresLongTermMemoryStore(_BasePostgresService):
 		})
 		return payload
 
-	def _filters(self, *, bucket_id: str | None = None, session_id: str | None = None, memory_scope: str | None = None) -> tuple[str, list[Any]]:
-		clauses: list[str] = []
-		params: list[Any] = []
-		if bucket_id:
-			clauses.append("bucket_id = %s")
-			params.append(bucket_id)
-		if session_id:
-			clauses.append("session_id = %s")
-			params.append(session_id)
-		if memory_scope:
-			clauses.append("memory_scope = %s")
-			params.append(memory_scope)
-		where_sql = f"WHERE {' AND '.join(clauses)}" if clauses else ""
-		return where_sql, params
-
 	def get_entries(
 		self,
 		*,
@@ -393,18 +395,27 @@ class PostgresLongTermMemoryStore(_BasePostgresService):
 		if not self.enabled:
 			return []
 		self.initialize()
-		where_sql, params = self._filters(bucket_id=bucket_id, session_id=session_id, memory_scope=memory_scope)
 		with self._connect() as connection:
 			with connection.cursor() as cursor:
 				cursor.execute(
-					f"""
+					"""
 					SELECT id, bucket_id, session_id, memory_scope, source, task_id, content, metadata, created_at
 					FROM frontier_long_term_memory
-					{where_sql}
+					WHERE (%s IS NULL OR bucket_id = %s)
+					AND (%s IS NULL OR session_id = %s)
+					AND (%s IS NULL OR memory_scope = %s)
 					ORDER BY created_at DESC
 					LIMIT %s
 					""",
-					(*params, max(1, limit)),
+					(
+						bucket_id,
+						bucket_id,
+						session_id,
+						session_id,
+						memory_scope,
+						memory_scope,
+						max(1, limit),
+					),
 				)
 				rows = cursor.fetchall()
 		return [self._row_to_entry(row) for row in reversed(rows)]
@@ -430,39 +441,53 @@ class PostgresLongTermMemoryStore(_BasePostgresService):
 		with self._connect() as connection:
 			with connection.cursor() as cursor:
 				if self.vector_enabled and vector:
-					params_with_vector = [*params]
-					vector_where = where_sql
-					if vector_where:
-						vector_where = f"{vector_where} AND embedding IS NOT NULL"
-					else:
-						vector_where = "WHERE embedding IS NOT NULL"
 					cursor.execute(
-						f"""
+						"""
 						SELECT id, bucket_id, session_id, memory_scope, source, task_id, content, metadata, created_at
 						FROM frontier_long_term_memory
-						{vector_where}
+						WHERE (%s IS NULL OR bucket_id = %s)
+						AND (%s IS NULL OR session_id = %s)
+						AND (%s IS NULL OR memory_scope = %s)
+						AND embedding IS NOT NULL
 						ORDER BY embedding <=> %s::vector, created_at DESC
 						LIMIT %s
 						""",
-						(*params_with_vector, _vector_literal(vector), max(1, limit)),
+						(
+							bucket_id,
+							bucket_id,
+							session_id,
+							session_id,
+							memory_scope,
+							memory_scope,
+							_vector_literal(vector),
+							max(1, limit),
+						),
 					)
 					rows = cursor.fetchall()
 				else:
 					pattern = f"%{normalized_query[:200]}%"
-					lexical_where = where_sql
-					if lexical_where:
-						lexical_where = f"{lexical_where} AND (content ILIKE %s OR metadata::text ILIKE %s)"
-					else:
-						lexical_where = "WHERE (content ILIKE %s OR metadata::text ILIKE %s)"
 					cursor.execute(
-						f"""
+						"""
 						SELECT id, bucket_id, session_id, memory_scope, source, task_id, content, metadata, created_at
 						FROM frontier_long_term_memory
-						{lexical_where}
+						WHERE (%s IS NULL OR bucket_id = %s)
+						AND (%s IS NULL OR session_id = %s)
+						AND (%s IS NULL OR memory_scope = %s)
+						AND (content ILIKE %s OR metadata::text ILIKE %s)
 						ORDER BY created_at DESC
 						LIMIT %s
 						""",
-						(*params, pattern, pattern, max(1, limit)),
+						(
+							bucket_id,
+							bucket_id,
+							session_id,
+							session_id,
+							memory_scope,
+							memory_scope,
+							pattern,
+							pattern,
+							max(1, limit),
+						),
 					)
 					rows = cursor.fetchall()
 		return [self._row_to_entry(row) for row in rows]
@@ -638,31 +663,29 @@ class PostgresLongTermMemoryStore(_BasePostgresService):
 		if not self.enabled:
 			return []
 		self.initialize()
-		clauses: list[str] = []
-		params: list[Any] = []
-		if bucket_id:
-			clauses.append("bucket_id = %s")
-			params.append(bucket_id)
-		if memory_scope:
-			clauses.append("memory_scope = %s")
-			params.append(memory_scope)
-		if status:
-			clauses.append("status = %s")
-			params.append(status)
-		where_sql = f"WHERE {' AND '.join(clauses)}" if clauses else ""
 
 		with self._connect() as connection:
 			with connection.cursor() as cursor:
 				cursor.execute(
-					f"""
+					"""
 					SELECT id, entry_id, bucket_id, session_id, memory_scope, source, task_id,
-					       candidate_kind, status, created_at, updated_at, content, metadata
+					candidate_kind, status, created_at, updated_at, content, metadata
 					FROM frontier_memory_consolidation_queue
-					{where_sql}
+					WHERE (%s IS NULL OR bucket_id = %s)
+					AND (%s IS NULL OR memory_scope = %s)
+					AND (%s IS NULL OR status = %s)
 					ORDER BY created_at DESC
 					LIMIT %s
 					""",
-					(*params, max(1, limit)),
+					(
+						bucket_id,
+						bucket_id,
+						memory_scope,
+						memory_scope,
+						status,
+						status,
+						max(1, limit),
+					),
 				)
 				rows = cursor.fetchall()
 		return [self._row_to_consolidation_candidate(row) for row in reversed(rows)]
@@ -677,22 +700,30 @@ class PostgresLongTermMemoryStore(_BasePostgresService):
 		if not self.enabled:
 			return
 		self.initialize()
-		metadata_sql = ""
-		params: list[Any] = [str(status or "pending"), str(candidate_id)]
-		if isinstance(extra_metadata, dict) and extra_metadata:
-			metadata_sql = ", metadata = COALESCE(metadata, '{}'::jsonb) || %s::jsonb"
-			params.insert(1, json.dumps(extra_metadata, default=_json_default))
 
 		with self._connect() as connection:
 			with connection.cursor() as cursor:
-				cursor.execute(
-					f"""
-					UPDATE frontier_memory_consolidation_queue
-					SET status = %s{metadata_sql}, updated_at = timezone('utc', now())
-					WHERE id = %s
-					""",
-					params,
-				)
+				if isinstance(extra_metadata, dict) and extra_metadata:
+					cursor.execute(
+						"""
+						UPDATE frontier_memory_consolidation_queue
+						SET status = %s,
+						metadata = COALESCE(metadata, '{}'::jsonb) || %s::jsonb,
+						updated_at = timezone('utc', now())
+						WHERE id = %s
+						""",
+						(str(status or "pending"), json.dumps(extra_metadata, default=_json_default), str(candidate_id)),
+					)
+				else:
+					cursor.execute(
+						"""
+						UPDATE frontier_memory_consolidation_queue
+						SET status = %s,
+						updated_at = timezone('utc', now())
+						WHERE id = %s
+						""",
+						(str(status or "pending"), str(candidate_id)),
+					)
 
 	def clear_entries(
 		self,
@@ -704,12 +735,26 @@ class PostgresLongTermMemoryStore(_BasePostgresService):
 		if not self.enabled:
 			return
 		self.initialize()
-		where_sql, params = self._filters(bucket_id=bucket_id, session_id=session_id, memory_scope=memory_scope)
-		if not where_sql:
+		if not any((bucket_id, session_id, memory_scope)):
 			return
 		with self._connect() as connection:
 			with connection.cursor() as cursor:
-				cursor.execute(f"DELETE FROM frontier_long_term_memory {where_sql}", params)
+				cursor.execute(
+					"""
+					DELETE FROM frontier_long_term_memory
+					WHERE (%s IS NULL OR bucket_id = %s)
+					AND (%s IS NULL OR session_id = %s)
+					AND (%s IS NULL OR memory_scope = %s)
+					""",
+					(
+						bucket_id,
+						bucket_id,
+						session_id,
+						session_id,
+						memory_scope,
+						memory_scope,
+					),
+				)
 
 
 class Neo4jRunGraph:
@@ -899,15 +944,15 @@ class Neo4jRunGraph:
 					"""
 					MATCH (owner:KnowledgeOwner {id: $owner_id})-[:OWNS_MEMORY]->(memory:KnowledgeMemory)
 					WHERE memory.memory_scope = $memory_scope
-					  AND ($query = '' OR toLower(memory.content) CONTAINS $query)
+					AND ($query = '' OR toLower(memory.content) CONTAINS $query)
 					RETURN memory.id AS id,
-					       memory.content AS content,
-					       memory.kind AS kind,
-					       memory.candidate_kind AS candidate_kind,
-					       memory.bucket_id AS bucket_id,
-					       memory.session_id AS session_id,
-					       memory.source_count AS source_count,
-					       memory.created_at AS created_at
+					memory.content AS content,
+					memory.kind AS kind,
+					memory.candidate_kind AS candidate_kind,
+					memory.bucket_id AS bucket_id,
+					memory.session_id AS session_id,
+					memory.source_count AS source_count,
+					memory.created_at AS created_at
 					ORDER BY memory.created_at DESC
 					LIMIT $limit
 					""",
@@ -937,8 +982,8 @@ class Neo4jRunGraph:
 					"""
 					MATCH (owner:KnowledgeOwner {id: $owner_id})-[:RELATES_TO_TOPIC]->(topic:KnowledgeTopic)
 					RETURN topic.id AS id,
-					       topic.name AS name,
-					       topic.weight AS weight
+					topic.name AS name,
+					topic.weight AS weight
 					ORDER BY topic.weight DESC, topic.name ASC
 					LIMIT $limit
 					""",

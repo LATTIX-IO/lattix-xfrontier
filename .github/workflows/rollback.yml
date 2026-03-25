@@ -51,11 +51,12 @@ jobs:
         shell: python
         run: |
           import json
+          import os
           from pathlib import Path
           rollback = json.loads(Path("dist/rollback/rollback-plan.json").read_text(encoding="utf-8"))
           manifest = json.loads(Path("dist/rollback/manifest.json").read_text(encoding="utf-8"))
           print(json.dumps({
-              "environment": "${{ github.event.inputs.environment }}",
+              "environment": os.environ["TARGET_ENV"],
               "target_version": rollback.get("target_version") or manifest.get("version"),
               "requested_release": manifest.get("version"),
               "strategy": manifest.get("rollback", {}).get("strategy"),

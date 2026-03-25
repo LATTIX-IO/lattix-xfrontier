@@ -2,6 +2,11 @@ version: "3.9"
 services:
   gtm-agent:
     image: ${FRONTIER_AGENT_IMAGE:-ghcr.io/your-org/agent-service:v0.1.0}
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp
     environment:
       - FRONTIER_RUNTIME_PROFILE=hosted
       - FRONTIER_REQUIRE_A2A_RUNTIME_HEADERS=true
@@ -14,6 +19,11 @@ services:
       - "8081:8080"
   security-agent:
     image: ${FRONTIER_AGENT_IMAGE:-ghcr.io/your-org/agent-service:v0.1.0}
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp
     environment:
       - FRONTIER_RUNTIME_PROFILE=hosted
       - FRONTIER_REQUIRE_A2A_RUNTIME_HEADERS=true

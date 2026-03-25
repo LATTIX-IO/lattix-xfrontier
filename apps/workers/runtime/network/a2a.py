@@ -7,7 +7,8 @@ import ssl
 from uuid import uuid4
 from typing import Any, Dict, Optional
 from urllib.parse import urlparse
-from urllib import request
+
+import httpx
 
 from ..layer2.contracts import Envelope
 from ..security.jwt import issue_token
@@ -51,6 +52,19 @@ def _build_runtime_signature(subject: str, nonce: str, correlation_id: str, body
     return hmac.new(_signing_secret(), message, hashlib.sha256).hexdigest()
 
 
+def _validated_a2a_url(url: str) -> str:
+    parsed = urlparse(str(url or "").strip())
+    if parsed.scheme.lower() not in {"http", "https"}:
+        raise ValueError("A2A transport requires an HTTP or HTTPS endpoint")
+    if not parsed.hostname:
+        raise ValueError("A2A transport requires a host")
+    if parsed.username or parsed.password:
+        raise ValueError("A2A transport URLs must not contain embedded credentials")
+    if parsed.fragment:
+        raise ValueError("A2A transport URLs must not contain fragments")
+    return parsed.geturl()
+
+
 def _enforce_transport_policy(url: str, *, sub: str, internal_service: bool, explicit_token: bool) -> None:
     if _strict_transport_required():
         if not sub:
@@ -79,6 +93,7 @@ def post_envelope(
     internal_service: bool = False,
     additional_claims: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
+    validated_url = _validated_a2a_url(url)
     data = env.to_json().encode("utf-8")
     headers = {"Content-Type": "application/json"}
     claim_overrides: Dict[str, Any] = dict(additional_claims or {})
@@ -89,7 +104,7 @@ def post_envelope(
     if internal_service:
         claim_overrides.setdefault("internal_service", True)
         claim_overrides.setdefault("subject", sub)
-    _enforce_transport_policy(url, sub=sub, internal_service=internal_service, explicit_token=bool(token))
+    _enforce_transport_policy(validated_url, sub=sub, internal_service=internal_service, explicit_token=bool(token))
     tok = token or issue_token(sub=sub, additional_claims=claim_overrides or None)
     headers["Authorization"] = f"Bearer {tok}"
     # Propagate correlation id for cross-service tracing
@@ -104,16 +119,22 @@ def post_envelope(
         headers["X-Frontier-Nonce"] = nonce
         headers["X-Frontier-Signature"] = _build_runtime_signature(sub, nonce, env.correlation_id, data)
 
-    req = request.Request(url, data=data, headers=headers, method="POST")
-    parsed = urlparse(url)
+    parsed = urlparse(validated_url)
     ssl_context = None
     if parsed.scheme.lower() == "https":
         ssl_context = ssl.create_default_context(cafile=ca_bundle) if ca_bundle else ssl.create_default_context()
     elif _runtime_profile() == "hosted":
         raise ValueError("Hosted runtime profile requires HTTPS A2A endpoints")
-    with request.urlopen(req, timeout=10, context=ssl_context) as resp:  # nosec - verified TLS context is used for HTTPS
-        body = resp.read().decode("utf-8")
-        try:
-            return json.loads(body)
-        except Exception:
-            return {"status": resp.status, "body": body}
+    response = httpx.post(
+        validated_url,
+        content=data,
+        headers=headers,
+        timeout=10.0,
+        verify=ssl_context if ssl_context is not None else True,
+        follow_redirects=False,
+    )
+    body = response.text
+    try:
+        return json.loads(body)
+    except Exception:
+        return {"status": response.status_code, "body": body}

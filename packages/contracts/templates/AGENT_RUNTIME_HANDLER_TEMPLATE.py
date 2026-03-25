@@ -5,7 +5,6 @@ Usage:
 - Place this module on PYTHONPATH (e.g., under runtime/agents/<agent_id>_handler.py)
 - Set agent's AGENTS/<agent>/agent.runtime.json with topics and module path
 """
-from typing import Any
 from runtime.layer2.contracts import Envelope
 from runtime.layer2.reporting import add_tokens, add_log
 
