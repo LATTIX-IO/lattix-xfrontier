@@ -1,10 +1,12 @@
 "use client";
 
 import Link from "next/link";
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
 import { ModeSwitch } from "@/components/mode-switch";
 import { ApiStatusBanner } from "@/components/api-status-banner";
+import { getOperatorSession } from "@/lib/api";
+import type { AppMode, OperatorSession } from "@/types/frontier";
 
 type IconName = "inbox" | "workflow" | "artifact" | "studio" | "agent" | "nodes" | "guardrails" | "integrations" | "releases" | "settings";
 type NavItem = { href: string; label: string; icon: IconName };
@@ -159,15 +161,22 @@ const adminNavGroup: NavGroup = {
 
 export function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
-  const mode = pathname.startsWith("/builder") ? "builder" : "user";
+  const router = useRouter();
+  const isPublicAuthRoute = pathname.startsWith("/auth");
+  const requestedMode: AppMode = pathname.startsWith("/builder") ? "builder" : "user";
   const inAdmin = pathname.startsWith("/admin");
+  const [operatorSession, setOperatorSession] = useState<OperatorSession | null>(null);
+  const [sessionResolved, setSessionResolved] = useState(false);
   const navGroups = useMemo(() => {
-    const base = mode === "builder" ? [...builderNavGroups] : [...userNavGroups];
-    if (inAdmin) {
+    const canBuilder = operatorSession?.capabilities.can_builder ?? false;
+    const canAdmin = operatorSession?.capabilities.can_admin ?? false;
+    const activeMode: AppMode = requestedMode === "builder" && canBuilder ? "builder" : "user";
+    const base = activeMode === "builder" ? [...builderNavGroups] : [...userNavGroups];
+    if (inAdmin && canAdmin) {
       base.push(adminNavGroup);
     }
     return base;
-  }, [inAdmin, mode]);
+  }, [inAdmin, operatorSession?.capabilities.can_admin, operatorSession?.capabilities.can_builder, requestedMode]);
 
   const SHOW_SOFT_LAUNCH = true;
   const SHOW_CLASSIFICATION = true;
@@ -211,6 +220,68 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     html.classList.add(`theme-${theme}`);
     window.localStorage.setItem("frontier-theme", theme);
   }, [theme]);
+
+  useEffect(() => {
+    let cancelled = false;
+    setSessionResolved(false);
+    getOperatorSession()
+      .then((session) => {
+        if (!cancelled) {
+          setOperatorSession(session);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setOperatorSession(null);
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setSessionResolved(true);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [pathname]);
+
+  useEffect(() => {
+    if (!sessionResolved || requestedMode !== "builder") {
+      return;
+    }
+    if (operatorSession?.capabilities.can_builder) {
+      return;
+    }
+    router.replace(operatorSession?.authenticated ? "/inbox" : "/auth");
+  }, [operatorSession?.authenticated, operatorSession?.capabilities.can_builder, requestedMode, router, sessionResolved]);
+
+  const canBuilder = operatorSession?.capabilities.can_builder ?? false;
+  const activeMode: AppMode = requestedMode === "builder" && canBuilder ? "builder" : "user";
+
+  if (isPublicAuthRoute) {
+    return (
+      <div className="fx-app min-h-screen text-[var(--foreground)]">
+        <div className="fixed inset-x-0 top-0 z-30 border-b border-[var(--ui-border)] bg-[color-mix(in_srgb,var(--fx-header)_94%,transparent)] backdrop-blur-sm">
+          <div className="mx-auto flex h-14 max-w-7xl items-center justify-between gap-3 px-4 sm:px-6 lg:px-8">
+            <div className="flex min-w-0 items-center gap-3">
+              <span className="text-xs font-semibold uppercase tracking-[0.16em] text-[var(--fx-muted)]">Lattix xFrontier</span>
+              <span className="fx-badge-local px-2 py-0.5 text-[10px]">Identity</span>
+            </div>
+            <div className="flex items-center gap-2">
+              <ModeSwitch activeMode="user" canAccessBuilder={false} />
+              <Link href="/inbox" className="fx-btn-secondary px-3 py-1.5 text-xs font-medium no-underline">
+                Skip to console
+              </Link>
+            </div>
+          </div>
+        </div>
+        <ApiStatusBanner />
+        <main className="min-h-screen pt-14">
+          {children}
+        </main>
+      </div>
+    );
+  }
 
   return (
     <div className="fx-app min-h-screen text-[var(--foreground)]">
@@ -272,8 +343,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               <span className="h-1.5 w-1.5 rounded-full bg-[hsl(var(--state-success))]" />
               DB OK
             </span>
-            <ModeSwitch />
-            {mode === "user" && (
+            <ModeSwitch activeMode={activeMode} canAccessBuilder={canBuilder} />
+            {activeMode === "user" && (
               <Link
                 href="/workflows/start"
                 className="fx-btn-primary px-2.5 py-1 text-[11px] font-medium"
@@ -373,7 +444,17 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         >
           <ApiStatusBanner />
           <div className="p-5 md:p-6">
-            {children}
+            {requestedMode === "builder" && !sessionResolved ? (
+              <div className="fx-panel max-w-2xl rounded-2xl border p-6">
+                <p className="text-xs font-semibold uppercase tracking-[0.16em] text-[var(--fx-muted)]">Checking access</p>
+                <h2 className="mt-3 text-xl font-semibold tracking-[-0.03em] text-[hsl(var(--foreground))]">Verifying builder permissions</h2>
+                <p className="mt-2 text-sm leading-6 text-[var(--fx-muted)]">
+                  One quick capability check so builder mode only opens for identities that actually have the keys.
+                </p>
+              </div>
+            ) : (
+              children
+            )}
           </div>
         </main>
       </div>

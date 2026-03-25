@@ -14,7 +14,7 @@ By contributing to this repository, you agree that your contributions are submit
 ### Root platform
 
 - `make bootstrap`
-- `make dev`
+- `make up`
 - `make test`
 - `make policy-test`
 

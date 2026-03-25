@@ -48,7 +48,9 @@ class PromptRenderFilter:
 
 class _DefaultFilterChain:
     async def run(self, envelope: Envelope, context: FilterContext) -> FilterResult:
-        if envelope.target_agent:
+        if _requires_capability_enforcement(envelope):
+            if not envelope.target_agent:
+                return FilterResult(action="block", envelope=envelope, reason="target agent required for capability-scoped action")
             token = envelope.capability_token
             if not token:
                 return FilterResult(action="block", envelope=envelope, reason="capability token required")
@@ -76,6 +78,23 @@ def _safe_int(value: Any) -> int | None:
         return int(value)
     except (TypeError, ValueError):
         return None
+
+
+def _requires_capability_enforcement(envelope: Envelope) -> bool:
+    action = str(envelope.action or "").strip().lower()
+    guarded_actions = {
+        "execute_step",
+        "read_file",
+        "write_file",
+        "network_egress",
+        "llm_call",
+    }
+    if envelope.target_agent or envelope.capability_token:
+        return True
+    if action in guarded_actions:
+        return True
+    metadata = envelope.metadata if isinstance(envelope.metadata, dict) else {}
+    return any(key in metadata for key in ("tool_call_count", "resource_path", "path"))
 
 
 def _redact_sensitive_text(text: str) -> tuple[str, list[str]]:

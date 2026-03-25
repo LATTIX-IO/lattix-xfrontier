@@ -1,5 +1,32 @@
 export type AppMode = "user" | "builder";
 
+export type OperatorSession = {
+  authenticated: boolean;
+  actor: string;
+  principal_id: string;
+  principal_type: "user" | "agent" | "service" | "npe" | string;
+  display_name: string;
+  subject: string;
+  email?: string;
+  preferred_username?: string;
+  auth_mode: string;
+  provider?: string;
+  roles: string[];
+  capabilities: {
+    can_admin: boolean;
+    can_builder: boolean;
+  };
+  allowed_modes: AppMode[];
+  default_mode: AppMode;
+  oidc: {
+    configured: boolean;
+    issuer: string;
+    audience: string;
+    provider: string;
+    validation_error?: string;
+  };
+};
+
 export type RunStatus =
   | "Running"
   | "Blocked"
@@ -147,6 +174,22 @@ export type AgentDefinition = {
     tools?: Record<string, unknown>;
     memory?: Record<string, unknown>;
     guardrails?: Record<string, unknown>;
+    iam?: {
+      principal_id?: string;
+      principal_type?: "user" | "agent" | "service" | "npe";
+      provider?: string;
+      auth_mode?: string;
+      display_name?: string;
+      subject?: string;
+      agent_id?: string;
+      service_account_id?: string;
+      client_id?: string;
+      roles?: string[];
+      groups?: string[];
+      provisioning?: Record<string, unknown>;
+      recommended_claims?: Record<string, unknown>;
+      [key: string]: unknown;
+    };
     security?: SecurityScopeConfig;
     graph_json?: {
       nodes?: Array<{ id: string; title: string; type: string; x: number; y: number; config?: Record<string, unknown> }>;
@@ -174,7 +217,6 @@ export type PlatformSettings = {
   idle_timeout?: string;
   local_only_mode: boolean;
   mask_secrets_in_events: boolean;
-  allow_direct_openai_without_agent: boolean;
   require_human_approval: boolean;
   require_human_approval_for_high_risk_tools?: boolean;
   emergency_read_only_mode?: boolean;
@@ -320,9 +362,13 @@ export type AtfAlignmentReport = {
 
 export type CollaborationParticipant = {
   user_id: string;
+  principal_id?: string | null;
+  principal_type?: "user" | "agent" | "service" | "npe";
+  auth_subject?: string | null;
   display_name: string;
   role: "owner" | "editor" | "viewer";
   last_seen_at: string;
+  metadata_json?: Record<string, unknown>;
 };
 
 export type CollaborationSession = {

@@ -29,7 +29,7 @@ def _full_compose(*extra: str) -> list[str]:
 
 
 def _local_compose(*extra: str) -> list[str]:
-    env_path = ensure_compose_env_file()
+    env_path = ensure_compose_env_file(local_profile=True)
     return ["docker", "compose", "--env-file", str(env_path), "-f", "docker-compose.local.yml", *extra]
 
 
@@ -42,13 +42,7 @@ def cli() -> None:
 def bootstrap() -> None:
     run_command([python_executable(), "-m", "pip", "install", "-e", ".[dev]"], cwd=ROOT)
     run_command(_full_compose("pull"), cwd=ROOT)
-    click.echo("Run 'lattix dev' to start the secure platform stack.")
-
-
-@cli.command("dev")
-def dev_command() -> None:
-    run_command(_full_compose("up", "-d"), cwd=ROOT)
-    click.echo("Secure platform stack running. Gateway: http://frontier.localhost ; API health: http://localhost:8000/healthz")
+    click.echo("Run 'lattix up' to start the secure platform stack.")
 
 
 @cli.command("up")
@@ -56,9 +50,20 @@ def up_command() -> None:
     run_command(_full_compose("up", "-d"), cwd=ROOT)
 
 
+@cli.command("local-up")
+def local_up_command() -> None:
+    run_command(_local_compose("up", "-d"), cwd=ROOT)
+    click.echo("Lightweight local stack running. Frontend: http://localhost:3000 ; API health: http://localhost:8000/healthz")
+
+
 @cli.command("down")
 def down_command() -> None:
     run_command(_full_compose("down", "-v"), cwd=ROOT)
+
+
+@cli.command("local-down")
+def local_down_command() -> None:
+    run_command(_local_compose("down", "-v"), cwd=ROOT)
 
 
 @cli.command("stack-up")
@@ -69,17 +74,6 @@ def stack_up_command() -> None:
 @cli.command("stack-down")
 def stack_down_command() -> None:
     run_command(_full_compose("down", "-v"), cwd=ROOT)
-
-
-@cli.command("local-up")
-def local_up_command() -> None:
-    run_command(_local_compose("up", "-d"), cwd=ROOT)
-    click.echo("Lightweight local stack running. Frontend: http://localhost:3000 ; API health: http://localhost:8000/healthz")
-
-
-@cli.command("local-down")
-def local_down_command() -> None:
-    run_command(_local_compose("down", "-v"), cwd=ROOT)
 
 
 @cli.command()

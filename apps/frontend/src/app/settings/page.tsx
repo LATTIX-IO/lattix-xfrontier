@@ -35,7 +35,6 @@ export default function SettingsPage() {
   const [idleTimeout, setIdleTimeout] = useState("30 minutes");
   const [localOnlyMode, setLocalOnlyMode] = useState(true);
   const [maskSecrets, setMaskSecrets] = useState(true);
-  const [allowDirectOpenAI, setAllowDirectOpenAI] = useState(true);
   const [requireHumanApproval, setRequireHumanApproval] = useState(false);
   const [emergencyReadOnlyMode, setEmergencyReadOnlyMode] = useState(false);
   const [blockNewRuns, setBlockNewRuns] = useState(false);
@@ -78,7 +77,6 @@ export default function SettingsPage() {
       if (settings.idle_timeout) setIdleTimeout(settings.idle_timeout);
       setLocalOnlyMode(settings.local_only_mode);
       setMaskSecrets(settings.mask_secrets_in_events);
-      setAllowDirectOpenAI(settings.allow_direct_openai_without_agent);
       setRequireHumanApproval(settings.require_human_approval);
       setEmergencyReadOnlyMode(Boolean(settings.emergency_read_only_mode));
       setBlockNewRuns(Boolean(settings.block_new_runs));
@@ -142,7 +140,6 @@ export default function SettingsPage() {
         idle_timeout: idleTimeout,
         local_only_mode: localOnlyMode,
         mask_secrets_in_events: maskSecrets,
-        allow_direct_openai_without_agent: allowDirectOpenAI,
         require_human_approval: requireHumanApproval,
         emergency_read_only_mode: emergencyReadOnlyMode,
         block_new_runs: blockNewRuns,
@@ -313,10 +310,6 @@ export default function SettingsPage() {
               <label className="flex items-center justify-between gap-3 border border-[var(--fx-border)] px-2 py-2 text-xs">
                 <span>Local-only mode</span>
                 <input type="checkbox" checked={localOnlyMode} onChange={(event) => setLocalOnlyMode(event.target.checked)} />
-              </label>
-              <label className="flex items-center justify-between gap-3 border border-[var(--fx-border)] px-2 py-2 text-xs md:col-span-2">
-                <span>Allow direct OpenAI runs (no selected agent)</span>
-                <input type="checkbox" checked={allowDirectOpenAI} onChange={(event) => setAllowDirectOpenAI(event.target.checked)} />
               </label>
               <label className="flex items-center justify-between gap-3 border border-[var(--fx-border)] px-2 py-2 text-xs md:col-span-2">
                 <span>Require human approval on all workflow runs</span>

@@ -1,43 +1,85 @@
+x-agent-image: &agent-image
+  image: ${FRONTIER_AGENT_IMAGE:-lattix-frontier/agent-base:3.12.10-slim-bookworm}
+  build:
+    context: .
+    dockerfile: Dockerfile.agent
+    args:
+      PYTHON_BASE_IMAGE: ${FRONTIER_AGENT_PYTHON_BASE_IMAGE:-python:3.12.10-slim-bookworm}
+
+x-default-logging: &default-logging
+  logging:
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "3"
+
 services:
+
   frontend:
+    <<: *default-logging
     build:
       context: .
       dockerfile: Dockerfile.frontend
       args:
         NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL:-/api}
-    depends_on: [backend]
-    ports: ["3000:3000"]
+    depends_on: [backend, casdoor]
     environment:
       NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL:-/api}
       API_BASE_URL_INTERNAL: http://backend:8000
       NEXT_PUBLIC_ENABLE_MOCK_DATA: ${NEXT_PUBLIC_ENABLE_MOCK_DATA:-false}
-      NEXT_PUBLIC_FRONTIER_ACTOR: ${NEXT_PUBLIC_FRONTIER_ACTOR:-frontend-user}
-      NEXT_PUBLIC_FRONTIER_API_TOKEN: ${NEXT_PUBLIC_FRONTIER_API_TOKEN:-}
+      NEXT_PUBLIC_FRONTIER_ACTOR: ${NEXT_PUBLIC_FRONTIER_ACTOR:-}
+      FRONTIER_AUTH_MODE: ${FRONTIER_AUTH_MODE:-oidc}
+      FRONTIER_AUTH_OIDC_PROVIDER: ${FRONTIER_AUTH_OIDC_PROVIDER:-casdoor}
+      FRONTIER_AUTH_OIDC_ISSUER: ${FRONTIER_AUTH_OIDC_ISSUER:-http://casdoor.localhost}
+      FRONTIER_AUTH_OIDC_AUDIENCE: ${FRONTIER_AUTH_OIDC_AUDIENCE:-frontier-ui}
+      FRONTIER_AUTH_OIDC_JWKS_URL: ${FRONTIER_AUTH_OIDC_JWKS_URL:-http://casdoor.localhost/.well-known/jwks.json}
+      FRONTIER_AUTH_OIDC_CLIENT_ID: ${FRONTIER_AUTH_OIDC_CLIENT_ID:-frontier-web}
+      FRONTIER_AUTH_OIDC_AUTHORIZATION_URL: ${FRONTIER_AUTH_OIDC_AUTHORIZATION_URL:-http://casdoor.localhost/login/oauth/authorize}
+      FRONTIER_AUTH_OIDC_TOKEN_URL: ${FRONTIER_AUTH_OIDC_TOKEN_URL:-http://casdoor.localhost/api/login/oauth/access_token}
+      FRONTIER_AUTH_OIDC_SIGNIN_URL: ${FRONTIER_AUTH_OIDC_SIGNIN_URL:-http://casdoor.localhost/login/oauth/authorize}
+      FRONTIER_AUTH_OIDC_SIGNUP_URL: ${FRONTIER_AUTH_OIDC_SIGNUP_URL:-http://casdoor.localhost/login/oauth/authorize}
+      FRONTIER_AUTH_OIDC_SCOPES: ${FRONTIER_AUTH_OIDC_SCOPES:-openid profile email}
 
   backend:
+    <<: *default-logging
     build:
       context: .
       dockerfile: Dockerfile
-    depends_on: [postgres, redis, neo4j, vault, opa, nats, envoy]
-    ports: ["8000:8000"]
+    depends_on: [postgres, redis, neo4j, opa, nats, envoy, casdoor]
     environment:
       FRONTEND_ORIGIN: ${FRONTEND_ORIGIN:-http://frontier.localhost}
-      POSTGRES_DSN: ${POSTGRES_DSN:-postgresql://lattix:lattix@postgres:5432/lattix}
+      POSTGRES_DSN: ${POSTGRES_DSN}
       REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
       FRONTIER_MEMORY_ENABLE_LONG_TERM: ${FRONTIER_MEMORY_ENABLE_LONG_TERM:-true}
       FRONTIER_MEMORY_LEARNING_ENABLED: ${FRONTIER_MEMORY_LEARNING_ENABLED:-true}
       OPENAI_EMBEDDING_MODEL: ${OPENAI_EMBEDDING_MODEL:-text-embedding-3-small}
       NEO4J_URI: ${NEO4J_URI:-bolt://neo4j:7687}
       NEO4J_USERNAME: ${NEO4J_USERNAME:-neo4j}
-      NEO4J_PASSWORD: ${NEO4J_PASSWORD:-neo4jpassword}
+      NEO4J_PASSWORD: ${NEO4J_PASSWORD}
       FRONTIER_AGENT_ASSETS_ROOT: ${FRONTIER_AGENT_ASSETS_ROOT:-/app/examples/agents}
-      VAULT_ADDR: http://vault:8200
-      VAULT_TOKEN: ${VAULT_TOKEN:-dev-root-token}
+      VAULT_ADDR: ${VAULT_ADDR:-http://vault:8200}
+      VAULT_TOKEN: ${VAULT_TOKEN:-}
       OPA_ADDR: http://opa:8181
       NATS_URL: nats://nats:4222
       JAEGER_ENDPOINT: http://jaeger:4317
       LOG_LEVEL: ${LOG_LEVEL:-DEBUG}
       FRONTIER_RUNTIME_PROFILE: ${FRONTIER_RUNTIME_PROFILE:-local-secure}
+      FRONTIER_AUTH_MODE: ${FRONTIER_AUTH_MODE:-oidc}
+      FRONTIER_AUTH_OIDC_PROVIDER: ${FRONTIER_AUTH_OIDC_PROVIDER:-casdoor}
+      FRONTIER_AUTH_OIDC_ISSUER: ${FRONTIER_AUTH_OIDC_ISSUER:-http://casdoor.localhost}
+      FRONTIER_AUTH_OIDC_AUDIENCE: ${FRONTIER_AUTH_OIDC_AUDIENCE:-frontier-ui}
+      FRONTIER_AUTH_OIDC_JWKS_URL: ${FRONTIER_AUTH_OIDC_JWKS_URL:-http://casdoor.localhost/.well-known/jwks.json}
+      FRONTIER_AUTH_OIDC_CLIENT_ID: ${FRONTIER_AUTH_OIDC_CLIENT_ID:-frontier-web}
+      FRONTIER_AUTH_OIDC_AUTHORIZATION_URL: ${FRONTIER_AUTH_OIDC_AUTHORIZATION_URL:-http://casdoor.localhost/login/oauth/authorize}
+      FRONTIER_AUTH_OIDC_TOKEN_URL: ${FRONTIER_AUTH_OIDC_TOKEN_URL:-http://casdoor.localhost/api/login/oauth/access_token}
+      FRONTIER_AUTH_OIDC_SIGNIN_URL: ${FRONTIER_AUTH_OIDC_SIGNIN_URL:-http://casdoor.localhost/login/oauth/authorize}
+      FRONTIER_AUTH_OIDC_SIGNUP_URL: ${FRONTIER_AUTH_OIDC_SIGNUP_URL:-http://casdoor.localhost/login/oauth/authorize}
+      FRONTIER_AUTH_OIDC_SCOPES: ${FRONTIER_AUTH_OIDC_SCOPES:-openid profile email}
+      FRONTIER_BOOTSTRAP_ADMIN_USERNAME: ${FRONTIER_BOOTSTRAP_ADMIN_USERNAME:-frontier-admin}
+      FRONTIER_BOOTSTRAP_ADMIN_EMAIL: ${FRONTIER_BOOTSTRAP_ADMIN_EMAIL:-admin@frontier.localhost}
+      FRONTIER_BOOTSTRAP_ADMIN_SUBJECT: ${FRONTIER_BOOTSTRAP_ADMIN_SUBJECT:-frontier-admin}
+      FRONTIER_ADMIN_ACTORS: ${FRONTIER_ADMIN_ACTORS:-frontier-admin,admin@frontier.localhost}
+      FRONTIER_BUILDER_ACTORS: ${FRONTIER_BUILDER_ACTORS:-frontier-admin,admin@frontier.localhost}
       FRONTIER_API_BEARER_TOKEN: ${FRONTIER_API_BEARER_TOKEN:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-dummy-key}
       OPENAI_MODEL: ${OPENAI_MODEL:-gpt-4o-mini}
@@ -55,18 +97,32 @@ services:
       - ./policies:/app/policies:ro
 
   local-gateway:
+    <<: *default-logging
     image: caddy:2.8.4-alpine
-    depends_on: [frontend, backend]
+    depends_on: [frontend, backend, casdoor]
     environment:
       LOCAL_STACK_HOST: ${LOCAL_STACK_HOST:-frontier.localhost}
+      CASDOOR_LOCAL_HOST: ${CASDOOR_LOCAL_HOST:-casdoor.localhost}
     volumes:
       - ./docker/local/Caddyfile:/etc/caddy/Caddyfile:ro
-    ports: ["${LOCAL_GATEWAY_HTTP_PORT:-80}:80"]
+    ports: ["${LOCAL_GATEWAY_BIND_HOST:-127.0.0.1}:${LOCAL_GATEWAY_HTTP_PORT:-80}:80"]
+
+  casdoor:
+    <<: *default-logging
+    image: casbin/casdoor-all-in-one:v1.765.0
+    environment:
+      RUNNING_IN_DOCKER: "true"
+      CASDOOR_PUBLIC_URL: ${CASDOOR_PUBLIC_URL:-http://casdoor.localhost}
+      CASDOOR_BOOTSTRAP_ADMIN_USERNAME: ${CASDOOR_BOOTSTRAP_ADMIN_USERNAME:-frontier-admin}
+      CASDOOR_BOOTSTRAP_ADMIN_EMAIL: ${CASDOOR_BOOTSTRAP_ADMIN_EMAIL:-admin@frontier.localhost}
 
   agent-research:
-    build:
-      context: .
-      dockerfile: Dockerfile.agent
+    <<: *agent-image
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     environment:
       AGENT_ID: research
       SERVICE_NAME: research
@@ -84,12 +140,14 @@ services:
       A2A_CLOCK_SKEW_SECONDS: ${A2A_CLOCK_SKEW_SECONDS:-30}
       A2A_REPLAY_TTL_SECONDS: ${A2A_REPLAY_TTL_SECONDS:-900}
       A2A_TRUSTED_SUBJECTS: ${A2A_TRUSTED_SUBJECTS:-backend,research,code,review,coordinator}
-    ports: ["8081:8081"]
 
   agent-code:
-    build:
-      context: .
-      dockerfile: Dockerfile.agent
+    <<: *agent-image
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     environment:
       AGENT_ID: code
       SERVICE_NAME: code
@@ -107,12 +165,14 @@ services:
       A2A_CLOCK_SKEW_SECONDS: ${A2A_CLOCK_SKEW_SECONDS:-30}
       A2A_REPLAY_TTL_SECONDS: ${A2A_REPLAY_TTL_SECONDS:-900}
       A2A_TRUSTED_SUBJECTS: ${A2A_TRUSTED_SUBJECTS:-backend,research,code,review,coordinator}
-    ports: ["8082:8082"]
 
   agent-review:
-    build:
-      context: .
-      dockerfile: Dockerfile.agent
+    <<: *agent-image
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     environment:
       AGENT_ID: review
       SERVICE_NAME: review
@@ -130,38 +190,38 @@ services:
       A2A_CLOCK_SKEW_SECONDS: ${A2A_CLOCK_SKEW_SECONDS:-30}
       A2A_REPLAY_TTL_SECONDS: ${A2A_REPLAY_TTL_SECONDS:-900}
       A2A_TRUSTED_SUBJECTS: ${A2A_TRUSTED_SUBJECTS:-backend,research,code,review,coordinator}
-    ports: ["8083:8083"]
-
   vault:
+    <<: *default-logging
     image: hashicorp/vault:1.18
+    command: ["server", "-config=/vault/config/vault.hcl"]
     cap_add: [IPC_LOCK]
     environment:
-      VAULT_DEV_ROOT_TOKEN_ID: dev-root-token
-      VAULT_DEV_LISTEN_ADDRESS: 0.0.0.0:8200
-    ports: ["8200:8200"]
-    volumes: [vault-data:/vault/file]
+      VAULT_ADDR: http://vault:8200
+    volumes:
+      - vault-data:/vault/file
+      - ./docker/vault/vault.hcl:/vault/config/vault.hcl:ro
 
   opa:
+    <<: *default-logging
     image: openpolicyagent/opa:0.68.0-static
     command: ["run", "--server", "--addr=0.0.0.0:8181", "--log-level=info", "/policies"]
     volumes: [./policies:/policies:ro]
-    ports: ["8181:8181"]
 
   envoy:
+    <<: *default-logging
     image: envoyproxy/envoy:v1.32.4
     volumes: [./envoy/envoy.yaml:/etc/envoy/envoy.yaml:ro]
-    ports: ["9901:9901", "10000:10000"]
     depends_on: [opa]
     networks:
       - default
 
   sandbox-egress-gateway:
+    <<: *default-logging
     image: sameersbn/squid:3.5.27-2
     container_name: frontier-sandbox-egress-gateway
     restart: unless-stopped
     volumes:
       - ./docker/sandbox/squid.conf:/etc/squid/squid.conf:ro
-    ports: ["3128:3128"]
     networks:
       sandbox-internal:
         aliases: ["sandbox-egress-gateway"]
@@ -169,36 +229,37 @@ services:
         aliases: ["sandbox-egress-external"]
 
   postgres:
+    <<: *default-logging
     image: postgres:16-alpine
     environment:
       POSTGRES_DB: lattix
       POSTGRES_USER: lattix
-      POSTGRES_PASSWORD: lattix
-    ports: ["5432:5432"]
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
     volumes: [postgres-data:/var/lib/postgresql/data]
 
   redis:
+    <<: *default-logging
     image: redis:7-alpine
-    ports: ["6379:6379"]
 
   neo4j:
+    <<: *default-logging
     image: neo4j:5-community
     environment:
-      NEO4J_AUTH: neo4j/neo4jpassword
-    ports: ["7474:7474", "7687:7687"]
+      NEO4J_AUTH: neo4j/${NEO4J_PASSWORD}
     volumes: [neo4j-data:/data]
 
   nats:
+    <<: *default-logging
     image: nats:2.11-alpine
     command: ["--jetstream", "--store_dir=/data", "--http_port=8222"]
-    ports: ["4222:4222", "8222:8222"]
     volumes: [nats-data:/data]
 
   jaeger:
+    <<: *default-logging
     image: jaegertracing/all-in-one:1.61.0
     environment:
       COLLECTOR_OTLP_ENABLED: "true"
-    ports: ["16686:16686", "4317:4317"]
+    ports: ["127.0.0.1:16686:16686"]
 
 volumes:
   vault-data:

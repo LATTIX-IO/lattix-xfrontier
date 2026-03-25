@@ -310,7 +310,7 @@ export function RunFollowupComposer({ runId, recentContext }: Props) {
 
       <div className="flex items-center justify-between gap-2">
         <p className="fx-muted text-[11px]">
-          Published @agents and /workflows are supported. Without either, this sends directly to the default model.
+          Published @agents and /workflows are supported. Without either, this routes through the default chat agent.
         </p>
         <button type="submit" disabled={isSubmitting} className="fx-btn-primary rounded-xl px-3 py-2 text-xs font-medium disabled:opacity-60">
           {isSubmitting ? "Sending…" : "Send"}

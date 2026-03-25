@@ -11,6 +11,8 @@ permissions:
 jobs:
   bundle:
     runs-on: ubuntu-latest
+    env:
+      AGENT_PYTHON_BASE_IMAGE: python:3.12.10-slim-bookworm
     outputs:
       previous_tag: ${{ steps.previous-tag.outputs.previous_tag }}
     steps:
@@ -30,7 +32,7 @@ jobs:
       - name: Build images
         run: |
           docker build -t lattix-frontier/orchestrator:${GITHUB_REF_NAME} -f Dockerfile .
-          docker build -t lattix-frontier/agent-base:${GITHUB_REF_NAME} -f Dockerfile.agent .
+          docker build --build-arg PYTHON_BASE_IMAGE=${AGENT_PYTHON_BASE_IMAGE} -t lattix-frontier/agent-base:${GITHUB_REF_NAME} -f Dockerfile.agent .
       - name: Run e2e tests
         run: pytest tests/e2e/ -v
       - name: Determine previous release tag

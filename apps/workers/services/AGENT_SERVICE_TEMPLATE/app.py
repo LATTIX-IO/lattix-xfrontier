@@ -4,6 +4,7 @@ import hmac
 import json
 import os
 import time
+from threading import Lock
 from typing import Any, Dict
 
 try:
@@ -21,6 +22,7 @@ from frontier_runtime.security import token_identity_from_claims
 
 app = FastAPI(title=os.getenv("SERVICE_NAME", "agent-service")) if FastAPI else None
 _SEEN_NONCES: dict[str, float] = {}
+_SEEN_NONCES_LOCK = Lock()
 
 
 def _env_flag(name: str, default: bool = False) -> bool:
@@ -37,6 +39,10 @@ def _runtime_profile() -> str:
 
 def _strict_service_auth_required() -> bool:
     return _runtime_profile() in {"local-secure", "hosted"} or _env_flag("FRONTIER_REQUIRE_A2A_RUNTIME_HEADERS", False)
+
+
+def _placeholder_execution_allowed() -> bool:
+    return not _strict_service_auth_required()
 
 
 def _trusted_subjects() -> set[str]:
@@ -64,11 +70,26 @@ def _nonce_ttl_seconds() -> int:
     return max(1, min(ttl, 86_400))
 
 
-def _prune_seen_nonces(now: float | None = None) -> None:
+def _prune_seen_nonces_locked(now: float | None = None) -> None:
     current = time.time() if now is None else now
     expired = [nonce for nonce, expires_at in _SEEN_NONCES.items() if expires_at <= current]
     for nonce in expired:
         _SEEN_NONCES.pop(nonce, None)
+
+
+def _prune_seen_nonces(now: float | None = None) -> None:
+    with _SEEN_NONCES_LOCK:
+        _prune_seen_nonces_locked(now)
+
+
+def _register_seen_nonce_or_raise(nonce: str, *, now: float | None = None) -> None:
+    current = time.time() if now is None else now
+    with _SEEN_NONCES_LOCK:
+        _prune_seen_nonces_locked(current)
+        if nonce in _SEEN_NONCES:
+            raise HTTPException(status_code=409, detail="frontier nonce replay detected")
+        _SEEN_NONCES[nonce] = current + _nonce_ttl_seconds()
+        _prune_seen_nonces_locked(current)
 
 
 def _verify_runtime_headers(request: Request, body: bytes) -> str:
@@ -86,6 +107,8 @@ def _verify_runtime_headers(request: Request, body: bytes) -> str:
         raise HTTPException(status_code=401, detail="missing frontier nonce")
     if not signature:
         raise HTTPException(status_code=401, detail="missing frontier signature")
+    if not correlation_id:
+        raise HTTPException(status_code=401, detail="missing correlation id header for signed A2A request")
 
     digest = hashlib.sha256(body).hexdigest()
     message = f"{subject}:{nonce}:{correlation_id}:{digest}".encode("utf-8")
@@ -93,11 +116,7 @@ def _verify_runtime_headers(request: Request, body: bytes) -> str:
     if not hmac.compare_digest(expected, signature):
         raise HTTPException(status_code=401, detail="invalid frontier signature")
 
-    now = time.time()
-    _prune_seen_nonces(now)
-    if nonce in _SEEN_NONCES:
-        raise HTTPException(status_code=409, detail="frontier nonce replay detected")
-    _SEEN_NONCES[nonce] = now + _nonce_ttl_seconds()
+    _register_seen_nonce_or_raise(nonce)
     return subject
 
 
@@ -156,6 +175,10 @@ if app:
         raw_body = await req.body()
         verified_subject = _verify_runtime_headers(req, raw_body)
         claims = _authz(req)
+        identity = getattr(req.state, "auth_identity", None)
+        authenticated_subject = getattr(identity, "subject", str(claims.get("sub") or ""))
+        if verified_subject and authenticated_subject and verified_subject != authenticated_subject:
+            raise HTTPException(status_code=401, detail="frontier subject header does not match bearer token subject")
         data = json.loads(raw_body.decode("utf-8"))
         # Basic validation
         errs = validate_envelope_dict(data)
@@ -166,9 +189,10 @@ if app:
         corr_hdr = req.headers.get("X-Correlation-ID") or req.headers.get("x-correlation-id")
         if corr_hdr and corr_hdr != env.correlation_id:
             raise HTTPException(status_code=400, detail={"errors": ["correlation_id mismatch"]})
+        if not _placeholder_execution_allowed():
+            raise HTTPException(status_code=501, detail="agent runtime handler is not configured")
         # TODO: call agent runtime handler or enqueue work
         corr = data.get("correlation_id")
-        identity = getattr(req.state, "auth_identity", None)
         return {
             "accepted": True,
             "envelope_id": env.id,

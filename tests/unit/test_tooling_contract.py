@@ -41,7 +41,7 @@ def test_bootstrap_installer_reports_secure_compose_env_path() -> None:
     assert 'ensure_compose_env_file(local_profile=False)' in installer
     assert '"compose_env": str(compose_env.resolve())' in installer
     assert ".installer/local-secure.env" in installer_docs
-    assert ".installer/local-lightweight.env" in installer_docs
+    assert ".installer/local-lightweight.env" not in installer_docs
 
 
 def test_compose_env_generation_uses_mode_specific_files_and_profiles() -> None:
@@ -61,3 +61,24 @@ def test_compose_env_generation_uses_mode_specific_files_and_profiles() -> None:
     assert "FRONTIER_RUNTIME_PROFILE=local-lightweight" in lightweight_text
     assert "NEXT_PUBLIC_API_BASE_URL=http://localhost:8000" in lightweight_text
     assert "A2A_JWT_AUD=frontier-runtime" in lightweight_text
+
+
+def test_tooling_and_docs_remove_dev_alias_but_keep_local_stack() -> None:
+    readme = _read("README.md")
+    deployment = _read("docs/DEPLOYMENT.md")
+    contributing = _read("CONTRIBUTING.md")
+    cli = _read("frontier_tooling/cli.py")
+    powershell = _read("scripts/frontier.ps1")
+    makefile = _read("Makefile")
+
+    assert "make dev" not in readme
+    assert "lattix dev" not in readme
+    assert "local-up" in readme
+    assert "make dev" not in deployment
+    assert "docker-compose.local.yml" in deployment
+    assert "make dev" not in contributing
+    assert '@cli.command("dev")' not in cli
+    assert '"local-up"' in cli
+    assert '"local-down"' in cli
+    assert "docker-compose.local.yml" in powershell
+    assert "local-up" in makefile

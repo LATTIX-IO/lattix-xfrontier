@@ -4,17 +4,30 @@ import rego.v1
 
 default allow = false
 
-agent_config := {
-  "orchestrator": {"id": "orchestrator", "allowed_tools": ["execute_step", "a2a.execute"]},
-  "backend": {"id": "backend", "allowed_tools": ["execute_step", "a2a.execute"]},
-  "research": {"id": "research", "allowed_tools": ["execute_step", "search"]},
-  "code": {"id": "code", "allowed_tools": ["execute_step", "generate_code"]},
-  "review": {"id": "review", "allowed_tools": ["execute_step", "review_output"]}
-}
-
 network_allowlist := {target | some target in input.allowed_targets}
 
 tool_calls_used := object.get(input, "tool_calls_used", object.get(input, "tool_calls", 0))
+
+operation := value if {
+  value := object.get(input, "tool", "")
+  is_string(value)
+  trim(value, " ") != ""
+}
+
+operation := value if {
+  tool := object.get(input, "tool", "")
+  not is_string(tool)
+  value := object.get(input, "action", "")
+  is_string(value)
+}
+
+operation := value if {
+  tool := object.get(input, "tool", "")
+  is_string(tool)
+  trim(tool, " ") == ""
+  value := object.get(input, "action", "")
+  is_string(value)
+}
 
 allowed_tool(tool) if {
   provided_allowed_tools := object.get(input, "allowed_tools", null)
@@ -22,31 +35,38 @@ allowed_tool(tool) if {
   tool in provided_allowed_tools
 }
 
-allowed_tool(tool) if {
-  provided_allowed_tools := object.get(input, "allowed_tools", null)
-  not is_array(provided_allowed_tools)
-  config := object.get(agent_config, input.agent_id, null)
-  config != null
-  tool in config.allowed_tools
-}
-
 allow if {
-  allowed_tool(input.tool)
+  allowed_tool(operation)
   not deny
 }
 
 deny if {
-  input.tool == "read_file"
-  regex.match("\\.(env|json|key|pem|ssh)$", input.resource)
+  operation == "read_file"
+  regex.match("(^|/)(\\.env(\\..+)?)$", lower(input.resource))
 }
 
 deny if {
-  input.action == "network_egress"
+  operation == "read_file"
+  regex.match("(^|/)(id_rsa|id_dsa|id_ed25519|authorized_keys|credentials|secrets?\\.(json|ya?ml)|service[-_]account.*\\.json|token\\.json|\\.npmrc|\\.pypirc|\\.netrc)$", lower(input.resource))
+}
+
+deny if {
+  operation == "read_file"
+  regex.match("(\\.ssh/|\\.gnupg/|\\.aws/|/\\.config/gcloud/|\\.kube/)", lower(input.resource))
+}
+
+deny if {
+  operation == "read_file"
+  regex.match("\\.(pem|key|p12|pfx|kdbx|asc)$", lower(input.resource))
+}
+
+deny if {
+  operation == "network_egress"
   count(network_allowlist) == 0
 }
 
 deny if {
-  input.action == "network_egress"
+  operation == "network_egress"
   not input.target in network_allowlist
 }
 
@@ -60,7 +80,7 @@ deny if {
 }
 
 deny if {
-  input.action == "llm_call"
+  operation == "llm_call"
   input.classification == "restricted"
   input.provider != "local"
 }

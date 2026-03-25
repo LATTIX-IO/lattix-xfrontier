@@ -58,29 +58,32 @@ Lattix xFrontier is built around four layers:
 
 ```text
 make bootstrap
-make dev
+make up
 ```
 
 On Windows PowerShell, use either the installed CLI or the PowerShell helper:
 
 ```text
-lattix dev
-.\scripts\frontier.ps1 dev
+lattix up
+.\scripts\frontier.ps1 up
 ```
 
 For the default secure/full browser experience, open `http://frontier.localhost` (or your configured `LOCAL_STACK_HOST`). That path proxies `/api/*` through the local gateway to the backend at `http://localhost:8000`.
 
 If you intentionally want the lighter local-only stack, use `make local-up`. That path exposes the frontend directly at `http://localhost:3000` and talks to the backend at `http://localhost:8000` without the gateway-based `/api` path.
 
-The intended default is the **secure full platform stack** via `make dev` / `make up` / `make stack-up`. The lighter `docker-compose.local.yml` stack is still available for quicker local-only iteration through `make local-up`.
+The intended default is the **secure full platform stack** via `make up` / `make stack-up`. The lighter `docker-compose.local.yml` stack is still available for quicker local-only iteration through `make local-up`.
 
-Runtime profiles are now explicit:
+Supported runtime profiles are now explicit:
 
-- `local-lightweight` — permissive local iteration profile used by `docker-compose.local.yml`
 - `local-secure` — fail-closed secure local/full-stack profile used by `docker-compose.yml`
 - `hosted` — non-local profile that requires authenticated operator access and signed A2A runtime headers
 
 Set `FRONTIER_RUNTIME_PROFILE` when you need to pin the backend/runtime security posture explicitly. Legacy flags like `FRONTIER_SECURE_LOCAL_MODE` and `FRONTIER_REQUIRE_AUTHENTICATED_REQUESTS` still exist for compatibility, but the named profile is the canonical contract.
+
+Secure local installs now default to OIDC-backed operator authentication and disable unsigned header-only actor trust. The installer ships with a Casdoor preset by default, but can also emit generic OIDC settings for another IAM provider when you want to connect Frontier to an external identity plane.
+The frontend includes a generic `/auth` portal that points users to the configured provider-hosted sign-in and sign-up URLs, so the same console entry flow works with Casdoor or another OIDC-compliant IAM.
+The secure local stack now also routes Casdoor at `http://casdoor.localhost`, and the installer seeds a default bootstrap admin identity (`frontier-admin` / `admin@<hostname>.localhost`) into both the admin and builder actor allowlists so the first authenticated operator lands with the right keys.
 
 By default, local-first development seeds safe public demo agents from `examples/agents/`. Optional private or proprietary agent definitions can be layered in by setting `FRONTIER_AGENT_ASSETS_ROOT` to an external directory.
 
@@ -144,7 +147,8 @@ The public repository currently exposes:
 
 After installation, the `lattix` command supports:
 
-- `lattix dev`
+- `lattix up`
+- `lattix local-up`
 - `lattix health`
 - `lattix agent list`
 - `lattix agent scaffold --name <agent-name>`
@@ -182,10 +186,13 @@ Windows PowerShell equivalents:
 Default local deployment uses the secure full Compose stack in `docker-compose.yml`:
 
 ```text
-make dev
+make up
 ```
 
 This path includes the added security-oriented infrastructure such as the local gateway, sandbox egress boundary, policy services, and supporting runtime components.
+It also keeps most internal services off the host network by default, generates local database credentials during installer setup, and expects signed internal A2A traffic instead of header-only trust.
+
+`make stack-up` is kept as an explicit alias for the same secure full stack.
 
 If you want the lighter stack for quick local iteration, use:
 
@@ -193,7 +200,7 @@ If you want the lighter stack for quick local iteration, use:
 make local-up
 ```
 
-`make stack-up` is kept as an explicit alias for the same secure full stack.
+That stack uses `docker-compose.local.yml`, exposes the frontend at `http://localhost:3000`, the backend at `http://localhost:8000`, and uses `FRONTIER_LOCAL_API_BASE_URL` rather than the gateway-based `/api` path.
 
 If you need the heavier full platform stack for gateway/sandbox/policy-infra work, use:
 

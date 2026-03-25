@@ -14,7 +14,7 @@ spec:
     spec:
       containers:
         - name: agent-service
-          image: ghcr.io/your-org/agent-service:latest
+          image: ghcr.io/your-org/agent-service:v0.1.0
           imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 8080

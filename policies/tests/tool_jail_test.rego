@@ -19,3 +19,10 @@ test_deny_root_user if not tool_jail.allow with input as {
   "allow_network": false,
   "run_as_user": "0:0"
 }
+
+test_deny_invalid_run_as_user if not tool_jail.allow with input as {
+  "readonly_rootfs": true,
+  "require_egress_mediation": true,
+  "allow_network": false,
+  "run_as_user": "nobody:1000"
+}

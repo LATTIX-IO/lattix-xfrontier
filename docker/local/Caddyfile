@@ -7,3 +7,9 @@ http://{$LOCAL_STACK_HOST:frontier.localhost} {
         reverse_proxy frontend:3000
     }
 }
+
+http://{$CASDOOR_LOCAL_HOST:casdoor.localhost} {
+    handle {
+        reverse_proxy casdoor:8000
+    }
+}

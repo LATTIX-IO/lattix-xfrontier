@@ -7,7 +7,11 @@ import hmac
 import json
 import os
 import time
+from urllib import error as urlerror
+from urllib import parse as urlparse
+from urllib import request as urlrequest
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -22,7 +26,10 @@ def _secret_bytes(key: bytes | str | None = None) -> bytes:
         return key
     if isinstance(key, str) and key:
         return key.encode("utf-8")
-    return str(os.getenv("A2A_JWT_SECRET", "unit-test-super-secret-value-32bytes")).encode("utf-8")
+    configured = str(os.getenv("A2A_JWT_SECRET") or "").strip()
+    if configured:
+        return configured.encode("utf-8")
+    raise RuntimeError("A2A_JWT_SECRET is required")
 
 
 def build_default_keypair() -> bytes:
@@ -263,6 +270,29 @@ def _claim_as_bool(value: Any) -> bool:
     return False
 
 
+def _normalize_policy_operation(tool: Any, action: Any) -> str:
+    tool_text = str(tool or "").strip()
+    if tool_text:
+        return tool_text
+    return str(action or "").strip()
+
+
+def _parse_run_as_user_uid(value: Any) -> int | None:
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    user_part = raw.split(":", 1)[0].strip()
+    if not user_part or not user_part.isdigit():
+        return None
+    try:
+        uid = int(user_part)
+    except ValueError:
+        return None
+    if uid < 0:
+        return None
+    return uid
+
+
 def decode_token(token: str) -> dict[str, Any]:
     return jwt.decode(
         token,
@@ -276,7 +306,7 @@ def decode_token(token: str) -> dict[str, Any]:
 def token_identity_from_claims(claims: dict[str, Any] | None) -> RuntimeTokenIdentity:
     payload = claims if isinstance(claims, dict) else {}
     subject = _first_claim_value(payload, "subject", "service", "sub")
-    actor = _first_claim_value(payload, "actor", "actor_id", "user_id", "user", "x-frontier-actor")
+    actor = _first_claim_value(payload, "actor", "actor_id", "user_id", "user", "preferred_username", "email", "name", "x-frontier-actor")
     tenant_id = _first_claim_value(payload, "tenant_id", "tenant", "currentTenant", "current_tenant")
     subject_type = _first_claim_value(payload, "subject_type", "token_type")
     internal_service = _claim_as_bool(payload.get("internal_service")) or _claim_as_bool(payload.get("internal"))
@@ -295,14 +325,6 @@ def token_identity_from_claims(claims: dict[str, Any] | None) -> RuntimeTokenIde
 
 
 class OPAClient:
-    _AGENT_TOOL_ALLOWLIST = {
-        "orchestrator": {"execute_step", "a2a.execute"},
-        "backend": {"execute_step", "a2a.execute"},
-        "research": {"execute_step", "search"},
-        "code": {"execute_step", "generate_code"},
-        "review": {"execute_step", "review_output"},
-    }
-
     def __init__(self, base_url: str) -> None:
         self.base_url = base_url
 
@@ -354,26 +376,86 @@ class OPAClient:
             details.update(extra)
         return PolicyDecision(allowed=allowed, reason=reason, details=details)
 
+    @staticmethod
+    def _looks_like_sensitive_path(value: str) -> bool:
+        candidate = str(value or "").strip().replace("\\", "/").lower()
+        if not candidate:
+            return False
+        name = Path(candidate).name.lower()
+        path_parts = [part for part in candidate.split("/") if part]
+        sensitive_names = {
+            ".env",
+            "credentials",
+            "config.json",
+            "id_rsa",
+            "id_dsa",
+            "id_ed25519",
+            "authorized_keys",
+            "known_hosts",
+            "secrets.json",
+            "service-account.json",
+            "service_account.json",
+            "token.json",
+            ".npmrc",
+            ".pypirc",
+            ".netrc",
+        }
+        sensitive_suffixes = (
+            ".env",
+            ".env.local",
+            ".env.production",
+            ".pem",
+            ".key",
+            ".p12",
+            ".pfx",
+            ".kdbx",
+            ".asc",
+        )
+        sensitive_fragments = (
+            "secret",
+            "credential",
+            "private",
+            "passwd",
+            "password",
+            "token",
+            "service-account",
+            "service_account",
+        )
+        sensitive_directories = {".ssh", ".gnupg", ".aws", ".azure", ".config/gcloud", ".kube"}
+
+        if name in sensitive_names or name.endswith(sensitive_suffixes):
+            return True
+        if any(fragment in name for fragment in sensitive_fragments):
+            return True
+        if any(part in {".ssh", ".gnupg", ".aws", ".azure", ".kube"} for part in path_parts):
+            return True
+        if "/.config/gcloud/" in f"/{candidate}/":
+            return True
+        return False
+
     async def evaluate_request(self, request: PolicyEvaluationRequest) -> PolicyDecision:
         await asyncio.sleep(0)
         if request.policy_name == "agent_policy":
+            operation = _normalize_policy_operation(request.tool, request.action)
             if request.budget_tokens_used > request.budget_max_tokens:
                 return self._decision(False, "budget overrun", request=request, control="token_budget", extra={"observed": request.budget_tokens_used, "limit": request.budget_max_tokens})
-            allowed_tools = set(request.allowed_tools) or self._AGENT_TOOL_ALLOWLIST.get(request.agent_id, set())
+            allowed_tools = set(request.allowed_tools)
 
-            if request.tool == "read_file" and request.resource.lower().endswith((".env", ".json", ".key", ".pem", ".ssh")):
+            if operation == "read_file" and self._looks_like_sensitive_path(request.resource):
                 return self._decision(False, "credential-like file access denied", request=request, control="credential_file")
-            if request.action == "network_egress":
+            if operation == "network_egress":
                 allowed_targets = set(request.allowed_targets)
                 if not allowed_targets or request.target not in allowed_targets:
                     return self._decision(False, "network target denied", request=request, control="network_egress", extra={"target": request.target, "allowed_targets": list(allowed_targets)})
-            if request.action == "llm_call" and request.classification == "restricted" and request.provider != "local":
+            if operation == "llm_call" and request.classification == "restricted" and request.provider != "local":
                 return self._decision(False, "restricted data requires local provider", request=request, control="restricted_provider")
             if request.max_tool_calls > 0 and request.tool_calls_used > request.max_tool_calls:
                 return self._decision(False, "tool call budget exceeded", request=request, control="tool_budget", extra={"observed": request.tool_calls_used, "limit": request.max_tool_calls})
-            if request.tool in allowed_tools:
-                return self._decision(True, "allowed by policy", request=request, control="allowlisted_tool", extra={"allowed_tools": sorted(allowed_tools)})
-            return self._decision(False, "agent/tool not allowlisted", request=request, control="tool_allowlist", extra={"allowed_tools": sorted(allowed_tools)})
+            if not allowed_tools:
+                return self._decision(False, "allowed_tools must be supplied explicitly", request=request, control="tool_allowlist_missing")
+            if operation in allowed_tools:
+                return self._decision(True, "allowed by policy", request=request, control="allowlisted_tool", extra={"allowed_tools": sorted(allowed_tools), "operation": operation})
+            return self._decision(False, "agent/tool not allowlisted", request=request, control="tool_allowlist", extra={"allowed_tools": sorted(allowed_tools), "operation": operation})
         if request.policy_name == "network_egress":
             allowed_targets = set(request.allowed_targets)
             allowed = request.target in allowed_targets
@@ -382,7 +464,10 @@ class OPAClient:
             network_safe = (request.allow_network is not True) or request.require_egress_mediation is True
             if not request.readonly_rootfs:
                 return self._decision(False, "readonly rootfs required", request=request, control="readonly_rootfs")
-            if request.run_as_user.startswith("0"):
+            uid = _parse_run_as_user_uid(request.run_as_user)
+            if uid is None:
+                return self._decision(False, "invalid run_as_user value", request=request, control="run_as_user")
+            if uid == 0:
                 return self._decision(False, "root execution denied", request=request, control="run_as_user")
             if not network_safe:
                 return self._decision(False, "network egress mediation required", request=request, control="egress_mediation")
@@ -406,8 +491,105 @@ class OPAClient:
 
 
 class VaultClient:
+    def __init__(self, *, addr: str | None = None, token: str | None = None, timeout_seconds: int = 5) -> None:
+        self.addr = str(addr if addr is not None else os.getenv("VAULT_ADDR") or "").strip().rstrip("/")
+        self.token = str(token if token is not None else os.getenv("VAULT_TOKEN") or "").strip()
+        self.timeout_seconds = max(1, int(timeout_seconds))
+
     def read_secret(self, path: str) -> dict[str, Any]:
-        return {"path": path, "value": "development-placeholder"}
+        normalized_path = str(path or "").strip().strip("/")
+        if not normalized_path:
+            raise ValueError("Vault secret path is required")
+        if not self.addr or not self.token:
+            raise RuntimeError("Vault client is not configured; set VAULT_ADDR and VAULT_TOKEN")
+
+        url = f"{self.addr}/v1/{urlparse.quote(normalized_path, safe='/')}"
+        request = urlrequest.Request(
+            url,
+            headers={
+                "X-Vault-Token": self.token,
+                "Accept": "application/json",
+            },
+            method="GET",
+        )
+        try:
+            with urlrequest.urlopen(request, timeout=self.timeout_seconds) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+        except urlerror.HTTPError as exc:
+            detail = exc.read().decode("utf-8", errors="ignore").strip()
+            raise RuntimeError(f"Vault read failed for '{normalized_path}': {exc.code} {detail}".strip()) from exc
+        except urlerror.URLError as exc:
+            raise RuntimeError(f"Vault read failed for '{normalized_path}': {exc.reason}") from exc
+        except json.JSONDecodeError as exc:
+            raise RuntimeError(f"Vault read failed for '{normalized_path}': invalid JSON response") from exc
+
+        if not isinstance(payload, dict):
+            raise RuntimeError(f"Vault read failed for '{normalized_path}': unexpected response shape")
+
+        data = payload.get("data")
+        if isinstance(data, dict) and isinstance(data.get("data"), dict):
+            return dict(data.get("data") or {})
+        if isinstance(data, dict):
+            return data
+        return payload
+
+
+def _runtime_replay_ttl_seconds() -> int:
+    raw = (
+        os.getenv("FRONTIER_RUNTIME_REPLAY_TTL_SECONDS")
+        or os.getenv("FRONTIER_A2A_NONCE_TTL_SECONDS")
+        or os.getenv("A2A_REPLAY_TTL_SECONDS")
+        or "900"
+    )
+    try:
+        ttl = int(str(raw).strip())
+    except (TypeError, ValueError):
+        ttl = 900
+    return max(1, min(ttl, 86_400))
+
+
+def _parse_replay_expiry(value: Any) -> float | None:
+    if isinstance(value, (int, float)):
+        return float(value)
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    if not text:
+        return None
+    try:
+        return float(text)
+    except ValueError:
+        pass
+    try:
+        normalized = text.replace("Z", "+00:00")
+        parsed = datetime.fromisoformat(normalized)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.timestamp()
+
+
+def _normalize_replay_tokens(raw_entries: Any, *, now: float, ttl_seconds: int) -> list[dict[str, Any]]:
+    normalized: list[dict[str, Any]] = []
+    if not isinstance(raw_entries, list):
+        return normalized
+    fallback_expiry = now + ttl_seconds
+    for entry in raw_entries:
+        token_hash = ""
+        expires_at = None
+        if isinstance(entry, dict):
+            token_hash = str(entry.get("token_hash") or entry.get("hash") or "").strip()
+            expires_at = _parse_replay_expiry(entry.get("expires_at"))
+        elif isinstance(entry, str):
+            token_hash = entry.strip()
+        if not token_hash:
+            continue
+        resolved_expiry = expires_at if expires_at is not None else fallback_expiry
+        if resolved_expiry <= now:
+            continue
+        normalized.append({"token_hash": token_hash, "expires_at": resolved_expiry})
+    return normalized[-5000:]
 
 
 def mint_token(sub: str, ttl_seconds: int = 600, additional_claims: dict[str, Any] | None = None) -> str:
@@ -428,19 +610,23 @@ def mint_token(sub: str, ttl_seconds: int = 600, additional_claims: dict[str, An
 def verify_token(token: str, require_nonce: bool = True) -> dict[str, Any]:
     claims = decode_token(token)
     token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
-
-    state = load_state()
-    replay_tokens = set(str(item) for item in state.get("replay_tokens", []))
-    if token_hash in replay_tokens:
-        raise ValueError("replay detected")
+    replay_detected = False
+    now = time.time()
+    ttl_seconds = _runtime_replay_ttl_seconds()
 
     def _mutate(snapshot: dict[str, Any]) -> None:
-        tokens = [str(item) for item in snapshot.get("replay_tokens", [])]
-        if token_hash not in tokens:
-            tokens.append(token_hash)
+        nonlocal replay_detected
+        tokens = _normalize_replay_tokens(snapshot.get("replay_tokens", []), now=now, ttl_seconds=ttl_seconds)
+        if any(str(item.get("token_hash") or "") == token_hash for item in tokens):
+            replay_detected = True
+            snapshot["replay_tokens"] = tokens
+            return
+        tokens.append({"token_hash": token_hash, "expires_at": now + ttl_seconds})
         snapshot["replay_tokens"] = tokens[-5000:]
 
     mutate_state(_mutate)
+    if replay_detected:
+        raise ValueError("replay detected")
     return claims
 
 

@@ -137,7 +137,7 @@ Expected characteristics:
 - gateway-mediated browser/API flow
 - OPA/policy infrastructure present
 - sandbox egress mediation present
-- stronger service-boundary expectations than local-lightweight mode
+- stronger service-boundary expectations than legacy lightweight localhost-only behavior
 
 ### Future hosted
 

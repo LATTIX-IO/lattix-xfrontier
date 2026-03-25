@@ -140,6 +140,9 @@ class RedisMemoryStore:
 	def _key(self, session_id: str) -> str:
 		return f"frontier:memory:short:{session_id}"
 
+	def _nonce_key(self, nonce: str) -> str:
+		return f"frontier:a2a:nonce:{nonce}"
+
 	def healthcheck(self) -> bool:
 		if not self.enabled or self._client is None:
 			return False
@@ -191,6 +194,18 @@ class RedisMemoryStore:
 			self._client.delete(self._key(session_id))
 		except Exception:  # noqa: BLE001
 			return
+
+	def register_nonce_once(self, nonce: str, *, ttl_seconds: int) -> bool:
+		if not self.enabled or self._client is None:
+			return False
+		nonce_text = str(nonce or "").strip()
+		if not nonce_text:
+			return False
+		try:
+			created = self._client.set(self._nonce_key(nonce_text), "1", ex=max(1, int(ttl_seconds)), nx=True)
+		except Exception:  # noqa: BLE001
+			return False
+		return bool(created)
 
 
 class PostgresLongTermMemoryStore(_BasePostgresService):

@@ -1,7 +1,7 @@
 version: "3.9"
 services:
   gtm-agent:
-    build: ./AGENT_SERVICE_TEMPLATE
+    image: ${FRONTIER_AGENT_IMAGE:-ghcr.io/your-org/agent-service:v0.1.0}
     environment:
       - FRONTIER_RUNTIME_PROFILE=hosted
       - FRONTIER_REQUIRE_A2A_RUNTIME_HEADERS=true
@@ -13,7 +13,7 @@ services:
     ports:
       - "8081:8080"
   security-agent:
-    build: ./AGENT_SERVICE_TEMPLATE
+    image: ${FRONTIER_AGENT_IMAGE:-ghcr.io/your-org/agent-service:v0.1.0}
     environment:
       - FRONTIER_RUNTIME_PROFILE=hosted
       - FRONTIER_REQUIRE_A2A_RUNTIME_HEADERS=true

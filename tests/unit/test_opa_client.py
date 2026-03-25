@@ -22,6 +22,7 @@ def test_opa_client_local_agent_policy_allows_backend_execute_step() -> None:
             {
                 "agent_id": "backend",
                 "tool": "execute_step",
+                "allowed_tools": ["execute_step"],
                 "resource": "research",
                 "budget": {"tokens_used": 0, "max_tokens": 10},
                 "classification": "internal",
@@ -51,6 +52,44 @@ def test_opa_client_local_agent_policy_honors_dynamic_allowed_tools() -> None:
     assert decision.allowed is True
 
 
+def test_opa_client_local_agent_policy_denies_missing_explicit_allowed_tools() -> None:
+    client = OPAClient(base_url="http://127.0.0.1:9")
+    decision = asyncio.run(
+        client.evaluate(
+            "agent_policy",
+            {
+                "agent_id": "backend",
+                "tool": "execute_step",
+                "resource": "research",
+                "budget": {"tokens_used": 0, "max_tokens": 10},
+                "classification": "internal",
+                "provider": "local",
+            },
+        )
+    )
+    assert decision.allowed is False
+    assert decision.details["control"] == "tool_allowlist_missing"
+
+
+def test_opa_client_local_agent_policy_uses_action_when_tool_is_missing() -> None:
+    client = OPAClient(base_url="http://127.0.0.1:9")
+    decision = asyncio.run(
+        client.evaluate(
+            "agent_policy",
+            {
+                "agent_id": "custom-agent",
+                "allowed_tools": ["generate_code"],
+                "action": "generate_code",
+                "resource": "artifact.py",
+                "budget": {"tokens_used": 0, "max_tokens": 10},
+                "classification": "internal",
+                "provider": "local",
+            },
+        )
+    )
+    assert decision.allowed is True
+
+
 def test_opa_client_local_agent_policy_denies_tool_call_budget_exceeded() -> None:
     client = OPAClient(base_url="http://127.0.0.1:9")
     decision = asyncio.run(
@@ -59,6 +98,7 @@ def test_opa_client_local_agent_policy_denies_tool_call_budget_exceeded() -> Non
             {
                 "agent_id": "backend",
                 "tool": "execute_step",
+                "allowed_tools": ["execute_step"],
                 "resource": "workflow",
                 "budget": {"tokens_used": 0, "max_tokens": 10},
                 "classification": "internal",
@@ -80,6 +120,26 @@ def test_opa_client_local_agent_policy_denies_credential_like_read_file() -> Non
                 "agent_id": "research",
                 "tool": "read_file",
                 "resource": ".env",
+                "budget": {"tokens_used": 0, "max_tokens": 10},
+                "action": "read_file",
+                "classification": "internal",
+                "provider": "local",
+            },
+        )
+    )
+    assert decision.allowed is False
+
+
+def test_opa_client_local_agent_policy_denies_secret_like_json_filename() -> None:
+    client = OPAClient(base_url="http://127.0.0.1:9")
+    decision = asyncio.run(
+        client.evaluate(
+            "agent_policy",
+            {
+                "agent_id": "research",
+                "tool": "read_file",
+                "resource": "backup/service-account-prod.json",
+                "allowed_tools": ["read_file"],
                 "budget": {"tokens_used": 0, "max_tokens": 10},
                 "action": "read_file",
                 "classification": "internal",
@@ -152,6 +212,22 @@ def test_opa_client_local_fallback_allows_safe_tool_jail() -> None:
     assert decision.allowed is True
 
 
+def test_opa_client_local_fallback_denies_invalid_run_as_user() -> None:
+    client = OPAClient(base_url="http://127.0.0.1:9")
+    decision = asyncio.run(
+        client.evaluate(
+            "tool_jail",
+            {
+                "readonly_rootfs": True,
+                "require_egress_mediation": True,
+                "allow_network": False,
+                "run_as_user": "nobody:1000",
+            },
+        )
+    )
+    assert decision.allowed is False
+
+
 def test_opa_client_local_fallback_denies_network_without_mediation() -> None:
     client = OPAClient(base_url="http://127.0.0.1:9")
     decision = asyncio.run(
@@ -211,6 +287,7 @@ def test_opa_client_evaluate_request_returns_structured_details() -> None:
         agent_id="backend",
         tool="execute_step",
         action="execute_step",
+        allowed_tools=("execute_step",),
         classification="internal",
         provider="local",
         budget_tokens_used=0,
@@ -222,4 +299,14 @@ def test_opa_client_evaluate_request_returns_structured_details() -> None:
     assert decision.allowed is True
     assert decision.details["policy_name"] == "agent_policy"
     assert decision.details["control"] == "allowlisted_tool"
+
+
+def test_parse_run_as_user_uid_rejects_invalid_values() -> None:
+    assert OPAClient._safe_int("123") == 123
+    from frontier_runtime.security import _parse_run_as_user_uid
+
+    assert _parse_run_as_user_uid("1000:1000") == 1000
+    assert _parse_run_as_user_uid("0:0") == 0
+    assert _parse_run_as_user_uid("nobody") is None
+    assert _parse_run_as_user_uid("-1:0") is None
 

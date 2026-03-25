@@ -182,20 +182,20 @@ function Ensure-ComposeEnvFile {
     return $installerEnvPath
 }
 
-function Get-ComposeCommandPrefix {
-    $installerEnvPath = Get-InstallerEnvPath -LocalProfile
-    if (Test-Path $installerEnvPath) {
-        return @("docker", "compose", "--env-file", $installerEnvPath, "-f", "docker-compose.local.yml")
-    }
-    return @("docker", "compose", "-f", "docker-compose.local.yml")
-}
-
 function Get-FullComposeCommandPrefix {
     $installerEnvPath = Get-InstallerEnvPath
     if (Test-Path $installerEnvPath) {
         return @("docker", "compose", "--env-file", $installerEnvPath)
     }
     return @("docker", "compose")
+}
+
+function Get-ComposeCommandPrefix {
+    $installerEnvPath = Get-InstallerEnvPath -LocalProfile
+    if (Test-Path $installerEnvPath) {
+        return @("docker", "compose", "--env-file", $installerEnvPath, "-f", "docker-compose.local.yml")
+    }
+    return @("docker", "compose", "-f", "docker-compose.local.yml")
 }
 
 function Assert-CommandAvailable {
@@ -282,7 +282,6 @@ function Show-Help {
     Write-Host ""
     Write-Host "Commands:"
     Write-Host "  bootstrap   Install editable package + dev dependencies"
-    Write-Host "  dev         Start docker compose stack"
     Write-Host "  up          Start docker compose stack"
     Write-Host "  down        Stop docker compose stack"
     Write-Host "  local-up    Start the lightweight local-first stack"
@@ -302,7 +301,7 @@ function Show-Help {
     Write-Host "  logs        Show docker compose logs"
     Write-Host "  smoke       Alias for health"
     Write-Host ""
-    Write-Host "Tip: You can also use the installed CLI directly with 'lattix dev'."
+    Write-Host "Tip: You can also use the installed CLI directly with 'lattix up'."
 }
 
 $python = Get-PythonCommand
@@ -310,17 +309,6 @@ $python = Get-PythonCommand
 switch ($Command.ToLowerInvariant()) {
     "bootstrap" {
         Invoke-ExternalCommand @($python, "-m", "pip", "install", "-e", ".[dev]")
-    }
-    "dev" {
-        Assert-DockerReady
-        $composeEnvFile = Ensure-ComposeEnvFile
-        Invoke-ExternalCommand @("docker", "compose", "--env-file", $composeEnvFile, "up", "-d")
-        $composeEnvMap = Get-EnvMapFromFile -Path $composeEnvFile
-        $localStackHost = $composeEnvMap["LOCAL_STACK_HOST"]
-        if ([string]::IsNullOrWhiteSpace($localStackHost)) {
-            $localStackHost = "frontier.localhost"
-        }
-        Write-Host "Secure platform stack running. Gateway: http://$localStackHost ; API health: http://localhost:8000/healthz"
     }
     "up" {
         Assert-DockerReady
@@ -343,14 +331,14 @@ switch ($Command.ToLowerInvariant()) {
         $composePrefix = Get-FullComposeCommandPrefix
         Invoke-ExternalCommand ($composePrefix + @("down", "-v"))
     }
-    "local-down" {
-        Assert-DockerReady
-        $composePrefix = Get-ComposeCommandPrefix
-        Invoke-ExternalCommand ($composePrefix + @("down", "-v"))
-    }
     "stack-down" {
         Assert-DockerReady
         $composePrefix = Get-FullComposeCommandPrefix
+        Invoke-ExternalCommand ($composePrefix + @("down", "-v"))
+    }
+    "local-down" {
+        Assert-DockerReady
+        $composePrefix = Get-ComposeCommandPrefix
         Invoke-ExternalCommand ($composePrefix + @("down", "-v"))
     }
     "start-docker" {

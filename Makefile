@@ -1,4 +1,4 @@
-.PHONY: dev up down local-up local-down test lint typecheck policy-test helm-validate release-bundle bootstrap health ps logs smoke install-opa
+.PHONY: up down local-up local-down stack-up stack-down test lint typecheck policy-test helm-validate release-bundle bootstrap health ps logs smoke install-opa
 
 PYTHON ?= python
 OPA_RUNNER ?= $(PYTHON) scripts/run_opa.py
@@ -6,10 +6,6 @@ SECURE_ENV_FILE := $(shell $(PYTHON) -c "from frontier_tooling.common import ens
 LIGHTWEIGHT_ENV_FILE := $(shell $(PYTHON) -c "from frontier_tooling.common import ensure_compose_env_file; print(ensure_compose_env_file(local_profile=True))")
 LOCAL_COMPOSE ?= docker compose --env-file $(LIGHTWEIGHT_ENV_FILE) -f docker-compose.local.yml
 FULL_COMPOSE ?= docker compose --env-file $(SECURE_ENV_FILE)
-
-dev:            ## Start local stack (Docker Compose)
-	$(FULL_COMPOSE) up -d
-	@echo "Secure platform stack running. Gateway: http://frontier.localhost  Backend health: http://localhost:8000/healthz"
 
 up:             ## Start all services
 	$(FULL_COMPOSE) up -d
@@ -21,14 +17,14 @@ local-up:       ## Start the lightweight local-first stack
 	$(LOCAL_COMPOSE) up -d
 	@echo "Lightweight local stack running. Frontend: http://localhost:3000  Backend health: http://localhost:8000/healthz"
 
+local-down:     ## Stop the lightweight local-first stack
+	$(LOCAL_COMPOSE) down -v
+
 stack-up:       ## Start the full platform stack (gateway, sandbox, policy infra)
 	$(FULL_COMPOSE) up -d
 
 stack-down:     ## Stop the full platform stack
 	$(FULL_COMPOSE) down -v
-
-local-down:     ## Stop the lightweight local-first stack
-	$(LOCAL_COMPOSE) down -v
 
 test:           ## Run all tests
 	pytest apps/backend/tests tests -v --cov=app --cov=frontier_runtime --cov-report=term-missing
@@ -63,7 +59,7 @@ install-opa:    ## Install repo-local OPA binary (Windows helper remains availab
 bootstrap:      ## First-time setup
 	$(PYTHON) -m pip install -e ".[dev]" --break-system-packages
 	$(FULL_COMPOSE) pull
-	@echo "Run 'make dev' to start the stack"
+	@echo "Run 'make up' to start the secure platform stack"
 
 health:         ## Check API health endpoint
 	$(PYTHON) -c "import urllib.request;print(urllib.request.urlopen('http://localhost:8000/healthz', timeout=5).read().decode())"

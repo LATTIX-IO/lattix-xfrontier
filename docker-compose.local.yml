@@ -1,5 +1,10 @@
 services:
   frontend:
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     image: node:22-alpine
     container_name: frontier-frontend
     working_dir: /workspace/apps/frontend
@@ -11,7 +16,6 @@ services:
       NEXT_PUBLIC_API_BASE_URL: ${FRONTIER_LOCAL_API_BASE_URL:-http://localhost:8000}
       API_BASE_URL_INTERNAL: ${API_BASE_URL_INTERNAL:-http://backend:8000}
       NEXT_PUBLIC_FRONTIER_ACTOR: ${NEXT_PUBLIC_FRONTIER_ACTOR:-frontend-user}
-      NEXT_PUBLIC_FRONTIER_API_TOKEN: ${NEXT_PUBLIC_FRONTIER_API_TOKEN:-}
     ports:
       - "127.0.0.1:3000:3000"
     volumes:
@@ -21,7 +25,12 @@ services:
       - backend
 
   backend:
-    image: python:3.12-slim
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    image: python:3.12.10-slim-bookworm
     container_name: frontier-backend
     working_dir: /workspace/apps/backend
     command: sh -lc "pip install --no-cache-dir -r requirements.txt && if [ \"${FRONTIER_INSTALL_RUNTIME_ENGINES:-0}\" = \"1\" ]; then pip install --no-cache-dir -r requirements-runtime-engines.txt; fi && uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"
@@ -54,6 +63,11 @@ services:
         condition: service_started
 
   postgres:
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     image: pgvector/pgvector:pg16
     container_name: frontier-postgres
     environment:
@@ -71,6 +85,11 @@ services:
       retries: 30
 
   redis:
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     image: redis:7-alpine
     container_name: frontier-redis
     ports:
@@ -79,6 +98,11 @@ services:
       - frontier_redis_data:/data
 
   neo4j:
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     image: neo4j:5.23-community
     container_name: frontier-neo4j
     environment:
@@ -92,7 +116,12 @@ services:
   # Optional workers profile for integration runs.
   # Enable with: docker compose --profile stack -f docker-compose.local.yml up
   workers:
-    image: python:3.12-slim
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    image: python:3.12.10-slim-bookworm
     profiles: ["stack"]
     container_name: frontier-workers
     working_dir: /workspace/apps/workers

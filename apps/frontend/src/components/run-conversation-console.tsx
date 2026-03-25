@@ -118,12 +118,12 @@ export function RunConversationConsole({ runId, run, events }: Props) {
 
   const fallbackGraphNodes = [
     { id: "n-trigger", title: "Trigger", type: "trigger" as const, x: 80, y: 140 },
-    { id: "n-direct-model", title: "Direct Model (No Agent Studio Agent)", type: "prompt" as const, x: 360, y: 140 },
+    { id: "n-default-chat-agent", title: "Default Chat Agent", type: "agent" as const, x: 360, y: 140 },
     { id: "n-output", title: "Output", type: "output" as const, x: 680, y: 140 },
   ];
   const fallbackGraphLinks = [
-    { from: "n-trigger", to: "n-direct-model", from_port: "out", to_port: "in" },
-    { from: "n-direct-model", to: "n-output", from_port: "out", to_port: "in" },
+    { from: "n-trigger", to: "n-default-chat-agent", from_port: "out", to_port: "in" },
+    { from: "n-default-chat-agent", to: "n-output", from_port: "out", to_port: "in" },
   ];
 
   const effectiveGraphNodes = graphNodes.length > 0 ? graphNodes : fallbackGraphNodes;
@@ -333,7 +333,7 @@ export function RunConversationConsole({ runId, run, events }: Props) {
           </div>
           <div className="fx-panel px-3 py-2">
             <p className="fx-muted">Graph mode</p>
-            <p className="mt-1 text-base font-semibold text-[var(--foreground)]">{usedAgentStudioAgent ? "Agent Studio" : "Direct model"}</p>
+            <p className="mt-1 text-base font-semibold text-[var(--foreground)]">{usedAgentStudioAgent ? "Agent-mediated" : "Fallback view"}</p>
           </div>
         </div>
 
@@ -589,7 +589,7 @@ export function RunConversationConsole({ runId, run, events }: Props) {
                   <div className="mb-2 flex items-center justify-between px-2 text-xs">
                     <h2 className="font-semibold">Execution Graph</h2>
                     <span className="fx-muted">
-                      {usedAgentStudioAgent ? "Read-only snapshot • draggable nodes" : "No Agent Studio agent used • direct model path shown"}
+                      {usedAgentStudioAgent ? "Read-only snapshot • draggable nodes" : "Default chat agent fallback shown"}
                     </span>
                   </div>
                   <ReactFlowCanvas nodes={effectiveGraphNodes} links={effectiveGraphLinks} height={560} readOnly />

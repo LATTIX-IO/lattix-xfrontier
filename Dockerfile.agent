@@ -1,11 +1,13 @@
-FROM python:3.12-slim AS builder
+ARG PYTHON_BASE_IMAGE=python:3.12.10-slim-bookworm
+
+FROM ${PYTHON_BASE_IMAGE} AS builder
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 
 WORKDIR /app
 RUN apt-get update \
-    && apt-get install --yes --no-install-recommends build-essential curl \
+    && apt-get install --yes --no-install-recommends build-essential \
     && rm -rf /var/lib/apt/lists/*
 
 COPY pyproject.toml README.md ./
@@ -13,18 +15,17 @@ COPY frontier_tooling ./frontier_tooling
 RUN python -m pip install --upgrade pip \
     && python -m pip install --prefix=/install .
 
-FROM python:3.12-slim AS runtime
+FROM ${PYTHON_BASE_IMAGE} AS runtime
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PYTHONPATH=/app/apps/workers \
     AGENT_ID=research \
-    AGENT_PORT=8081
+    AGENT_PORT=8081 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    HOME=/home/lattix
 
-RUN apt-get update \
-    && apt-get install --yes --no-install-recommends curl \
-    && rm -rf /var/lib/apt/lists/* \
-    && groupadd --gid 1000 lattix \
+RUN groupadd --gid 1000 lattix \
     && useradd --uid 1000 --gid 1000 --create-home lattix
 
 WORKDIR /app
@@ -33,6 +34,6 @@ COPY . /app
 
 USER lattix
 EXPOSE 8081
-HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 CMD curl -f http://localhost:${AGENT_PORT}/healthz || exit 1
+HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 CMD python -c "import os, urllib.request; port=os.getenv(\"AGENT_PORT\", \"8081\"); urllib.request.urlopen(f'http://127.0.0.1:{port}/healthz', timeout=3).read()" || exit 1
 
 ENTRYPOINT ["sh", "-lc", "uvicorn --app-dir /app/apps/workers/services/AGENT_SERVICE_TEMPLATE app:app --host 0.0.0.0 --port ${AGENT_PORT:-8081}"]

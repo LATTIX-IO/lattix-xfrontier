@@ -23,3 +23,17 @@ test_deny_prefix_bypass_path if not filesystem_access.allow with input as {
   "path": "/workspace/project-evil/secrets.txt",
   "allowed_paths": ["/workspace/project"]
 }
+
+test_deny_read_with_parent_traversal_escape if not filesystem_access.allow with input as {
+  "action": "read",
+  "path": "/workspace/project/../secrets.txt",
+  "allowed_paths": ["/workspace/project"]
+}
+
+test_allow_read_with_dot_segments_under_allowed_root if {
+  filesystem_access.allow with input as {
+    "action": "read",
+    "path": "/workspace/project/./nested/file.txt",
+    "allowed_paths": ["/workspace/project/"]
+  }
+}
