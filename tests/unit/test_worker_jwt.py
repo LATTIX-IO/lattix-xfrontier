@@ -5,12 +5,14 @@ import json
 import sys
 import time
 from pathlib import Path
+from threading import Thread
 
 import pytest
 from fastapi.testclient import TestClient
 
 from apps.workers.runtime.layer2.contracts import Envelope
 from apps.workers.runtime.layer2.event_bus import EventBus
+from apps.workers.runtime.layer2 import security as runtime_security_module
 from apps.workers.runtime.layer1.orchestrator import Orchestrator
 from apps.workers.runtime.network.dispatcher import TopicDispatcher
 from apps.workers.runtime.network import a2a
@@ -68,13 +70,14 @@ def test_worker_post_envelope_mints_identity_claims(monkeypatch) -> None:
         def read(self) -> bytes:
             return json.dumps({"accepted": True}).encode("utf-8")
 
-    def _fake_urlopen(req, timeout=10):
+    def _fake_urlopen(req, timeout=10, context=None):
         captured["authorization"] = req.get_header("Authorization")
         captured["correlation_id"] = req.get_header("X-correlation-id")
         captured["frontier_subject"] = req.get_header("X-frontier-subject")
         captured["frontier_nonce"] = req.get_header("X-frontier-nonce")
         captured["frontier_signature"] = req.get_header("X-frontier-signature")
         captured["timeout"] = timeout
+        captured["context"] = context
         return _FakeResponse()
 
     monkeypatch.setattr(a2a.request, "urlopen", _fake_urlopen)
@@ -218,10 +221,8 @@ def test_worker_service_template_hosted_profile_requires_internal_service_identi
             "X-Frontier-Signature": a2a._build_runtime_signature("backend", "nonce-1", env.correlation_id, env.to_json().encode("utf-8")),
         },
     )
-    assert allowed.status_code == 200
-    assert allowed.json()["authenticated_subject"] == "backend"
-    assert allowed.json()["authenticated_actor"] == "service-backend"
-    assert allowed.json()["frontier_subject"] == "backend"
+    assert allowed.status_code == 501
+    assert allowed.json()["detail"] == "agent runtime handler is not configured"
 
     ready = client.get("/readyz", headers={"Authorization": f"Bearer {service_token}"})
     assert ready.status_code == 200
@@ -230,6 +231,40 @@ def test_worker_service_template_hosted_profile_requires_internal_service_identi
     details = client.get("/healthz/details", headers={"Authorization": f"Bearer {service_token}"})
     assert details.status_code == 200
     assert details.json()["auth"] == "required"
+
+
+def test_worker_service_template_lightweight_profile_keeps_placeholder_ack(monkeypatch) -> None:
+    monkeypatch.setenv("A2A_JWT_SECRET", "unit-test-super-secret-value-32bytes")
+    monkeypatch.setenv("FRONTIER_RUNTIME_PROFILE", "local-lightweight")
+    monkeypatch.delenv("FRONTIER_REQUIRE_A2A_RUNTIME_HEADERS", raising=False)
+
+    module = _load_agent_service_template_module()
+    client = TestClient(module.app)
+    env = Envelope(topic="security.compliance", sender="orchestrator", payload={"task": "review"})
+    token = issue_token(
+        "backend",
+        ttl_seconds=60,
+        additional_claims={
+            "actor": "service-backend",
+            "tenant_id": "acme",
+            "subject": "backend",
+            "internal_service": False,
+        },
+    )
+
+    allowed = client.post(
+        "/v1/envelope",
+        content=env.to_json(),
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+        },
+    )
+
+    assert allowed.status_code == 200
+    assert allowed.json()["accepted"] is True
+    assert allowed.json()["authenticated_subject"] == "backend"
+    assert allowed.json()["authenticated_actor"] == "service-backend"
 
 
 def test_worker_service_template_rejects_runtime_header_replay(monkeypatch) -> None:
@@ -257,9 +292,109 @@ def test_worker_service_template_rejects_runtime_header_replay(monkeypatch) -> N
     }
 
     first = client.post("/v1/envelope", content=env.to_json(), headers=headers)
-    assert first.status_code == 200
+    assert first.status_code == 501
+    assert first.json()["detail"] == "agent runtime handler is not configured"
     second = client.post("/v1/envelope", content=env.to_json(), headers=headers)
     assert second.status_code == 409
+
+
+def test_worker_service_template_requires_correlation_id_for_signed_runtime_headers(monkeypatch) -> None:
+    monkeypatch.setenv("A2A_JWT_SECRET", "unit-test-super-secret-value-32bytes")
+    monkeypatch.setenv("FRONTIER_RUNTIME_PROFILE", "hosted")
+    monkeypatch.setenv("FRONTIER_REQUIRE_A2A_RUNTIME_HEADERS", "true")
+
+    module = _load_agent_service_template_module()
+    client = TestClient(module.app)
+    env = Envelope(topic="security.compliance", sender="orchestrator", payload={"task": "review"})
+    token = issue_token(
+        "backend",
+        ttl_seconds=60,
+        additional_claims={"actor": "service-backend", "tenant_id": "acme", "subject": "backend", "internal_service": True},
+    )
+    nonce = "nonce-missing-correlation"
+    signature = a2a._build_runtime_signature("backend", nonce, "", env.to_json().encode("utf-8"))
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json",
+        "X-Frontier-Subject": "backend",
+        "X-Frontier-Nonce": nonce,
+        "X-Frontier-Signature": signature,
+    }
+
+    denied = client.post("/v1/envelope", content=env.to_json(), headers=headers)
+    assert denied.status_code == 401
+    assert denied.json()["detail"] == "missing correlation id header for signed A2A request"
+
+
+def test_worker_service_template_rejects_header_subject_mismatch_with_bearer_identity(monkeypatch) -> None:
+    monkeypatch.setenv("A2A_JWT_SECRET", "unit-test-super-secret-value-32bytes")
+    monkeypatch.setenv("FRONTIER_RUNTIME_PROFILE", "hosted")
+    monkeypatch.setenv("FRONTIER_REQUIRE_A2A_RUNTIME_HEADERS", "true")
+
+    module = _load_agent_service_template_module()
+    client = TestClient(module.app)
+    env = Envelope(topic="security.compliance", sender="orchestrator", payload={"task": "review"})
+    token = issue_token(
+        "research",
+        ttl_seconds=60,
+        additional_claims={"actor": "service-research", "tenant_id": "acme", "subject": "research", "internal_service": True},
+    )
+    nonce = "nonce-subject-mismatch"
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json",
+        "X-Correlation-ID": env.correlation_id,
+        "X-Frontier-Subject": "backend",
+        "X-Frontier-Nonce": nonce,
+        "X-Frontier-Signature": a2a._build_runtime_signature("backend", nonce, env.correlation_id, env.to_json().encode("utf-8")),
+    }
+
+    denied = client.post("/v1/envelope", content=env.to_json(), headers=headers)
+    assert denied.status_code == 401
+    assert denied.json()["detail"] == "frontier subject header does not match bearer token subject"
+
+
+def test_worker_service_template_prunes_expired_seen_nonces_before_accepting_reuse(monkeypatch) -> None:
+    monkeypatch.setenv("A2A_JWT_SECRET", "unit-test-super-secret-value-32bytes")
+    monkeypatch.setenv("FRONTIER_RUNTIME_PROFILE", "hosted")
+    monkeypatch.setenv("FRONTIER_REQUIRE_A2A_RUNTIME_HEADERS", "true")
+    monkeypatch.setenv("FRONTIER_A2A_NONCE_TTL_SECONDS", "5")
+
+    module = _load_agent_service_template_module()
+    module._SEEN_NONCES.clear()
+    module._SEEN_NONCES["expired-nonce"] = 1.0
+
+    module._register_seen_nonce_or_raise("expired-nonce", now=10.0)
+
+    assert module._SEEN_NONCES["expired-nonce"] == 15.0
+
+
+def test_worker_service_template_nonce_registration_is_race_safe(monkeypatch) -> None:
+    monkeypatch.setenv("A2A_JWT_SECRET", "unit-test-super-secret-value-32bytes")
+    monkeypatch.setenv("FRONTIER_RUNTIME_PROFILE", "hosted")
+    monkeypatch.setenv("FRONTIER_REQUIRE_A2A_RUNTIME_HEADERS", "true")
+    monkeypatch.setenv("FRONTIER_A2A_NONCE_TTL_SECONDS", "60")
+
+    module = _load_agent_service_template_module()
+    module._SEEN_NONCES.clear()
+
+    results: list[str] = []
+
+    def _worker() -> None:
+        try:
+            module._register_seen_nonce_or_raise("race-nonce", now=100.0)
+            results.append("accepted")
+        except module.HTTPException as exc:
+            results.append(f"error:{exc.status_code}")
+
+    threads = [Thread(target=_worker) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert results.count("accepted") == 1
+    assert results.count("error:409") == 1
 
 
 def test_topic_dispatcher_propagates_auth_context_in_strict_profile(monkeypatch, tmp_path) -> None:
@@ -298,6 +433,119 @@ def test_topic_dispatcher_propagates_auth_context_in_strict_profile(monkeypatch,
     trace_events = [item["trace"] for item in env.payload.get("logs", []) if isinstance(item, dict) and "trace" in item]
     assert any(item["stage"] == "network.dispatch" and item["outcome"] == "attempt" for item in trace_events)
     assert any(item["stage"] == "network.dispatch" and item["outcome"] == "delivered" for item in trace_events)
+
+
+def test_topic_dispatcher_fails_closed_without_registered_url_in_strict_profile(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("FRONTIER_RUNTIME_PROFILE", "hosted")
+    monkeypatch.setenv("FRONTIER_REQUIRE_A2A_RUNTIME_HEADERS", "true")
+
+    mapping_path = tmp_path / "topic-map.json"
+    mapping_path.write_text("{}", encoding="utf-8")
+    dispatcher = TopicDispatcher(mapping_path)
+    env = Envelope(
+        topic="security.compliance",
+        sender="orchestrator",
+        payload={"auth_context": {"actor": "tenant-user", "tenant_id": "acme", "subject": "orchestrator", "internal_service": True}},
+    )
+
+    with pytest.raises(ValueError, match="No registered endpoint"):
+        dispatcher.dispatch("security.compliance", env)
+
+    assert any("remote dispatch blocked: no registered endpoint" in err for err in env.errors)
+    assert env.payload["metrics"]["remote_dispatch_failures"] == 1
+    trace_events = [item["trace"] for item in env.payload.get("logs", []) if isinstance(item, dict) and "trace" in item]
+    assert any(
+        item["stage"] == "network.dispatch"
+        and item["outcome"] == "error"
+        and item.get("metadata", {}).get("reason") == "no_registered_url"
+        for item in trace_events
+    )
+
+
+def test_topic_dispatcher_keeps_skip_semantics_in_lightweight_profile(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("FRONTIER_RUNTIME_PROFILE", "local-lightweight")
+    monkeypatch.delenv("FRONTIER_REQUIRE_A2A_RUNTIME_HEADERS", raising=False)
+
+    mapping_path = tmp_path / "topic-map.json"
+    mapping_path.write_text("{}", encoding="utf-8")
+    dispatcher = TopicDispatcher(mapping_path)
+    env = Envelope(topic="security.compliance", sender="orchestrator")
+
+    response = dispatcher.dispatch("security.compliance", env)
+
+    assert response is None
+    assert not env.errors
+    trace_events = [item["trace"] for item in env.payload.get("logs", []) if isinstance(item, dict) and "trace" in item]
+    assert any(
+        item["stage"] == "network.dispatch"
+        and item["outcome"] == "skipped"
+        and item.get("metadata", {}).get("reason") == "no_registered_url"
+        for item in trace_events
+    )
+
+
+def test_orchestrator_remote_dispatch_records_failure_on_envelope(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("A2A_JWT_SECRET", "unit-test-super-secret-value-32bytes")
+    monkeypatch.setenv("FRONTIER_RUNTIME_PROFILE", "hosted")
+    monkeypatch.setenv("FRONTIER_REQUIRE_A2A_RUNTIME_HEADERS", "true")
+
+    mapping_path = tmp_path / "topic-map.json"
+    mapping_path.write_text('{"security.compliance": ["https://worker.example.test/v1/envelope"]}', encoding="utf-8")
+    orchestrator = Orchestrator(tmp_path / "registry.json")
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("dispatch exploded")
+
+    monkeypatch.setattr("apps.workers.runtime.network.dispatcher.post_envelope", _boom)
+
+    env = orchestrator.run_stage(
+        name="remote-failure",
+        topic="security.compliance",
+        payload={
+            "auth_context": {"actor": "tenant-user", "tenant_id": "acme", "subject": "orchestrator", "internal_service": True},
+        },
+        dispatch_mode="remote",
+        remote_map_path=mapping_path,
+    )
+
+    assert any("remote dispatch failed: dispatch exploded" in err for err in env.errors)
+    assert env.payload["metrics"]["remote_dispatch_attempts"] == 1
+    assert env.payload["metrics"]["remote_dispatch_failures"] == 1
+    trace_events = [item["trace"] for item in env.payload.get("logs", []) if isinstance(item, dict) and "trace" in item]
+    assert any(
+        item["stage"] == "network.dispatch"
+        and item["outcome"] == "error"
+        and item.get("metadata", {}).get("reason") == "dispatch exploded"
+        for item in trace_events
+    )
+    assert any(
+        item["stage"] == "orchestrator.dispatch"
+        and item["outcome"] == "error"
+        and item.get("metadata", {}).get("reason") == "dispatch exploded"
+        for item in trace_events
+    )
+
+
+def test_orchestrator_done_when_exception_no_longer_passes_as_success(tmp_path) -> None:
+    orchestrator = Orchestrator(tmp_path / "registry.json")
+
+    env = orchestrator.run_stage(
+        name="done-when-error",
+        topic="security.compliance",
+        payload={
+            "auth_context": {"actor": "tenant-user", "tenant_id": "acme", "subject": "orchestrator", "internal_service": True},
+        },
+        done_when=lambda _env: (_ for _ in ()).throw(RuntimeError("done_when exploded")),
+    )
+
+    assert any("stage completion check failed: done_when exploded" in err for err in env.errors)
+    trace_events = [item["trace"] for item in env.payload.get("logs", []) if isinstance(item, dict) and "trace" in item]
+    assert any(
+        item["stage"] == "orchestrator.done_when"
+        and item["outcome"] == "error"
+        and item.get("metadata", {}).get("reason") == "done_when exploded"
+        for item in trace_events
+    )
 
 
 def test_local_event_bus_blocks_unauthorized_tenant_memory_request(monkeypatch, tmp_path) -> None:
@@ -378,6 +626,13 @@ def test_local_event_bus_blocks_conflicting_payload_tenant_context(monkeypatch, 
     assert any(
         event.get("control") == "tenant_isolation" and event.get("outcome") == "blocked"
         for event in env.payload.get("security_events", [])
+    )
+    trace_events = [item["trace"] for item in env.payload.get("logs", []) if isinstance(item, dict) and "trace" in item]
+    assert any(
+        item["stage"] == "event_bus.delivery"
+        and item["outcome"] == "blocked"
+        and item.get("metadata", {}).get("reason") == "policy_denied"
+        for item in trace_events
     )
 
 
@@ -486,5 +741,51 @@ def test_event_bus_records_subscriber_failures_in_trace() -> None:
         item["stage"] == "event_bus.delivery"
         and item["outcome"] == "error"
         and item.get("metadata", {}).get("reason") == "subscriber blew up"
+        for item in trace_events
+    )
+
+
+def test_runtime_security_middleware_marks_unexpected_errors_as_security_errors(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("FRONTIER_RUNTIME_PROFILE", "local-secure")
+    orchestrator = Orchestrator(tmp_path / "registry.json")
+    called = {"value": False}
+
+    def _subscriber(env: Envelope) -> None:
+        called["value"] = True
+
+    orchestrator.bus.subscribe("security.compliance", _subscriber)
+    original = runtime_security_module.enforce_runtime_envelope_security
+
+    def _boom(env: Envelope):
+        raise RuntimeError("middleware exploded")
+
+    monkeypatch.setattr(runtime_security_module, "enforce_runtime_envelope_security", _boom)
+    try:
+        env = orchestrator.run_stage(
+            name="security-error",
+            topic="security.compliance",
+            payload={
+                "auth_context": {"actor": "tenant-user", "tenant_id": "acme", "subject": "orchestrator", "internal_service": True},
+            },
+        )
+    finally:
+        monkeypatch.setattr(runtime_security_module, "enforce_runtime_envelope_security", original)
+
+    assert called["value"] is False
+    assert any("security middleware error: middleware exploded" in err for err in env.errors)
+    assert env.payload["metrics"]["security_errors"] >= 1
+    assert env.payload["metrics"]["security_blocked"] == 0
+    assert env.payload["_security_block_classification"] == "security_error"
+    assert any(
+        event.get("control") == "runtime_security_middleware"
+        and event.get("outcome") == "error"
+        and event.get("metadata", {}).get("exception_type") == "RuntimeError"
+        for event in env.payload.get("security_events", [])
+    )
+    trace_events = [item["trace"] for item in env.payload.get("logs", []) if isinstance(item, dict) and "trace" in item]
+    assert any(
+        item["stage"] == "event_bus.delivery"
+        and item["outcome"] == "blocked"
+        and item.get("metadata", {}).get("reason") == "security_error"
         for item in trace_events
     )

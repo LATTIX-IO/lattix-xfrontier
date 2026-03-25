@@ -73,7 +73,7 @@ Daytona becomes default only when all gates below are met:
 
 ### Current phase (local-first)
 
-- Default: Docker Desktop + `docker-compose.local.yml`.
+- Default: Docker Desktop + `docker-compose.local.yml` for lightweight iteration, or `docker-compose.yml` for the secure full stack.
 - Daytona: optional experimentation only.
 
 ### Cloud multi-tenant phase (this ADR applies)

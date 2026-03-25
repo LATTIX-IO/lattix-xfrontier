@@ -1,5 +1,6 @@
 from __future__ import annotations
 import json
+import os
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional
 
@@ -7,6 +8,26 @@ from .contracts import Envelope
 from .event_bus import EventBus
 from .registry import AgentsRegistry
 from .reporting import add_log
+
+
+def _env_flag(name: str, default: bool = False) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return str(raw).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _runtime_profile() -> str:
+    value = str(os.getenv("FRONTIER_RUNTIME_PROFILE", "local-lightweight") or "").strip().lower()
+    return value or "local-lightweight"
+
+
+def _placeholder_auto_registration_allowed() -> bool:
+    if _runtime_profile() in {"local-secure", "hosted"}:
+        return False
+    if _env_flag("FRONTIER_REQUIRE_A2A_RUNTIME_HEADERS", False):
+        return False
+    return True
 
 
 def _load_topic_map(path: Path) -> Dict[str, List[str]]:
@@ -24,6 +45,9 @@ def auto_register_by_tags(
     This scaffolds the L3 interface. Replace subscribers with real agent handlers later.
     Returns the count of registrations.
     """
+    if not _placeholder_auto_registration_allowed():
+        return 0
+
     tag_filter = set(t.lower() for t in include_tags) if include_tags else None
     topic_map = _load_topic_map(topic_map_path)
     count = 0

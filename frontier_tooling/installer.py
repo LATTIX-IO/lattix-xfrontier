@@ -20,7 +20,7 @@ def main() -> None:
             "repo_root": str(root),
             "compose_env": str(compose_env.resolve()),
             "next_steps": [
-                "lattix dev",
+                "lattix up",
                 "lattix health",
             ],
             "bootstrap_url": bootstrap_url(),

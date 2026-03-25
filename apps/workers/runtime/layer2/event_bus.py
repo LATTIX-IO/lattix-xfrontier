@@ -33,8 +33,9 @@ class EventBus:
             except Exception as e:
                 msg.errors.append(str(e))
             if isinstance(msg.payload, dict) and msg.payload.get("_security_blocked"):
+                reason = str(msg.payload.get("_security_block_classification") or msg.payload.get("_security_block_reason") or "security_blocked").strip() or "security_blocked"
                 increment_metric(msg, "event_bus_delivery_blocked", 1)
-                add_trace(msg, "event_bus.delivery", "blocked", {"reason": "security_blocked", "topic": topic})
+                add_trace(msg, "event_bus.delivery", "blocked", {"reason": reason, "topic": topic})
                 return
         # Deliver to subscribers with simple budget checks
         subs = list(self._subscribers.get(topic, []))

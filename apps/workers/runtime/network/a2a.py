@@ -3,6 +3,7 @@ import hashlib
 import hmac
 import json
 import os
+import ssl
 from uuid import uuid4
 from typing import Any, Dict, Optional
 from urllib.parse import urlparse
@@ -104,10 +105,13 @@ def post_envelope(
         headers["X-Frontier-Signature"] = _build_runtime_signature(sub, nonce, env.correlation_id, data)
 
     req = request.Request(url, data=data, headers=headers, method="POST")
-    # Optional: support custom CA bundle via certifi-style hook
-    if ca_bundle:
-        os.environ["SSL_CERT_FILE"] = ca_bundle
-    with request.urlopen(req, timeout=10) as resp:  # nosec - demo scaffolding
+    parsed = urlparse(url)
+    ssl_context = None
+    if parsed.scheme.lower() == "https":
+        ssl_context = ssl.create_default_context(cafile=ca_bundle) if ca_bundle else ssl.create_default_context()
+    elif _runtime_profile() == "hosted":
+        raise ValueError("Hosted runtime profile requires HTTPS A2A endpoints")
+    with request.urlopen(req, timeout=10, context=ssl_context) as resp:  # nosec - verified TLS context is used for HTTPS
         body = resp.read().decode("utf-8")
         try:
             return json.loads(body)

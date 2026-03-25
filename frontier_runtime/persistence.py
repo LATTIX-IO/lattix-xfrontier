@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+from tempfile import NamedTemporaryFile
+from threading import RLock
 from typing import Any
 
 
@@ -11,6 +13,8 @@ _DEFAULT_STATE: dict[str, Any] = {
     "events": [],
     "replay_tokens": [],
 }
+
+_STATE_LOCK = RLock()
 
 
 def _default_state() -> dict[str, Any]:
@@ -44,16 +48,37 @@ def load_state() -> dict[str, Any]:
 
 
 def save_state(state: dict[str, Any]) -> None:
+    with _STATE_LOCK:
+        _save_state_unlocked(state)
+
+
+def _save_state_unlocked(state: dict[str, Any]) -> None:
     path = state_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(state, indent=2, sort_keys=True), encoding="utf-8")
+    serialized = json.dumps(state, indent=2, sort_keys=True)
+    temp_path: str | None = None
+    try:
+        with NamedTemporaryFile("w", encoding="utf-8", dir=path.parent, delete=False) as handle:
+            handle.write(serialized)
+            handle.flush()
+            os.fsync(handle.fileno())
+            temp_path = handle.name
+        os.replace(temp_path, path)
+    finally:
+        if temp_path:
+            try:
+                if os.path.exists(temp_path):
+                    os.unlink(temp_path)
+            except OSError:
+                pass
 
 
 def mutate_state(mutator: Any) -> dict[str, Any]:
-    state = load_state()
-    mutator(state)
-    save_state(state)
-    return state
+    with _STATE_LOCK:
+        state = load_state()
+        mutator(state)
+        _save_state_unlocked(state)
+        return state
 
 
 def reset_shared_state_backend() -> None:

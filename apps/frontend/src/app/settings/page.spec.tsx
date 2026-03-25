@@ -7,7 +7,6 @@ const { getPlatformSettingsMock, savePlatformSettingsMock, getAtfAlignmentReport
   getPlatformSettingsMock: vi.fn(async () => ({
     local_only_mode: true,
     mask_secrets_in_events: true,
-    allow_direct_openai_without_agent: true,
     require_human_approval: false,
     default_guardrail_ruleset_id: null,
     global_blocked_keywords: [],

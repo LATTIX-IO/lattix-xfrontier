@@ -62,6 +62,20 @@ class RuntimeAuthContext:
     session_id: str = ""
 
 
+def _security_events_count(env: Envelope) -> int:
+    payload = env.payload if isinstance(env.payload, dict) else {}
+    events = payload.get("security_events") if isinstance(payload.get("security_events"), list) else []
+    return len(events)
+
+
+def _mark_security_block(env: Envelope, *, reason: str, classification: str) -> None:
+    if not isinstance(env.payload, dict):
+        env.payload = {}
+    env.payload["_security_blocked"] = True
+    env.payload["_security_block_reason"] = str(reason or classification).strip() or classification
+    env.payload["_security_block_classification"] = classification
+
+
 def resolve_runtime_auth_context(env: Envelope) -> RuntimeAuthContext:
     payload = env.payload if isinstance(env.payload, dict) else {}
     auth_context = payload.get("auth_context") if isinstance(payload.get("auth_context"), dict) else {}
@@ -319,12 +333,38 @@ def enforce_runtime_envelope_security(env: Envelope) -> RuntimeAuthContext:
 
 def runtime_security_middleware() -> Any:
     def _mw(env: Envelope) -> None:
+        before_events = _security_events_count(env)
         try:
             enforce_runtime_envelope_security(env)
-        except Exception as exc:  # noqa: BLE001
-            if not isinstance(env.payload, dict):
-                env.payload = {}
-            env.payload["_security_blocked"] = True
+        except ValueError as exc:
+            if _security_events_count(env) == before_events:
+                auth_context = resolve_runtime_auth_context(env)
+                add_security_event(
+                    env,
+                    "blocked",
+                    "runtime_security_middleware",
+                    reason=str(exc),
+                    auth_context=asdict(auth_context),
+                    metadata={"classification": "policy_denied", "profile": _runtime_profile()},
+                )
+            _mark_security_block(env, reason=str(exc), classification="policy_denied")
             env.errors.append(f"security policy: {exc}")
+        except Exception as exc:  # noqa: BLE001
+            auth_context = resolve_runtime_auth_context(env)
+            add_security_event(
+                env,
+                "error",
+                "runtime_security_middleware",
+                reason="unexpected security middleware failure",
+                auth_context=asdict(auth_context),
+                metadata={
+                    "classification": "security_error",
+                    "exception_type": exc.__class__.__name__,
+                    "error": str(exc),
+                    "profile": _runtime_profile(),
+                },
+            )
+            _mark_security_block(env, reason=str(exc), classification="security_error")
+            env.errors.append(f"security middleware error: {exc}")
 
     return _mw

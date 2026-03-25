@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import sys
 import types
@@ -7,8 +8,14 @@ from collections import defaultdict
 from pathlib import Path
 from uuid import uuid4
 
+import pytest
 from fastapi.testclient import TestClient
 from frontier_runtime.security import mint_token
+
+if not str(os.environ.get("A2A_JWT_SECRET") or "").strip() or "placeholder" in str(os.environ.get("A2A_JWT_SECRET") or "").lower():
+    os.environ["A2A_JWT_SECRET"] = "unit-test-super-secret-value-32bytes"
+if not str(os.environ.get("FRONTIER_API_BEARER_TOKEN") or "").strip() or "placeholder" in str(os.environ.get("FRONTIER_API_BEARER_TOKEN") or "").lower():
+    os.environ["FRONTIER_API_BEARER_TOKEN"] = "unit-test-bearer"
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -34,6 +41,7 @@ class _FakeRedisMemoryStore:
     def __init__(self, *_args: object, **_kwargs: object) -> None:
         self.enabled = True
         self._entries: dict[str, list[dict[str, object]]] = defaultdict(list)
+        self._nonces: dict[str, int] = {}
 
     def healthcheck(self) -> bool:
         return True
@@ -50,6 +58,15 @@ class _FakeRedisMemoryStore:
 
     def clear_entries(self, session_id: str) -> None:
         self._entries[session_id] = []
+
+    def register_nonce_once(self, nonce: str, *, ttl_seconds: int) -> bool:
+        nonce_text = str(nonce or "").strip()
+        if not nonce_text:
+            return False
+        if nonce_text in self._nonces:
+            return False
+        self._nonces[nonce_text] = max(1, int(ttl_seconds))
+        return True
 
 
 class _FakeLongTermMemoryStore:
@@ -271,6 +288,23 @@ from app.request_security import validate_route_inventory
 
 client = TestClient(app)
 
+AUTH_HEADERS = {"Authorization": "Bearer unit-test-bearer", "x-frontier-actor": "tester"}
+ADMIN_HEADERS = {"Authorization": "Bearer unit-test-bearer", "x-frontier-actor": "frontier-admin"}
+MEMBER_AUTH_HEADERS = {"Authorization": "Bearer unit-test-bearer", "x-frontier-actor": "member-user"}
+OWNER_AUTH_HEADERS = {"Authorization": "Bearer unit-test-bearer", "x-frontier-actor": "owner-user"}
+NON_ADMIN_HEADERS = {"x-frontier-actor": "member-user"}
+
+
+def _signed_internal_headers(*, payload: bytes = b"", actor: str = "tester", subject: str = "backend", nonce: str = "nonce-1", correlation_id: str = "corr-1") -> dict[str, str]:
+    return {
+        "x-frontier-actor": actor,
+        "x-correlation-id": correlation_id,
+        "x-frontier-subject": subject,
+        "x-frontier-nonce": nonce,
+        "x-frontier-signature": main_module._build_runtime_signature(subject, nonce, correlation_id, payload),
+        "content-type": "application/json",
+    }
+
 
 def _sample_graph() -> dict[str, list[dict[str, object]]]:
     return {
@@ -289,6 +323,17 @@ def _sample_graph() -> dict[str, list[dict[str, object]]]:
     }
 
 
+def _run_access(owner: str, *, tenant: str = "") -> dict[str, object]:
+    return {
+        "actor": owner,
+        "principal_id": owner,
+        "principal_type": "user",
+        "subject": "",
+        "tenant": tenant,
+        "references": [owner],
+    }
+
+
 def test_publish_agent_definition_generates_code_artifacts() -> None:
     agent_id = str(uuid4())
     payload = {
@@ -304,10 +349,10 @@ def test_publish_agent_definition_generates_code_artifacts() -> None:
         },
     }
 
-    save_response = client.post("/agent-definitions", json=payload)
+    save_response = client.post("/agent-definitions", json=payload, headers=ADMIN_HEADERS)
     assert save_response.status_code == 200
 
-    publish_response = client.post(f"/agent-definitions/{agent_id}/publish")
+    publish_response = client.post(f"/agent-definitions/{agent_id}/publish", headers=ADMIN_HEADERS)
     assert publish_response.status_code == 200
     body = publish_response.json()
     assert body["ok"] is True
@@ -514,10 +559,11 @@ def test_agent_definition_versions_and_rollback_clear_generated_artifacts() -> N
                     "graph_json": _sample_graph(),
                 },
             },
+            headers=ADMIN_HEADERS,
         )
         assert save_v1.status_code == 200
 
-        publish = client.post(f"/agent-definitions/{agent_id}/publish")
+        publish = client.post(f"/agent-definitions/{agent_id}/publish", headers=ADMIN_HEADERS)
         assert publish.status_code == 200
         assert len(store.agent_definitions[agent_id].generated_artifacts) == 2
 
@@ -533,6 +579,7 @@ def test_agent_definition_versions_and_rollback_clear_generated_artifacts() -> N
                     "graph_json": changed_graph,
                 },
             },
+            headers=ADMIN_HEADERS,
         )
         assert save_v2.status_code == 200
 
@@ -545,6 +592,7 @@ def test_agent_definition_versions_and_rollback_clear_generated_artifacts() -> N
         rollback = client.post(
             f"/agent-definitions/{agent_id}/rollback",
             json={"revision_id": published_revision["id"]},
+            headers=ADMIN_HEADERS,
         )
         assert rollback.status_code == 200
         rollback_body = rollback.json()
@@ -576,10 +624,11 @@ def test_guardrail_ruleset_versions_and_rollback_restore_prior_config() -> None:
                 "name": "Versioned Guardrail",
                 "config_json": {"blocked_keywords": ["secret"], "tripwire_action": "reject_content"},
             },
+            headers=ADMIN_HEADERS,
         )
         assert save_v1.status_code == 200
 
-        publish = client.post(f"/guardrail-rulesets/{ruleset_id}/publish")
+        publish = client.post(f"/guardrail-rulesets/{ruleset_id}/publish", headers=ADMIN_HEADERS)
         assert publish.status_code == 200
 
         save_v2 = client.post(
@@ -589,6 +638,7 @@ def test_guardrail_ruleset_versions_and_rollback_restore_prior_config() -> None:
                 "name": "Versioned Guardrail v2",
                 "config_json": {"blocked_keywords": ["secret", "token"], "tripwire_action": "reject_content"},
             },
+            headers=ADMIN_HEADERS,
         )
         assert save_v2.status_code == 200
 
@@ -605,6 +655,7 @@ def test_guardrail_ruleset_versions_and_rollback_restore_prior_config() -> None:
         rollback = client.post(
             f"/guardrail-rulesets/{ruleset_id}/rollback",
             json={"revision_id": published_revision["id"]},
+            headers=ADMIN_HEADERS,
         )
         assert rollback.status_code == 200
         rollback_body = rollback.json()
@@ -680,9 +731,10 @@ def test_agent_and_guardrail_runtime_resolution_use_pinned_published_revisions()
                 "name": "Pinned Ruleset",
                 "config_json": {"blocked_keywords": ["alpha"], "tripwire_action": "reject_content"},
             },
+            headers=ADMIN_HEADERS,
         )
         assert ruleset_create.status_code == 200
-        ruleset_publish = client.post(f"/guardrail-rulesets/{ruleset_id}/publish")
+        ruleset_publish = client.post(f"/guardrail-rulesets/{ruleset_id}/publish", headers=ADMIN_HEADERS)
         assert ruleset_publish.status_code == 200
         published_ruleset_pointer = store.guardrail_rulesets[ruleset_id].published_revision_id
         assert published_ruleset_pointer
@@ -694,6 +746,7 @@ def test_agent_and_guardrail_runtime_resolution_use_pinned_published_revisions()
                 "name": "Pinned Ruleset Draft",
                 "config_json": {"blocked_keywords": ["beta"], "tripwire_action": "reject_content"},
             },
+            headers=ADMIN_HEADERS,
         )
         assert ruleset_draft.status_code == 200
         assert store.guardrail_rulesets[ruleset_id].status == "draft"
@@ -721,9 +774,10 @@ def test_agent_and_guardrail_runtime_resolution_use_pinned_published_revisions()
                     "graph_json": _sample_graph(),
                 },
             },
+            headers=ADMIN_HEADERS,
         )
         assert agent_create.status_code == 200
-        agent_publish = client.post(f"/agent-definitions/{agent_id}/publish")
+        agent_publish = client.post(f"/agent-definitions/{agent_id}/publish", headers=ADMIN_HEADERS)
         assert agent_publish.status_code == 200
         published_agent_pointer = store.agent_definitions[agent_id].published_revision_id
         assert published_agent_pointer
@@ -738,6 +792,7 @@ def test_agent_and_guardrail_runtime_resolution_use_pinned_published_revisions()
                     "graph_json": _sample_graph(),
                 },
             },
+            headers=ADMIN_HEADERS,
         )
         assert agent_draft.status_code == 200
         assert store.agent_definitions[agent_id].status == "draft"
@@ -838,9 +893,10 @@ def test_agent_and_guardrail_activation_control_runtime_resolution() -> None:
                 "name": "Runtime Ruleset v1",
                 "config_json": {"blocked_keywords": ["alpha"], "tripwire_action": "reject_content"},
             },
+            headers=ADMIN_HEADERS,
         )
         assert ruleset_v1.status_code == 200
-        assert client.post(f"/guardrail-rulesets/{ruleset_id}/publish").status_code == 200
+        assert client.post(f"/guardrail-rulesets/{ruleset_id}/publish", headers=ADMIN_HEADERS).status_code == 200
 
         ruleset_v2 = client.post(
             "/guardrail-rulesets",
@@ -849,9 +905,10 @@ def test_agent_and_guardrail_activation_control_runtime_resolution() -> None:
                 "name": "Runtime Ruleset v2",
                 "config_json": {"blocked_keywords": ["beta"], "tripwire_action": "reject_content"},
             },
+            headers=ADMIN_HEADERS,
         )
         assert ruleset_v2.status_code == 200
-        assert client.post(f"/guardrail-rulesets/{ruleset_id}/publish").status_code == 200
+        assert client.post(f"/guardrail-rulesets/{ruleset_id}/publish", headers=ADMIN_HEADERS).status_code == 200
 
         guardrail_current = store.guardrail_rulesets[ruleset_id]
         assert guardrail_current.published_revision_id
@@ -861,7 +918,7 @@ def test_agent_and_guardrail_activation_control_runtime_resolution() -> None:
         resolved_guardrail_before, _, _ = main_module._resolve_guardrail_config({"ruleset_id": ruleset_id})
         assert resolved_guardrail_before["blocked_keywords"] == ["alpha"]
 
-        activate_ruleset = client.post(f"/guardrail-rulesets/{ruleset_id}/activate")
+        activate_ruleset = client.post(f"/guardrail-rulesets/{ruleset_id}/activate", headers=ADMIN_HEADERS)
         assert activate_ruleset.status_code == 200
 
         resolved_guardrail_after, _, _ = main_module._resolve_guardrail_config({"ruleset_id": ruleset_id})
@@ -877,9 +934,10 @@ def test_agent_and_guardrail_activation_control_runtime_resolution() -> None:
                     "graph_json": _sample_graph(),
                 },
             },
+            headers=ADMIN_HEADERS,
         )
         assert agent_v1.status_code == 200
-        assert client.post(f"/agent-definitions/{agent_id}/publish").status_code == 200
+        assert client.post(f"/agent-definitions/{agent_id}/publish", headers=ADMIN_HEADERS).status_code == 200
 
         agent_v2 = client.post(
             "/agent-definitions",
@@ -891,9 +949,10 @@ def test_agent_and_guardrail_activation_control_runtime_resolution() -> None:
                     "graph_json": _sample_graph(),
                 },
             },
+            headers=ADMIN_HEADERS,
         )
         assert agent_v2.status_code == 200
-        assert client.post(f"/agent-definitions/{agent_id}/publish").status_code == 200
+        assert client.post(f"/agent-definitions/{agent_id}/publish", headers=ADMIN_HEADERS).status_code == 200
 
         agent_current = store.agent_definitions[agent_id]
         assert agent_current.published_revision_id
@@ -905,7 +964,7 @@ def test_agent_and_guardrail_activation_control_runtime_resolution() -> None:
         assert resolved_agent_before.name == "Runtime Agent v1"
         assert resolved_agent_before.config_json["system_prompt"] == "Use the first runtime prompt."
 
-        activate_agent = client.post(f"/agent-definitions/{agent_id}/activate")
+        activate_agent = client.post(f"/agent-definitions/{agent_id}/activate", headers=ADMIN_HEADERS)
         assert activate_agent.status_code == 200
 
         resolved_agent_after = main_module._resolve_published_agent_definition(agent_id)
@@ -1043,14 +1102,12 @@ def test_internal_memory_consolidation_endpoint_runs_processor() -> None:
         source="memory-node",
     )
 
+    payload = {"bucket_id": bucket_id, "scope": "workflow", "limit": 10, "actor": "tester"}
+    raw = json.dumps(payload).encode("utf-8")
     response = client.post(
         "/internal/memory/consolidation/run",
-        json={"bucket_id": bucket_id, "scope": "workflow", "limit": 10, "actor": "tester"},
-            headers={
-                "x-frontier-actor": "tester",
-                "x-frontier-subject": "backend",
-                "x-frontier-signature": "signed",
-            },
+        content=raw,
+        headers=_signed_internal_headers(payload=raw, nonce="memory-consolidation-nonce"),
     )
 
     assert response.status_code == 200
@@ -1158,14 +1215,12 @@ def test_internal_world_graph_projection_endpoint_replays_consolidated_memories(
         source="memory-consolidation",
     )
 
+    payload = {"bucket_id": bucket_id, "scope": "agent", "limit": 10, "actor": "tester"}
+    raw = json.dumps(payload).encode("utf-8")
     response = client.post(
         "/internal/memory/world-graph/project",
-        json={"bucket_id": bucket_id, "scope": "agent", "limit": 10, "actor": "tester"},
-        headers={
-            "x-frontier-actor": "tester",
-            "x-frontier-subject": "backend",
-            "x-frontier-signature": "signed",
-        },
+        content=raw,
+        headers=_signed_internal_headers(payload=raw, nonce="world-graph-project-nonce"),
     )
 
     assert response.status_code == 200
@@ -1304,13 +1359,13 @@ def test_definition_mutations_require_auth_when_enabled_and_emit_audit_events() 
                 "description": "Should require authenticated mutation requests.",
                 "graph_json": _sample_graph(),
             },
-            headers={"x-frontier-actor": "tester"},
+            headers=ADMIN_HEADERS,
         )
         assert authorized_response.status_code == 200
 
         publish_response = client.post(
             f"/workflow-definitions/{workflow_id}/publish",
-            headers={"x-frontier-actor": "tester"},
+            headers=ADMIN_HEADERS,
         )
         assert publish_response.status_code == 200
 
@@ -1394,19 +1449,19 @@ def test_integration_mutations_require_auth_and_emit_audit_events() -> None:
                 "type": "http",
                 "base_url": "http://localhost:9999/test",
             },
-            headers={"x-frontier-actor": "tester"},
+            headers=ADMIN_HEADERS,
         )
         assert authorized_response.status_code == 200
 
         test_response = client.post(
             f"/integrations/{integration_id}/test",
-            headers={"x-frontier-actor": "tester"},
+            headers=ADMIN_HEADERS,
         )
         assert test_response.status_code == 200
 
         delete_response = client.delete(
             f"/integrations/{integration_id}",
-            headers={"x-frontier-actor": "tester"},
+            headers=ADMIN_HEADERS,
         )
         assert delete_response.status_code == 200
 
@@ -1444,7 +1499,7 @@ def test_template_and_collaboration_mutations_require_auth_and_emit_audit_events
         template_response = client.post(
             f"/templates/agents/{template_id}/instantiate",
             json={"name": "Template Instance"},
-            headers={"x-frontier-actor": "tester"},
+            headers=ADMIN_HEADERS,
         )
         assert template_response.status_code == 200
         created_agent_id = template_response.json()["id"]
@@ -1468,7 +1523,7 @@ def test_template_and_collaboration_mutations_require_auth_and_emit_audit_events
                 "user_id": "tester",
                 "display_name": "Tester",
             },
-            headers={"x-frontier-actor": "tester"},
+            headers=AUTH_HEADERS,
         )
         assert join_response.status_code == 200
         session_id = join_response.json()["session"]["id"]
@@ -1476,7 +1531,7 @@ def test_template_and_collaboration_mutations_require_auth_and_emit_audit_events
         sync_response = client.post(
             f"/collab/sessions/{session_id}/sync",
             json={"user_id": "tester", "graph_json": _sample_graph()},
-            headers={"x-frontier-actor": "tester"},
+            headers=AUTH_HEADERS,
         )
         assert sync_response.status_code == 200
 
@@ -1520,10 +1575,11 @@ def test_sensitive_read_routes_require_auth_when_enabled() -> None:
         assert client.get(f"/collab/sessions/{collab_session.id}").status_code == 401
         assert client.delete(f"/memory/{session_id}").status_code == 401
 
-        headers = {"x-frontier-actor": "tester"}
+        headers = AUTH_HEADERS
         assert client.get("/platform/settings", headers=headers).status_code == 200
         assert client.get(f"/memory/{session_id}", headers=headers).status_code == 200
-        assert client.get("/audit/events", headers=headers).status_code == 200
+        assert client.get("/audit/events", headers=headers).status_code == 403
+        assert client.get("/audit/events", headers=ADMIN_HEADERS).status_code == 200
         assert client.get(f"/collab/sessions/{collab_session.id}", headers=headers).status_code == 200
         assert client.delete(f"/memory/{session_id}", headers=headers).status_code == 200
 
@@ -1554,7 +1610,7 @@ def test_secure_local_mode_fail_closes_sensitive_diagnostics(monkeypatch) -> Non
         assert client.get("/runtime/local-integration-readiness").status_code == 401
         assert client.get("/runtime/l3-parity-report").status_code == 401
 
-        headers = {"x-frontier-actor": "tester"}
+        headers = AUTH_HEADERS
         assert client.get("/platform/security-policy", headers=headers).status_code == 200
         assert client.get("/runtime/providers", headers=headers).status_code == 200
         assert client.get("/runtime/local-integration-readiness", headers=headers).status_code == 200
@@ -1584,7 +1640,7 @@ def test_secure_local_mode_keeps_public_health_minimal_and_gates_details(monkeyp
 
         assert client.get("/healthz/details").status_code == 401
 
-        detailed_health = client.get("/healthz/details", headers={"x-frontier-actor": "tester"})
+        detailed_health = client.get("/healthz/details", headers=AUTH_HEADERS)
         assert detailed_health.status_code == 200
         assert "postgres" in detailed_health.json()
         assert any(event.action == "health.details.read" and event.outcome == "allowed" for event in store.audit_events)
@@ -1622,7 +1678,7 @@ def test_secure_local_mode_fail_closes_mutation_routes_without_store_toggle(monk
                 "description": "Should require auth in secure local mode.",
                 "graph_json": _sample_graph(),
             },
-            headers={"x-frontier-actor": "tester"},
+            headers=ADMIN_HEADERS,
         )
         assert authorized_response.status_code == 200
     finally:
@@ -1633,20 +1689,17 @@ def test_secure_local_mode_fail_closes_mutation_routes_without_store_toggle(monk
 def test_secure_local_mode_uses_expiring_nonce_replay_cache(monkeypatch) -> None:
     original_require_auth = store.platform_settings.require_authenticated_requests
     original_seen_nonces = dict(store.a2a_seen_nonces)
+    original_redis_enabled = main_module._REDIS_MEMORY.enabled
 
     try:
         store.platform_settings.require_authenticated_requests = False
         store.a2a_seen_nonces = {}
+        main_module._REDIS_MEMORY.enabled = False
         monkeypatch.setenv("FRONTIER_SECURE_LOCAL_MODE", "true")
         monkeypatch.setenv("FRONTIER_REQUIRE_A2A_RUNTIME_HEADERS", "true")
         monkeypatch.setenv("FRONTIER_A2A_NONCE_TTL_SECONDS", "60")
 
-        headers = {
-            "x-frontier-actor": "tester",
-            "x-frontier-subject": "backend",
-            "x-frontier-signature": "signed",
-            "x-frontier-nonce": "nonce-1",
-        }
+        headers = _signed_internal_headers(nonce="nonce-1")
 
         first = client.get("/platform/security-policy", headers=headers)
         assert first.status_code == 200
@@ -1662,8 +1715,103 @@ def test_secure_local_mode_uses_expiring_nonce_replay_cache(monkeypatch) -> None
         assert expired_reuse.status_code == 200
         assert "nonce-1" in store.a2a_seen_nonces
     finally:
+        main_module._REDIS_MEMORY.enabled = original_redis_enabled
         store.platform_settings.require_authenticated_requests = original_require_auth
         store.a2a_seen_nonces = original_seen_nonces
+
+
+def test_signed_a2a_nonce_replay_survives_in_memory_reset_with_redis_cache(monkeypatch) -> None:
+    original_require_auth = store.platform_settings.require_authenticated_requests
+    original_seen_nonces = dict(store.a2a_seen_nonces)
+    original_redis_enabled = main_module._REDIS_MEMORY.enabled
+    original_redis_nonces = dict(getattr(main_module._REDIS_MEMORY, "_nonces", {}))
+
+    try:
+        store.platform_settings.require_authenticated_requests = False
+        store.a2a_seen_nonces = {}
+        main_module._REDIS_MEMORY.enabled = True
+        if hasattr(main_module._REDIS_MEMORY, "_nonces"):
+            main_module._REDIS_MEMORY._nonces = {}
+        monkeypatch.setenv("FRONTIER_RUNTIME_PROFILE", "hosted")
+        monkeypatch.setenv("FRONTIER_A2A_NONCE_TTL_SECONDS", "60")
+
+        headers = _signed_internal_headers(nonce="redis-backed-nonce-1")
+
+        first = client.get("/platform/security-policy", headers=headers)
+        assert first.status_code == 200
+
+        store.a2a_seen_nonces = {}
+
+        replay = client.get("/platform/security-policy", headers=headers)
+        assert replay.status_code == 409
+    finally:
+        main_module._REDIS_MEMORY.enabled = original_redis_enabled
+        if hasattr(main_module._REDIS_MEMORY, "_nonces"):
+            main_module._REDIS_MEMORY._nonces = original_redis_nonces
+        store.platform_settings.require_authenticated_requests = original_require_auth
+        store.a2a_seen_nonces = original_seen_nonces
+
+
+def test_signed_a2a_nonce_replay_survives_restart_via_state_snapshot_when_redis_unavailable(monkeypatch) -> None:
+    original_require_auth = store.platform_settings.require_authenticated_requests
+    original_seen_nonces = dict(store.a2a_seen_nonces)
+    original_redis_enabled = main_module._REDIS_MEMORY.enabled
+    original_state_payload = main_module._POSTGRES_STATE.load_state()
+
+    try:
+        store.platform_settings.require_authenticated_requests = False
+        store.a2a_seen_nonces = {}
+        main_module._REDIS_MEMORY.enabled = False
+        main_module._POSTGRES_STATE._payload = None
+        monkeypatch.setenv("FRONTIER_RUNTIME_PROFILE", "hosted")
+        monkeypatch.setenv("FRONTIER_A2A_NONCE_TTL_SECONDS", "60")
+
+        headers = _signed_internal_headers(nonce="persisted-nonce-1")
+
+        first = client.get("/platform/security-policy", headers=headers)
+        assert first.status_code == 200
+
+        persisted = main_module._POSTGRES_STATE.load_state()
+        assert isinstance(persisted, dict)
+        assert persisted.get("a2a_seen_nonces", {}).get("persisted-nonce-1")
+
+        store.a2a_seen_nonces = {}
+        main_module._apply_store_state(persisted)
+
+        replay = client.get("/platform/security-policy", headers=headers)
+        assert replay.status_code == 409
+    finally:
+        main_module._REDIS_MEMORY.enabled = original_redis_enabled
+        main_module._POSTGRES_STATE._payload = original_state_payload
+        store.platform_settings.require_authenticated_requests = original_require_auth
+        store.a2a_seen_nonces = original_seen_nonces
+
+
+def test_signed_a2a_json_requests_require_raw_request_body_for_signature_verification() -> None:
+    payload = {"bucket_id": "agent:test", "scope": "agent", "limit": 10}
+    payload_bytes = json.dumps(payload).encode("utf-8")
+    request = types.SimpleNamespace(
+        headers={
+            "x-correlation-id": "corr-raw-body",
+            "content-type": "application/json",
+            "content-length": str(len(payload_bytes)),
+        },
+        method="POST",
+        state=types.SimpleNamespace(frontier_raw_body=None),
+        _body=None,
+    )
+
+    with pytest.raises(main_module.HTTPException) as missing_raw_body:
+        main_module._verify_runtime_signature(
+            request,
+            subject="backend",
+            nonce="raw-body-nonce",
+            signature=main_module._build_runtime_signature("backend", "raw-body-nonce", "corr-raw-body", payload_bytes),
+            payload=payload,
+        )
+
+    assert missing_raw_body.value.status_code == 401
+    assert missing_raw_body.value.detail == "Signed A2A request body must be verified from raw request bytes"
 
 
 def test_runtime_profile_local_secure_matches_fail_closed_local_behavior(monkeypatch) -> None:
@@ -1685,7 +1833,7 @@ def test_runtime_profile_local_secure_matches_fail_closed_local_behavior(monkeyp
 
         assert client.get("/platform/security-policy").status_code == 401
 
-        detailed = client.get("/platform/security-policy", headers={"x-frontier-actor": "tester"})
+        detailed = client.get("/platform/security-policy", headers=AUTH_HEADERS)
         assert detailed.status_code == 200
         body = detailed.json()
         assert body["runtime_profile"]["name"] == "local-secure"
@@ -1716,12 +1864,7 @@ def test_runtime_profile_hosted_is_immutable_and_requires_a2a_headers(monkeypatc
         assert client.get("/platform/security-policy").status_code == 401
         assert client.get("/platform/security-policy", headers={"x-frontier-actor": "tester"}).status_code == 401
 
-        hosted_headers = {
-            "x-frontier-actor": "tester",
-            "x-frontier-subject": "backend",
-            "x-frontier-signature": "signed",
-            "x-frontier-nonce": "hosted-profile-nonce-1",
-        }
+        hosted_headers = _signed_internal_headers(nonce="hosted-profile-nonce-1")
         allowed = client.get("/platform/security-policy", headers=hosted_headers)
         assert allowed.status_code == 200
         body = allowed.json()
@@ -1797,10 +1940,858 @@ def test_central_route_policy_protects_previously_unenforced_read_surfaces() -> 
             unauthorized = client.get(path)
             assert unauthorized.status_code == 401, path
 
-            authorized = client.get(path, headers={"x-frontier-actor": "tester"})
+            header_only = client.get(path, headers={"x-frontier-actor": "tester"})
+            assert header_only.status_code == 401, path
+
+            authorized = client.get(path, headers=ADMIN_HEADERS if path in {"/templates/agents", "/observability/dashboard"} else AUTH_HEADERS)
             assert authorized.status_code == 200, path
     finally:
         store.platform_settings.require_authenticated_requests = original_require_auth
+
+
+def test_workflow_runs_are_scoped_to_authenticated_owner_when_auth_required() -> None:
+    original_require_auth = store.platform_settings.require_authenticated_requests
+    owner_run_id = str(uuid4())
+    other_run_id = str(uuid4())
+
+    try:
+        store.platform_settings.require_authenticated_requests = True
+        store.runs[owner_run_id] = main_module.WorkflowRunSummary(
+            id=owner_run_id,
+            title="Owner Visible Run",
+            status="Running",
+            updatedAt="just now",
+            progressLabel="Step 1/2",
+        )
+        store.run_details[owner_run_id] = {
+            "artifacts": [],
+            "status": "Running",
+            "graph": {"nodes": [], "links": []},
+            "agent_traces": [],
+            "approvals": {"required": False, "pending": False},
+            "access": _run_access("tester"),
+        }
+        store.run_events[owner_run_id] = []
+
+        store.runs[other_run_id] = main_module.WorkflowRunSummary(
+            id=other_run_id,
+            title="Other User Run",
+            status="Running",
+            updatedAt="just now",
+            progressLabel="Step 1/2",
+        )
+        store.run_details[other_run_id] = {
+            "artifacts": [],
+            "status": "Running",
+            "graph": {"nodes": [], "links": []},
+            "agent_traces": [],
+            "approvals": {"required": False, "pending": False},
+            "access": _run_access("member-user"),
+        }
+        store.run_events[other_run_id] = []
+
+        list_response = client.get("/workflow-runs", headers=AUTH_HEADERS)
+        assert list_response.status_code == 200
+        visible_ids = {item["id"] for item in list_response.json()}
+        assert owner_run_id in visible_ids
+        assert other_run_id not in visible_ids
+
+        own_detail = client.get(f"/workflow-runs/{owner_run_id}", headers=AUTH_HEADERS)
+        assert own_detail.status_code == 200
+
+        foreign_detail = client.get(f"/workflow-runs/{other_run_id}", headers=AUTH_HEADERS)
+        assert foreign_detail.status_code == 403
+
+        admin_detail = client.get(f"/workflow-runs/{other_run_id}", headers=ADMIN_HEADERS)
+        assert admin_detail.status_code == 200
+    finally:
+        store.platform_settings.require_authenticated_requests = original_require_auth
+        store.runs.pop(owner_run_id, None)
+        store.runs.pop(other_run_id, None)
+        store.run_details.pop(owner_run_id, None)
+        store.run_details.pop(other_run_id, None)
+        store.run_events.pop(owner_run_id, None)
+        store.run_events.pop(other_run_id, None)
+
+
+def test_inbox_and_artifacts_are_scoped_by_run_owner_when_auth_required() -> None:
+    original_require_auth = store.platform_settings.require_authenticated_requests
+    owner_run_id = str(uuid4())
+    other_run_id = str(uuid4())
+    owner_artifact_id = str(uuid4())
+    other_artifact_id = str(uuid4())
+    owner_inbox_id = str(uuid4())
+    other_inbox_id = str(uuid4())
+
+    try:
+        store.platform_settings.require_authenticated_requests = True
+        store.runs[owner_run_id] = main_module.WorkflowRunSummary(
+            id=owner_run_id,
+            title="Owner Artifact Run",
+            status="Needs Review",
+            updatedAt="just now",
+            progressLabel="Awaiting review",
+        )
+        store.run_details[owner_run_id] = {
+            "artifacts": [{"id": owner_artifact_id, "name": "Owner Artifact", "status": "Needs Review", "version": 1}],
+            "status": "Needs Review",
+            "graph": {"nodes": [], "links": []},
+            "agent_traces": [{"output": "owner artifact body"}],
+            "response_text": "owner artifact body",
+            "approvals": {"required": True, "pending": True, "artifact_id": owner_artifact_id, "version": 1},
+            "access": _run_access("tester"),
+        }
+        store.run_events[owner_run_id] = [
+            main_module.WorkflowRunEvent(
+                id=f"evt-{uuid4()}",
+                type="artifact_created",
+                title="Owner artifact created",
+                summary="created",
+                createdAt=main_module._now_iso(),
+                metadata={"artifact_id": owner_artifact_id},
+            )
+        ]
+
+        store.runs[other_run_id] = main_module.WorkflowRunSummary(
+            id=other_run_id,
+            title="Foreign Artifact Run",
+            status="Needs Review",
+            updatedAt="just now",
+            progressLabel="Awaiting review",
+        )
+        store.run_details[other_run_id] = {
+            "artifacts": [{"id": other_artifact_id, "name": "Foreign Artifact", "status": "Needs Review", "version": 1}],
+            "status": "Needs Review",
+            "graph": {"nodes": [], "links": []},
+            "agent_traces": [{"output": "foreign artifact body"}],
+            "response_text": "foreign artifact body",
+            "approvals": {"required": True, "pending": True, "artifact_id": other_artifact_id, "version": 1},
+            "access": _run_access("member-user"),
+        }
+        store.run_events[other_run_id] = [
+            main_module.WorkflowRunEvent(
+                id=f"evt-{uuid4()}",
+                type="artifact_created",
+                title="Foreign artifact created",
+                summary="created",
+                createdAt=main_module._now_iso(),
+                metadata={"artifact_id": other_artifact_id},
+            )
+        ]
+
+        store.inbox.insert(
+            0,
+            main_module.InboxItem(
+                id=owner_inbox_id,
+                runId=owner_run_id,
+                runName="Owner Artifact Run",
+                artifactType="Owner Artifact",
+                reason="Owner review",
+                queue="Needs Approval",
+            ),
+        )
+        store.inbox.insert(
+            0,
+            main_module.InboxItem(
+                id=other_inbox_id,
+                runId=other_run_id,
+                runName="Foreign Artifact Run",
+                artifactType="Foreign Artifact",
+                reason="Foreign review",
+                queue="Needs Approval",
+            ),
+        )
+
+        inbox_response = client.get("/inbox", headers=AUTH_HEADERS)
+        assert inbox_response.status_code == 200
+        inbox_run_ids = {item["runId"] for item in inbox_response.json()}
+        assert owner_run_id in inbox_run_ids
+        assert other_run_id not in inbox_run_ids
+
+        artifact_list = client.get("/artifacts", headers=AUTH_HEADERS)
+        assert artifact_list.status_code == 200
+        artifact_ids = {item["id"] for item in artifact_list.json()}
+        assert owner_artifact_id in artifact_ids
+        assert other_artifact_id not in artifact_ids
+
+        own_artifact = client.get(f"/artifacts/{owner_artifact_id}", headers=AUTH_HEADERS)
+        assert own_artifact.status_code == 200
+        assert own_artifact.json()["content"] == "owner artifact body"
+
+        foreign_artifact = client.get(f"/artifacts/{other_artifact_id}", headers=AUTH_HEADERS)
+        assert foreign_artifact.status_code == 403
+
+        admin_artifact = client.get(f"/artifacts/{other_artifact_id}", headers=ADMIN_HEADERS)
+        assert admin_artifact.status_code == 200
+    finally:
+        store.platform_settings.require_authenticated_requests = original_require_auth
+        store.runs.pop(owner_run_id, None)
+        store.runs.pop(other_run_id, None)
+        store.run_details.pop(owner_run_id, None)
+        store.run_details.pop(other_run_id, None)
+        store.run_events.pop(owner_run_id, None)
+        store.run_events.pop(other_run_id, None)
+        store.inbox = [item for item in store.inbox if item.id not in {owner_inbox_id, other_inbox_id}]
+
+
+def test_run_mutations_require_owner_or_builder_when_auth_required() -> None:
+    original_require_auth = store.platform_settings.require_authenticated_requests
+    run_id = str(uuid4())
+    artifact_id = str(uuid4())
+    inbox_id = str(uuid4())
+
+    try:
+        store.platform_settings.require_authenticated_requests = True
+        store.runs[run_id] = main_module.WorkflowRunSummary(
+            id=run_id,
+            title="Owner Mutation Run",
+            status="Needs Review",
+            updatedAt="just now",
+            progressLabel="Awaiting approval",
+        )
+        store.run_details[run_id] = {
+            "artifacts": [{"id": artifact_id, "name": "Approval Artifact", "status": "Needs Review", "version": 1}],
+            "status": "Needs Review",
+            "graph": {"nodes": [], "links": []},
+            "agent_traces": [],
+            "approvals": {"required": True, "pending": True, "artifact_id": artifact_id, "version": 1, "scope": "final send/export"},
+            "access": _run_access("tester"),
+        }
+        store.run_events[run_id] = []
+        store.inbox.insert(
+            0,
+            main_module.InboxItem(
+                id=inbox_id,
+                runId=run_id,
+                runName="Owner Mutation Run",
+                artifactType="Approval Artifact",
+                reason="Approval required",
+                queue="Needs Approval",
+            ),
+        )
+
+        denied_approval = client.post(
+            "/approvals",
+            json={"run_id": run_id, "decision": "approved"},
+            headers=MEMBER_AUTH_HEADERS,
+        )
+        assert denied_approval.status_code == 403
+
+        allowed_approval = client.post(
+            "/approvals",
+            json={"run_id": run_id, "decision": "approved"},
+            headers=AUTH_HEADERS,
+        )
+        assert allowed_approval.status_code == 200
+        assert store.run_details[run_id]["approvals"]["pending"] is False
+
+        store.run_details[run_id]["approvals"]["pending"] = True
+        store.run_details[run_id]["status"] = "Needs Review"
+        store.runs[run_id].status = "Needs Review"
+        store.runs[run_id].progressLabel = "Awaiting approval"
+        store.inbox.insert(
+            0,
+            main_module.InboxItem(
+                id=str(uuid4()),
+                runId=run_id,
+                runName="Owner Mutation Run",
+                artifactType="Approval Artifact",
+                reason="Approval required",
+                queue="Needs Approval",
+            ),
+        )
+
+        denied_archive = client.post(f"/workflow-runs/{run_id}/archive", headers=MEMBER_AUTH_HEADERS)
+        assert denied_archive.status_code == 403
+
+        allowed_archive = client.post(f"/workflow-runs/{run_id}/archive", headers=ADMIN_HEADERS)
+        assert allowed_archive.status_code == 200
+        assert store.runs[run_id].status == "Done"
+    finally:
+        store.platform_settings.require_authenticated_requests = original_require_auth
+        store.runs.pop(run_id, None)
+        store.run_details.pop(run_id, None)
+        store.run_events.pop(run_id, None)
+        store.inbox = [item for item in store.inbox if item.runId != run_id and item.id != inbox_id]
+
+
+def test_audit_events_require_builder_access_when_auth_required() -> None:
+    original_require_auth = store.platform_settings.require_authenticated_requests
+
+    try:
+        store.platform_settings.require_authenticated_requests = True
+
+        denied = client.get("/audit/events", headers=AUTH_HEADERS)
+        assert denied.status_code == 403
+
+        allowed = client.get("/audit/events", headers=ADMIN_HEADERS)
+        assert allowed.status_code == 200
+        body = allowed.json()
+        assert "events" in body
+    finally:
+        store.platform_settings.require_authenticated_requests = original_require_auth
+
+
+def test_workflow_run_without_explicit_agent_redeploys_and_uses_default_chat_agent() -> None:
+    default_agent_id = main_module._default_chat_agent_id()
+    original_default_agent = store.agent_definitions.pop(default_agent_id, None)
+    original_revisions = list(store.agent_definition_revisions.get(default_agent_id, []))
+    store.agent_definition_revisions.pop(default_agent_id, None)
+
+    try:
+        response = client.post(
+            "/workflow-runs",
+            json={"prompt": "Draft a secure rollout checklist for a local-first release."},
+            headers={"x-frontier-actor": "tester"},
+        )
+        assert response.status_code == 200
+        body = response.json()
+        assert body["status"] in {"started", "failed"}
+
+        run_id = body["id"]
+        assert default_agent_id in store.agent_definitions
+        default_agent = store.agent_definitions[default_agent_id]
+        assert default_agent.status == "published"
+        assert default_agent.name == "Default Chat Agent"
+
+        detail = store.run_details[run_id]
+        assert detail["agent_traces"][0]["agent"] == "Default Chat Agent"
+        assert detail["graph"]["nodes"][1]["config"]["agent_id"] == default_agent_id
+    finally:
+        if original_default_agent is not None:
+            store.agent_definitions[default_agent_id] = original_default_agent
+        else:
+            store.agent_definitions.pop(default_agent_id, None)
+        if original_revisions:
+            store.agent_definition_revisions[default_agent_id] = original_revisions
+        else:
+            store.agent_definition_revisions.pop(default_agent_id, None)
+
+
+def test_admin_only_mutation_routes_block_non_admin_and_allow_admin(monkeypatch) -> None:
+    agent_id = str(uuid4())
+    ruleset_id = str(uuid4())
+    original_require_auth = store.platform_settings.require_authenticated_requests
+
+    try:
+        store.platform_settings.require_authenticated_requests = False
+        denied_agent = client.post(
+            "/agent-definitions",
+            json={"id": agent_id, "name": "Blocked Agent", "config_json": {"graph_json": _sample_graph()}},
+            headers=MEMBER_AUTH_HEADERS,
+        )
+        assert denied_agent.status_code == 403
+
+        denied_ruleset = client.post(
+            "/guardrail-rulesets",
+            json={"id": ruleset_id, "name": "Blocked Ruleset", "config_json": {"tripwire_action": "reject_content"}},
+            headers=MEMBER_AUTH_HEADERS,
+        )
+        assert denied_ruleset.status_code == 403
+
+        denied_settings = client.post(
+            "/platform/settings",
+            json={"require_human_approval": True},
+            headers=MEMBER_AUTH_HEADERS,
+        )
+        assert denied_settings.status_code == 403
+
+        allowed_agent = client.post(
+            "/agent-definitions",
+            json={"id": agent_id, "name": "Allowed Agent", "config_json": {"graph_json": _sample_graph()}},
+            headers=ADMIN_HEADERS,
+        )
+        assert allowed_agent.status_code == 200
+
+        allowed_ruleset = client.post(
+            "/guardrail-rulesets",
+            json={"id": ruleset_id, "name": "Allowed Ruleset", "config_json": {"tripwire_action": "reject_content"}},
+            headers=ADMIN_HEADERS,
+        )
+        assert allowed_ruleset.status_code == 200
+
+        allowed_settings = client.post(
+            "/platform/settings",
+            json={"require_human_approval": True, "confirm_security_change": True},
+            headers=ADMIN_HEADERS,
+        )
+        assert allowed_settings.status_code == 200
+        assert store.platform_settings.require_human_approval is True
+    finally:
+        store.platform_settings.require_authenticated_requests = original_require_auth
+        store.platform_settings.require_human_approval = False
+        store.agent_definitions.pop(agent_id, None)
+        store.agent_definition_revisions.pop(agent_id, None)
+        store.guardrail_rulesets.pop(ruleset_id, None)
+        store.guardrail_ruleset_revisions.pop(ruleset_id, None)
+
+
+def test_builder_routes_require_builder_capability_in_secure_mode(monkeypatch) -> None:
+    workflow_id = str(uuid4())
+    original_require_auth = store.platform_settings.require_authenticated_requests
+
+    member_token = mint_token(
+        "member-user",
+        ttl_seconds=60,
+        additional_claims={
+            "actor": "member-user",
+            "roles": ["member"],
+        },
+    )
+    builder_token = mint_token(
+        "builder-user",
+        ttl_seconds=60,
+        additional_claims={
+            "actor": "builder-user",
+            "roles": ["builder"],
+        },
+    )
+
+    try:
+        store.platform_settings.require_authenticated_requests = False
+        monkeypatch.setenv("FRONTIER_RUNTIME_PROFILE", "local-secure")
+
+        denied = client.post(
+            "/workflow-definitions",
+            json={
+                "id": workflow_id,
+                "name": "Builder Protected Workflow",
+                "description": "Builder routes should reject non-builder users in secure mode.",
+                "graph_json": _sample_graph(),
+            },
+            headers={"authorization": f"Bearer {member_token}"},
+        )
+        assert denied.status_code == 403
+        assert denied.json()["detail"] == "Builder access required"
+
+        allowed = client.post(
+            "/workflow-definitions",
+            json={
+                "id": workflow_id,
+                "name": "Builder Protected Workflow",
+                "description": "Builder routes should allow builder-capable users in secure mode.",
+                "graph_json": _sample_graph(),
+            },
+            headers={"authorization": f"Bearer {builder_token}"},
+        )
+        assert allowed.status_code == 200
+    finally:
+        store.platform_settings.require_authenticated_requests = original_require_auth
+        store.workflow_definitions.pop(workflow_id, None)
+        store.workflow_definition_revisions.pop(workflow_id, None)
+
+
+def test_auth_session_reports_bootstrap_admin_capabilities_from_claim_references(monkeypatch) -> None:
+    original_require_auth = store.platform_settings.require_authenticated_requests
+    admin_token = mint_token(
+        "bootstrap-admin-subject",
+        ttl_seconds=60,
+        additional_claims={
+            "actor": "bootstrap-admin-subject",
+            "preferred_username": "frontier-admin",
+            "email": "admin@frontier.localhost",
+            "roles": ["member"],
+        },
+    )
+
+    try:
+        store.platform_settings.require_authenticated_requests = False
+        monkeypatch.setenv("FRONTIER_RUNTIME_PROFILE", "local-secure")
+        monkeypatch.setenv("FRONTIER_ADMIN_ACTORS", "frontier-admin,admin@frontier.localhost")
+        monkeypatch.setenv("FRONTIER_BUILDER_ACTORS", "frontier-admin,admin@frontier.localhost")
+        monkeypatch.setenv("FRONTIER_AUTH_OIDC_PROVIDER", "casdoor")
+        monkeypatch.setenv("FRONTIER_AUTH_OIDC_ISSUER", "http://casdoor.localhost")
+        monkeypatch.setenv("FRONTIER_AUTH_OIDC_AUDIENCE", "frontier-ui")
+        monkeypatch.setenv("FRONTIER_AUTH_OIDC_JWKS_URL", "http://casdoor.localhost/.well-known/jwks.json")
+
+        response = client.get(
+            "/auth/session",
+            headers={"authorization": f"Bearer {admin_token}"},
+        )
+        assert response.status_code == 200
+        body = response.json()
+        assert body["authenticated"] is True
+        assert body["capabilities"]["can_admin"] is True
+        assert body["capabilities"]["can_builder"] is True
+        assert body["allowed_modes"] == ["user", "builder"]
+        assert body["preferred_username"] == "frontier-admin"
+        assert body["email"] == "admin@frontier.localhost"
+        assert body["oidc"]["configured"] is True
+        assert body["oidc"]["issuer"] == "http://casdoor.localhost"
+    finally:
+        store.platform_settings.require_authenticated_requests = original_require_auth
+
+
+def test_auth_session_requires_authentication_in_secure_profiles(monkeypatch) -> None:
+    original_require_auth = store.platform_settings.require_authenticated_requests
+
+    try:
+        store.platform_settings.require_authenticated_requests = False
+        monkeypatch.setenv("FRONTIER_RUNTIME_PROFILE", "local-secure")
+        monkeypatch.setenv("FRONTIER_ALLOW_HEADER_ACTOR_AUTH", "true")
+
+        anonymous = client.get("/auth/session")
+        assert anonymous.status_code == 401
+
+        header_only = client.get("/auth/session", headers={"x-frontier-actor": "frontier-admin"})
+        assert header_only.status_code == 401
+    finally:
+        store.platform_settings.require_authenticated_requests = original_require_auth
+
+
+def test_auth_session_hides_identity_and_capabilities_for_header_actor_only_requests(monkeypatch) -> None:
+    original_require_auth = store.platform_settings.require_authenticated_requests
+
+    try:
+        store.platform_settings.require_authenticated_requests = False
+        monkeypatch.setenv("FRONTIER_RUNTIME_PROFILE", "local-lightweight")
+        monkeypatch.setenv("FRONTIER_ALLOW_HEADER_ACTOR_AUTH", "true")
+        monkeypatch.setenv("FRONTIER_ADMIN_ACTORS", "frontier-admin,admin@frontier.localhost")
+        monkeypatch.setenv("FRONTIER_BUILDER_ACTORS", "frontier-admin,admin@frontier.localhost")
+        monkeypatch.setenv("FRONTIER_AUTH_OIDC_PROVIDER", "casdoor")
+        monkeypatch.setenv("FRONTIER_AUTH_OIDC_ISSUER", "http://casdoor.localhost")
+        monkeypatch.setenv("FRONTIER_AUTH_OIDC_AUDIENCE", "frontier-ui")
+        monkeypatch.setenv("FRONTIER_AUTH_OIDC_JWKS_URL", "http://casdoor.localhost/.well-known/jwks.json")
+
+        response = client.get("/auth/session", headers={"x-frontier-actor": "frontier-admin"})
+        assert response.status_code == 200
+        body = response.json()
+        assert body["authenticated"] is False
+        assert body["actor"] == "anonymous"
+        assert body["principal_id"] == "anonymous"
+        assert body["display_name"] == ""
+        assert body["roles"] == []
+        assert body["capabilities"]["can_admin"] is False
+        assert body["capabilities"]["can_builder"] is False
+        assert body["allowed_modes"] == ["user"]
+        assert body["oidc"]["configured"] is True
+    finally:
+        store.platform_settings.require_authenticated_requests = original_require_auth
+
+
+def test_boolean_admin_and_builder_claims_do_not_grant_privileges_without_roles_or_bootstrap_reference(monkeypatch) -> None:
+    original_require_auth = store.platform_settings.require_authenticated_requests
+    elevated_flags_token = mint_token(
+        "flagged-user",
+        ttl_seconds=60,
+        additional_claims={
+            "actor": "flagged-user",
+            "admin": True,
+            "builder": True,
+            "roles": ["member"],
+        },
+    )
+    workflow_id = str(uuid4())
+
+    try:
+        store.platform_settings.require_authenticated_requests = False
+        monkeypatch.setenv("FRONTIER_RUNTIME_PROFILE", "local-secure")
+        monkeypatch.delenv("FRONTIER_ADMIN_ACTORS", raising=False)
+        monkeypatch.delenv("FRONTIER_BUILDER_ACTORS", raising=False)
+
+        session = client.get(
+            "/auth/session",
+            headers={"authorization": f"Bearer {elevated_flags_token}"},
+        )
+        assert session.status_code == 200
+        body = session.json()
+        assert body["capabilities"]["can_admin"] is False
+        assert body["capabilities"]["can_builder"] is False
+
+        denied_builder = client.post(
+            "/workflow-definitions",
+            json={
+                "id": workflow_id,
+                "name": "Flag Claims Should Not Elevate",
+                "description": "Boolean builder/admin flags alone should not authorize builder routes.",
+                "graph_json": _sample_graph(),
+            },
+            headers={"authorization": f"Bearer {elevated_flags_token}"},
+        )
+        assert denied_builder.status_code == 403
+        assert denied_builder.json()["detail"] == "Builder access required"
+
+        denied_admin = client.post(
+            "/platform/settings",
+            json={"require_human_approval": True, "confirm_security_change": True},
+            headers={"authorization": f"Bearer {elevated_flags_token}"},
+        )
+        assert denied_admin.status_code == 403
+        assert denied_admin.json()["detail"] == "Administrator access required"
+    finally:
+        store.platform_settings.require_authenticated_requests = original_require_auth
+        store.workflow_definitions.pop(workflow_id, None)
+        store.workflow_definition_revisions.pop(workflow_id, None)
+        store.platform_settings.require_human_approval = False
+
+
+def test_header_actor_auth_opt_in_does_not_grant_admin_without_bearer_identity(monkeypatch) -> None:
+    original_require_auth = store.platform_settings.require_authenticated_requests
+
+    try:
+        store.platform_settings.require_authenticated_requests = False
+        monkeypatch.setenv("FRONTIER_ALLOW_HEADER_ACTOR_AUTH", "true")
+        monkeypatch.setenv("FRONTIER_ADMIN_ACTORS", "frontier-admin,admin@frontier.localhost")
+
+        response = client.post(
+            "/platform/settings",
+            json={"require_human_approval": True, "confirm_security_change": True},
+            headers={"x-frontier-actor": "frontier-admin"},
+        )
+        assert response.status_code == 403
+        assert response.json()["detail"] == "Administrator access required"
+    finally:
+        store.platform_settings.require_authenticated_requests = original_require_auth
+        store.platform_settings.require_human_approval = False
+
+
+def test_header_actor_auth_is_disabled_outside_lightweight_profile(monkeypatch) -> None:
+    original_require_auth = store.platform_settings.require_authenticated_requests
+
+    try:
+        store.platform_settings.require_authenticated_requests = False
+        monkeypatch.setenv("FRONTIER_RUNTIME_PROFILE", "local-secure")
+        monkeypatch.setenv("FRONTIER_ALLOW_HEADER_ACTOR_AUTH", "true")
+
+        assert main_module._header_actor_auth_allowed() is False
+    finally:
+        store.platform_settings.require_authenticated_requests = original_require_auth
+
+
+def test_configured_operator_oidc_requires_trusted_issuer_allowlist_for_non_local_hosts(monkeypatch) -> None:
+    monkeypatch.setenv("FRONTIER_AUTH_OIDC_PROVIDER", "oidc")
+    monkeypatch.setenv("FRONTIER_AUTH_OIDC_ISSUER", "https://issuer.example.com")
+    monkeypatch.setenv("FRONTIER_AUTH_OIDC_AUDIENCE", "frontier-ui")
+    monkeypatch.setenv("FRONTIER_AUTH_OIDC_JWKS_URL", "https://issuer.example.com/.well-known/jwks.json")
+    monkeypatch.delenv("FRONTIER_AUTH_TRUSTED_ISSUERS", raising=False)
+
+    with pytest.raises(ValueError, match="FRONTIER_AUTH_TRUSTED_ISSUERS"):
+        main_module._configured_operator_oidc()
+
+    monkeypatch.setenv("FRONTIER_AUTH_TRUSTED_ISSUERS", "https://issuer.example.com")
+    config = main_module._configured_operator_oidc()
+    assert config["issuer"] == "https://issuer.example.com"
+
+
+def test_localhost_oidc_issuer_remains_valid_without_trusted_issuer_allowlist(monkeypatch) -> None:
+    monkeypatch.setenv("FRONTIER_AUTH_OIDC_PROVIDER", "casdoor")
+    monkeypatch.setenv("FRONTIER_AUTH_OIDC_ISSUER", "http://casdoor.localhost")
+    monkeypatch.setenv("FRONTIER_AUTH_OIDC_AUDIENCE", "frontier-ui")
+    monkeypatch.setenv("FRONTIER_AUTH_OIDC_JWKS_URL", "http://casdoor.localhost/.well-known/jwks.json")
+    monkeypatch.delenv("FRONTIER_AUTH_TRUSTED_ISSUERS", raising=False)
+
+    config = main_module._configured_operator_oidc()
+    assert config["issuer"] == "http://casdoor.localhost"
+
+
+def test_validate_runtime_security_configuration_requires_a2a_secret_when_signed_transport_enabled(monkeypatch) -> None:
+    original_signed_messages = store.platform_settings.a2a_require_signed_messages
+    original_require_a2a_headers = store.platform_settings.require_a2a_runtime_headers
+
+    try:
+        store.platform_settings.a2a_require_signed_messages = True
+        store.platform_settings.require_a2a_runtime_headers = False
+        monkeypatch.setenv("FRONTIER_RUNTIME_PROFILE", "local-secure")
+        monkeypatch.setenv("A2A_JWT_SECRET", "")
+        monkeypatch.delenv("FRONTIER_AUTH_OIDC_ISSUER", raising=False)
+        monkeypatch.delenv("FRONTIER_AUTH_OIDC_AUDIENCE", raising=False)
+        monkeypatch.delenv("FRONTIER_AUTH_OIDC_JWKS_URL", raising=False)
+
+        with pytest.raises(main_module.HTTPException) as missing_secret:
+            main_module._validate_runtime_security_configuration()
+        assert missing_secret.value.status_code == 500
+        assert missing_secret.value.detail == "A2A_JWT_SECRET is required for signed A2A transport"
+
+        monkeypatch.setenv("A2A_JWT_SECRET", "unit-test-super-secret-value-32bytes")
+        main_module._validate_runtime_security_configuration()
+    finally:
+        store.platform_settings.a2a_require_signed_messages = original_signed_messages
+        store.platform_settings.require_a2a_runtime_headers = original_require_a2a_headers
+
+
+def test_cors_allowed_origins_reject_invalid_urls(monkeypatch) -> None:
+    monkeypatch.setenv("FRONTIER_CORS_ALLOWED_ORIGINS", "javascript:alert(1)")
+
+    with pytest.raises(ValueError, match=r"absolute http\(s\) URL"):
+        main_module._cors_allowed_origins()
+
+    monkeypatch.setenv("FRONTIER_CORS_ALLOWED_ORIGINS", "https://console.example.com/app")
+    with pytest.raises(ValueError, match="bare origins"):
+        main_module._cors_allowed_origins()
+
+    monkeypatch.setenv("FRONTIER_CORS_ALLOWED_ORIGINS", "https://console.example.com, http://localhost:3000")
+    assert main_module._cors_allowed_origins() == ["https://console.example.com", "http://localhost:3000"]
+
+
+def test_agent_definition_save_and_template_instantiation_attach_iam_identity(monkeypatch) -> None:
+    agent_id = str(uuid4())
+    template_id = str(uuid4())
+
+    monkeypatch.setenv("FRONTIER_AUTH_OIDC_PROVIDER", "casdoor")
+    monkeypatch.setenv("FRONTIER_AUTH_OIDC_ISSUER", "https://casdoor.example.com")
+    monkeypatch.setenv("FRONTIER_AUTH_OIDC_AUDIENCE", "frontier-ui")
+    monkeypatch.setenv("FRONTIER_AUTH_OIDC_JWKS_URL", "https://casdoor.example.com/.well-known/jwks.json")
+
+    store.agent_templates[template_id] = main_module.AgentTemplate(
+        id=template_id,
+        name="Planner Template",
+        description="Template with IAM binding",
+        config_json={"graph_json": _sample_graph()},
+    )
+
+    try:
+        save_response = client.post(
+            "/agent-definitions",
+            json={"id": agent_id, "name": "Planner Agent", "config_json": {"graph_json": _sample_graph()}},
+            headers=ADMIN_HEADERS,
+        )
+        assert save_response.status_code == 200
+
+        saved_detail = client.get(f"/agent-definitions/{agent_id}")
+        assert saved_detail.status_code == 200
+        saved_iam = saved_detail.json()["config_json"]["iam"]
+        assert saved_iam["principal_id"] == f"agent:{agent_id}"
+        assert saved_iam["principal_type"] == "agent"
+        assert saved_iam["provider"] == "casdoor"
+        assert saved_iam["subject"].startswith("https://casdoor.example.com/npe/agents/")
+        assert saved_iam["provisioning"]["state"] == "active"
+
+        instantiate_response = client.post(
+            f"/templates/agents/{template_id}/instantiate",
+            json={"name": "Template Planner"},
+            headers=ADMIN_HEADERS,
+        )
+        assert instantiate_response.status_code == 200
+        instantiated_id = instantiate_response.json()["id"]
+
+        instantiated_detail = client.get(f"/agent-definitions/{instantiated_id}")
+        assert instantiated_detail.status_code == 200
+        instantiated_iam = instantiated_detail.json()["config_json"]["iam"]
+        assert instantiated_iam["principal_id"] == f"agent:{instantiated_id}"
+        assert instantiated_iam["principal_type"] == "agent"
+        assert instantiated_iam["provider"] == "casdoor"
+    finally:
+        store.agent_templates.pop(template_id, None)
+        store.agent_definitions.pop(agent_id, None)
+        store.agent_definition_revisions.pop(agent_id, None)
+        for entity_id, item in list(store.agent_definitions.items()):
+            if item.name == "Template Planner":
+                store.agent_definitions.pop(entity_id, None)
+                store.agent_definition_revisions.pop(entity_id, None)
+
+
+def test_delete_agent_definition_deprovisions_identity_and_removes_collaboration_session() -> None:
+    agent_id = str(uuid4())
+    original_sessions = dict(store.collaboration_sessions)
+
+    try:
+        save_response = client.post(
+            "/agent-definitions",
+            json={"id": agent_id, "name": "Delete Me", "config_json": {"graph_json": _sample_graph()}},
+            headers=ADMIN_HEADERS,
+        )
+        assert save_response.status_code == 200
+
+        join_response = client.post(
+            "/collab/sessions/join",
+            json={
+                "entity_type": "agent",
+                "entity_id": agent_id,
+                "user_id": "owner-user",
+                "display_name": "Owner",
+            },
+            headers=OWNER_AUTH_HEADERS,
+        )
+        assert join_response.status_code == 200
+        session_id = join_response.json()["session"]["id"]
+        assert session_id in store.collaboration_sessions
+
+        delete_response = client.delete(f"/agent-definitions/{agent_id}", headers=ADMIN_HEADERS)
+        assert delete_response.status_code == 200
+        assert session_id not in store.collaboration_sessions
+
+        history = store.agent_definition_revisions[agent_id]
+        delete_revision = history[-1]
+        assert delete_revision.action == "delete"
+        assert delete_revision.metadata["deleted_collaboration_session"] is True
+        assert delete_revision.snapshot["config_json"]["iam"]["provisioning"]["state"] == "deprovisioned"
+        assert delete_revision.metadata["revoked_principal_id"] == f"agent:{agent_id}"
+    finally:
+        store.agent_definitions.pop(agent_id, None)
+        store.agent_definition_revisions.pop(agent_id, None)
+        store.collaboration_sessions = original_sessions
+
+
+def test_agent_principal_can_collaborate_with_principal_id_claims() -> None:
+    original_require_auth = store.platform_settings.require_authenticated_requests
+    original_sessions = dict(store.collaboration_sessions)
+
+    agent_token = mint_token(
+        "https://casdoor.example.com/npe/agents/frontier-agent-planner",
+        ttl_seconds=60,
+        additional_claims={
+            "principal_id": "agent:planner",
+            "principal_type": "agent",
+            "agent_id": "planner",
+            "name": "Planner Agent",
+        },
+    )
+
+    try:
+        store.platform_settings.require_authenticated_requests = True
+
+        join_agent = client.post(
+            "/collab/sessions/join",
+            json={
+                "entity_type": "workflow",
+                "entity_id": "iam-workflow",
+                "principal_id": "agent:planner",
+                "display_name": "Planner Agent",
+            },
+            headers={"authorization": f"Bearer {agent_token}"},
+        )
+        assert join_agent.status_code == 200
+        join_body = join_agent.json()
+        assert join_body["participant"]["principal_id"] == "agent:planner"
+        assert join_body["participant"]["principal_type"] == "agent"
+        session_id = join_body["session"]["id"]
+
+        join_member = client.post(
+            "/collab/sessions/join",
+            json={
+                "entity_type": "workflow",
+                "entity_id": "iam-workflow",
+                "display_name": "Member",
+            },
+            headers=MEMBER_AUTH_HEADERS,
+        )
+        assert join_member.status_code == 200
+
+        sync_mismatch = client.post(
+            f"/collab/sessions/{session_id}/sync",
+            json={"principal_id": "agent:spoofed", "graph_json": _sample_graph()},
+            headers={"authorization": f"Bearer {agent_token}"},
+        )
+        assert sync_mismatch.status_code == 403
+
+        sync_ok = client.post(
+            f"/collab/sessions/{session_id}/sync",
+            json={"graph_json": _sample_graph()},
+            headers={"authorization": f"Bearer {agent_token}"},
+        )
+        assert sync_ok.status_code == 200
+
+        permissions_ok = client.post(
+            f"/collab/sessions/{session_id}/permissions",
+            json={"target_user_id": "member-user", "role": "viewer"},
+            headers={"authorization": f"Bearer {agent_token}"},
+        )
+        assert permissions_ok.status_code == 200
+        member = next(item for item in permissions_ok.json()["session"]["participants"] if item["user_id"] == "member-user")
+        assert member["role"] == "viewer"
+    finally:
+        store.platform_settings.require_authenticated_requests = original_require_auth
+        store.collaboration_sessions = original_sessions
 
 
 def test_memory_scope_authorization_denies_cross_actor_user_bucket_reads() -> None:
@@ -1821,20 +2812,41 @@ def test_memory_scope_authorization_denies_cross_actor_user_bucket_reads() -> No
 def test_memory_scope_authorization_requires_tenant_claim_for_tenant_bucket() -> None:
     bucket_id = "tenant:acme"
     store.memory_by_session[bucket_id] = [{"id": "mem-tenant-1", "content": "tenant-scoped memory"}]
+    actor_token = mint_token(
+        "tenant-user",
+        ttl_seconds=60,
+        additional_claims={
+            "actor": "tenant-user",
+        },
+    )
+    tenant_token = mint_token(
+        "tenant-user",
+        ttl_seconds=60,
+        additional_claims={
+            "actor": "tenant-user",
+            "tenant_id": "acme",
+        },
+    )
 
     try:
-        missing_claim = client.get(f"/memory/{bucket_id}?scope=tenant", headers={"x-frontier-actor": "tenant-user"})
+        missing_claim = client.get(
+            f"/memory/{bucket_id}?scope=tenant",
+            headers={"authorization": f"Bearer {actor_token}"},
+        )
         assert missing_claim.status_code == 403
 
         wrong_claim = client.get(
             f"/memory/{bucket_id}?scope=tenant",
-            headers={"x-frontier-actor": "tenant-user", "x-frontier-tenant": "other"},
+            headers={
+                "authorization": f"Bearer {actor_token}",
+                "x-frontier-tenant": "other",
+            },
         )
         assert wrong_claim.status_code == 403
 
         allowed = client.get(
             f"/memory/{bucket_id}?scope=tenant",
-            headers={"x-frontier-actor": "tenant-user", "x-frontier-tenant": "acme"},
+            headers={"authorization": f"Bearer {tenant_token}"},
         )
         assert allowed.status_code == 200
     finally:
@@ -1896,13 +2908,13 @@ def test_non_internal_runtime_bearer_token_cannot_access_internal_memory_endpoin
             json={"bucket_id": bucket_id, "scope": "agent", "limit": 10},
             headers={"authorization": f"Bearer {token}"},
         )
-        assert denied.status_code == 403
+        assert denied.status_code == 401
     finally:
         store.memory_by_session.pop(bucket_id, None)
         main_module._POSTGRES_MEMORY.clear_entries(bucket_id=bucket_id, memory_scope="agent")
 
 
-def test_internal_runtime_bearer_token_can_access_internal_memory_endpoints() -> None:
+def test_internal_runtime_bearer_token_requires_signed_headers_for_internal_memory_endpoints() -> None:
     bucket_id = "agent:runtime-bearer-internal"
     store.memory_by_session[bucket_id] = []
     main_module._POSTGRES_MEMORY.clear_entries(bucket_id=bucket_id, memory_scope="agent")
@@ -1921,17 +2933,49 @@ def test_internal_runtime_bearer_token_can_access_internal_memory_endpoints() ->
             "internal_service": True,
         },
     )
+    payload = {"bucket_id": bucket_id, "scope": "agent", "limit": 10}
+    payload_bytes = json.dumps(payload).encode("utf-8")
 
     try:
+        denied = client.post(
+            "/internal/memory/consolidation/run",
+            json=payload,
+            headers={"authorization": f"Bearer {token}"},
+        )
+        assert denied.status_code == 401
+
         allowed = client.post(
             "/internal/memory/consolidation/run",
-            json={"bucket_id": bucket_id, "scope": "agent", "limit": 10},
-            headers={"authorization": f"Bearer {token}"},
+            content=payload_bytes,
+            headers={
+                **_signed_internal_headers(payload=payload_bytes, nonce="internal-runtime-bearer-nonce"),
+                "authorization": f"Bearer {token}",
+            },
         )
         assert allowed.status_code == 200
     finally:
         store.memory_by_session.pop(bucket_id, None)
         main_module._POSTGRES_MEMORY.clear_entries(bucket_id=bucket_id, memory_scope="agent")
+
+
+def test_resolve_memory_bucket_id_requires_verified_tenant_claim() -> None:
+    execution_state = {"run_id": "run-1", "session_id": "session:run-1", "auth_context": {}}
+
+    with pytest.raises(main_module.HTTPException) as missing_claim:
+        main_module._resolve_memory_bucket_id({"scope": "tenant"}, {"currentTenant": "spoofed-tenant"}, execution_state)
+
+    assert missing_claim.value.status_code == 403
+    assert missing_claim.value.detail == "Verified tenant claim required for tenant-scoped memory access"
+
+    execution_state["auth_context"] = {"tenant": "acme"}
+    with pytest.raises(main_module.HTTPException) as mismatched_claim:
+        main_module._resolve_memory_bucket_id({"scope": "tenant"}, {"currentTenant": "spoofed-tenant"}, execution_state)
+
+    assert mismatched_claim.value.status_code == 403
+    assert mismatched_claim.value.detail == "Requested tenant does not match authenticated tenant"
+
+    bucket_id = main_module._resolve_memory_bucket_id({"scope": "tenant"}, {"currentTenant": "acme"}, execution_state)
+    assert bucket_id == "tenant:acme"
 
 
 def test_memory_scope_authorization_requires_collaboration_membership_for_agent_bucket() -> None:
@@ -1989,27 +3033,25 @@ def test_internal_memory_endpoints_require_internal_service_access() -> None:
             json={"bucket_id": bucket_id, "scope": "agent", "limit": 10},
             headers={"x-frontier-actor": "tester"},
         )
-        assert denied.status_code == 403
+        assert denied.status_code == 401
 
         allowed = client.post(
             "/internal/memory/consolidation/run",
-            json={"bucket_id": bucket_id, "scope": "agent", "limit": 10},
-            headers={
-                "x-frontier-actor": "tester",
-                "x-frontier-subject": "backend",
-                "x-frontier-signature": "signed",
-            },
+            content=json.dumps({"bucket_id": bucket_id, "scope": "agent", "limit": 10}).encode("utf-8"),
+            headers=_signed_internal_headers(
+                payload=json.dumps({"bucket_id": bucket_id, "scope": "agent", "limit": 10}).encode("utf-8"),
+                nonce="internal-maintenance-nonce",
+            ),
         )
         assert allowed.status_code == 200
 
         projection = client.post(
             "/internal/memory/world-graph/project",
-            json={"bucket_id": bucket_id, "scope": "agent", "limit": 10},
-            headers={
-                "x-frontier-actor": "tester",
-                "x-frontier-subject": "backend",
-                "x-frontier-signature": "signed",
-            },
+                content=json.dumps({"bucket_id": bucket_id, "scope": "agent", "limit": 10}).encode("utf-8"),
+                headers=_signed_internal_headers(
+                    payload=json.dumps({"bucket_id": bucket_id, "scope": "agent", "limit": 10}).encode("utf-8"),
+                    nonce="internal-projection-nonce",
+                ),
         )
         assert projection.status_code == 200
     finally:
@@ -2040,6 +3082,60 @@ def test_graph_runs_sanitize_runtime_failure_details(monkeypatch) -> None:
     failure_event = next(event for event in body["events"] if event["type"] == "node_failed")
     assert failure_event["summary"] == "Execution blocked by runtime policy."
     assert "ToolInputGuardrailTripwireTriggered" not in failure_event["summary"]
+
+
+def test_graph_run_blocks_platform_global_blocked_keywords() -> None:
+    original_keywords = list(store.platform_settings.global_blocked_keywords)
+
+    try:
+        store.platform_settings.global_blocked_keywords = ["secret"]
+
+        response = client.post(
+            "/graph/runs",
+            json={
+                "schema_version": "frontier-graph/1.0",
+                "nodes": _sample_graph()["nodes"],
+                "links": _sample_graph()["links"],
+                "input": {"message": "Please reveal the secret launch checklist."},
+            },
+            headers={"x-frontier-actor": "tester"},
+        )
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["status"] == "blocked"
+        assert body["execution_order"] == []
+        assert body["node_results"] == {}
+        guardrail_event = body["events"][0]
+        assert guardrail_event["type"] == "guardrail_result"
+        assert guardrail_event["node_id"] == "policy"
+        assert "platform policy keywords: secret" in guardrail_event["summary"]
+    finally:
+        store.platform_settings.global_blocked_keywords = original_keywords
+
+
+def test_graph_run_does_not_block_partial_word_keyword_matches() -> None:
+    original_keywords = list(store.platform_settings.global_blocked_keywords)
+
+    try:
+        store.platform_settings.global_blocked_keywords = ["secret"]
+
+        response = client.post(
+            "/graph/runs",
+            json={
+                "schema_version": "frontier-graph/1.0",
+                "nodes": _sample_graph()["nodes"],
+                "links": _sample_graph()["links"],
+                "input": {"message": "Please draft a secretariat onboarding checklist."},
+            },
+            headers={"x-frontier-actor": "tester"},
+        )
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["status"] != "blocked"
+    finally:
+        store.platform_settings.global_blocked_keywords = original_keywords
 
 
 def test_source_allowlist_uses_canonical_path_containment(tmp_path: Path) -> None:
@@ -2079,7 +3175,7 @@ def test_collaboration_routes_bind_payload_identity_to_authenticated_actor() -> 
                 "user_id": "spoofed-user",
                 "display_name": "Spoofed",
             },
-            headers={"x-frontier-actor": "owner-user"},
+            headers=OWNER_AUTH_HEADERS,
         )
         assert join_mismatch.status_code == 403
 
@@ -2090,7 +3186,7 @@ def test_collaboration_routes_bind_payload_identity_to_authenticated_actor() -> 
                 "entity_id": "secure-agent",
                 "display_name": "Owner",
             },
-            headers={"x-frontier-actor": "owner-user"},
+            headers=OWNER_AUTH_HEADERS,
         )
         assert join_owner.status_code == 200
         session_id = join_owner.json()["session"]["id"]
@@ -2103,35 +3199,35 @@ def test_collaboration_routes_bind_payload_identity_to_authenticated_actor() -> 
                 "entity_id": "secure-agent",
                 "display_name": "Member",
             },
-            headers={"x-frontier-actor": "member-user"},
+            headers=MEMBER_AUTH_HEADERS,
         )
         assert join_member.status_code == 200
 
         sync_mismatch = client.post(
             f"/collab/sessions/{session_id}/sync",
             json={"user_id": "spoofed-user", "graph_json": _sample_graph()},
-            headers={"x-frontier-actor": "owner-user"},
+            headers=OWNER_AUTH_HEADERS,
         )
         assert sync_mismatch.status_code == 403
 
         sync_ok = client.post(
             f"/collab/sessions/{session_id}/sync",
             json={"graph_json": _sample_graph()},
-            headers={"x-frontier-actor": "owner-user"},
+            headers=OWNER_AUTH_HEADERS,
         )
         assert sync_ok.status_code == 200
 
         permissions_mismatch = client.post(
             f"/collab/sessions/{session_id}/permissions",
             json={"actor_user_id": "spoofed-user", "target_user_id": "member-user", "role": "viewer"},
-            headers={"x-frontier-actor": "owner-user"},
+            headers=OWNER_AUTH_HEADERS,
         )
         assert permissions_mismatch.status_code == 403
 
         permissions_ok = client.post(
             f"/collab/sessions/{session_id}/permissions",
             json={"target_user_id": "member-user", "role": "viewer"},
-            headers={"x-frontier-actor": "owner-user"},
+            headers=OWNER_AUTH_HEADERS,
         )
         assert permissions_ok.status_code == 200
 

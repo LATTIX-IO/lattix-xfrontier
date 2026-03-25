@@ -2,7 +2,15 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
+import os
 import platform as platform_module
+
+
+DEFAULT_SANDBOX_RUNNER_IMAGE = "python:3.12.10-slim-bookworm"
+
+
+def sandbox_runner_image() -> str:
+    return str(os.getenv("SANDBOX_RUNNER_IMAGE") or DEFAULT_SANDBOX_RUNNER_IMAGE).strip() or DEFAULT_SANDBOX_RUNNER_IMAGE
 
 
 class HostPlatform(str, Enum):
@@ -90,7 +98,7 @@ class ToolJailService:
         ]
         if network_name:
             docker_command.append(f"--network={network_name}")
-        docker_command.extend(["python:3.12-slim", *spec.command])
+        docker_command.extend([sandbox_runner_image(), *spec.command])
         return ExecutionPlanResult(
             executed=False,
             plan=ExecutionPlan(backend=backend, docker_command=docker_command, network_name=network_name),

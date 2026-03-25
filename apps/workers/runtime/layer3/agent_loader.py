@@ -70,6 +70,8 @@ def register_agents(
         handler: Optional[Callable[[Envelope], None]] = None
         if mod:
             handler = _try_import(mod, fn)
+            if handler is None:
+                continue
         if handler is None:
             handler = _default_handler(agent_id, agent_name)
         for t in topics:

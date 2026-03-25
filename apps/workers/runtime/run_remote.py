@@ -10,7 +10,6 @@ if str(WORKERS_ROOT) not in sys.path:
     sys.path.insert(0, str(WORKERS_ROOT))
 
 from runtime.layer1.orchestrator import Orchestrator, registry_path_default
-from runtime.network.dispatcher import TopicDispatcher
 from runtime.paths import topic_endpoints_map_path
 
 
@@ -22,10 +21,15 @@ def main() -> None:
     args = ap.parse_args()
 
     orch = Orchestrator(Path(registry_path_default()))
-    env = orch.run_stage(name=f"{args.topic}-remote", topic=args.topic, payload=json.loads(args.payload))
-
-    dispatcher = TopicDispatcher(Path(args.map_path).resolve())
-    resp = dispatcher.dispatch(args.topic, env)
+    env = orch.run_stage(
+        name=f"{args.topic}-remote",
+        topic=args.topic,
+        payload=json.loads(args.payload),
+        dispatch_mode="remote",
+        remote_map_path=Path(args.map_path).resolve(),
+    )
+    remote_responses = env.payload.get("remote_responses") if isinstance(env.payload, dict) else None
+    resp = remote_responses[-1] if isinstance(remote_responses, list) and remote_responses else None
     print(json.dumps({"request": json.loads(env.to_json()), "response": resp}, indent=2))
 
 

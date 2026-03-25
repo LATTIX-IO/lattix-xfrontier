@@ -33,6 +33,15 @@ def test_filter_chain_blocks_targeted_envelope_without_capability_token() -> Non
     assert result.reason == "capability token required"
 
 
+def test_filter_chain_blocks_capability_scoped_action_without_target_agent() -> None:
+    envelope = Envelope(source_agent="backend", action="execute_step", payload={"task": "research foo"})
+
+    result = asyncio.run(default_filter_chain().run(envelope, FilterContext()))
+
+    assert result.action == "block"
+    assert result.reason == "target agent required for capability-scoped action"
+
+
 def test_filter_chain_blocks_capability_token_when_tool_budget_exceeded() -> None:
     token = CapabilityMinter(build_default_keypair()).mint_agent_token(
         agent_id="research",
@@ -84,3 +93,24 @@ def test_filter_chain_blocks_capability_token_when_read_path_outside_scope(tmp_p
 
     assert result.action == "block"
     assert result.reason == "invalid capability token"
+
+
+def test_filter_chain_blocks_capability_token_without_target_agent_even_if_present() -> None:
+    token = CapabilityMinter(build_default_keypair()).mint_agent_token(
+        agent_id="research",
+        allowed_tools=["execute_step"],
+        allowed_read_paths=[],
+        allowed_write_paths=[],
+        max_tool_calls=1,
+    )
+    envelope = Envelope(
+        source_agent="backend",
+        action="execute_step",
+        payload={"task": "research foo"},
+        capability_token=token.decode("utf-8"),
+    )
+
+    result = asyncio.run(default_filter_chain().run(envelope, FilterContext()))
+
+    assert result.action == "block"
+    assert result.reason == "target agent required for capability-scoped action"
