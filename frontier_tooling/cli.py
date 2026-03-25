@@ -12,8 +12,10 @@ from .common import (
     detect_sandbox_backend,
     discover_agent_records,
     ensure_compose_env_file,
+    existing_compose_prefix,
     print_json,
     python_executable,
+    remove_installer_env_files,
     repo_root,
     request_json,
     resolve_opa_command,
@@ -59,6 +61,29 @@ def local_up_command() -> None:
 @cli.command("down")
 def down_command() -> None:
     run_command(_full_compose("down", "-v"), cwd=ROOT)
+
+
+@cli.command("remove")
+def remove_command() -> None:
+    torn_down: list[str] = []
+    for local, label in ((False, "secure"), (True, "lightweight")):
+        prefix = existing_compose_prefix(local=local)
+        if prefix is None:
+            continue
+        run_command(prefix + ["down", "-v", "--remove-orphans"], cwd=ROOT, check=False)
+        torn_down.append(label)
+    removed_files = remove_installer_env_files()
+    print_json(
+        {
+            "removed": True,
+            "torn_down": torn_down,
+            "deleted_env_files": [str(path) for path in removed_files],
+            "notes": [
+                "Source checkout and .env were left in place.",
+                "Run 'lattix bootstrap' or the public bootstrap script again to reinstall.",
+            ],
+        }
+    )
 
 
 @cli.command("local-down")

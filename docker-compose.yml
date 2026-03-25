@@ -110,11 +110,22 @@ services:
   casdoor:
     <<: *default-logging
     image: casbin/casdoor-all-in-one:v1.765.0
+    entrypoint: ["/bin/bash", "/docker/casdoor/start-casdoor.sh"]
+    depends_on:
+      postgres:
+        condition: service_healthy
     environment:
       RUNNING_IN_DOCKER: "true"
       CASDOOR_PUBLIC_URL: ${CASDOOR_PUBLIC_URL:-http://casdoor.localhost}
       CASDOOR_BOOTSTRAP_ADMIN_USERNAME: ${CASDOOR_BOOTSTRAP_ADMIN_USERNAME:-frontier-admin}
       CASDOOR_BOOTSTRAP_ADMIN_EMAIL: ${CASDOOR_BOOTSTRAP_ADMIN_EMAIL:-admin@frontier.localhost}
+      CASDOOR_POSTGRES_HOST: ${CASDOOR_POSTGRES_HOST:-postgres}
+      CASDOOR_POSTGRES_PORT: ${CASDOOR_POSTGRES_PORT:-5432}
+      CASDOOR_POSTGRES_USER: ${CASDOOR_POSTGRES_USER:-${POSTGRES_USER:-frontier}}
+      CASDOOR_POSTGRES_PASSWORD: ${CASDOOR_POSTGRES_PASSWORD:-${POSTGRES_PASSWORD}}
+      CASDOOR_POSTGRES_DB: ${CASDOOR_POSTGRES_DB:-${POSTGRES_DB:-frontier}}
+    volumes:
+      - ./docker/casdoor/start-casdoor.sh:/docker/casdoor/start-casdoor.sh:ro
 
   agent-research:
     <<: *agent-image
@@ -193,7 +204,7 @@ services:
   vault:
     <<: *default-logging
     image: hashicorp/vault:1.18
-    command: ["server", "-config=/vault/config/vault.hcl"]
+    command: ["server"]
     cap_add: [IPC_LOCK]
     environment:
       VAULT_ADDR: http://vault:8200
@@ -232,9 +243,14 @@ services:
     <<: *default-logging
     image: postgres:16-alpine
     environment:
-      POSTGRES_DB: lattix
-      POSTGRES_USER: lattix
+      POSTGRES_DB: ${POSTGRES_DB:-frontier}
+      POSTGRES_USER: ${POSTGRES_USER:-frontier}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-frontier} -d ${POSTGRES_DB:-frontier}"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
     volumes: [postgres-data:/var/lib/postgresql/data]
 
   redis:

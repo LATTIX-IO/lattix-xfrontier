@@ -8,8 +8,9 @@ RUN apt-get update \
     && apt-get install --yes --no-install-recommends build-essential curl \
     && rm -rf /var/lib/apt/lists/*
 
-COPY pyproject.toml README.md ./
+COPY pyproject.toml README.md LICENSE ./
 COPY frontier_tooling ./frontier_tooling
+COPY frontier_runtime ./frontier_runtime
 RUN python -m pip install --upgrade pip \
     && python -m pip install --prefix=/install .
 

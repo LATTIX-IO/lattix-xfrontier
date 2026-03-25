@@ -19,6 +19,16 @@ def test_agent_dockerfile_uses_pinned_lightweight_python_base() -> None:
     assert "apt-get install --yes --no-install-recommends curl" not in dockerfile
 
 
+def test_backend_and_agent_dockerfiles_copy_license_for_package_metadata() -> None:
+    backend_dockerfile = (REPO_ROOT / "Dockerfile").read_text(encoding="utf-8")
+    agent_dockerfile = (REPO_ROOT / "Dockerfile.agent").read_text(encoding="utf-8")
+
+    for dockerfile in (backend_dockerfile, agent_dockerfile):
+        assert "COPY pyproject.toml README.md LICENSE ./" in dockerfile
+        assert "COPY frontier_tooling ./frontier_tooling" in dockerfile
+        assert "COPY frontier_runtime ./frontier_runtime" in dockerfile
+
+
 def test_full_compose_uses_pinned_default_agent_image() -> None:
     compose = (REPO_ROOT / "docker-compose.yml").read_text(encoding="utf-8")
     assert f"FRONTIER_AGENT_IMAGE:-{PINNED_AGENT_IMAGE}" in compose

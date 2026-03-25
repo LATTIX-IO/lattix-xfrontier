@@ -70,7 +70,8 @@ def ensure_compose_env_file(*, local_profile: bool = False) -> Path:
         for key, value in _read_env_map(source).items():
             env_map[key] = value
 
-    env_map.setdefault("A2A_JWT_SECRET", _random_secret())
+    if not str(env_map.get("A2A_JWT_SECRET") or "").strip():
+        env_map["A2A_JWT_SECRET"] = _random_secret()
     env_map.setdefault("A2A_JWT_ALG", "HS256")
     env_map.setdefault("A2A_JWT_ISS", "lattix-frontier")
     env_map["A2A_JWT_AUD"] = _normalize_a2a_audience(env_map.get("A2A_JWT_AUD"))
@@ -97,8 +98,27 @@ def compose_prefix(*, local: bool) -> list[str]:
     return base
 
 
-def run_command(args: list[str], *, cwd: Path | None = None) -> None:
-    subprocess.run(args, cwd=str(cwd or REPO_ROOT), check=True)
+def existing_compose_prefix(*, local: bool) -> list[str] | None:
+    env_path = _installer_env_path(local_profile=local)
+    if not env_path.exists():
+        return None
+    base = ["docker", "compose", "--env-file", str(env_path)]
+    if local:
+        base.extend(["-f", "docker-compose.local.yml"])
+    return base
+
+
+def remove_installer_env_files() -> list[Path]:
+    removed: list[Path] = []
+    for path in (SECURE_INSTALLER_ENV_PATH, LIGHTWEIGHT_INSTALLER_ENV_PATH):
+        if path.exists():
+            path.unlink()
+            removed.append(path)
+    return removed
+
+
+def run_command(args: list[str], *, cwd: Path | None = None, check: bool = True) -> None:
+    subprocess.run(args, cwd=str(cwd or REPO_ROOT), check=check)
 
 
 def request_json(url: str, *, method: str = "GET", payload: dict[str, Any] | None = None, timeout: int = 10) -> Any:

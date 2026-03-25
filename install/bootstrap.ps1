@@ -1,6 +1,7 @@
 $ErrorActionPreference = 'Stop'
 
-$BootstrapDir = Join-Path ($env:TEMP ?? '.\tmp') 'frontier-install'
+$TempRoot = if ([string]::IsNullOrWhiteSpace($env:TEMP)) { '.\tmp' } else { $env:TEMP }
+$BootstrapDir = Join-Path $TempRoot 'frontier-install'
 $InstallerUrl = if ($env:INSTALLER_URL) { $env:INSTALLER_URL } else { 'https://raw.githubusercontent.com/LATTIX-IO/lattix-xfrontier/main/install/frontier-installer.py' }
 
 Write-Host '==> Lattix xFrontier bootstrap'

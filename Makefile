@@ -1,30 +1,46 @@
-.PHONY: up down local-up local-down stack-up stack-down test lint typecheck policy-test helm-validate release-bundle bootstrap health ps logs smoke install-opa
+.PHONY: up down remove local-up local-down stack-up stack-down test lint typecheck policy-test helm-validate release-bundle bootstrap health ps logs smoke install-opa
 
-PYTHON ?= python
+# Canonical public install path: install/bootstrap.sh (or install/bootstrap.ps1 on Windows).
+# This Makefile is kept as a source-checkout convenience wrapper for contributors.
+
+ifeq ($(OS),Windows_NT)
+VENV_PYTHON := .venv/Scripts/python.exe
+DEFAULT_PYTHON := py -3
+DEV_NULL := NUL
+else
+VENV_PYTHON := .venv/bin/python
+DEFAULT_PYTHON := python3
+DEV_NULL := /dev/null
+endif
+
+PYTHON ?= $(if $(wildcard $(VENV_PYTHON)),$(VENV_PYTHON),$(DEFAULT_PYTHON))
+CLI_RUNNER ?= $(PYTHON) -m frontier_tooling.cli
 OPA_RUNNER ?= $(PYTHON) scripts/run_opa.py
-SECURE_ENV_FILE := $(shell $(PYTHON) -c "from frontier_tooling.common import ensure_compose_env_file; print(ensure_compose_env_file(local_profile=False))")
-LIGHTWEIGHT_ENV_FILE := $(shell $(PYTHON) -c "from frontier_tooling.common import ensure_compose_env_file; print(ensure_compose_env_file(local_profile=True))")
+SECURE_ENV_FILE := $(strip $(shell "$(PYTHON)" -c "from frontier_tooling.common import ensure_compose_env_file; print(ensure_compose_env_file(local_profile=False))"))
+LIGHTWEIGHT_ENV_FILE := $(strip $(shell "$(PYTHON)" -c "from frontier_tooling.common import ensure_compose_env_file; print(ensure_compose_env_file(local_profile=True))"))
 LOCAL_COMPOSE ?= docker compose --env-file $(LIGHTWEIGHT_ENV_FILE) -f docker-compose.local.yml
 FULL_COMPOSE ?= docker compose --env-file $(SECURE_ENV_FILE)
 
 up:             ## Start all services
-	$(FULL_COMPOSE) up -d
+	$(CLI_RUNNER) up
 
 down:           ## Stop all services
-	$(FULL_COMPOSE) down -v
+	$(CLI_RUNNER) down
+
+remove:         ## Tear down local install and delete installer-managed env files
+	$(CLI_RUNNER) remove
 
 local-up:       ## Start the lightweight local-first stack
-	$(LOCAL_COMPOSE) up -d
-	@echo "Lightweight local stack running. Frontend: http://localhost:3000  Backend health: http://localhost:8000/healthz"
+	$(CLI_RUNNER) local-up
 
 local-down:     ## Stop the lightweight local-first stack
-	$(LOCAL_COMPOSE) down -v
+	$(CLI_RUNNER) local-down
 
 stack-up:       ## Start the full platform stack (gateway, sandbox, policy infra)
-	$(FULL_COMPOSE) up -d
+	$(CLI_RUNNER) stack-up
 
 stack-down:     ## Stop the full platform stack
-	$(FULL_COMPOSE) down -v
+	$(CLI_RUNNER) stack-down
 
 test:           ## Run all tests
 	pytest apps/backend/tests tests -v --cov=app --cov=frontier_runtime --cov-report=term-missing
@@ -41,7 +57,7 @@ policy-test:    ## Test OPA policies
 
 helm-validate:  ## Validate Helm chart manifests (requires helm)
 	helm lint ./helm/lattix-frontier
-	helm template lattix ./helm/lattix-frontier -f helm/lattix-frontier/values-prod.yaml > /dev/null
+	helm template lattix ./helm/lattix-frontier -f helm/lattix-frontier/values-prod.yaml > $(DEV_NULL)
 
 release-bundle: ## Build a local release bundle (requires VERSION and helm)
 	@test -n "$(VERSION)" || (echo "VERSION is required, e.g. make release-bundle VERSION=v0.1.0" && exit 1)
@@ -57,19 +73,17 @@ install-opa:    ## Install repo-local OPA binary (Windows helper remains availab
 	@echo "Install OPA with .\\scripts\\frontier.ps1 install-opa on Windows, or place the binary at .tools/opa/opa(.exe)."
 
 bootstrap:      ## First-time setup
-	$(PYTHON) -m pip install -e ".[dev]" --break-system-packages
-	$(FULL_COMPOSE) pull
-	@echo "Run 'make up' to start the secure platform stack"
+	$(CLI_RUNNER) bootstrap
 
 health:         ## Check API health endpoint
-	$(PYTHON) -c "import urllib.request;print(urllib.request.urlopen('http://localhost:8000/healthz', timeout=5).read().decode())"
+	$(CLI_RUNNER) health
 
 ps:
-	$(FULL_COMPOSE) ps
+	$(CLI_RUNNER) ps
 
 logs:
-	$(FULL_COMPOSE) logs --tail=200
+	$(CLI_RUNNER) logs
 
 smoke:
-	$(PYTHON) -c "import urllib.request; print(urllib.request.urlopen('http://localhost:8000/healthz', timeout=5).read().decode())"
+	$(CLI_RUNNER) smoke
 

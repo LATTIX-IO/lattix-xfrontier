@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from frontier_tooling.common import ensure_compose_env_file
+from frontier_tooling.common import ensure_compose_env_file, remove_installer_env_files
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -63,6 +63,29 @@ def test_compose_env_generation_uses_mode_specific_files_and_profiles() -> None:
     assert "A2A_JWT_AUD=frontier-runtime" in lightweight_text
 
 
+def test_compose_env_generation_repairs_blank_a2a_secret(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr("frontier_tooling.common.REPO_ROOT", tmp_path)
+    monkeypatch.setattr("frontier_tooling.common.INSTALLER_DIR", tmp_path / ".installer")
+    monkeypatch.setattr(
+        "frontier_tooling.common.SECURE_INSTALLER_ENV_PATH",
+        tmp_path / ".installer" / "local-secure.env",
+    )
+    monkeypatch.setattr(
+        "frontier_tooling.common.LIGHTWEIGHT_INSTALLER_ENV_PATH",
+        tmp_path / ".installer" / "local-lightweight.env",
+    )
+
+    (tmp_path / ".env").write_text("A2A_JWT_SECRET=from-dot-env\n", encoding="utf-8")
+    (tmp_path / ".installer").mkdir(parents=True, exist_ok=True)
+    (tmp_path / ".installer" / "local-secure.env").write_text("A2A_JWT_SECRET=\n", encoding="utf-8")
+
+    secure_env = ensure_compose_env_file(local_profile=False)
+    secure_text = secure_env.read_text(encoding="utf-8")
+
+    assert "A2A_JWT_SECRET=" in secure_text
+    assert "A2A_JWT_SECRET=\n" not in secure_text
+
+
 def test_tooling_and_docs_remove_dev_alias_but_keep_local_stack() -> None:
     readme = _read("README.md")
     deployment = _read("docs/DEPLOYMENT.md")
@@ -80,5 +103,91 @@ def test_tooling_and_docs_remove_dev_alias_but_keep_local_stack() -> None:
     assert '@cli.command("dev")' not in cli
     assert '"local-up"' in cli
     assert '"local-down"' in cli
+    assert '"remove"' in cli
     assert "docker-compose.local.yml" in powershell
+    assert '"remove"' in powershell
     assert "local-up" in makefile
+    assert "remove:" in makefile
+
+
+def test_makefile_prefers_repo_venv_python_and_quotes_env_bootstrap_commands() -> None:
+    makefile = _read("Makefile")
+
+    assert "VENV_PYTHON := .venv/Scripts/python.exe" in makefile
+    assert "VENV_PYTHON := .venv/bin/python" in makefile
+    assert "CLI_RUNNER ?= $(PYTHON) -m frontier_tooling.cli" in makefile
+    assert 'SECURE_ENV_FILE := $(strip $(shell "$(PYTHON)" -c "from frontier_tooling.common import ensure_compose_env_file; print(ensure_compose_env_file(local_profile=False))"))' in makefile
+    assert 'LIGHTWEIGHT_ENV_FILE := $(strip $(shell "$(PYTHON)" -c "from frontier_tooling.common import ensure_compose_env_file; print(ensure_compose_env_file(local_profile=True))"))' in makefile
+    assert "helm template lattix ./helm/lattix-frontier -f helm/lattix-frontier/values-prod.yaml > $(DEV_NULL)" in makefile
+
+
+def test_makefile_routes_runtime_commands_through_shared_cli() -> None:
+    makefile = _read("Makefile")
+
+    assert "Canonical public install path: install/bootstrap.sh" in makefile
+    assert "$(CLI_RUNNER) bootstrap" in makefile
+    assert "$(CLI_RUNNER) up" in makefile
+    assert "$(CLI_RUNNER) down" in makefile
+    assert "$(CLI_RUNNER) remove" in makefile
+    assert "$(CLI_RUNNER) local-up" in makefile
+    assert "$(CLI_RUNNER) local-down" in makefile
+    assert "$(CLI_RUNNER) stack-up" in makefile
+    assert "$(CLI_RUNNER) stack-down" in makefile
+    assert "$(CLI_RUNNER) health" in makefile
+    assert "$(CLI_RUNNER) ps" in makefile
+    assert "$(CLI_RUNNER) logs" in makefile
+    assert "$(CLI_RUNNER) smoke" in makefile
+
+
+def test_public_docs_expose_bootstrap_and_remove_flow() -> None:
+    readme = _read("README.md")
+    installer_docs = _read("docs/INSTALLER.md")
+    deployment = _read("docs/DEPLOYMENT.md")
+
+    assert "curl -fsSL https://raw.githubusercontent.com/LATTIX-IO/lattix-xfrontier/main/install/bootstrap.sh | sh" in readme
+    assert "curl -fsSL https://raw.githubusercontent.com/LATTIX-IO/lattix-xfrontier/main/install/bootstrap.sh | sh" in installer_docs
+    assert "curl -fsSL https://raw.githubusercontent.com/LATTIX-IO/lattix-xfrontier/main/install/bootstrap.sh | sh" in deployment
+    assert "-UseBasicParsing" in readme
+    assert "-UseBasicParsing" in installer_docs
+    assert "-UseBasicParsing" in deployment
+    assert "pwsh -File .\\install\\bootstrap.ps1" in readme
+    assert "pwsh -File .\\install\\bootstrap.ps1" in installer_docs
+    assert "pwsh -File .\\install\\bootstrap.ps1" in deployment
+    assert "sh ./install/bootstrap.sh" in readme
+    assert "sh ./install/bootstrap.sh" in installer_docs
+    assert "sh ./install/bootstrap.sh" in deployment
+    assert "raw.githubusercontent.com" in installer_docs
+    assert "lattix remove" in readme
+    assert "lattix remove" in installer_docs
+    assert "lattix remove" in deployment
+
+
+def test_bootstrap_powershell_script_avoids_powershell7_only_syntax() -> None:
+    bootstrap_ps1 = _read("install/bootstrap.ps1")
+
+    assert "??" not in bootstrap_ps1
+    assert "$TempRoot = if ([string]::IsNullOrWhiteSpace($env:TEMP))" in bootstrap_ps1
+
+
+def test_remove_installer_env_files_deletes_generated_envs(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr("frontier_tooling.common.INSTALLER_DIR", tmp_path / ".installer")
+    monkeypatch.setattr(
+        "frontier_tooling.common.SECURE_INSTALLER_ENV_PATH",
+        tmp_path / ".installer" / "local-secure.env",
+    )
+    monkeypatch.setattr(
+        "frontier_tooling.common.LIGHTWEIGHT_INSTALLER_ENV_PATH",
+        tmp_path / ".installer" / "local-lightweight.env",
+    )
+
+    secure = tmp_path / ".installer" / "local-secure.env"
+    lightweight = tmp_path / ".installer" / "local-lightweight.env"
+    secure.parent.mkdir(parents=True, exist_ok=True)
+    secure.write_text("A2A_JWT_SECRET=test\n", encoding="utf-8")
+    lightweight.write_text("A2A_JWT_SECRET=test\n", encoding="utf-8")
+
+    removed = remove_installer_env_files()
+
+    assert removed == [secure, lightweight]
+    assert not secure.exists()
+    assert not lightweight.exists()
