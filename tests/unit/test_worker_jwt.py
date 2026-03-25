@@ -59,28 +59,22 @@ def test_worker_post_envelope_mints_identity_claims(monkeypatch) -> None:
     captured: dict[str, object] = {}
 
     class _FakeResponse:
-        status = 200
+        status_code = 200
+        text = json.dumps({"accepted": True})
 
-        def __enter__(self) -> "_FakeResponse":
-            return self
-
-        def __exit__(self, exc_type, exc, tb) -> None:
-            return None
-
-        def read(self) -> bytes:
-            return json.dumps({"accepted": True}).encode("utf-8")
-
-    def _fake_urlopen(req, timeout=10, context=None):
-        captured["authorization"] = req.get_header("Authorization")
-        captured["correlation_id"] = req.get_header("X-correlation-id")
-        captured["frontier_subject"] = req.get_header("X-frontier-subject")
-        captured["frontier_nonce"] = req.get_header("X-frontier-nonce")
-        captured["frontier_signature"] = req.get_header("X-frontier-signature")
+    def _fake_post(url, content=None, headers=None, timeout=None, verify=None, follow_redirects=None):
+        captured["url"] = url
+        captured["authorization"] = headers.get("Authorization") if headers else None
+        captured["correlation_id"] = headers.get("X-Correlation-ID") if headers else None
+        captured["frontier_subject"] = headers.get("X-Frontier-Subject") if headers else None
+        captured["frontier_nonce"] = headers.get("X-Frontier-Nonce") if headers else None
+        captured["frontier_signature"] = headers.get("X-Frontier-Signature") if headers else None
         captured["timeout"] = timeout
-        captured["context"] = context
+        captured["verify"] = verify
+        captured["follow_redirects"] = follow_redirects
         return _FakeResponse()
 
-    monkeypatch.setattr(a2a.request, "urlopen", _fake_urlopen)
+    monkeypatch.setattr(a2a.httpx, "post", _fake_post)
 
     env = Envelope(topic="security.compliance", sender="orchestrator", payload={"task": "review"})
     response = a2a.post_envelope(
@@ -103,10 +97,20 @@ def test_worker_post_envelope_mints_identity_claims(monkeypatch) -> None:
     assert identity.actor == "owner-user"
     assert identity.tenant_id == "acme"
     assert identity.internal_service is True
+    assert captured["url"] == "https://worker.example.test/v1/envelope"
     assert captured["correlation_id"] == env.correlation_id
     assert captured["frontier_subject"] == "backend"
     assert captured["frontier_nonce"]
     assert captured["frontier_signature"]
+
+
+def test_worker_post_envelope_rejects_non_http_scheme(monkeypatch) -> None:
+    monkeypatch.setenv("A2A_JWT_SECRET", "unit-test-super-secret-value-32bytes")
+
+    env = Envelope(topic="security.compliance", sender="orchestrator", payload={"task": "review"})
+
+    with pytest.raises(ValueError, match="HTTP or HTTPS endpoint"):
+        a2a.post_envelope("file:///tmp/payload.json", env, sub="backend", internal_service=False)
 
 
 def test_worker_post_envelope_rejects_plain_http_in_hosted_profile(monkeypatch) -> None:

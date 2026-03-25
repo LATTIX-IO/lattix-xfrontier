@@ -5,6 +5,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
+RUN addgroup --system app && adduser --system --ingroup app --uid 10001 appuser && chown -R appuser:app /app
 EXPOSE 8080
 ENV SERVICE_NAME=agent-service
+USER appuser
 CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8080"]

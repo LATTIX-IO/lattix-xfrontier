@@ -10,7 +10,9 @@ import sys
 from collections import OrderedDict
 from pathlib import Path
 from typing import Any
-from urllib.request import Request, urlopen
+
+import httpx
+from urllib.parse import urlparse
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 INSTALLER_DIR = REPO_ROOT / ".installer"
@@ -122,6 +124,19 @@ def run_command(
     return subprocess.run(args, cwd=str(cwd or REPO_ROOT), check=check)
 
 
+def _validated_http_url(url: str) -> str:
+    parsed = urlparse(str(url or "").strip())
+    if parsed.scheme.lower() not in {"http", "https"}:
+        raise ValueError("Only HTTP and HTTPS URLs are supported")
+    if not parsed.hostname:
+        raise ValueError("A host is required")
+    if parsed.username or parsed.password:
+        raise ValueError("Embedded URL credentials are not supported")
+    if parsed.fragment:
+        raise ValueError("URL fragments are not supported")
+    return parsed.geturl()
+
+
 def request_json(url: str, *, method: str = "GET", payload: dict[str, Any] | None = None, timeout: int = 10) -> Any:
     headers = {"Accept": "application/json"}
     bearer = str(os.getenv("FRONTIER_API_BEARER_TOKEN", "") or "").strip()
@@ -131,9 +146,16 @@ def request_json(url: str, *, method: str = "GET", payload: dict[str, Any] | Non
     if payload is not None:
         headers["Content-Type"] = "application/json"
         data = json.dumps(payload).encode("utf-8")
-    request = Request(url, data=data, method=method, headers=headers)
-    with urlopen(request, timeout=timeout) as response:  # noqa: S310
-        raw = response.read().decode("utf-8")
+    response = httpx.request(
+        method,
+        _validated_http_url(url),
+        content=data,
+        headers=headers,
+        timeout=float(timeout),
+        follow_redirects=False,
+    )
+    response.raise_for_status()
+    raw = response.text
     return json.loads(raw) if raw else None
 
 

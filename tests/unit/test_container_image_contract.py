@@ -62,6 +62,11 @@ def test_agent_templates_do_not_use_latest_tags() -> None:
     assert ":latest" not in compose_template
     assert "ghcr.io/your-org/agent-service:v0.1.0" in deployment_template
     assert "ghcr.io/your-org/agent-service:v0.1.0" in compose_template
+    assert "USER appuser" in (REPO_ROOT / "apps" / "workers" / "services" / "AGENT_SERVICE_TEMPLATE" / "Dockerfile").read_text(encoding="utf-8")
+    assert "runAsNonRoot: true" in deployment_template
+    assert "allowPrivilegeEscalation: false" in deployment_template
+    assert "no-new-privileges:true" in compose_template
+    assert "read_only: true" in compose_template
 
 
 def test_sandbox_runner_default_is_pinned_lightweight_python_image(monkeypatch) -> None:

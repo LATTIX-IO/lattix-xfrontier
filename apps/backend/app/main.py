@@ -8,6 +8,7 @@ import hashlib
 import hmac
 import ipaddress
 import socket
+import importlib
 import importlib.util
 from collections import Counter, defaultdict, deque
 from dataclasses import dataclass
@@ -15,7 +16,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from pprint import pformat
 from threading import Lock
-from typing import Any, Literal
+from typing import Any, Callable, Literal
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
@@ -1989,10 +1990,28 @@ def _module_available(module_name: str) -> bool:
         return False
 
 
-def _import_module(module_name: str) -> Any:
-    import importlib
+_OPTIONAL_MODULE_LOADERS: dict[str, Callable[[], Any]] = {
+    "autogen": lambda: importlib.import_module("autogen"),
+    "autogen_agentchat": lambda: importlib.import_module("autogen_agentchat"),
+    "autogen_agentchat.agents": lambda: importlib.import_module("autogen_agentchat.agents"),
+    "autogen_ext.models.openai": lambda: importlib.import_module("autogen_ext.models.openai"),
+    "langchain_core": lambda: importlib.import_module("langchain_core"),
+    "langchain_core.documents": lambda: importlib.import_module("langchain_core.documents"),
+    "langchain_core.messages": lambda: importlib.import_module("langchain_core.messages"),
+    "langchain_core.tools": lambda: importlib.import_module("langchain_core.tools"),
+    "langchain_openai": lambda: importlib.import_module("langchain_openai"),
+    "langgraph": lambda: importlib.import_module("langgraph"),
+    "langgraph.graph": lambda: importlib.import_module("langgraph.graph"),
+    "semantic_kernel": lambda: importlib.import_module("semantic_kernel"),
+    "semantic_kernel.connectors.ai.open_ai": lambda: importlib.import_module("semantic_kernel.connectors.ai.open_ai"),
+}
 
-    return importlib.import_module(module_name)
+
+def _import_module(module_name: str) -> Any:
+    loader = _OPTIONAL_MODULE_LOADERS.get(module_name)
+    if loader is None:
+        raise ValueError(f"Unsupported optional module import '{module_name}'")
+    return loader()
 
 
 def _framework_runtime_probe(engine: str) -> dict[str, Any]:

@@ -187,12 +187,18 @@ def test_bootstrap_powershell_script_validates_python_runtime() -> None:
 
 def test_public_frontier_installer_imports_packaged_module() -> None:
     public_installer = _read("install/frontier-installer.py")
+    tooling_common = _read("frontier_tooling/common.py")
 
     assert 'import importlib' in public_installer
     assert 'import sys' in public_installer
     assert 'importlib.import_module("frontier_tooling.installer")' in public_installer
     assert 'module.main()' in public_installer
     assert 'runpy.run_path' not in public_installer
+    assert 'urlopen(' not in public_installer
+    assert '_validated_archive_url' in public_installer
+    assert 'http.client.HTTPSConnection' in public_installer
+    assert 'httpx.request(' in tooling_common
+    assert '_validated_http_url' in tooling_common
 
 
 def test_remove_installer_env_files_deletes_generated_envs(tmp_path: Path, monkeypatch) -> None:

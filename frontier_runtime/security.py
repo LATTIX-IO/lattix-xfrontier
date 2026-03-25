@@ -7,15 +7,14 @@ import hmac
 import json
 import os
 import time
-from urllib import error as urlerror
 from urllib import parse as urlparse
-from urllib import request as urlrequest
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+import httpx
 import jwt
 
 from frontier_runtime.persistence import mutate_state
@@ -495,6 +494,19 @@ class VaultClient:
         self.token = str(token if token is not None else os.getenv("VAULT_TOKEN") or "").strip()
         self.timeout_seconds = max(1, int(timeout_seconds))
 
+    @staticmethod
+    def _validated_addr(addr: str) -> str:
+        parsed = urlparse.urlparse(str(addr or "").strip())
+        if parsed.scheme.lower() not in {"http", "https"}:
+            raise RuntimeError("Vault client requires an HTTP or HTTPS address")
+        if not parsed.hostname:
+            raise RuntimeError("Vault client requires a host")
+        if parsed.username or parsed.password:
+            raise RuntimeError("Vault client does not allow credentials in VAULT_ADDR")
+        if parsed.fragment:
+            raise RuntimeError("Vault client address must not include fragments")
+        return parsed.geturl().rstrip("/")
+
     def read_secret(self, path: str) -> dict[str, Any]:
         normalized_path = str(path or "").strip().strip("/")
         if not normalized_path:
@@ -502,23 +514,24 @@ class VaultClient:
         if not self.addr or not self.token:
             raise RuntimeError("Vault client is not configured; set VAULT_ADDR and VAULT_TOKEN")
 
-        url = f"{self.addr}/v1/{urlparse.quote(normalized_path, safe='/')}"
-        request = urlrequest.Request(
-            url,
-            headers={
-                "X-Vault-Token": self.token,
-                "Accept": "application/json",
-            },
-            method="GET",
-        )
+        url = f"{self._validated_addr(self.addr)}/v1/{urlparse.quote(normalized_path, safe='/')}"
         try:
-            with urlrequest.urlopen(request, timeout=self.timeout_seconds) as response:
-                payload = json.loads(response.read().decode("utf-8"))
-        except urlerror.HTTPError as exc:
-            detail = exc.read().decode("utf-8", errors="ignore").strip()
-            raise RuntimeError(f"Vault read failed for '{normalized_path}': {exc.code} {detail}".strip()) from exc
-        except urlerror.URLError as exc:
-            raise RuntimeError(f"Vault read failed for '{normalized_path}': {exc.reason}") from exc
+            response = httpx.get(
+                url,
+                headers={
+                    "X-Vault-Token": self.token,
+                    "Accept": "application/json",
+                },
+                timeout=float(self.timeout_seconds),
+                follow_redirects=False,
+            )
+            response.raise_for_status()
+            payload = response.json()
+        except httpx.HTTPStatusError as exc:
+            detail = exc.response.text.strip()
+            raise RuntimeError(f"Vault read failed for '{normalized_path}': {exc.response.status_code} {detail}".strip()) from exc
+        except httpx.RequestError as exc:
+            raise RuntimeError(f"Vault read failed for '{normalized_path}': {exc}") from exc
         except json.JSONDecodeError as exc:
             raise RuntimeError(f"Vault read failed for '{normalized_path}': invalid JSON response") from exc
 

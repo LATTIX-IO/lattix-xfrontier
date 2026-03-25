@@ -52,6 +52,17 @@ def _vector_literal(values: list[float]) -> str:
 	return "[" + ",".join(f"{float(item):.8f}" for item in values) + "]"
 
 
+def _validated_embedding_dimensions(value: int) -> int:
+	return max(8, min(int(value), 3_072))
+
+
+def _vector_type_sql(dimensions: int) -> Any:
+	assert psycopg_sql is not None
+	return psycopg_sql.SQL("vector({})").format(
+		psycopg_sql.SQL(str(_validated_embedding_dimensions(dimensions)))
+	)
+
+
 class _BasePostgresService:
 	def __init__(self, dsn: str) -> None:
 		self.dsn = str(dsn or "").strip()
@@ -214,7 +225,9 @@ class PostgresLongTermMemoryStore(_BasePostgresService):
 	def __init__(self, dsn: str) -> None:
 		super().__init__(dsn)
 		self.vector_enabled = False
-		self.embedding_dimensions = max(8, int(os.getenv("FRONTIER_MEMORY_EMBEDDING_DIMENSIONS", "1536")))
+		self.embedding_dimensions = _validated_embedding_dimensions(
+			int(os.getenv("FRONTIER_MEMORY_EMBEDDING_DIMENSIONS", "1536"))
+		)
 		self.embedding_model = str(os.getenv("OPENAI_EMBEDDING_MODEL", "text-embedding-3-small") or "text-embedding-3-small").strip()
 		self._openai_client: Any | None = None
 
@@ -256,7 +269,9 @@ class PostgresLongTermMemoryStore(_BasePostgresService):
 				)
 				if self.vector_enabled:
 					cursor.execute(
-						f"ALTER TABLE frontier_long_term_memory ADD COLUMN IF NOT EXISTS embedding vector({self.embedding_dimensions})"
+						psycopg_sql.SQL(
+							"ALTER TABLE frontier_long_term_memory ADD COLUMN IF NOT EXISTS embedding {}"
+						).format(_vector_type_sql(self.embedding_dimensions))
 					)
 				cursor.execute(
 					"CREATE INDEX IF NOT EXISTS frontier_long_term_memory_bucket_idx ON frontier_long_term_memory (bucket_id, created_at DESC)"
@@ -420,7 +435,7 @@ class PostgresLongTermMemoryStore(_BasePostgresService):
 		where_sql, params = self._filters(bucket_id=bucket_id, session_id=session_id, memory_scope=memory_scope)
 		with self._connect() as connection:
 			with connection.cursor() as cursor:
-				query = (
+				cursor.execute(
 					psycopg_sql.SQL(
 						"""
 						SELECT id, bucket_id, session_id, memory_scope, source, task_id, content, metadata, created_at
@@ -433,10 +448,7 @@ class PostgresLongTermMemoryStore(_BasePostgresService):
 						ORDER BY created_at DESC
 						LIMIT %s
 						"""
-					)
-				)
-				cursor.execute(
-					query,
+					),
 					(*params, max(1, limit)),
 				)
 				rows = cursor.fetchall()
@@ -469,7 +481,7 @@ class PostgresLongTermMemoryStore(_BasePostgresService):
 						memory_scope=memory_scope,
 						extra_clauses=[psycopg_sql.SQL("embedding IS NOT NULL")],
 					)
-					vector_query = (
+					cursor.execute(
 						psycopg_sql.SQL(
 							"""
 							SELECT id, bucket_id, session_id, memory_scope, source, task_id, content, metadata, created_at
@@ -482,10 +494,7 @@ class PostgresLongTermMemoryStore(_BasePostgresService):
 							ORDER BY embedding <=> %s::vector, created_at DESC
 							LIMIT %s
 							"""
-						)
-					)
-					cursor.execute(
-						vector_query,
+						),
 						(*vector_params, _vector_literal(vector), max(1, limit)),
 					)
 					rows = cursor.fetchall()
@@ -497,7 +506,7 @@ class PostgresLongTermMemoryStore(_BasePostgresService):
 						memory_scope=memory_scope,
 						extra_clauses=[psycopg_sql.SQL("(content ILIKE %s OR metadata::text ILIKE %s)")],
 					)
-					lexical_query = (
+					cursor.execute(
 						psycopg_sql.SQL(
 							"""
 							SELECT id, bucket_id, session_id, memory_scope, source, task_id, content, metadata, created_at
@@ -510,10 +519,7 @@ class PostgresLongTermMemoryStore(_BasePostgresService):
 							ORDER BY created_at DESC
 							LIMIT %s
 							"""
-						)
-					)
-					cursor.execute(
-						lexical_query,
+						),
 						(*lexical_params, pattern, pattern, max(1, limit)),
 					)
 					rows = cursor.fetchall()
@@ -694,7 +700,7 @@ class PostgresLongTermMemoryStore(_BasePostgresService):
 
 		with self._connect() as connection:
 			with connection.cursor() as cursor:
-				query = (
+				cursor.execute(
 					psycopg_sql.SQL(
 						"""
 						SELECT id, entry_id, bucket_id, session_id, memory_scope, source, task_id,
@@ -708,10 +714,7 @@ class PostgresLongTermMemoryStore(_BasePostgresService):
 						ORDER BY created_at DESC
 						LIMIT %s
 						"""
-					)
-				)
-				cursor.execute(
-					query,
+					),
 					(*params, max(1, limit)),
 				)
 				rows = cursor.fetchall()
@@ -767,8 +770,7 @@ class PostgresLongTermMemoryStore(_BasePostgresService):
 			return
 		with self._connect() as connection:
 			with connection.cursor() as cursor:
-				query = psycopg_sql.SQL("DELETE FROM frontier_long_term_memory") + where_sql
-				cursor.execute(query, params)
+				cursor.execute(psycopg_sql.SQL("DELETE FROM frontier_long_term_memory") + where_sql, params)
 
 
 class Neo4jRunGraph:
