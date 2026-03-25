@@ -227,3 +227,21 @@ def test_remove_command_tracks_failed_teardowns_and_radius_secret_is_not_hardcod
     assert 'CASDOOR_RADIUS_SECRET="${CASDOOR_RADIUS_SECRET:-${POSTGRES_PASSWORD}}"' in casdoor
     assert 'radiusSecret = "${CASDOOR_RADIUS_SECRET}"' in casdoor
     assert 'radiusSecret = "secret"' not in casdoor
+
+def test_precommit_script_runs_repo_native_checks() -> None:
+    precommit = _read("precommit.ps1")
+
+    assert 'Write-Host "Lattix xFrontier pre-commit checks"' in precommit
+    assert 'Invoke-Step "$Python -m pip install -e `".[dev]`""' in precommit
+    assert 'Invoke-Step "npm ci" -WorkingDirectory $FrontendRoot' in precommit
+    assert 'Invoke-Step "$Python -m ruff check ."' in precommit
+    assert 'Invoke-Step "$Python -m mypy frontier_tooling/ frontier_runtime/"' in precommit
+    assert 'Invoke-Step "$Python -m pytest apps/backend/tests tests -v --cov=app --cov=frontier_runtime --cov-report=term-missing"' in precommit
+    assert 'Invoke-Step "$Python scripts/run_opa.py test policies/ -v"' in precommit
+    assert 'Invoke-Step "npm run lint" -WorkingDirectory $FrontendRoot' in precommit
+    assert 'Invoke-Step "npm test" -WorkingDirectory $FrontendRoot' in precommit
+    assert 'Invoke-Step "npm run build" -WorkingDirectory $FrontendRoot' in precommit
+    assert 'Invoke-IfAvailable -CommandName "semgrep"' in precommit
+    assert 'Invoke-IfAvailable -CommandName "gitleaks"' in precommit
+    assert 'Invoke-IfAvailable -CommandName "trivy"' in precommit
+    assert 'Invoke-IfAvailable -CommandName "helm"' in precommit

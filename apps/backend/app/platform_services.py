@@ -8,7 +8,7 @@ from uuid import uuid4
 
 try:
 	import psycopg
- 	from psycopg import sql as psycopg_sql
+	from psycopg import sql as psycopg_sql
 except Exception:  # pragma: no cover - optional dependency in some local test paths
 	psycopg = None
 	psycopg_sql = None
@@ -698,7 +698,7 @@ class PostgresLongTermMemoryStore(_BasePostgresService):
 					psycopg_sql.SQL(
 						"""
 						SELECT id, entry_id, bucket_id, session_id, memory_scope, source, task_id,
-						       candidate_kind, status, created_at, updated_at, content, metadata
+						candidate_kind, status, created_at, updated_at, content, metadata
 						FROM frontier_memory_consolidation_queue
 						"""
 					)
@@ -735,8 +735,8 @@ class PostgresLongTermMemoryStore(_BasePostgresService):
 						"""
 						UPDATE frontier_memory_consolidation_queue
 						SET status = %s,
-						    metadata = COALESCE(metadata, '{}'::jsonb) || %s::jsonb,
-						    updated_at = timezone('utc', now())
+						metadata = COALESCE(metadata, '{}'::jsonb) || %s::jsonb,
+						updated_at = timezone('utc', now())
 						WHERE id = %s
 						""",
 						(str(status or "pending"), json.dumps(extra_metadata, default=_json_default), str(candidate_id)),
@@ -746,7 +746,7 @@ class PostgresLongTermMemoryStore(_BasePostgresService):
 						"""
 						UPDATE frontier_memory_consolidation_queue
 						SET status = %s,
-						    updated_at = timezone('utc', now())
+						updated_at = timezone('utc', now())
 						WHERE id = %s
 						""",
 						(str(status or "pending"), str(candidate_id)),
