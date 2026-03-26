@@ -106,11 +106,30 @@ function Normalize-A2AAudience {
 }
 
 function Get-HelmCommand {
-    $pathHelm = Get-Command helm -ErrorAction SilentlyContinue
-    if ($pathHelm) {
+    $repoRoot = Get-RepoRoot
+    foreach ($candidate in @(
+        (Join-Path $repoRoot ".tools\helm\windows-amd64\helm.exe"),
+        (Join-Path $repoRoot ".tools\helm\helm.exe")
+    )) {
+        if (Test-Path $candidate) {
+            return (Resolve-Path $candidate).Path
+        }
+    }
+
+    $pathHelm = Get-Command helm.exe -ErrorAction SilentlyContinue
+    if ($pathHelm -and -not [string]::IsNullOrWhiteSpace($pathHelm.Source)) {
         return $pathHelm.Source
     }
-    throw "Helm was not found. Install it or run validation in CI."
+
+    $fallback = Get-Command helm -ErrorAction SilentlyContinue
+    if ($fallback -and -not [string]::IsNullOrWhiteSpace($fallback.Source)) {
+        $resolved = $fallback.Source
+        if ($resolved -match '\.(exe|cmd|bat)$') {
+            return $resolved
+        }
+    }
+
+    throw "A real Helm executable was not found. Install Helm with .\\scripts\\frontier.ps1 install-helm or add helm.exe to PATH; Windows may be resolving a non-executable shim named 'helm'."
 }
 
 function Ensure-ComposeEnvFile {
@@ -157,7 +176,7 @@ function Ensure-ComposeEnvFile {
         $envMap["A2A_TRUSTED_SUBJECTS"] = "backend,research,code,review,coordinator"
     }
     if (-not $envMap.Contains("LOCAL_STACK_HOST") -or [string]::IsNullOrWhiteSpace($envMap["LOCAL_STACK_HOST"])) {
-        $envMap["LOCAL_STACK_HOST"] = "frontier.localhost"
+        $envMap["LOCAL_STACK_HOST"] = "xfrontier.local"
     }
 
     if ($LocalProfile) {

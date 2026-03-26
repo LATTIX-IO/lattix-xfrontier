@@ -14,6 +14,7 @@ from .common import (
     existing_compose_prefix,
     print_json,
     python_executable,
+    remove_installer_artifacts,
     remove_installer_env_files,
     repo_root,
     request_json,
@@ -75,10 +76,12 @@ def remove_command() -> None:
             torn_down.append(label)
         else:
             failed_teardowns.append(label)
-    removed_files = remove_installer_env_files()
+    removed_env_files = remove_installer_env_files()
+    removed_artifacts = remove_installer_artifacts()
     removed = not failed_teardowns
     notes = [
         "Source checkout and .env were left in place.",
+        "Editable installs, virtual environments, and PATH entries are left in place.",
         "Run 'lattix bootstrap' or the public bootstrap script again to reinstall.",
     ]
     if failed_teardowns:
@@ -88,7 +91,8 @@ def remove_command() -> None:
             "removed": removed,
             "torn_down": torn_down,
             "failed_teardowns": failed_teardowns,
-            "deleted_env_files": [str(path) for path in removed_files],
+            "deleted_env_files": [str(path) for path in removed_env_files],
+            "deleted_artifacts": [str(path) for path in removed_artifacts],
             "notes": notes,
         }
     )

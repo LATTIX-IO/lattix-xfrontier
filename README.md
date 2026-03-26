@@ -53,8 +53,8 @@ Lattix xFrontier is built around four layers:
 ## Quick start
 
 1. Run the public bootstrap installer.
-2. Follow the prompts for local auth, secrets, and hostname.
-3. If you skip auto-launch, start the secure default stack with `lattix up`.
+2. The installer pulls the vetted `main` content, installs `lattix`, updates your user `PATH`, and automatically starts the secure stack.
+3. Open `http://xfrontier.local` or use the printed `127.0.0.1` / LAN URLs.
 
 ```text
 curl -fsSL https://raw.githubusercontent.com/LATTIX-IO/lattix-xfrontier/main/install/bootstrap.sh | sh
@@ -83,7 +83,7 @@ make remove
 
 That tears down the local Docker stacks, removes named volumes and networks for those stacks, and deletes installer-managed env files under `.installer/`. It intentionally leaves your repository checkout and `.env` in place.
 
-For the default secure/full browser experience, open `http://frontier.localhost` (or your configured `LOCAL_STACK_HOST`). That path proxies `/api/*` through the local gateway to the backend at `http://localhost:8000`.
+For the default secure/full browser experience, open `http://xfrontier.local` (or your configured `LOCAL_STACK_HOST`). The public installer also prints clickable `http://127.0.0.1` and LAN IP URLs after `lattix up` auto-starts. That path proxies `/api/*` through the local gateway to the backend at `http://localhost:8000`.
 
 If you intentionally want the lighter local-only stack, use `make local-up`. That path exposes the frontend directly at `http://localhost:3000` and talks to the backend at `http://localhost:8000` without the gateway-based `/api` path.
 

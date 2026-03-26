@@ -40,5 +40,6 @@ def test_secure_local_compose_vault_avoids_double_loading_config() -> None:
 def test_local_gateway_routes_casdoor_host() -> None:
     caddyfile = (REPO_ROOT / "docker" / "local" / "Caddyfile").read_text(encoding="utf-8")
 
+    assert "http://{$LOCAL_STACK_HOST:xfrontier.local}" in caddyfile
     assert "http://{$CASDOOR_LOCAL_HOST:casdoor.localhost}" in caddyfile
     assert "reverse_proxy casdoor:8000" in caddyfile

@@ -2,7 +2,7 @@
 set -eu
 
 BOOTSTRAP_DIR="${TMPDIR:-/tmp}/frontier-install"
-INSTALLER_URL="${INSTALLER_URL:-https://raw.githubusercontent.com/LATTIX-IO/lattix-xfrontier/main/install/frontier-installer.py}"
+INSTALLER_URL="https://raw.githubusercontent.com/LATTIX-IO/lattix-xfrontier/main/install/frontier-installer.py"
 
 echo "==> Lattix xFrontier bootstrap"
 echo "==> Preparing installer workspace"
@@ -27,4 +27,10 @@ else
 fi
 
 echo "==> Launching interactive installer"
-exec "$PYTHON_BIN" "$BOOTSTRAP_DIR/frontier-installer.py"
+if "$PYTHON_BIN" "$BOOTSTRAP_DIR/frontier-installer.py"; then
+  :
+else
+  installer_exit_code=$?
+  echo "Installer failed with exit code $installer_exit_code. The current shell was left intact so you can inspect the error and retry." >&2
+  exit "$installer_exit_code"
+fi

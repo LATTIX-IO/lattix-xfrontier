@@ -10,6 +10,7 @@ import secrets
 import shutil
 import socket
 import subprocess
+import textwrap
 from typing import Iterable
 from urllib.parse import urlsplit, urlunsplit
 
@@ -116,6 +117,11 @@ class InstallerAnswers:
     bootstrap_admin_username: str = ""
     bootstrap_admin_email: str = ""
     bootstrap_admin_subject: str = ""
+    bootstrap_login_username: str = ""
+    bootstrap_login_email: str = ""
+    bootstrap_login_display_name: str = ""
+    bootstrap_login_password: str = ""
+    bootstrap_login_password_generated: bool = False
     openai_api_key: str = ""
     oidc_issuer: str = ""
     oidc_audience: str = ""
@@ -135,6 +141,357 @@ class InstallerAnswers:
 class FrontierInstaller:
     def __init__(self, repo_root: Path) -> None:
         self.repo_root = Path(repo_root)
+
+    @staticmethod
+    def _terminal_width() -> int:
+        return max(72, min(shutil.get_terminal_size(fallback=(100, 24)).columns, 120))
+
+    @classmethod
+    def _wrap_panel_lines(cls, lines: list[str]) -> list[str]:
+        width = cls._terminal_width() - 4
+        wrapped: list[str] = []
+        for line in lines:
+            if not line:
+                wrapped.append("")
+                continue
+            wrapped.extend(textwrap.wrap(line, width=width, replace_whitespace=False, drop_whitespace=False) or [""])
+        return wrapped
+
+    @classmethod
+    def _render_panel(cls, title: str, lines: list[str]) -> str:
+        wrapped = cls._wrap_panel_lines(lines)
+        content = [title, *wrapped]
+        width = max(cls._terminal_width() - 4, len(title)) if content else len(title)
+        top = f"╔{'═' * (width + 2)}╗"
+        body = [f"║ {line.ljust(width)} ║" for line in content]
+        bottom = f"╚{'═' * (width + 2)}╝"
+        return "\n".join([top, *body, bottom])
+
+    @classmethod
+    def _print_panel(cls, title: str, lines: list[str]) -> None:
+        print(cls._render_panel(title, lines))  # noqa: T201
+
+    @staticmethod
+    def _default_local_hostname() -> str:
+        configured = str(os.getenv("LOCAL_STACK_HOST") or "").strip().lower()
+        candidate = configured
+        for suffix in (".localhost", ".local"):
+            if candidate.endswith(suffix):
+                candidate = candidate[: -len(suffix)]
+                break
+        validation = hostname_prefix_valid(candidate)
+        return candidate if validation.ok else "xfrontier"
+
+    @staticmethod
+    def _raw_input(prompt: str = "› ") -> str:
+        return builtins.input(prompt)
+
+    @classmethod
+    def _prompt_with_default(cls, prompt: str, default: str, description: str = "") -> str:
+        lines = [description] if description else []
+        lines.extend(
+            [
+                f"Field      : {prompt}",
+                f"Default    : {default}",
+                "Action     : Press Enter to accept the default or type a custom value.",
+            ]
+        )
+        cls._print_panel("Installer prompt", lines)
+        response = cls._raw_input().strip()
+        return response or default
+
+    @classmethod
+    def _prompt_choice(
+        cls,
+        prompt: str,
+        choices: tuple[str, ...],
+        *,
+        default: str,
+        descriptions: dict[str, str] | None = None,
+    ) -> str:
+        normalized_choices = {choice.casefold(): choice for choice in choices}
+        while True:
+            lines = [f"Field      : {prompt}", "Choose an option by number or name."]
+            for index, choice in enumerate(choices, start=1):
+                suffix = " (default)" if choice == default else ""
+                description = str((descriptions or {}).get(choice) or "").strip()
+                lines.append(f"  {index}. {choice}{suffix}")
+                if description:
+                    lines.append(f"     {description}")
+            cls._print_panel("Installer choice", lines)
+            response = cls._raw_input().strip().casefold()
+            if not response:
+                return default
+            if response.isdigit():
+                index = int(response)
+                if 1 <= index <= len(choices):
+                    return choices[index - 1]
+            if response in normalized_choices:
+                return normalized_choices[response]
+            print(f"Please choose one of: {', '.join(choices)}")  # noqa: T201
+
+    @staticmethod
+    def _prompt_hostname(default: str) -> str:
+        while True:
+            candidate = FrontierInstaller._prompt_with_default(
+                "Local portal hostname prefix",
+                default,
+                description="This becomes the local gateway hostname for the portal, for example xfrontier.local.",
+            ).strip().lower()
+            validation = hostname_prefix_valid(candidate)
+            if validation.ok:
+                return candidate
+            print(validation.message)  # noqa: T201
+
+    @classmethod
+    def _prompt_required_value(cls, prompt: str, default: str = "", description: str = "") -> str:
+        while True:
+            if default:
+                candidate = cls._prompt_with_default(prompt, default, description)
+            else:
+                cls._print_panel(
+                    "Installer prompt",
+                    [*( [description] if description else []), f"Field      : {prompt}", "Action     : Enter a required value to continue."],
+                )
+                candidate = cls._raw_input().strip()
+            candidate = candidate.strip()
+            if candidate:
+                return candidate
+            print("A value is required.")  # noqa: T201
+
+    @classmethod
+    def _prompt_secret(cls, prompt: str, description: str) -> str:
+        cls._print_panel(
+            "Installer secret",
+            [
+                description,
+                f"Secret     : {prompt}",
+                "Action     : Leave blank to generate a strong per-install secret.",
+            ],
+        )
+        return getpass.getpass("› ").strip()
+
+    @classmethod
+    def _render_answers_summary(cls, answers: InstallerAnswers) -> str:
+        lines = [
+            f"Install root: {answers.installation_root}",
+            f"Hostname    : {answers.local_hostname}.localhost",
+            f"Auth mode   : {answers.local_auth_provider}",
+            f"OIDC preset : {answers.oidc_provider_template or 'n/a'}",
+            f"Admin user  : {answers.bootstrap_admin_username}",
+            f"Admin email : {answers.bootstrap_admin_email}",
+            f"Admin sub   : {answers.bootstrap_admin_subject}",
+        ]
+        if str(answers.bootstrap_login_username or "").strip():
+            lines.extend(
+                [
+                    f"Login user  : {answers.bootstrap_login_username}",
+                    f"Login email : {answers.bootstrap_login_email}",
+                    f"Login name  : {answers.bootstrap_login_display_name}",
+                    f"Login pass  : {'Generated during install' if answers.bootstrap_login_password_generated else 'Provided during install'}",
+                ]
+            )
+        if answers.local_auth_provider == "oidc" and answers.oidc_provider_template == "external":
+            lines.extend(
+                [
+                    "",
+                    "External OIDC",
+                    f"  Issuer    : {answers.oidc_issuer}",
+                    f"  Audience  : {answers.oidc_audience}",
+                    f"  Client ID : {answers.oidc_client_id}",
+                ]
+            )
+        lines.extend(
+            [
+                "",
+                "Security posture",
+                "  • Secure local profile with authenticated requests",
+                "  • Signed A2A messages and replay protection stay enabled",
+                "  • This is still a single-host Docker deployment, not hosted per-agent isolation",
+            ]
+        )
+        return cls._render_panel("Review install settings", lines)
+
+    @staticmethod
+    def _suggest_bootstrap_admin_identity(hostname_prefix: str) -> dict[str, str]:
+        suffix = secrets.token_hex(3)
+        username = f"frontier-admin-{suffix}"
+        email = f"{username}@{hostname_prefix}.localhost"
+        return {
+            "username": username,
+            "email": email,
+            "subject": username,
+        }
+
+    @staticmethod
+    def _suggest_bootstrap_login_identity(hostname_prefix: str) -> dict[str, str]:
+        suffix = secrets.token_hex(3)
+        username = f"frontier-user-{suffix}"
+        email = f"{username}@{hostname_prefix}.localhost"
+        return {
+            "username": username,
+            "email": email,
+            "display_name": "Frontier Operator",
+        }
+
+    def secure_local_answers(self, installation_root: Path) -> InstallerAnswers:
+        hostname_prefix = self._default_local_hostname()
+        bootstrap_admin = self._suggest_bootstrap_admin_identity(hostname_prefix)
+        bootstrap_login = self._suggest_bootstrap_login_identity(hostname_prefix)
+        return InstallerAnswers(
+            installation_root=str(installation_root),
+            deployment_mode="local",
+            local_hostname=hostname_prefix,
+            local_auth_provider="oidc",
+            oidc_provider_template="casdoor",
+            bootstrap_admin_username=bootstrap_admin["username"],
+            bootstrap_admin_email=bootstrap_admin["email"],
+            bootstrap_admin_subject=bootstrap_admin["subject"],
+            bootstrap_login_username=bootstrap_login["username"],
+            bootstrap_login_email=bootstrap_login["email"],
+            bootstrap_login_display_name=bootstrap_login["display_name"],
+            bootstrap_login_password=secrets.token_urlsafe(18),
+            bootstrap_login_password_generated=True,
+        )
+
+    def collect_local_answers(self, *, installation_root: Path, interactive: bool) -> InstallerAnswers:
+        if not interactive:
+            return self.secure_local_answers(installation_root)
+
+        while True:
+            answers = self.secure_local_answers(installation_root)
+            self._print_panel(
+                "Lattix xFrontier installer",
+                [
+                    "Secure local installation wizard",
+                    "Press Enter to accept a recommended value.",
+                    "Sensitive values can be generated automatically.",
+                ],
+            )
+
+            answers.local_hostname = self._prompt_hostname(answers.local_hostname)
+            answers.local_auth_provider = self._prompt_choice(
+                "Operator authentication mode",
+                ("oidc", "shared-token"),
+                default=answers.local_auth_provider,
+                descriptions={
+                    "oidc": "Recommended. Uses a real identity provider for operator sign-in.",
+                    "shared-token": "Fallback. Generates a backend bearer token instead of full OIDC.",
+                },
+            )
+
+            if answers.local_auth_provider == "oidc":
+                answers.oidc_provider_template = self._prompt_choice(
+                    "OIDC provider preset",
+                    ("casdoor", "external"),
+                    default=answers.oidc_provider_template,
+                    descriptions={
+                        "casdoor": "Turnkey local IAM preset that matches the bundled secure-local topology.",
+                        "external": "Bring your own OIDC provider and enter the URLs explicitly.",
+                    },
+                )
+                if answers.oidc_provider_template == "external":
+                    answers.oidc_issuer = self._prompt_required_value(
+                        "OIDC issuer URL",
+                        description="Absolute issuer URL used to validate operator bearer tokens.",
+                    )
+                    answers.oidc_audience = self._prompt_required_value(
+                        "OIDC audience",
+                        "frontier-ui",
+                        description="Audience expected in tokens presented to the local stack.",
+                    )
+                    answers.oidc_jwks_url = self._prompt_required_value(
+                        "OIDC JWKS URL",
+                        description="Public key endpoint used to validate signed operator tokens.",
+                    )
+                    answers.oidc_client_id = self._prompt_required_value(
+                        "OIDC client ID",
+                        "frontier-web",
+                        description="Client identifier for the UI sign-in flow.",
+                    )
+                    answers.oidc_authorization_url = self._prompt_required_value(
+                        "OIDC authorization URL",
+                        description="Browser redirect target for sign-in.",
+                    )
+                    answers.oidc_token_url = self._prompt_required_value(
+                        "OIDC token URL",
+                        description="Token exchange endpoint for the configured OIDC provider.",
+                    )
+                    answers.oidc_signin_url = self._prompt_with_default(
+                        "OIDC sign-in URL",
+                        answers.oidc_authorization_url,
+                        description="Optional override for the UI sign-in button.",
+                    )
+                    answers.oidc_signup_url = self._prompt_with_default(
+                        "OIDC sign-up URL",
+                        answers.oidc_authorization_url,
+                        description="Optional override for the UI create-account button.",
+                    )
+                    scopes = self._prompt_with_default(
+                        "OIDC scopes (space separated)",
+                        "openid profile email",
+                        description="Scopes requested during operator sign-in.",
+                    )
+                    answers.oidc_scopes = [scope for scope in scopes.split() if scope]
+                else:
+                    answers.oidc_provider_template = "casdoor"
+            else:
+                answers.oidc_provider_template = ""
+
+            bootstrap_admin = self._suggest_bootstrap_admin_identity(answers.local_hostname)
+            answers.bootstrap_admin_username = self._prompt_with_default(
+                "Bootstrap admin username",
+                bootstrap_admin["username"],
+                description="First operator identity granted admin and builder capabilities.",
+            )
+            answers.bootstrap_admin_email = self._prompt_with_default(
+                "Bootstrap admin email",
+                bootstrap_admin["email"],
+                description="Email claim expected from the initial operator identity.",
+            )
+            answers.bootstrap_admin_subject = self._prompt_with_default(
+                "Bootstrap admin subject",
+                bootstrap_admin["subject"],
+                description="Subject claim that maps the initial operator into the admin allowlist.",
+            )
+
+            if answers.local_auth_provider == "oidc" and answers.oidc_provider_template == "casdoor":
+                bootstrap_login = self._suggest_bootstrap_login_identity(answers.local_hostname)
+                answers.bootstrap_login_username = self._prompt_with_default(
+                    "Bootstrap login username",
+                    bootstrap_login["username"],
+                    description="Casdoor user created automatically so you can sign in from the login screen after install.",
+                )
+                answers.bootstrap_login_email = self._prompt_with_default(
+                    "Bootstrap login email",
+                    bootstrap_login["email"],
+                    description="Email address assigned to the installer-created Casdoor login user.",
+                )
+                answers.bootstrap_login_display_name = self._prompt_with_default(
+                    "Bootstrap login display name",
+                    bootstrap_login["display_name"],
+                    description="Friendly display name shown for the installer-created login user.",
+                )
+                provided_login_password = self._prompt_secret(
+                    "CASDOOR bootstrap login password",
+                    "Password for the installer-created Casdoor login user. Leave blank to generate a strong value and reveal it in the final install summary.",
+                )
+                if provided_login_password:
+                    answers.bootstrap_login_password = provided_login_password
+                    answers.bootstrap_login_password_generated = False
+                else:
+                    answers.bootstrap_login_password = secrets.token_urlsafe(18)
+                    answers.bootstrap_login_password_generated = True
+            else:
+                answers.bootstrap_login_username = ""
+                answers.bootstrap_login_email = ""
+                answers.bootstrap_login_display_name = ""
+                answers.bootstrap_login_password = ""
+                answers.bootstrap_login_password_generated = False
+
+            print(self._render_answers_summary(answers))  # noqa: T201
+            if self._ask_yes_no("Proceed with these settings?", True):
+                return answers
 
     @staticmethod
     def _normalize_auth_provider(value: str) -> str:
@@ -249,6 +606,19 @@ class FrontierInstaller:
             "actor_list": ",".join(references),
         }
 
+    @staticmethod
+    def _resolved_bootstrap_login_identity(answers: InstallerAnswers) -> dict[str, str]:
+        username = str(answers.bootstrap_login_username or "").strip()
+        email = str(answers.bootstrap_login_email or "").strip()
+        display_name = str(answers.bootstrap_login_display_name or "").strip()
+        password = str(answers.bootstrap_login_password or "")
+        return {
+            "username": username,
+            "email": email,
+            "display_name": display_name,
+            "password": password,
+        }
+
     def _write_env_file(self, answers: InstallerAnswers, secrets_map: dict[str, str]) -> Path:
         generated_dir = self.repo_root / ".installer"
         generated_dir.mkdir(parents=True, exist_ok=True)
@@ -266,6 +636,7 @@ class FrontierInstaller:
             "FRONTIER_SECURE_LOCAL_MODE=true",
             "FRONTIER_REQUIRE_AUTHENTICATED_REQUESTS=true",
             "FRONTIER_ALLOW_HEADER_ACTOR_AUTH=false",
+            "FRONTIER_LOCAL_BOOTSTRAP_AUTHENTICATED_OPERATOR=true",
             "NEXT_PUBLIC_API_BASE_URL=/api",
             f"FRONTEND_ORIGIN=http://{answers.local_hostname}.localhost",
             f"FRONTIER_AUTH_MODE={self._normalize_auth_provider(answers.local_auth_provider)}",
@@ -277,6 +648,7 @@ class FrontierInstaller:
             f"FEDERATION_PEERS={','.join(answers.federation_peers)}",
         ]
         bootstrap_admin = self._resolved_bootstrap_admin_identity(answers)
+        bootstrap_login = self._resolved_bootstrap_login_identity(answers)
         generated_lines.extend(
             [
                 f"FRONTIER_BOOTSTRAP_ADMIN_USERNAME={bootstrap_admin['username']}",
@@ -286,6 +658,10 @@ class FrontierInstaller:
                 f"FRONTIER_BUILDER_ACTORS={bootstrap_admin['actor_list']}",
                 f"CASDOOR_BOOTSTRAP_ADMIN_USERNAME={bootstrap_admin['username']}",
                 f"CASDOOR_BOOTSTRAP_ADMIN_EMAIL={bootstrap_admin['email']}",
+                f"CASDOOR_BOOTSTRAP_LOGIN_USERNAME={bootstrap_login['username']}",
+                f"CASDOOR_BOOTSTRAP_LOGIN_EMAIL={bootstrap_login['email']}",
+                f"CASDOOR_BOOTSTRAP_LOGIN_DISPLAY_NAME={bootstrap_login['display_name']}",
+                f"CASDOOR_BOOTSTRAP_LOGIN_PASSWORD={bootstrap_login['password']}",
             ]
         )
         if self._normalize_auth_provider(answers.local_auth_provider) == "oidc":
@@ -348,16 +724,28 @@ class FrontierInstaller:
     def _collect_local_secrets(self, answers: InstallerAnswers) -> dict[str, str]:
         if answers.deployment_mode == "enterprise":
             return {}
-        a2a_secret = getpass.getpass("A2A_JWT_SECRET (leave blank to generate): ").strip() or secrets.token_urlsafe(32)
-        postgres_password = getpass.getpass("POSTGRES_PASSWORD (leave blank to generate): ").strip() or secrets.token_urlsafe(24)
-        neo4j_password = getpass.getpass("NEO4J_PASSWORD (leave blank to generate): ").strip() or secrets.token_urlsafe(24)
+        a2a_secret = self._prompt_secret(
+            "A2A_JWT_SECRET",
+            "Shared signing secret for authenticated agent-to-agent traffic in the secure local stack.",
+        ) or secrets.token_urlsafe(32)
+        postgres_password = self._prompt_secret(
+            "POSTGRES_PASSWORD",
+            "Database password for the local PostgreSQL instance used by the secure local stack.",
+        ) or secrets.token_urlsafe(24)
+        neo4j_password = self._prompt_secret(
+            "NEO4J_PASSWORD",
+            "Graph database password for the local Neo4j service.",
+        ) or secrets.token_urlsafe(24)
         secrets_map = {
             "A2A_JWT_SECRET": a2a_secret,
             "POSTGRES_PASSWORD": postgres_password,
             "NEO4J_PASSWORD": neo4j_password,
         }
         if self._normalize_auth_provider(answers.local_auth_provider) == "shared-token":
-            provided_bearer = getpass.getpass("FRONTIER_API_BEARER_TOKEN (leave blank to generate): ").strip()
+            provided_bearer = self._prompt_secret(
+                "FRONTIER_API_BEARER_TOKEN",
+                "Fallback backend bearer token when you are not wiring operator auth through OIDC yet.",
+            )
             secrets_map["FRONTIER_API_BEARER_TOKEN"] = provided_bearer or secrets.token_urlsafe(32)
         return secrets_map
 
@@ -382,7 +770,15 @@ class FrontierInstaller:
     def _ask_yes_no(self, prompt: str, default: bool) -> bool:
         suffix = "[Y/n]" if default else "[y/N]"
         while True:
-            response = builtins.input(f"{prompt} {suffix} ").strip().lower()
+            self._print_panel(
+                "Installer confirmation",
+                [
+                    prompt,
+                    f"Default    : {'Yes' if default else 'No'}",
+                    f"Input      : {suffix}",
+                ],
+            )
+            response = self._raw_input().strip().lower()
             if not response:
                 return default
             if response in {"y", "yes"}:
