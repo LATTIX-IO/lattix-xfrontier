@@ -152,14 +152,23 @@ def _scripts_dir_for_install_mode(mode: str) -> Path:
     return python_scripts_dir() if mode == "editable" else user_scripts_dir()
 
 
+def _path_separator_for_scripts_dir(scripts_dir: Path, current_path: str) -> str:
+    if ";" in current_path:
+        return ";"
+    if scripts_dir.name.lower() == "scripts":
+        return ";"
+    return os.pathsep
+
+
 def _runtime_env(install_root: Path, mode: str) -> dict[str, str]:
     scripts_dir = _scripts_dir_for_install_mode(mode)
     current_path = str(os.getenv("PATH") or "")
-    path_entries = [entry for entry in current_path.split(os.pathsep) if entry]
+    path_separator = _path_separator_for_scripts_dir(scripts_dir, current_path)
+    path_entries = [entry for entry in current_path.split(path_separator) if entry]
     if str(scripts_dir) not in path_entries:
         path_entries.insert(0, str(scripts_dir))
     env = os.environ.copy()
-    env["PATH"] = os.pathsep.join(path_entries)
+    env["PATH"] = path_separator.join(path_entries)
     env[FRONTIER_APP_HOME_ENV] = str(install_root)
     return env
 
