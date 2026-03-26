@@ -6050,6 +6050,32 @@ def _configured_builder_actors() -> set[str]:
     return _configured_admin_actors()
 
 
+def _local_authenticated_operator_bootstrap_enabled() -> bool:
+    return _env_flag("FRONTIER_LOCAL_BOOTSTRAP_AUTHENTICATED_OPERATOR", False)
+
+
+def _request_uses_local_operator_oidc(request: Request | None) -> bool:
+    if request is None:
+        return False
+    auth_context = getattr(request.state, "frontier_auth_context", None)
+    if not isinstance(auth_context, dict) or not auth_context.get("used_bearer_token"):
+        return False
+    if _active_runtime_profile().name != "local-secure":
+        return False
+    if not _local_authenticated_operator_bootstrap_enabled():
+        return False
+    try:
+        config = _configured_operator_oidc()
+    except Exception:
+        return False
+    issuer = str(config.get("issuer") or "").strip()
+    provider = str(config.get("provider") or "").strip().lower()
+    if not issuer:
+        return False
+    issuer_host = str(urlsplit(issuer).hostname or "").strip().lower()
+    return _hostname_is_local(issuer_host) and provider in {"casdoor", "oidc"}
+
+
 def _configured_static_bearer_token() -> str:
     return str(os.getenv("FRONTIER_API_BEARER_TOKEN") or "").strip()
 
@@ -6417,6 +6443,8 @@ def _request_has_admin_access(request: Request | None) -> bool:
     roles = _auth_context_access_claims(auth_context)
     if roles.intersection({"admin", "platform-admin", "builder-admin", "owner"}):
         return True
+    if _request_uses_local_operator_oidc(request):
+        return True
 
     references = _auth_context_identity_references(auth_context)
     return bool(auth_context.get("used_bearer_token") and references.intersection(_configured_admin_actors()))
@@ -6432,6 +6460,8 @@ def _request_has_builder_access(request: Request | None) -> bool:
         return False
     roles = _auth_context_access_claims(auth_context)
     if roles.intersection({"builder", "builder-admin", "platform-admin", "admin", "owner", "builder:access", "frontier:builder"}):
+        return True
+    if _request_uses_local_operator_oidc(request):
         return True
 
     references = _auth_context_identity_references(auth_context)

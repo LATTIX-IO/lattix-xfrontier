@@ -106,11 +106,30 @@ function Normalize-A2AAudience {
 }
 
 function Get-HelmCommand {
-    $pathHelm = Get-Command helm -ErrorAction SilentlyContinue
-    if ($pathHelm) {
+    $repoRoot = Get-RepoRoot
+    foreach ($candidate in @(
+        (Join-Path $repoRoot ".tools\helm\windows-amd64\helm.exe"),
+        (Join-Path $repoRoot ".tools\helm\helm.exe")
+    )) {
+        if (Test-Path $candidate) {
+            return (Resolve-Path $candidate).Path
+        }
+    }
+
+    $pathHelm = Get-Command helm.exe -ErrorAction SilentlyContinue
+    if ($pathHelm -and -not [string]::IsNullOrWhiteSpace($pathHelm.Source)) {
         return $pathHelm.Source
     }
-    throw "Helm was not found. Install it or run validation in CI."
+
+    $fallback = Get-Command helm -ErrorAction SilentlyContinue
+    if ($fallback -and -not [string]::IsNullOrWhiteSpace($fallback.Source)) {
+        $resolved = $fallback.Source
+        if ($resolved -match '\.(exe|cmd|bat)$') {
+            return $resolved
+        }
+    }
+
+    throw "A real Helm executable was not found. Install Helm with .\\scripts\\frontier.ps1 install-helm or add helm.exe to PATH; Windows may be resolving a non-executable shim named 'helm'."
 }
 
 function Ensure-ComposeEnvFile {
@@ -157,7 +176,7 @@ function Ensure-ComposeEnvFile {
         $envMap["A2A_TRUSTED_SUBJECTS"] = "backend,research,code,review,coordinator"
     }
     if (-not $envMap.Contains("LOCAL_STACK_HOST") -or [string]::IsNullOrWhiteSpace($envMap["LOCAL_STACK_HOST"])) {
-        $envMap["LOCAL_STACK_HOST"] = "frontier.localhost"
+        $envMap["LOCAL_STACK_HOST"] = "xfrontier.local"
     }
 
     if ($LocalProfile) {
@@ -170,8 +189,26 @@ function Ensure-ComposeEnvFile {
         $envMap["FRONTIER_RUNTIME_PROFILE"] = "local-secure"
         $envMap["NEXT_PUBLIC_API_BASE_URL"] = "/api"
         $envMap["FRONTEND_ORIGIN"] = "http://$($envMap['LOCAL_STACK_HOST'])"
-        if (-not $envMap.Contains("FRONTIER_LOCAL_API_BASE_URL") -or [string]::IsNullOrWhiteSpace($envMap["FRONTIER_LOCAL_API_BASE_URL"])) {
-            $envMap["FRONTIER_LOCAL_API_BASE_URL"] = "http://localhost:8000"
+        $gatewayBindHost = if (-not $envMap.Contains("LOCAL_GATEWAY_BIND_HOST") -or [string]::IsNullOrWhiteSpace($envMap["LOCAL_GATEWAY_BIND_HOST"]) -or $envMap["LOCAL_GATEWAY_BIND_HOST"] -eq "0.0.0.0") {
+            "127.0.0.1"
+        }
+        else {
+            $envMap["LOCAL_GATEWAY_BIND_HOST"]
+        }
+        $gatewayPort = if (-not $envMap.Contains("LOCAL_GATEWAY_HTTP_PORT") -or [string]::IsNullOrWhiteSpace($envMap["LOCAL_GATEWAY_HTTP_PORT"])) {
+            "80"
+        }
+        else {
+            $envMap["LOCAL_GATEWAY_HTTP_PORT"]
+        }
+        $defaultSecureApiBase = if ($gatewayPort -eq "80") {
+            "http://$gatewayBindHost/api"
+        }
+        else {
+            "http://$gatewayBindHost`:$gatewayPort/api"
+        }
+        if (-not $envMap.Contains("FRONTIER_LOCAL_API_BASE_URL") -or [string]::IsNullOrWhiteSpace($envMap["FRONTIER_LOCAL_API_BASE_URL"]) -or $envMap["FRONTIER_LOCAL_API_BASE_URL"] -eq "http://localhost:8000") {
+            $envMap["FRONTIER_LOCAL_API_BASE_URL"] = $defaultSecureApiBase
         }
     }
 
@@ -297,12 +334,47 @@ function Show-Help {
     Write-Host "  install-helm Install Helm via direct download into .tools\helm"
     Write-Host "  install-opa Install repo-local OPA binary"
     Write-Host "  policy-test Run opa tests"
-    Write-Host "  health      Query http://localhost:8000/healthz"
+    Write-Host "  health      Query the configured API /healthz endpoint"
     Write-Host "  ps          Show docker compose status"
     Write-Host "  logs        Show docker compose logs"
     Write-Host "  smoke       Alias for health"
     Write-Host ""
     Write-Host "Tip: You can also use the installed CLI directly with 'lattix up'."
+}
+
+function Get-ConfiguredApiBaseUrl {
+    $secureEnvPath = Get-InstallerEnvPath
+    $lightweightEnvPath = Get-InstallerEnvPath -LocalProfile
+
+    if ((Test-Path $secureEnvPath) -or -not (Test-Path $lightweightEnvPath)) {
+        $envPath = Ensure-ComposeEnvFile
+    }
+    else {
+        $envPath = Ensure-ComposeEnvFile -LocalProfile
+    }
+
+    $envMap = Get-EnvMapFromFile -Path $envPath
+    $configured = if ($envMap.Contains("FRONTIER_LOCAL_API_BASE_URL")) {
+        [string]$envMap["FRONTIER_LOCAL_API_BASE_URL"]
+    }
+    else {
+        ""
+    }
+    return $configured.TrimEnd('/')
+}
+
+function Get-ConfiguredApiHostHeader {
+    $secureEnvPath = Get-InstallerEnvPath
+    if (-not (Test-Path $secureEnvPath)) {
+        return ""
+    }
+
+    $envPath = Ensure-ComposeEnvFile
+    $envMap = Get-EnvMapFromFile -Path $envPath
+    if ($envMap.Contains("LOCAL_STACK_HOST")) {
+        return ([string]$envMap["LOCAL_STACK_HOST"]).Trim()
+    }
+    return ""
 }
 
 $python = Get-PythonCommand
@@ -426,7 +498,9 @@ switch ($Command.ToLowerInvariant()) {
         Invoke-ExternalCommand @($opa, "test", "policies/", "-v")
     }
     "health" {
-        Invoke-ExternalCommand @($python, "-c", "import urllib.request;print(urllib.request.urlopen('http://localhost:8000/healthz', timeout=5).read().decode())")
+        $apiBaseUrl = Get-ConfiguredApiBaseUrl
+        $apiHostHeader = Get-ConfiguredApiHostHeader
+        Invoke-ExternalCommand @($python, "-c", "import urllib.request; req=urllib.request.Request('$apiBaseUrl/healthz', headers={'Host': '$apiHostHeader'} if '$apiHostHeader' else {}); print(urllib.request.urlopen(req, timeout=5).read().decode())")
     }
     "ps" {
         Assert-DockerReady
@@ -439,7 +513,9 @@ switch ($Command.ToLowerInvariant()) {
         Invoke-ExternalCommand ($composePrefix + @("logs", "--tail=200"))
     }
     "smoke" {
-        Invoke-ExternalCommand @($python, "-c", "import urllib.request;print(urllib.request.urlopen('http://localhost:8000/healthz', timeout=5).read().decode())")
+        $apiBaseUrl = Get-ConfiguredApiBaseUrl
+        $apiHostHeader = Get-ConfiguredApiHostHeader
+        Invoke-ExternalCommand @($python, "-c", "import urllib.request; req=urllib.request.Request('$apiBaseUrl/healthz', headers={'Host': '$apiHostHeader'} if '$apiHostHeader' else {}); print(urllib.request.urlopen(req, timeout=5).read().decode())")
     }
     "help" {
         Show-Help

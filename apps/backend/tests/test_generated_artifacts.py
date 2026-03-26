@@ -2467,6 +2467,41 @@ def test_auth_session_reports_bootstrap_admin_capabilities_from_claim_references
         store.platform_settings.require_authenticated_requests = original_require_auth
 
 
+def test_auth_session_treats_local_oidc_operator_as_bootstrap_admin_when_enabled(monkeypatch) -> None:
+    original_require_auth = store.platform_settings.require_authenticated_requests
+    operator_token = mint_token(
+        "different-local-operator",
+        ttl_seconds=60,
+        additional_claims={
+            "actor": "different-local-operator",
+            "preferred_username": "james",
+            "email": "james@xfrontier.localhost",
+            "roles": ["member"],
+        },
+    )
+
+    try:
+        store.platform_settings.require_authenticated_requests = False
+        monkeypatch.setenv("FRONTIER_RUNTIME_PROFILE", "local-secure")
+        monkeypatch.setenv("FRONTIER_LOCAL_BOOTSTRAP_AUTHENTICATED_OPERATOR", "true")
+        monkeypatch.setenv("FRONTIER_AUTH_OIDC_PROVIDER", "casdoor")
+        monkeypatch.setenv("FRONTIER_AUTH_OIDC_ISSUER", "http://casdoor.localhost")
+        monkeypatch.setenv("FRONTIER_AUTH_OIDC_AUDIENCE", "frontier-ui")
+        monkeypatch.setenv("FRONTIER_AUTH_OIDC_JWKS_URL", "http://casdoor.localhost/.well-known/jwks.json")
+        monkeypatch.setenv("FRONTIER_ADMIN_ACTORS", "frontier-admin,admin@frontier.localhost")
+        monkeypatch.setenv("FRONTIER_BUILDER_ACTORS", "frontier-admin,admin@frontier.localhost")
+
+        response = client.get("/auth/session", headers={"authorization": f"Bearer {operator_token}"})
+        assert response.status_code == 200
+        body = response.json()
+        assert body["authenticated"] is True
+        assert body["capabilities"]["can_admin"] is True
+        assert body["capabilities"]["can_builder"] is True
+        assert body["allowed_modes"] == ["user", "builder"]
+    finally:
+        store.platform_settings.require_authenticated_requests = original_require_auth
+
+
 def test_auth_session_requires_authentication_in_secure_profiles(monkeypatch) -> None:
     original_require_auth = store.platform_settings.require_authenticated_requests
 

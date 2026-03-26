@@ -33,6 +33,12 @@
   --fx-input-text: hsl(var(--foreground));
   --fx-nav-hover: hsl(var(--muted) / 0.78);
   --fx-nav-active: hsl(var(--accent) / 0.14);
+  --fx-nav-active-border: color-mix(in srgb, var(--fx-primary) 24%, var(--ui-border) 76%);
+  --fx-nav-active-text: hsl(var(--foreground));
+  --fx-primary-strong: color-mix(in srgb, var(--fx-primary) 92%, hsl(var(--foreground)) 8%);
+  --fx-sidebar-divider: color-mix(in srgb, var(--ui-border) 82%, transparent);
+  --fx-sidebar-kicker: color-mix(in srgb, hsl(var(--muted-foreground)) 88%, transparent);
+  --fx-sidebar-footer: color-mix(in srgb, hsl(var(--muted)) 70%, transparent);
   --fx-top-strip: hsl(var(--muted));
   --fx-top-strip-text: hsl(var(--foreground));
   --fx-focus-ring: hsl(var(--accent));
@@ -82,6 +88,12 @@
   --fx-input-text: hsl(var(--foreground));
   --fx-nav-hover: hsl(var(--muted) / 0.85);
   --fx-nav-active: hsl(var(--accent) / 0.2);
+  --fx-nav-active-border: color-mix(in srgb, var(--fx-primary) 28%, var(--ui-border) 72%);
+  --fx-nav-active-text: hsl(var(--foreground));
+  --fx-primary-strong: color-mix(in srgb, var(--fx-primary) 94%, hsl(var(--foreground)) 6%);
+  --fx-sidebar-divider: color-mix(in srgb, var(--ui-border) 78%, transparent);
+  --fx-sidebar-kicker: color-mix(in srgb, hsl(var(--muted-foreground)) 92%, transparent);
+  --fx-sidebar-footer: color-mix(in srgb, hsl(var(--muted)) 80%, transparent);
   --fx-top-strip: hsl(var(--muted));
   --fx-top-strip-text: hsl(var(--foreground));
   --fx-focus-ring: hsl(var(--accent));
@@ -156,6 +168,84 @@ body {
   background: var(--fx-nav-active);
   color: hsl(var(--foreground));
   border: 1px solid color-mix(in srgb, var(--ui-border) 70%, var(--fx-primary) 30%);
+}
+
+.fx-workspace-switcher {
+  border: 1px solid transparent;
+  border-radius: 0.9rem;
+  padding: 0.75rem 0.8rem;
+  background: color-mix(in srgb, hsl(var(--card)) 88%, hsl(var(--muted)) 12%);
+  transition: background 140ms ease, border-color 140ms ease, transform 140ms ease;
+}
+
+.fx-workspace-switcher:hover {
+  background: color-mix(in srgb, hsl(var(--card)) 70%, hsl(var(--muted)) 30%);
+  border-color: var(--fx-sidebar-divider);
+}
+
+.fx-workspace-switcher-kicker {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--fx-sidebar-kicker);
+}
+
+.fx-nav-section {
+  margin-bottom: 1rem;
+}
+
+.fx-nav-section-title {
+  padding: 0 0.6rem 0.45rem;
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--fx-sidebar-kicker);
+}
+
+.fx-nav-item {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  min-height: 2.35rem;
+  border: 1px solid transparent;
+  border-radius: 0.85rem;
+  padding: 0.55rem 0.75rem;
+  color: hsl(var(--foreground));
+  font-size: 0.86rem;
+  font-weight: 500;
+  text-decoration: none;
+  transition: background 140ms ease, border-color 140ms ease, color 140ms ease, transform 140ms ease;
+}
+
+.fx-nav-item:hover {
+  background: var(--fx-nav-hover);
+  border-color: var(--fx-sidebar-divider);
+}
+
+.fx-nav-item:focus-visible {
+  outline: 2px solid var(--fx-focus-ring);
+  outline-offset: 2px;
+}
+
+.fx-nav-item-active {
+  background: var(--fx-nav-active);
+  border-color: var(--fx-nav-active-border);
+  color: var(--fx-nav-active-text);
+  box-shadow: inset 0 1px 0 color-mix(in srgb, white 24%, transparent);
+}
+
+.fx-nav-item-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.15rem;
+  height: 1.15rem;
+  flex: 0 0 auto;
 }
 
 .fx-btn-primary {

@@ -1,5 +1,4 @@
 import type { Metadata } from "next";
-import Link from "next/link";
 
 export const dynamic = "force-dynamic";
 
@@ -243,14 +242,9 @@ export default function AuthPage() {
                 </span>
               ))}
             </div>
-            <div className="flex flex-wrap items-center justify-between gap-3 text-sm text-[var(--fx-muted)]">
-              <span className="max-w-[24rem] text-pretty">
-                Need a different provider? Update the install-time OIDC values and this page will keep pointing to the right IAM surface.
-              </span>
-              <Link href="/inbox" className="text-sm font-semibold text-[var(--fx-primary)] no-underline hover:opacity-80">
-                Continue to the console →
-              </Link>
-            </div>
+            <p className="max-w-[24rem] text-pretty text-sm text-[var(--fx-muted)]">
+              Need a different provider? Update the install-time OIDC values and this page will keep pointing to the right IAM surface.
+            </p>
           </div>
         </div>
       </div>

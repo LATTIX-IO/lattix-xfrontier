@@ -4,8 +4,8 @@ Dual-mode Next.js frontend for local-first orchestration operations and workflow
 
 ## Modes
 
-- **User Mode** (Ops/day-to-day): inbox, run conversation, artifacts, targets, guardrails.
-- **Builder Mode** (Power-user): workflow studio, agent studio, node library, guardrails builder, releases.
+- **User Mode** (Ops/day-to-day): inbox, workflows, artifacts, and shared settings.
+- **Builder Mode** (Power-user): agent studio, workflow studio, templates, playbooks, observability, integrations, node library, guardrails, releases, and builder settings.
 
 ## Local development
 

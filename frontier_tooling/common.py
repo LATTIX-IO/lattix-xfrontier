@@ -5,27 +5,114 @@ import json
 import os
 import platform
 import secrets
+import site
+import socket
 import subprocess
 import sys
+import sysconfig
 from collections import OrderedDict
 from pathlib import Path
 from typing import Any
+from collections.abc import Mapping
 
 from urllib.parse import urlparse
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
-INSTALLER_DIR = REPO_ROOT / ".installer"
-SECURE_INSTALLER_ENV_PATH = INSTALLER_DIR / "local-secure.env"
-LIGHTWEIGHT_INSTALLER_ENV_PATH = INSTALLER_DIR / "local-lightweight.env"
+PACKAGE_ROOT = Path(__file__).resolve().parents[1]
+FRONTIER_APP_HOME_ENV = "FRONTIER_APP_HOME"
+DEFAULT_LOCAL_STACK_HOST = "xfrontier.local"
 DEFAULT_ARCHIVE_URL = "https://github.com/LATTIX-IO/lattix-xfrontier/archive/refs/heads/main.zip"
 
 
+def _normalized_gateway_bind_host(value: str | None) -> str:
+    host = str(value or "").strip()
+    if not host or host == "0.0.0.0":
+        return "127.0.0.1"
+    return host
+
+
+def _default_secure_local_api_base_url(env_map: OrderedDict[str, str]) -> str:
+    host = _normalized_gateway_bind_host(env_map.get("LOCAL_GATEWAY_BIND_HOST"))
+    port = str(env_map.get("LOCAL_GATEWAY_HTTP_PORT") or "80").strip() or "80"
+    authority = host if port == "80" else f"{host}:{port}"
+    return f"http://{authority}/api"
+
+
+def source_repo_root() -> Path:
+    return PACKAGE_ROOT
+
+
+def default_app_home() -> Path:
+    home = Path.home()
+    system = platform.system().lower()
+    if system == "windows":
+        base = Path(os.getenv("LOCALAPPDATA") or (home / "AppData" / "Local"))
+        return base / "Lattix" / "xFrontier"
+    if system == "darwin":
+        return home / "Library" / "Application Support" / "Lattix" / "xFrontier"
+    xdg_data_home = str(os.getenv("XDG_DATA_HOME") or "").strip()
+    if xdg_data_home:
+        return Path(xdg_data_home) / "lattix" / "xfrontier"
+    return home / ".local" / "share" / "lattix" / "xfrontier"
+
+
+def _looks_like_repo_root(candidate: Path) -> bool:
+    return all(
+        [
+            (candidate / "pyproject.toml").exists(),
+            (candidate / "frontier_tooling").exists(),
+            (candidate / "docker-compose.yml").exists(),
+        ]
+    )
+
+
 def repo_root() -> Path:
-    return REPO_ROOT
+    configured = str(os.getenv(FRONTIER_APP_HOME_ENV) or "").strip()
+    if configured:
+        candidate = Path(configured).expanduser().resolve(strict=False)
+        if _looks_like_repo_root(candidate):
+            return candidate
+    for candidate in (PACKAGE_ROOT, default_app_home()):
+        resolved = candidate.expanduser().resolve(strict=False)
+        if _looks_like_repo_root(resolved):
+            return resolved
+    return PACKAGE_ROOT
 
 
 def python_executable() -> str:
     return sys.executable
+
+
+def user_scripts_dir() -> Path:
+    scheme = sysconfig.get_preferred_scheme("user")
+    scripts_path = sysconfig.get_path("scripts", scheme=scheme)
+    if scripts_path:
+        return Path(scripts_path)
+    return Path(site.getuserbase()) / ("Scripts" if os.name == "nt" else "bin")
+
+
+def python_scripts_dir() -> Path:
+    scripts_path = sysconfig.get_path("scripts")
+    if scripts_path:
+        return Path(scripts_path)
+    return Path(sys.executable).resolve().parent
+
+
+def cli_executable(command_name: str = "lattix", *, scripts_dir: Path | None = None) -> Path:
+    resolved_scripts_dir = scripts_dir or user_scripts_dir()
+    suffix = ".exe" if os.name == "nt" else ""
+    return resolved_scripts_dir / f"{command_name}{suffix}"
+
+
+def installer_dir(*, root: Path | None = None) -> Path:
+    return (root or repo_root()) / ".installer"
+
+
+def secure_installer_env_path(*, root: Path | None = None) -> Path:
+    return installer_dir(root=root) / "local-secure.env"
+
+
+def lightweight_installer_env_path(*, root: Path | None = None) -> Path:
+    return installer_dir(root=root) / "local-lightweight.env"
 
 
 def _read_env_map(path: Path) -> OrderedDict[str, str]:
@@ -59,14 +146,25 @@ def _normalize_a2a_audience(value: str | None) -> str:
     return text
 
 
-def _installer_env_path(*, local_profile: bool) -> Path:
-    return LIGHTWEIGHT_INSTALLER_ENV_PATH if local_profile else SECURE_INSTALLER_ENV_PATH
+def _installer_env_path(*, local_profile: bool, root: Path | None = None) -> Path:
+    return lightweight_installer_env_path(root=root) if local_profile else secure_installer_env_path(root=root)
 
 
-def ensure_compose_env_file(*, local_profile: bool = False) -> Path:
+def installer_artifact_paths(*, root: Path | None = None) -> list[Path]:
+    base = installer_dir(root=root)
+    return [
+        secure_installer_env_path(root=root),
+        lightweight_installer_env_path(root=root),
+        base / "local.env",
+        base / "generated-values.yaml",
+    ]
+
+
+def ensure_compose_env_file(*, local_profile: bool = False, root: Path | None = None) -> Path:
     env_map: OrderedDict[str, str] = OrderedDict()
-    installer_env_path = _installer_env_path(local_profile=local_profile)
-    for source in (REPO_ROOT / ".env.example", REPO_ROOT / ".env", installer_env_path):
+    resolved_root = root or repo_root()
+    installer_env_path = _installer_env_path(local_profile=local_profile, root=resolved_root)
+    for source in (resolved_root / ".env.example", resolved_root / ".env", installer_env_path):
         for key, value in _read_env_map(source).items():
             env_map[key] = value
 
@@ -76,7 +174,7 @@ def ensure_compose_env_file(*, local_profile: bool = False) -> Path:
     env_map.setdefault("A2A_JWT_ISS", "lattix-frontier")
     env_map["A2A_JWT_AUD"] = _normalize_a2a_audience(env_map.get("A2A_JWT_AUD"))
     env_map["A2A_TRUSTED_SUBJECTS"] = "backend,research,code,review,coordinator"
-    env_map.setdefault("LOCAL_STACK_HOST", "frontier.localhost")
+    env_map.setdefault("LOCAL_STACK_HOST", DEFAULT_LOCAL_STACK_HOST)
     if local_profile:
         env_map["FRONTIER_RUNTIME_PROFILE"] = "local-lightweight"
         env_map["NEXT_PUBLIC_API_BASE_URL"] = "http://localhost:8000"
@@ -84,22 +182,58 @@ def ensure_compose_env_file(*, local_profile: bool = False) -> Path:
         env_map["FRONTIER_LOCAL_API_BASE_URL"] = "http://localhost:8000"
     else:
         env_map["FRONTIER_RUNTIME_PROFILE"] = "local-secure"
+        env_map["FRONTIER_LOCAL_BOOTSTRAP_AUTHENTICATED_OPERATOR"] = "true"
         env_map["NEXT_PUBLIC_API_BASE_URL"] = "/api"
         env_map["FRONTEND_ORIGIN"] = f"http://{env_map['LOCAL_STACK_HOST']}"
-        env_map.setdefault("FRONTIER_LOCAL_API_BASE_URL", "http://localhost:8000")
+        secure_api_base = _default_secure_local_api_base_url(env_map)
+        configured_api_base = str(env_map.get("FRONTIER_LOCAL_API_BASE_URL") or "").strip()
+        if not configured_api_base or configured_api_base == "http://localhost:8000":
+            env_map["FRONTIER_LOCAL_API_BASE_URL"] = secure_api_base
     return _write_env_map(installer_env_path, env_map)
 
 
-def compose_prefix(*, local: bool) -> list[str]:
-    env_path = ensure_compose_env_file(local_profile=local)
+def configured_local_api_base_url(*, root: Path | None = None) -> str:
+    resolved_root = root or repo_root()
+    secure_env_path = secure_installer_env_path(root=resolved_root)
+    lightweight_env_path = lightweight_installer_env_path(root=resolved_root)
+
+    if secure_env_path.exists() or not lightweight_env_path.exists():
+        env_map = _read_env_map(ensure_compose_env_file(local_profile=False, root=resolved_root))
+        default_base = _default_secure_local_api_base_url(env_map)
+    else:
+        env_map = _read_env_map(ensure_compose_env_file(local_profile=True, root=resolved_root))
+        default_base = "http://localhost:8000"
+
+    configured = str(env_map.get("FRONTIER_LOCAL_API_BASE_URL") or "").strip()
+    return (configured or default_base).rstrip("/")
+
+
+def configured_local_api_headers(*, root: Path | None = None) -> dict[str, str]:
+    resolved_root = root or repo_root()
+    secure_env_path = secure_installer_env_path(root=resolved_root)
+    lightweight_env_path = lightweight_installer_env_path(root=resolved_root)
+
+    if secure_env_path.exists() or not lightweight_env_path.exists():
+        env_map = _read_env_map(ensure_compose_env_file(local_profile=False, root=resolved_root))
+        host = str(env_map.get("LOCAL_STACK_HOST") or "").strip()
+        return {"Host": host} if host else {}
+    return {}
+
+
+def configured_local_api_url(path: str, *, root: Path | None = None) -> str:
+    return f"{configured_local_api_base_url(root=root)}/{path.lstrip('/')}"
+
+
+def compose_prefix(*, local: bool, root: Path | None = None) -> list[str]:
+    env_path = ensure_compose_env_file(local_profile=local, root=root)
     base = ["docker", "compose", "--env-file", str(env_path)]
     if local:
         base.extend(["-f", "docker-compose.local.yml"])
     return base
 
 
-def existing_compose_prefix(*, local: bool) -> list[str] | None:
-    env_path = _installer_env_path(local_profile=local)
+def existing_compose_prefix(*, local: bool, root: Path | None = None) -> list[str] | None:
+    env_path = _installer_env_path(local_profile=local, root=root)
     if not env_path.exists():
         return None
     base = ["docker", "compose", "--env-file", str(env_path)]
@@ -108,19 +242,38 @@ def existing_compose_prefix(*, local: bool) -> list[str] | None:
     return base
 
 
-def remove_installer_env_files() -> list[Path]:
+def remove_installer_env_files(*, root: Path | None = None) -> list[Path]:
     removed: list[Path] = []
-    for path in (SECURE_INSTALLER_ENV_PATH, LIGHTWEIGHT_INSTALLER_ENV_PATH):
+    for path in (secure_installer_env_path(root=root), lightweight_installer_env_path(root=root)):
         if path.exists():
             path.unlink()
             removed.append(path)
     return removed
 
 
+def remove_installer_artifacts(*, root: Path | None = None) -> list[Path]:
+    removed: list[Path] = []
+    seen: set[Path] = set()
+    for path in installer_artifact_paths(root=root):
+        if path in seen:
+            continue
+        seen.add(path)
+        if path.exists():
+            path.unlink()
+            removed.append(path)
+    installer_root = installer_dir(root=root)
+    if installer_root.exists():
+        try:
+            installer_root.rmdir()
+        except OSError:
+            pass
+    return removed
+
+
 def run_command(
-    args: list[str], *, cwd: Path | None = None, check: bool = True
+    args: list[str], *, cwd: Path | None = None, check: bool = True, env: dict[str, str] | None = None
 ) -> subprocess.CompletedProcess[Any]:
-    return subprocess.run(args, cwd=str(cwd or REPO_ROOT), check=check)
+    return subprocess.run(args, cwd=str(cwd or repo_root()), check=check, env=env)
 
 
 def _validated_http_url(url: str) -> str:
@@ -136,10 +289,19 @@ def _validated_http_url(url: str) -> str:
     return parsed.geturl()
 
 
-def request_json(url: str, *, method: str = "GET", payload: dict[str, Any] | None = None, timeout: int = 10) -> Any:
+def request_json(
+    url: str,
+    *,
+    method: str = "GET",
+    payload: Mapping[str, Any] | None = None,
+    timeout: int = 10,
+    extra_headers: dict[str, str] | None = None,
+) -> Any:
     import httpx
 
     headers = {"Accept": "application/json"}
+    if extra_headers:
+        headers.update({key: value for key, value in extra_headers.items() if str(value or "").strip()})
     bearer = str(os.getenv("FRONTIER_API_BEARER_TOKEN", "") or "").strip()
     if bearer:
         headers["Authorization"] = f"Bearer {bearer}"
@@ -164,6 +326,36 @@ def print_json(data: Any) -> None:
     print(json.dumps(data, indent=2, sort_keys=False))  # noqa: T201
 
 
+def _detect_primary_ipv4() -> str | None:
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+            sock.connect(("8.8.8.8", 80))
+            address = str(sock.getsockname()[0]).strip()
+            if address:
+                return address
+    except OSError:
+        pass
+    try:
+        address = str(socket.gethostbyname(socket.gethostname())).strip()
+    except OSError:
+        return None
+    return address or None
+
+
+def portal_urls(*, root: Path | None = None) -> list[str]:
+    env_map = _read_env_map(ensure_compose_env_file(local_profile=False, root=root))
+    host = str(env_map.get("LOCAL_STACK_HOST") or DEFAULT_LOCAL_STACK_HOST).strip() or DEFAULT_LOCAL_STACK_HOST
+    urls = [f"http://{host}", "http://127.0.0.1"]
+    lan_ip = _detect_primary_ipv4()
+    if lan_ip and lan_ip != "127.0.0.1":
+        urls.append(f"http://{lan_ip}")
+    deduped: list[str] = []
+    for url in urls:
+        if url not in deduped:
+            deduped.append(url)
+    return deduped
+
+
 def detect_sandbox_backend() -> str:
     system = platform.system().lower()
     if system == "windows":
@@ -177,11 +369,12 @@ def detect_sandbox_backend() -> str:
 
 def agent_asset_roots() -> list[Path]:
     configured = str(os.getenv("FRONTIER_AGENT_ASSETS_ROOT", "") or "").strip()
-    roots: list[Path] = [(REPO_ROOT / "examples" / "agents").resolve()]
+    resolved_root = repo_root()
+    roots: list[Path] = [(resolved_root / "examples" / "agents").resolve()]
     if configured:
         configured_path = Path(configured)
         if not configured_path.is_absolute():
-            configured_path = (REPO_ROOT / configured_path).resolve()
+            configured_path = (resolved_root / configured_path).resolve()
         roots.append(configured_path)
     deduped: list[Path] = []
     seen: set[str] = set()
@@ -216,7 +409,7 @@ def discover_agent_records() -> list[dict[str, str]]:
 
 
 def resolve_opa_command() -> str:
-    local_opa = REPO_ROOT / ".tools" / "opa" / ("opa.exe" if os.name == "nt" else "opa")
+    local_opa = repo_root() / ".tools" / "opa" / ("opa.exe" if os.name == "nt" else "opa")
     if local_opa.exists():
         return str(local_opa)
     return "opa"

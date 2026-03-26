@@ -36,6 +36,7 @@ def _download_url_bytes(url: str, *, redirects_remaining: int = 3) -> bytes:
     parsed = urlsplit(validated_url)
     connection: http.client.HTTPConnection
     if parsed.scheme.lower() == "https":
+        # nosemgrep: python.lang.security.audit.httpsconnection-detected.httpsconnection-detected
         connection = http.client.HTTPSConnection(
             parsed.hostname,
             parsed.port,
@@ -65,7 +66,7 @@ def _download_url_bytes(url: str, *, redirects_remaining: int = 3) -> bytes:
 
 
 def _download_repo_archive(target_dir: Path) -> Path:
-    archive_url = _validated_archive_url(os.environ.get("FRONTIER_ARCHIVE_URL", DEFAULT_ARCHIVE_URL))
+    archive_url = _validated_archive_url(DEFAULT_ARCHIVE_URL)
     archive_bytes = _download_url_bytes(archive_url)
     with zipfile.ZipFile(io.BytesIO(archive_bytes)) as archive:
         archive.extractall(target_dir)
@@ -83,11 +84,6 @@ def _run_packaged_installer(repo_root: Path) -> None:
 
 
 def main() -> None:
-    cwd = Path.cwd()
-    packaged = cwd / "frontier_tooling" / "installer.py"
-    if packaged.exists():
-        _run_packaged_installer(cwd)
-        return
     temp_root = Path(tempfile.mkdtemp(prefix="frontier-public-installer-"))
     try:
         repo_root = _download_repo_archive(temp_root)

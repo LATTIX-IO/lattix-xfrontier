@@ -11,8 +11,8 @@ Steps:
 
 1. Run `curl -fsSL https://raw.githubusercontent.com/LATTIX-IO/lattix-xfrontier/main/install/bootstrap.sh | sh`, or on Windows run `powershell -ExecutionPolicy Bypass -c "iwr https://raw.githubusercontent.com/LATTIX-IO/lattix-xfrontier/main/install/bootstrap.ps1 -UseBasicParsing | iex"`.
 2. Follow the interactive installer prompts.
-3. If you skip auto-launch, run `lattix up`.
-4. Open `http://frontier.localhost` (or your configured `LOCAL_STACK_HOST`) for the gateway-routed frontend and use the local gateway or host-only admin bindings for health checks.
+3. The installer auto-runs `lattix up` for the secure stack once installation completes.
+4. Open `http://xfrontier.local` (or your configured `LOCAL_STACK_HOST`) for the gateway-routed frontend and use the local gateway or host-only admin bindings for health checks.
 5. Validate with `lattix health` and `make test`.
 
 For source-checkout testing, the bootstrap scripts also work directly as `pwsh -File .\install\bootstrap.ps1` and `sh ./install/bootstrap.sh`.
@@ -21,7 +21,7 @@ The intended default local deployment path uses the root `docker-compose.yml`. I
 
 This default secure stack exposes the minimum host-facing surfaces by default:
 
-- frontend via local gateway: `http://frontier.localhost`
+- frontend via local gateway: `http://xfrontier.local`
 - local gateway admin/health endpoint: host-only bind via `LOCAL_GATEWAY_BIND_HOST` (defaults to `127.0.0.1`)
 - Jaeger UI: `http://127.0.0.1:16686`
 

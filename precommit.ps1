@@ -3,23 +3,33 @@ Set-StrictMode -Version Latest
 
 $RepoRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 $FrontendRoot = Join-Path $RepoRoot "apps\frontend"
+$StepResults = [System.Collections.Generic.List[object]]::new()
 
 Write-Host "Lattix xFrontier pre-commit checks"
 
 function Get-PythonCommand {
   $venvPython = Join-Path $RepoRoot ".venv\Scripts\python.exe"
   if (Test-Path $venvPython) {
-    return (Resolve-Path $venvPython).Path
+    return [pscustomobject]@{
+      Executable = (Resolve-Path $venvPython).Path
+      PrefixArgs = @()
+    }
   }
 
   $pyLauncher = Get-Command py -ErrorAction SilentlyContinue
   if ($pyLauncher) {
-    return "py -3"
+    return [pscustomobject]@{
+      Executable = $pyLauncher.Source
+      PrefixArgs = @("-3")
+    }
   }
 
   $python = Get-Command python -ErrorAction SilentlyContinue
   if ($python) {
-    return $python.Source
+    return [pscustomobject]@{
+      Executable = $python.Source
+      PrefixArgs = @()
+    }
   }
 
   throw "Python 3 is required but was not found in PATH."
@@ -39,20 +49,104 @@ function Get-OpaCommand {
   return $null
 }
 
+function Get-HelmCommand {
+  $repoHelmCandidates = @(
+    (Join-Path $RepoRoot ".tools\helm\windows-amd64\helm.exe"),
+    (Join-Path $RepoRoot ".tools\helm\helm.exe")
+  )
+
+  foreach ($candidate in $repoHelmCandidates) {
+    if (Test-Path $candidate) {
+      return (Resolve-Path $candidate).Path
+    }
+  }
+
+  $helmExe = Get-Command helm.exe -ErrorAction SilentlyContinue
+  if ($helmExe -and -not [string]::IsNullOrWhiteSpace($helmExe.Source)) {
+    return $helmExe.Source
+  }
+
+  $helmFallback = Get-Command helm -ErrorAction SilentlyContinue
+  if ($helmFallback -and -not [string]::IsNullOrWhiteSpace($helmFallback.Source)) {
+    if ($helmFallback.Source -match '\.(exe|cmd|bat)$') {
+      return $helmFallback.Source
+    }
+  }
+
+  return $null
+}
+
+function Add-StepResult {
+  param(
+    [Parameter(Mandatory = $true)]
+    [string]$Name,
+    [Parameter(Mandatory = $true)]
+    [ValidateSet("PASS", "FAIL", "SKIP")]
+    [string]$Status,
+    [int]$ExitCode = 0,
+    [string]$Detail = ""
+  )
+
+  $StepResults.Add([pscustomobject]@{
+      Name = $Name
+      Status = $Status
+      ExitCode = $ExitCode
+      Detail = $Detail
+    }) | Out-Null
+}
+
+function Write-StepSummary {
+  param(
+    [switch]$Final
+  )
+
+  Write-Host ""
+  Write-Host "Pre-commit status summary"
+  foreach ($result in $StepResults) {
+    $suffix = if ([string]::IsNullOrWhiteSpace($result.Detail)) { "" } else { " - $($result.Detail)" }
+    Write-Host ("[{0}] {1}{2}" -f $result.Status, $result.Name, $suffix)
+  }
+  if ($Final) {
+    Write-Host ""
+  }
+}
+
+function Invoke-Python {
+  param(
+    [Parameter(Mandatory = $true)]
+    [string[]]$Arguments
+  )
+
+  & $Python.Executable @($Python.PrefixArgs + $Arguments)
+}
+
 function Invoke-Step {
   param(
     [Parameter(Mandatory = $true)]
-    [string]$CommandLine,
+    [string]$Name,
+    [Parameter(Mandatory = $true)]
+    [scriptblock]$Action,
     [string]$WorkingDirectory = $RepoRoot
   )
 
-  Write-Host $CommandLine
+  Write-Host ("==> {0}" -f $Name)
   Push-Location $WorkingDirectory
   try {
-    Invoke-Expression $CommandLine
-    if ($LASTEXITCODE -ne 0) {
-      exit $LASTEXITCODE
+    $global:LASTEXITCODE = 0
+    & $Action
+    $exitCode = if ($null -ne $LASTEXITCODE) { [int]$LASTEXITCODE } else { 0 }
+    if ($exitCode -ne 0) {
+      Add-StepResult -Name $Name -Status "FAIL" -ExitCode $exitCode -Detail ("exit code {0}" -f $exitCode)
+      Write-StepSummary
+      exit $exitCode
     }
+    Add-StepResult -Name $Name -Status "PASS"
+    Write-Host ("PASS: {0}" -f $Name)
+  }
+  catch {
+    Add-StepResult -Name $Name -Status "FAIL" -ExitCode 1 -Detail $_.Exception.Message
+    Write-StepSummary
+    throw
   }
   finally {
     Pop-Location
@@ -64,64 +158,64 @@ function Invoke-IfAvailable {
     [Parameter(Mandatory = $true)]
     [string]$CommandName,
     [Parameter(Mandatory = $true)]
-    [string]$RunLine,
-    [Parameter(Mandatory = $true)]
     [string]$Description,
+    [Parameter(Mandatory = $true)]
+    [scriptblock]$Action,
     [string]$WorkingDirectory = $RepoRoot
   )
 
   if (Get-Command $CommandName -ErrorAction SilentlyContinue) {
-    Write-Host " - $Description"
-    Invoke-Step -CommandLine $RunLine -WorkingDirectory $WorkingDirectory
+    Invoke-Step -Name $Description -Action $Action -WorkingDirectory $WorkingDirectory
   }
   else {
-    Write-Host " - Skipping $Description (missing $CommandName)"
+    $detail = "missing $CommandName"
+    Write-Host ("SKIP: {0} ({1})" -f $Description, $detail)
+    Add-StepResult -Name $Description -Status "SKIP" -Detail $detail
   }
 }
 
 $Python = Get-PythonCommand
 $Opa = Get-OpaCommand
+$Helm = Get-HelmCommand
 $env:PYTHONUTF8 = "1"
 $env:PYTHONIOENCODING = "utf-8"
 
-Write-Host "1) Install Python dependencies"
-Invoke-Step "$Python -m pip install -e `".[dev]`""
+Invoke-Step -Name "Install Python dependencies" -Action { Invoke-Python -Arguments @("-m", "pip", "install", "-e", ".[dev]") }
+Invoke-Step -Name "Install frontend dependencies" -Action { npm ci } -WorkingDirectory $FrontendRoot
+Invoke-Step -Name "Python lint" -Action { Invoke-Python -Arguments @("-m", "ruff", "check", ".") }
+Invoke-Step -Name "Python typecheck" -Action { Invoke-Python -Arguments @("-m", "mypy", "frontier_tooling/", "frontier_runtime/") }
+Invoke-Step -Name "Python tests" -Action { Invoke-Python -Arguments @("-m", "pytest", "apps/backend/tests", "tests", "-v", "--cov=app", "--cov=frontier_runtime", "--cov-report=term-missing") }
 
-Write-Host "2) Install frontend dependencies"
-Invoke-Step "npm ci" -WorkingDirectory $FrontendRoot
-
-Write-Host "3) Python lint"
-Invoke-Step "$Python -m ruff check ."
-
-Write-Host "4) Python typecheck"
-Invoke-Step "$Python -m mypy frontier_tooling/ frontier_runtime/"
-
-Write-Host "5) Python tests"
-Invoke-Step "$Python -m pytest apps/backend/tests tests -v --cov=app --cov=frontier_runtime --cov-report=term-missing"
-
-Write-Host "6) Policy tests"
 if ($Opa) {
-  Invoke-Step "$Python scripts/run_opa.py test policies/ -v"
+  Invoke-Step -Name "Policy tests" -Action { Invoke-Python -Arguments @("scripts/run_opa.py", "test", "policies/", "-v") }
 }
 else {
-  Write-Host " - Skipping policy tests (OPA missing; install to .tools\\opa\\opa.exe or add 'opa' to PATH)"
+  $policyDetail = "OPA missing; install to .tools\\opa\\opa.exe or add 'opa' to PATH"
+  Write-Host ("SKIP: Policy tests ({0})" -f $policyDetail)
+  Add-StepResult -Name "Policy tests" -Status "SKIP" -Detail $policyDetail
 }
 
-Write-Host "7) Frontend lint"
-Invoke-Step "npm run lint" -WorkingDirectory $FrontendRoot
+Invoke-Step -Name "Frontend lint" -Action { npm run lint } -WorkingDirectory $FrontendRoot
+Invoke-Step -Name "Frontend tests" -Action { npm test } -WorkingDirectory $FrontendRoot
+Invoke-Step -Name "Frontend build" -Action { npm run build } -WorkingDirectory $FrontendRoot
 
-Write-Host "8) Frontend tests"
-Invoke-Step "npm test" -WorkingDirectory $FrontendRoot
+Invoke-IfAvailable -CommandName "semgrep" -Description "SAST via Semgrep" -Action { semgrep --config=auto --exclude .venv --exclude .next --exclude node_modules --exclude dist . }
+Invoke-IfAvailable -CommandName "gitleaks" -Description "Secret scanning via Gitleaks" -Action { gitleaks detect --source . --no-git --redact }
+Invoke-IfAvailable -CommandName "trivy" -Description "SCA/config via Trivy" -Action { trivy fs --scanners vuln,misconfig --severity HIGH,CRITICAL --exit-code 1 --skip-dirs .venv,.next,node_modules,dist . }
+if ($Helm) {
+  Invoke-Step -Name "Helm chart validation" -Action {
+    & $Helm lint ./helm/lattix-frontier
+    if ($LASTEXITCODE -ne 0) {
+      exit $LASTEXITCODE
+    }
+    & $Helm template lattix ./helm/lattix-frontier -f helm/lattix-frontier/values-prod.yaml | Out-Null
+  }
+}
+else {
+  $helmDetail = "missing helm.exe (run .\\scripts\\frontier.ps1 install-helm or add helm.exe to PATH)"
+  Write-Host ("SKIP: Helm chart validation ({0})" -f $helmDetail)
+  Add-StepResult -Name "Helm chart validation" -Status "SKIP" -Detail $helmDetail
+}
 
-Write-Host "9) Frontend build"
-Invoke-Step "npm run build" -WorkingDirectory $FrontendRoot
-
-Write-Host "10) Security checks (optional)"
-Invoke-IfAvailable -CommandName "semgrep" -RunLine "semgrep --config=auto --exclude .venv --exclude .next --exclude node_modules --exclude dist ." -Description "SAST via Semgrep"
-Invoke-IfAvailable -CommandName "gitleaks" -RunLine "gitleaks detect --source . --no-git --redact" -Description "Secret scanning via Gitleaks"
-Invoke-IfAvailable -CommandName "trivy" -RunLine "trivy fs --scanners vuln,misconfig --severity HIGH,CRITICAL --exit-code 1 --skip-dirs .venv,.next,node_modules,dist ." -Description "SCA/config via Trivy"
-
-Write-Host "11) Helm validation (optional)"
-Invoke-IfAvailable -CommandName "helm" -RunLine "helm lint ./helm/lattix-frontier; if (`$LASTEXITCODE -ne 0) { exit `$LASTEXITCODE }; helm template lattix ./helm/lattix-frontier -f helm/lattix-frontier/values-prod.yaml > `$null" -Description "Helm chart validation"
-
+Write-StepSummary -Final
 Write-Host "All pre-commit checks passed."

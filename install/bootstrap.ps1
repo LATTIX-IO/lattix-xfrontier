@@ -2,7 +2,7 @@ $ErrorActionPreference = 'Stop'
 
 $TempRoot = if ([string]::IsNullOrWhiteSpace($env:TEMP)) { '.\tmp' } else { $env:TEMP }
 $BootstrapDir = Join-Path $TempRoot 'frontier-install'
-$InstallerUrl = if ($env:INSTALLER_URL) { $env:INSTALLER_URL } else { 'https://raw.githubusercontent.com/LATTIX-IO/lattix-xfrontier/main/install/frontier-installer.py' }
+$InstallerUrl = 'https://raw.githubusercontent.com/LATTIX-IO/lattix-xfrontier/main/install/frontier-installer.py'
 
 function Test-PythonCommand {
     param(
@@ -25,6 +25,18 @@ function Test-PythonCommand {
     catch {
         return $false
     }
+}
+
+function Stop-Bootstrap {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Message,
+
+        [int]$ExitCode = 1
+    )
+
+    $global:LASTEXITCODE = $ExitCode
+    throw $Message
 }
 
 Write-Host '==> Lattix xFrontier bootstrap'
@@ -57,5 +69,5 @@ if ($Python.Name -eq 'py.exe' -or $Python.Name -eq 'py') {
 }
 $installerExitCode = $LASTEXITCODE
 if ($installerExitCode -ne 0) {
-    exit $installerExitCode
+    Stop-Bootstrap -Message "Installer failed with exit code $installerExitCode. The current terminal session was left open so you can inspect the error and retry." -ExitCode $installerExitCode
 }
