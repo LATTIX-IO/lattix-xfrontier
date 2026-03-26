@@ -83,6 +83,16 @@ make remove
 
 That tears down the local Docker stacks, removes named volumes and networks for those stacks, and deletes installer-managed env files under `.installer/`. It intentionally leaves your repository checkout and `.env` in place.
 
+To refresh an existing local install **without deleting workflows, agents, settings, or installer-managed state**, use:
+
+```text
+lattix update
+make update
+.\scripts\frontier.ps1 update
+```
+
+The updater keeps the existing `.installer/` env files and local Docker data volumes in place, reapplies the current package, and restarts the active local stack with a build refresh.
+
 For the default secure/full browser experience, open `http://xfrontier.local` (or your configured `LOCAL_STACK_HOST`). The public installer also prints clickable `http://127.0.0.1` and LAN IP URLs after `lattix up` auto-starts. That path proxies `/api/*` through the local gateway to the backend at `http://localhost:8000`.
 
 If you intentionally want the lighter local-only stack, use `make local-up`. That path exposes the frontend directly at `http://localhost:3000` and talks to the backend at `http://localhost:8000` without the gateway-based `/api` path.
@@ -130,6 +140,7 @@ Useful consolidation tuning flags:
 Useful follow-ups:
 
 - `lattix remove`
+- `lattix update`
 - `lattix health`
 - `lattix agent list`
 - `lattix sandbox backend`
@@ -165,6 +176,7 @@ After installation, the `lattix` command supports:
 
 - `lattix up`
 - `lattix down`
+- `lattix update`
 - `lattix remove`
 - `lattix local-up`
 - `lattix local-down`

@@ -28,6 +28,7 @@ _ROUTE_ACCESS_RULES: tuple[RouteAccessRule, ...] = (
     RouteAccessRule(("GET",), "/health", RouteAccessCategory.PUBLIC_MINIMAL),
     RouteAccessRule(("GET",), "/healthz", RouteAccessCategory.PUBLIC_MINIMAL),
     RouteAccessRule(("GET",), "/auth/session", RouteAccessCategory.AUTHENTICATED_READ, "auth.session.read"),
+    RouteAccessRule(("GET",), "/platform/version", RouteAccessCategory.PUBLIC_MINIMAL),
     RouteAccessRule(("GET",), "/healthz/details", RouteAccessCategory.AUTHENTICATED_READ, "health.details.read"),
     RouteAccessRule(("GET",), "/federation/status", RouteAccessCategory.AUTHENTICATED_READ, "federation.status.read"),
     RouteAccessRule(("GET",), "/runtime/providers", RouteAccessCategory.AUTHENTICATED_READ, "runtime.providers.read"),

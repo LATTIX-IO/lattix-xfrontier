@@ -480,6 +480,28 @@ def test_auth_session_hides_oidc_validation_details(monkeypatch) -> None:
     assert "frontier_auth_oidc_issuer" not in body["oidc"]["validation_error"].lower()
 
 
+def test_platform_version_reports_update_metadata(monkeypatch) -> None:
+    monkeypatch.setattr(
+        main_module,
+        "_fetch_remote_release_manifest",
+        lambda: {
+            "version": "9.9.9",
+            "update_command": "lattix update",
+            "publicRepo": "https://github.com/LATTIX-IO/lattix-xfrontier",
+        },
+    )
+
+    response = client.get("/platform/version")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["current_version"]
+    assert body["latest_version"] == "9.9.9"
+    assert body["update_available"] is True
+    assert body["update_command"] == "lattix update"
+    assert "without deleting workflows" in body["summary"].lower()
+
+
 def test_publish_workflow_definition_hides_internal_graph_parse_details() -> None:
     workflow_id = str(uuid4())
     payload = {

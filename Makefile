@@ -1,4 +1,4 @@
-.PHONY: up down remove local-up local-down stack-up stack-down test lint typecheck policy-test helm-validate release-bundle bootstrap health ps logs smoke install-opa
+.PHONY: up down update remove local-up local-down stack-up stack-down test lint typecheck policy-test helm-validate release-bundle bootstrap health ps logs smoke install-opa
 
 # Canonical public install path: install/bootstrap.sh (or install/bootstrap.ps1 on Windows).
 # This Makefile is kept as a source-checkout convenience wrapper for contributors.
@@ -26,6 +26,9 @@ up:             ## Start all services
 
 down:           ## Stop all services
 	$(CLI_RUNNER) down
+
+update:         ## Refresh a local install in place without deleting workflows or settings
+	$(CLI_RUNNER) update
 
 remove:         ## Tear down local install and delete installer-managed env files
 	$(CLI_RUNNER) remove

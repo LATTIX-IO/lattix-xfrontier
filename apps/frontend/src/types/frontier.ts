@@ -27,6 +27,18 @@ export type OperatorSession = {
   };
 };
 
+export type PlatformVersionStatus = {
+  current_version: string;
+  latest_version: string;
+  update_available: boolean;
+  install_mode: "editable" | "wheel" | string;
+  update_command: string;
+  release_notes_url?: string;
+  checked_at: string;
+  source?: string;
+  summary: string;
+};
+
 export type RunStatus =
   | "Running"
   | "Blocked"

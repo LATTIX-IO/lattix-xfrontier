@@ -321,6 +321,7 @@ function Show-Help {
     Write-Host "  bootstrap   Install editable package + dev dependencies"
     Write-Host "  up          Start docker compose stack"
     Write-Host "  down        Stop docker compose stack"
+    Write-Host "  update      Refresh the local install in place without deleting workflows or settings"
     Write-Host "  remove      Tear down local install and delete installer-managed env files"
     Write-Host "  local-up    Start the lightweight local-first stack"
     Write-Host "  local-down  Stop the lightweight local-first stack"
@@ -403,6 +404,9 @@ switch ($Command.ToLowerInvariant()) {
         Assert-DockerReady
         $composePrefix = Get-FullComposeCommandPrefix
         Invoke-ExternalCommand ($composePrefix + @("down", "-v"))
+    }
+    "update" {
+        Invoke-ExternalCommand @($python, "-m", "frontier_tooling.cli", "update")
     }
     "remove" {
         $secureEnvPath = Get-InstallerEnvPath

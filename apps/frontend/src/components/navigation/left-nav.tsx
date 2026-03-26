@@ -1,14 +1,15 @@
 "use client";
 
 import Link from "next/link";
-import packageJson from "../../../package.json";
 import { getPreferenceNavItem, getPrimaryNavGroups, type NavGroup, type NavIconName, type NavItem, type NavMode } from "@/components/navigation/nav-config";
+import type { PlatformVersionStatus } from "@/types/frontier";
 
 type LeftNavProps = {
   mode: NavMode;
   pathname: string;
   inAdmin: boolean;
   expanded: boolean;
+  platformVersion?: PlatformVersionStatus | null;
 };
 
 function NavIcon({ name, active }: { name: NavIconName; active: boolean }) {
@@ -149,12 +150,13 @@ function NavSection({ group, pathname }: { group: NavGroup; pathname: string }) 
   );
 }
 
-export function LeftNav({ mode, pathname, inAdmin, expanded }: LeftNavProps) {
+export function LeftNav({ mode, pathname, inAdmin, expanded, platformVersion }: LeftNavProps) {
   const navGroups = getPrimaryNavGroups(mode, inAdmin);
   const preferenceItem = getPreferenceNavItem(mode);
   const modeLabel = mode === "builder" ? "Builder Console" : "Operational Console";
   const workspaceLabel = mode === "builder" ? "Builder workspace" : "Workspace";
-  const versionLabel = `v${packageJson.version}`;
+  const versionLabel = platformVersion?.current_version ? `v${platformVersion.current_version}` : "Version unavailable";
+  const latestVersionLabel = platformVersion?.latest_version ? `v${platformVersion.latest_version}` : "";
 
   if (!expanded) {
     return null;
@@ -195,8 +197,46 @@ export function LeftNav({ mode, pathname, inAdmin, expanded }: LeftNavProps) {
           </nav>
         </section>
 
-        <div className="mt-3 border-t border-[var(--ui-border)] px-2 pt-3 text-[0.7rem] text-[var(--fx-muted)]">
-          <span>{versionLabel}</span>
+        <div className="mt-3 border-t border-[var(--ui-border)] px-2 pt-3">
+          <div className="flex items-center justify-between gap-3 text-[0.68rem] uppercase tracking-[0.12em] text-[var(--fx-muted)]">
+            <span>Platform version</span>
+            <span className="rounded-full border border-[var(--ui-border)] bg-[hsl(var(--card))] px-2 py-1 text-[0.72rem] font-semibold normal-case text-[hsl(var(--foreground))]">
+              {versionLabel}
+            </span>
+          </div>
+
+          {platformVersion?.update_available ? (
+            <div className="mt-3 rounded-2xl border border-[color-mix(in_srgb,var(--fx-primary-strong)_28%,var(--ui-border))] bg-[color-mix(in_srgb,var(--fx-primary)_12%,var(--fx-sidebar))] p-3 shadow-[0_10px_24px_rgba(0,0,0,0.16)]">
+              <p className="text-[0.68rem] font-semibold uppercase tracking-[0.12em] text-[var(--fx-primary-strong)]">Update available</p>
+              <p className="mt-1 text-[0.9rem] font-semibold text-[hsl(var(--foreground))]">
+                {versionLabel} → {latestVersionLabel}
+              </p>
+              <p className="mt-2 text-[0.74rem] leading-5 text-[var(--fx-muted)]">
+                Refresh the local app in place. Workflows, agents, settings, and installer state stay intact.
+              </p>
+              <details className="mt-3 rounded-xl border border-[var(--ui-border)] bg-[hsl(var(--card))] p-2 text-[0.74rem] text-[var(--foreground)]">
+                <summary className="cursor-pointer list-none font-medium text-[var(--foreground)] marker:hidden">
+                  How to update
+                </summary>
+                <p className="mt-2 leading-5 text-[var(--fx-muted)]">Open a terminal on this machine and run the updater command below.</p>
+                <div className="mt-2 rounded-lg border border-[var(--ui-border)] bg-[var(--fx-sidebar)] px-2 py-2 font-mono text-[0.72rem] text-[hsl(var(--foreground))]">
+                  {platformVersion.update_command}
+                </div>
+                {platformVersion.release_notes_url ? (
+                  <a
+                    href={platformVersion.release_notes_url}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="mt-2 inline-flex text-[0.72rem] font-medium text-[var(--fx-primary-strong)] no-underline hover:underline"
+                  >
+                    View release source ↗
+                  </a>
+                ) : null}
+              </details>
+            </div>
+          ) : (
+            <p className="mt-3 text-[0.74rem] leading-5 text-[var(--fx-muted)]">Current build is up to date.</p>
+          )}
         </div>
       </div>
     </div>

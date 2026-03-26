@@ -72,6 +72,27 @@ The remove flow:
 
 It intentionally does **not** delete the repository checkout, your top-level `.env` file, editable installs, virtual environments, or PATH entries.
 
+## Updating a local install in place
+
+When you have already installed xFrontier locally and want the latest published build without wiping operator-created data, use:
+
+`lattix update`
+
+Equivalent repo-local helpers:
+
+- `make update`
+- `./scripts/frontier.ps1 update`
+
+The update flow is intentionally non-destructive:
+
+1. Preserves installer-managed env files under `.installer/`.
+2. Preserves the top-level `.env` file when present.
+3. Reinstalls the current package in place.
+4. Restarts the active local stack(s) with `docker compose up -d --build --remove-orphans`.
+5. Leaves Docker volumes intact, so local workflows, agents, settings, and other persisted operator data survive the refresh.
+
+For editable/source-checkout installs, `lattix update` requires a clean Git working tree and then performs a fast-forward pull before refreshing the local stack.
+
 ## Local vanity URL
 
 The Docker Compose stack now includes `local-gateway` powered by Caddy, which routes `LOCAL_STACK_HOST` to the Frontier frontend over plain HTTP for local development, proxies `/api/*` requests to the canonical backend service, and exposes the bundled Casdoor surface at `http://casdoor.localhost`.

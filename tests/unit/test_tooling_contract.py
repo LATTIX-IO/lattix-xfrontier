@@ -109,13 +109,16 @@ def test_tooling_and_docs_remove_dev_alias_but_keep_local_stack() -> None:
     assert "docker-compose.local.yml" in deployment
     assert "make dev" not in contributing
     assert '@cli.command("dev")' not in cli
+    assert '@cli.command("update")' in cli
     assert '"local-up"' in cli
     assert '"local-down"' in cli
     assert '"remove"' in cli
+    assert '"update"' in powershell
     assert "docker-compose.local.yml" in powershell
     assert '"remove"' in powershell
     assert "local-up" in makefile
     assert "remove:" in makefile
+    assert "update:" in makefile
 
 
 def test_makefile_prefers_repo_venv_python_and_quotes_env_bootstrap_commands() -> None:
@@ -136,6 +139,7 @@ def test_makefile_routes_runtime_commands_through_shared_cli() -> None:
     assert "$(CLI_RUNNER) bootstrap" in makefile
     assert "$(CLI_RUNNER) up" in makefile
     assert "$(CLI_RUNNER) down" in makefile
+    assert "$(CLI_RUNNER) update" in makefile
     assert "$(CLI_RUNNER) remove" in makefile
     assert "$(CLI_RUNNER) local-up" in makefile
     assert "$(CLI_RUNNER) local-down" in makefile
@@ -168,6 +172,8 @@ def test_public_docs_expose_bootstrap_and_remove_flow() -> None:
     assert "lattix remove" in readme
     assert "lattix remove" in installer_docs
     assert "lattix remove" in deployment
+    assert "lattix update" in readme
+    assert "lattix update" in installer_docs
     for doc in docs:
         assert "xfrontier.local" in doc
         assert "LOCAL_STACK_HOST" in doc
@@ -210,6 +216,7 @@ def test_public_frontier_installer_imports_packaged_module() -> None:
     bootstrap_sh = _read("install/bootstrap.sh")
     tooling_common = _read("frontier_tooling/common.py")
     packaged_installer = _read("frontier_tooling/installer.py")
+    manifest = _read("install/manifest.json")
 
     assert 'import importlib' in public_installer
     assert 'import sys' in public_installer
@@ -247,6 +254,9 @@ def test_public_frontier_installer_imports_packaged_module() -> None:
     assert 'Secure local profile (single-host compose, authenticated A2A)' in packaged_installer
     assert 'Use the hosted or enterprise deployment path when you need per-agent workload isolation' in packaged_installer
     assert 'Install src :' in packaged_installer
+    assert 'def update() -> None:' in packaged_installer
+    assert 'lattix update' in manifest
+    assert '"version": "0.1.0"' in manifest
     assert 'DEFAULT_LOCAL_STACK_HOST = "xfrontier.local"' in tooling_common
 
 

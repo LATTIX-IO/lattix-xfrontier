@@ -75,6 +75,11 @@ def down_command() -> None:
     run_command(_full_compose("down", "-v"), cwd=ROOT)
 
 
+@cli.command("update")
+def update_command() -> None:
+    installer.update()
+
+
 @cli.command("remove")
 def remove_command() -> None:
     torn_down: list[str] = []

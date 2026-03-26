@@ -8,6 +8,7 @@ import hashlib
 import hmac
 import ipaddress
 import socket
+import tomllib
 import importlib
 import importlib.util
 from collections import Counter, defaultdict, deque
@@ -9217,6 +9218,128 @@ def healthz() -> dict[str, str]:
             "mode": runtime_profile.name,
         }
     return payload
+
+
+def _metadata_repo_root() -> Path:
+    return Path(__file__).resolve().parents[3]
+
+
+def _platform_version() -> str:
+    override = str(os.getenv("FRONTIER_APP_VERSION") or "").strip()
+    if override:
+        return override
+
+    pyproject_path = _metadata_repo_root() / "pyproject.toml"
+    try:
+        payload = tomllib.loads(pyproject_path.read_text(encoding="utf-8"))
+    except (OSError, tomllib.TOMLDecodeError):
+        return "0.0.0"
+    project = payload.get("project") if isinstance(payload.get("project"), dict) else {}
+    return str(project.get("version") or "0.0.0").strip() or "0.0.0"
+
+
+def _version_sort_key(value: str) -> tuple[tuple[int, object], ...]:
+    normalized = str(value or "").strip().lstrip("vV")
+    parts = [part for part in re.split(r"[.\-+_]", normalized) if part]
+    key: list[tuple[int, object]] = []
+    for part in parts:
+        if part.isdigit():
+            key.append((0, int(part)))
+        else:
+            key.append((1, part.casefold()))
+    return tuple(key)
+
+
+def _version_is_newer(candidate: str, current: str) -> bool:
+    if not str(candidate or "").strip():
+        return False
+    return _version_sort_key(candidate) > _version_sort_key(current)
+
+
+def _default_update_manifest_url() -> str:
+    override = str(os.getenv("FRONTIER_UPDATE_MANIFEST_URL") or "").strip()
+    if override:
+        return override
+
+    public_repo = str(os.getenv("INSTALLER_PUBLIC_REPO") or "https://github.com/LATTIX-IO/lattix-xfrontier").strip().rstrip("/")
+    ref = str(os.getenv("INSTALLER_DEFAULT_REF") or "main").strip() or "main"
+    parsed = urlsplit(public_repo)
+    owner_repo = parsed.path.strip("/")
+    if owner_repo.endswith(".git"):
+        owner_repo = owner_repo[:-4]
+    if parsed.netloc.lower() == "github.com" and owner_repo:
+        return f"https://raw.githubusercontent.com/{owner_repo}/{ref}/install/manifest.json"
+    return ""
+
+
+def _validated_update_manifest_url(url: str) -> str:
+    parsed = urlsplit(str(url or "").strip())
+    if parsed.scheme.lower() not in {"http", "https"}:
+        raise ValueError("Update manifest URL must use http or https")
+    if not parsed.hostname:
+        raise ValueError("Update manifest URL must include a host")
+    if parsed.username or parsed.password:
+        raise ValueError("Update manifest URL must not embed credentials")
+    if parsed.fragment:
+        raise ValueError("Update manifest URL must not include a fragment")
+    return parsed.geturl()
+
+
+def _fetch_remote_release_manifest() -> dict[str, Any] | None:
+    manifest_url = _default_update_manifest_url()
+    if not manifest_url:
+        return None
+
+    try:
+        import httpx
+
+        response = httpx.request(
+            "GET",
+            _validated_update_manifest_url(manifest_url),
+            headers={
+                "Accept": "application/json",
+                "User-Agent": "lattix-xfrontier-version-check/1.0",
+            },
+            timeout=3.0,
+            follow_redirects=False,
+        )
+        response.raise_for_status()
+        payload = response.json()
+    except (ValueError, OSError, json.JSONDecodeError, httpx.HTTPError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _platform_version_payload() -> dict[str, Any]:
+    current_version = _platform_version()
+    release_manifest = _fetch_remote_release_manifest() or {}
+    latest_version = str(release_manifest.get("version") or current_version).strip() or current_version
+    repo_root = _metadata_repo_root()
+    install_mode = "editable" if (repo_root / ".git").exists() else "wheel"
+    update_command = str(release_manifest.get("update_command") or "lattix update").strip() or "lattix update"
+    update_available = _version_is_newer(latest_version, current_version)
+    release_notes_url = str(release_manifest.get("release_notes_url") or release_manifest.get("publicRepo") or "").strip()
+
+    return {
+        "current_version": current_version,
+        "latest_version": latest_version,
+        "update_available": update_available,
+        "install_mode": install_mode,
+        "update_command": update_command,
+        "release_notes_url": release_notes_url,
+        "checked_at": _now_iso(),
+        "source": _default_update_manifest_url(),
+        "summary": (
+            f"Version {latest_version} is available. Run `{update_command}` to refresh the local app without deleting workflows, agents, settings, or installer-managed env files."
+            if update_available
+            else "Your local app is up to date."
+        ),
+    }
+
+
+@app.get("/platform/version")
+def get_platform_version() -> dict[str, Any]:
+    return _platform_version_payload()
 
 
 @app.get("/auth/session")

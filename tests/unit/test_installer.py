@@ -444,6 +444,27 @@ def test_packaged_installer_runtime_env_prepends_editable_scripts_dir(monkeypatc
     assert env[packaged_installer.FRONTIER_APP_HOME_ENV] == str(tmp_path)
 
 
+def test_packaged_installer_update_preserves_installer_state(tmp_path: Path) -> None:
+    source_root = tmp_path / "source"
+    install_root = tmp_path / "installed"
+    (source_root / "frontier_tooling").mkdir(parents=True, exist_ok=True)
+    (source_root / "pyproject.toml").write_text("[project]\nname='lattix-frontier'\nversion='0.2.0'\n", encoding="utf-8")
+    (source_root / "docker-compose.yml").write_text("services: {}\n", encoding="utf-8")
+    (source_root / "README.md").write_text("new build\n", encoding="utf-8")
+
+    (install_root / ".installer").mkdir(parents=True, exist_ok=True)
+    (install_root / ".installer" / "local-secure.env").write_text("A2A_JWT_SECRET=existing-secret\n", encoding="utf-8")
+    (install_root / ".env").write_text("LOCAL_STACK_HOST=xfrontier.local\n", encoding="utf-8")
+    (install_root / "README.md").write_text("old build\n", encoding="utf-8")
+
+    refreshed_root = packaged_installer._prepare_install_root_for_update(source_root, install_root)
+
+    assert refreshed_root == install_root
+    assert (install_root / ".installer" / "local-secure.env").read_text(encoding="utf-8") == "A2A_JWT_SECRET=existing-secret\n"
+    assert (install_root / ".env").read_text(encoding="utf-8") == "LOCAL_STACK_HOST=xfrontier.local\n"
+    assert (install_root / "README.md").read_text(encoding="utf-8") == "new build\n"
+
+
 def test_installer_defaults_to_casdoor_oidc_preset(tmp_path: Path) -> None:
     installer = FrontierInstaller(repo_root=tmp_path)
     answers = InstallerAnswers(installation_root=str(tmp_path), deployment_mode="local")

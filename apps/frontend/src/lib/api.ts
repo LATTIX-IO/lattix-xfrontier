@@ -12,6 +12,7 @@ import {
   ObservabilityRunTrace,
   OperatorSession,
   PlaybookDefinition,
+  PlatformVersionStatus,
   PlatformSettings,
   SecurityPolicyResponse,
   TemplateCatalogItem,
@@ -696,6 +697,20 @@ export async function getOperatorSession(): Promise<OperatorSession> {
       provider: "",
       validation_error: "",
     },
+  });
+}
+
+export async function getPlatformVersionStatus(): Promise<PlatformVersionStatus> {
+  return safeFetch<PlatformVersionStatus>("/platform/version", {
+    current_version: "0.0.0",
+    latest_version: "0.0.0",
+    update_available: false,
+    install_mode: "wheel",
+    update_command: "lattix update",
+    release_notes_url: "",
+    checked_at: new Date().toISOString(),
+    source: "",
+    summary: "Version metadata is unavailable right now.",
   });
 }
 

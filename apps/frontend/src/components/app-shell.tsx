@@ -6,8 +6,8 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { ApiStatusBanner } from "@/components/api-status-banner";
 import { ModeSwitch } from "@/components/mode-switch";
 import { LeftNav } from "@/components/navigation/left-nav";
-import { getOperatorSession } from "@/lib/api";
-import type { AppMode, OperatorSession } from "@/types/frontier";
+import { getOperatorSession, getPlatformVersionStatus } from "@/lib/api";
+import type { AppMode, OperatorSession, PlatformVersionStatus } from "@/types/frontier";
 
 export function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
@@ -17,6 +17,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const requestedMode: AppMode = pathname.startsWith("/builder") ? "builder" : "user";
   const inAdmin = pathname.startsWith("/admin");
   const [operatorSession, setOperatorSession] = useState<OperatorSession | null>(null);
+  const [platformVersion, setPlatformVersion] = useState<PlatformVersionStatus | null>(null);
   const sessionRequestIdRef = useRef(0);
   const [activeSessionRequestId, setActiveSessionRequestId] = useState(0);
   const [resolvedSessionRequestId, setResolvedSessionRequestId] = useState(0);
@@ -93,6 +94,26 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       cancelled = true;
     };
   }, [pathname]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    getPlatformVersionStatus()
+      .then((status) => {
+        if (!cancelled) {
+          setPlatformVersion(status);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setPlatformVersion(null);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const sessionResolved = activeSessionRequestId !== 0 && resolvedSessionRequestId === activeSessionRequestId;
 
@@ -287,7 +308,13 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             borderRightWidth: sidebarExpanded ? "1px" : "0px",
           }}
         >
-          <LeftNav mode={activeMode} pathname={pathname} inAdmin={inAdmin && canAdmin} expanded={sidebarExpanded} />
+          <LeftNav
+            mode={activeMode}
+            pathname={pathname}
+            inAdmin={inAdmin && canAdmin}
+            expanded={sidebarExpanded}
+            platformVersion={platformVersion}
+          />
         </aside>
 
         <main
