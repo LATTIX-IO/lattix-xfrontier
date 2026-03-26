@@ -77,6 +77,18 @@ const builderSession = {
 } as const;
 
 describe("AppShell", () => {
+  it("redirects unauthenticated users away from protected routes without rendering protected content", async () => {
+    pathnameState.current = "/inbox";
+    replaceMock.mockReset();
+    getOperatorSessionMock.mockResolvedValue(guestSession);
+
+    render(<AppShell><div>protected child</div></AppShell>);
+
+    expect(screen.queryByText(/protected child/i)).not.toBeInTheDocument();
+    expect(await screen.findByText(/login required/i)).toBeInTheDocument();
+    await waitFor(() => expect(replaceMock).toHaveBeenCalledWith("/auth"));
+  });
+
   it("redirects authenticated non-builders away from builder routes", async () => {
     pathnameState.current = "/builder/workflows";
     replaceMock.mockReset();
@@ -109,8 +121,24 @@ describe("AppShell", () => {
     render(<AppShell><div>builder child</div></AppShell>);
 
     expect(await screen.findByText(/workflow studio/i)).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /^settings$/i })).toHaveAttribute("href", "/builder/settings");
     expect(screen.getByText(/builder child/i)).toBeInTheDocument();
     expect(replaceMock).not.toHaveBeenCalled();
+  });
+
+  it("shows user navigation with shared settings destination", async () => {
+    pathnameState.current = "/inbox";
+    replaceMock.mockReset();
+    getOperatorSessionMock.mockResolvedValue({
+      ...builderSession,
+      default_mode: "user",
+    });
+
+    render(<AppShell><div>user child</div></AppShell>);
+
+    expect(await screen.findByRole("link", { name: /^inbox$/i })).toHaveAttribute("href", "/inbox");
+    expect(screen.getByRole("link", { name: /^settings$/i })).toHaveAttribute("href", "/settings");
+    expect(screen.getByText(/user child/i)).toBeInTheDocument();
   });
 
   it("does not let a stale session request resolve a later navigation", async () => {
@@ -137,5 +165,17 @@ describe("AppShell", () => {
     firstRequest.resolve(guestSession);
 
     await waitFor(() => expect(replaceMock).not.toHaveBeenCalled());
+  });
+
+  it("does not expose a skip-to-console link on auth routes", async () => {
+    pathnameState.current = "/auth";
+    replaceMock.mockReset();
+    getOperatorSessionMock.mockResolvedValue(guestSession);
+
+    render(<AppShell><div>auth child</div></AppShell>);
+
+    expect(await screen.findByText(/authentication required/i)).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: /skip to console/i })).not.toBeInTheDocument();
+    expect(screen.getByText(/auth child/i)).toBeInTheDocument();
   });
 });

@@ -13,6 +13,7 @@ import sysconfig
 from collections import OrderedDict
 from pathlib import Path
 from typing import Any
+from collections.abc import Mapping
 
 from urllib.parse import urlparse
 
@@ -20,6 +21,20 @@ PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 FRONTIER_APP_HOME_ENV = "FRONTIER_APP_HOME"
 DEFAULT_LOCAL_STACK_HOST = "xfrontier.local"
 DEFAULT_ARCHIVE_URL = "https://github.com/LATTIX-IO/lattix-xfrontier/archive/refs/heads/main.zip"
+
+
+def _normalized_gateway_bind_host(value: str | None) -> str:
+    host = str(value or "").strip()
+    if not host or host == "0.0.0.0":
+        return "127.0.0.1"
+    return host
+
+
+def _default_secure_local_api_base_url(env_map: OrderedDict[str, str]) -> str:
+    host = _normalized_gateway_bind_host(env_map.get("LOCAL_GATEWAY_BIND_HOST"))
+    port = str(env_map.get("LOCAL_GATEWAY_HTTP_PORT") or "80").strip() or "80"
+    authority = host if port == "80" else f"{host}:{port}"
+    return f"http://{authority}/api"
 
 
 def source_repo_root() -> Path:
@@ -170,8 +185,43 @@ def ensure_compose_env_file(*, local_profile: bool = False, root: Path | None = 
         env_map["FRONTIER_LOCAL_BOOTSTRAP_AUTHENTICATED_OPERATOR"] = "true"
         env_map["NEXT_PUBLIC_API_BASE_URL"] = "/api"
         env_map["FRONTEND_ORIGIN"] = f"http://{env_map['LOCAL_STACK_HOST']}"
-        env_map.setdefault("FRONTIER_LOCAL_API_BASE_URL", "http://localhost:8000")
+        secure_api_base = _default_secure_local_api_base_url(env_map)
+        configured_api_base = str(env_map.get("FRONTIER_LOCAL_API_BASE_URL") or "").strip()
+        if not configured_api_base or configured_api_base == "http://localhost:8000":
+            env_map["FRONTIER_LOCAL_API_BASE_URL"] = secure_api_base
     return _write_env_map(installer_env_path, env_map)
+
+
+def configured_local_api_base_url(*, root: Path | None = None) -> str:
+    resolved_root = root or repo_root()
+    secure_env_path = secure_installer_env_path(root=resolved_root)
+    lightweight_env_path = lightweight_installer_env_path(root=resolved_root)
+
+    if secure_env_path.exists() or not lightweight_env_path.exists():
+        env_map = _read_env_map(ensure_compose_env_file(local_profile=False, root=resolved_root))
+        default_base = _default_secure_local_api_base_url(env_map)
+    else:
+        env_map = _read_env_map(ensure_compose_env_file(local_profile=True, root=resolved_root))
+        default_base = "http://localhost:8000"
+
+    configured = str(env_map.get("FRONTIER_LOCAL_API_BASE_URL") or "").strip()
+    return (configured or default_base).rstrip("/")
+
+
+def configured_local_api_headers(*, root: Path | None = None) -> dict[str, str]:
+    resolved_root = root or repo_root()
+    secure_env_path = secure_installer_env_path(root=resolved_root)
+    lightweight_env_path = lightweight_installer_env_path(root=resolved_root)
+
+    if secure_env_path.exists() or not lightweight_env_path.exists():
+        env_map = _read_env_map(ensure_compose_env_file(local_profile=False, root=resolved_root))
+        host = str(env_map.get("LOCAL_STACK_HOST") or "").strip()
+        return {"Host": host} if host else {}
+    return {}
+
+
+def configured_local_api_url(path: str, *, root: Path | None = None) -> str:
+    return f"{configured_local_api_base_url(root=root)}/{path.lstrip('/')}"
 
 
 def compose_prefix(*, local: bool, root: Path | None = None) -> list[str]:
@@ -239,10 +289,19 @@ def _validated_http_url(url: str) -> str:
     return parsed.geturl()
 
 
-def request_json(url: str, *, method: str = "GET", payload: dict[str, Any] | None = None, timeout: int = 10) -> Any:
+def request_json(
+    url: str,
+    *,
+    method: str = "GET",
+    payload: Mapping[str, Any] | None = None,
+    timeout: int = 10,
+    extra_headers: dict[str, str] | None = None,
+) -> Any:
     import httpx
 
     headers = {"Accept": "application/json"}
+    if extra_headers:
+        headers.update({key: value for key, value in extra_headers.items() if str(value or "").strip()})
     bearer = str(os.getenv("FRONTIER_API_BEARER_TOKEN", "") or "").strip()
     if bearer:
         headers["Authorization"] = f"Bearer {bearer}"

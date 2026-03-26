@@ -63,6 +63,14 @@ def _vector_type_sql(dimensions: int) -> Any:
 	)
 
 
+def _embedding_column_statement(dimensions: int) -> str:
+	validated_dimensions = _validated_embedding_dimensions(dimensions)
+	return (
+		"ALTER TABLE frontier_long_term_memory "
+		f"ADD COLUMN IF NOT EXISTS embedding vector({validated_dimensions})"
+	)
+
+
 class _BasePostgresService:
 	def __init__(self, dsn: str) -> None:
 		self.dsn = str(dsn or "").strip()
@@ -268,11 +276,8 @@ class PostgresLongTermMemoryStore(_BasePostgresService):
 					"""
 				)
 				if self.vector_enabled:
-					cursor.execute(
-						psycopg_sql.SQL(
-							"ALTER TABLE frontier_long_term_memory ADD COLUMN IF NOT EXISTS embedding {}"
-						).format(_vector_type_sql(self.embedding_dimensions))
-					)
+					# nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query
+					cursor.execute(_embedding_column_statement(self.embedding_dimensions))
 				cursor.execute(
 					"CREATE INDEX IF NOT EXISTS frontier_long_term_memory_bucket_idx ON frontier_long_term_memory (bucket_id, created_at DESC)"
 				)

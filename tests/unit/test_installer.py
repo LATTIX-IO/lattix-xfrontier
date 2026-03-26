@@ -92,10 +92,62 @@ def test_installer_generates_local_secret_when_blank(monkeypatch, tmp_path: Path
     assert "FRONTIER_API_BEARER_TOKEN" not in secrets_map
 
 
+def test_installer_reuses_existing_local_secrets_when_blank(monkeypatch, tmp_path: Path) -> None:
+    installer = FrontierInstaller(repo_root=tmp_path)
+    installer_dir = tmp_path / ".installer"
+    installer_dir.mkdir(parents=True, exist_ok=True)
+    (installer_dir / "local-secure.env").write_text(
+        "\n".join(
+            [
+                "A2A_JWT_SECRET=existing-a2a",
+                "POSTGRES_PASSWORD=existing-postgres",
+                "NEO4J_PASSWORD=existing-neo4j",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    answers = InstallerAnswers(installation_root=str(tmp_path), deployment_mode="local")
+    monkeypatch.setattr("getpass.getpass", lambda prompt: "")
+
+    secrets_map = installer._collect_local_secrets(answers)
+
+    assert secrets_map["A2A_JWT_SECRET"] == "existing-a2a"
+    assert secrets_map["POSTGRES_PASSWORD"] == "existing-postgres"
+    assert secrets_map["NEO4J_PASSWORD"] == "existing-neo4j"
+
+
+def test_installer_reuses_existing_shared_token_when_blank(monkeypatch, tmp_path: Path) -> None:
+    installer = FrontierInstaller(repo_root=tmp_path)
+    installer_dir = tmp_path / ".installer"
+    installer_dir.mkdir(parents=True, exist_ok=True)
+    (installer_dir / "local-secure.env").write_text(
+        "\n".join(
+            [
+                "A2A_JWT_SECRET=existing-a2a",
+                "POSTGRES_PASSWORD=existing-postgres",
+                "NEO4J_PASSWORD=existing-neo4j",
+                "FRONTIER_API_BEARER_TOKEN=existing-bearer",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    answers = InstallerAnswers(
+        installation_root=str(tmp_path),
+        deployment_mode="local",
+        local_auth_provider="shared-token",
+    )
+    monkeypatch.setattr("getpass.getpass", lambda prompt: "")
+
+    secrets_map = installer._collect_local_secrets(answers)
+
+    assert secrets_map["FRONTIER_API_BEARER_TOKEN"] == "existing-bearer"
+
+
 def test_secure_local_answers_generate_randomized_bootstrap_identity(monkeypatch, tmp_path: Path) -> None:
     installer = FrontierInstaller(repo_root=tmp_path)
     monkeypatch.setattr("secrets.token_hex", lambda _: "abc123")
-    monkeypatch.setattr("secrets.token_urlsafe", lambda _: "generated-login-pass")
 
     answers = installer.secure_local_answers(tmp_path)
 
@@ -105,11 +157,11 @@ def test_secure_local_answers_generate_randomized_bootstrap_identity(monkeypatch
     assert answers.bootstrap_admin_username == "frontier-admin-abc123"
     assert answers.bootstrap_admin_email == "frontier-admin-abc123@xfrontier.localhost"
     assert answers.bootstrap_admin_subject == "frontier-admin-abc123"
-    assert answers.bootstrap_login_username == "frontier-user-abc123"
-    assert answers.bootstrap_login_email == "frontier-user-abc123@xfrontier.localhost"
-    assert answers.bootstrap_login_display_name == "Frontier Operator"
-    assert answers.bootstrap_login_password == "generated-login-pass"
-    assert answers.bootstrap_login_password_generated is True
+    assert answers.bootstrap_login_username == ""
+    assert answers.bootstrap_login_email == ""
+    assert answers.bootstrap_login_display_name == ""
+    assert answers.bootstrap_login_password == ""
+    assert answers.bootstrap_login_password_generated is False
 
 
 def test_collect_local_answers_interactively_prompts_for_external_oidc(monkeypatch, tmp_path: Path) -> None:
@@ -171,22 +223,28 @@ def test_render_panel_produces_boxed_tui_output(tmp_path: Path) -> None:
 
 def test_collect_local_answers_prints_review_tui(monkeypatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     installer = FrontierInstaller(repo_root=tmp_path)
-    prompts = iter(["", "", "", "", "", "", "", "", "", "y"])
+    prompts = iter(["", "", "", "", "", "", "review-user", "review@example.com", "Review User", "y"])
     monkeypatch.setattr("secrets.token_hex", lambda _: "abc123")
-    monkeypatch.setattr("getpass.getpass", lambda prompt: "")
-    monkeypatch.setattr("secrets.token_urlsafe", lambda _: "generated-login-pass")
+    monkeypatch.setattr("getpass.getpass", lambda prompt: "ReviewPass123!")
     monkeypatch.setattr("builtins.input", lambda prompt: next(prompts))
 
     answers = installer.collect_local_answers(installation_root=tmp_path, interactive=True)
 
     captured = capsys.readouterr()
     assert answers.bootstrap_admin_username == "frontier-admin-abc123"
-    assert answers.bootstrap_login_username == "frontier-user-abc123"
-    assert answers.bootstrap_login_password == "generated-login-pass"
+    assert answers.bootstrap_login_username == "review-user"
+    assert answers.bootstrap_login_password == "ReviewPass123!"
     assert "Lattix xFrontier installer" in captured.out
     assert "Review install settings" in captured.out
     assert "Secure local installation wizard" in captured.out
-    assert "Login user  : frontier-user-abc123" in captured.out
+    assert "Login user  : review-user" in captured.out
+
+
+def test_collect_local_answers_requires_interactive_casdoor_login_input(tmp_path: Path) -> None:
+    installer = FrontierInstaller(repo_root=tmp_path)
+
+    with pytest.raises(SystemExit, match="Interactive installer input is required to create the Casdoor bootstrap login user"):
+        installer.collect_local_answers(installation_root=tmp_path, interactive=False)
 
 
 def test_collect_local_answers_prompts_for_casdoor_login_bootstrap(monkeypatch, tmp_path: Path) -> None:
@@ -214,6 +272,38 @@ def test_collect_local_answers_prompts_for_casdoor_login_bootstrap(monkeypatch, 
     assert answers.bootstrap_login_display_name == "Demo Operator"
     assert answers.bootstrap_login_password == "LoginPass123!"
     assert answers.bootstrap_login_password_generated is False
+
+
+def test_collect_local_answers_reprompts_for_required_casdoor_login_fields(monkeypatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    installer = FrontierInstaller(repo_root=tmp_path)
+    prompts = iter([
+        "demo",
+        "oidc",
+        "casdoor",
+        "frontier-admin-demo",
+        "admin@demo.localhost",
+        "frontier-admin-demo",
+        "",
+        "required-user",
+        "",
+        "required@example.com",
+        "",
+        "Required User",
+        "y",
+    ])
+    secrets_iter = iter(["", "RequiredPass123!"])
+    monkeypatch.setattr("secrets.token_hex", lambda _: "abc123")
+    monkeypatch.setattr("builtins.input", lambda prompt: next(prompts))
+    monkeypatch.setattr("getpass.getpass", lambda prompt: next(secrets_iter))
+
+    answers = installer.collect_local_answers(installation_root=tmp_path, interactive=True)
+
+    captured = capsys.readouterr()
+    assert answers.bootstrap_login_username == "required-user"
+    assert answers.bootstrap_login_email == "required@example.com"
+    assert answers.bootstrap_login_display_name == "Required User"
+    assert answers.bootstrap_login_password == "RequiredPass123!"
+    assert captured.out.count("A value is required.") >= 4
 
 
 def test_packaged_installer_bootstraps_casdoor_login_user(monkeypatch, tmp_path: Path) -> None:
@@ -279,6 +369,58 @@ def test_packaged_installer_bootstraps_casdoor_login_user(monkeypatch, tmp_path:
     assert add_user_request[1] == "POST"
     assert '"name": "demo-login"' in add_user_request[2]
     assert add_user_request[3]["Host"] == "casdoor.localhost"
+
+
+def test_packaged_installer_retries_transient_casdoor_gateway_failures(monkeypatch, tmp_path: Path) -> None:
+    answers = InstallerAnswers(
+        installation_root=str(tmp_path),
+        local_auth_provider="oidc",
+        oidc_provider_template="casdoor",
+        oidc_issuer="http://casdoor.localhost",
+        bootstrap_login_username="demo-login",
+        bootstrap_login_email="demo-login@demo.localhost",
+        bootstrap_login_display_name="Demo Login",
+        bootstrap_login_password="DemoPass123!",
+        bootstrap_login_password_generated=True,
+    )
+
+    attempts = {"count": 0}
+
+    class DummyOpener:
+        def open(self, request, timeout=10):
+            attempts["count"] += 1
+
+            class DummyResponse:
+                def __init__(self, payload: str) -> None:
+                    self._payload = payload
+
+                def read(self) -> bytes:
+                    return self._payload.encode("utf-8")
+
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, exc_type, exc, tb) -> bool:
+                    return False
+
+            if attempts["count"] <= 2:
+                raise packaged_installer.urllib_error.HTTPError(request.full_url, 502, "Bad Gateway", hdrs=None, fp=None)
+            if request.full_url.endswith("/api/get-account"):
+                return DummyResponse('{"status":"ok","data":{"owner":"built-in","name":"admin"}}')
+            if "/api/get-user" in request.full_url:
+                return DummyResponse('{"status":"error","msg":"not found"}')
+            if request.full_url.endswith("/api/add-user"):
+                return DummyResponse('{"status":"ok","data":"Affected"}')
+            return DummyResponse('{"status":"error","msg":"ignored"}')
+
+    monkeypatch.setattr(packaged_installer.urllib_request, "build_opener", lambda *args: DummyOpener())
+    monkeypatch.setattr(packaged_installer.time, "sleep", lambda *_: None)
+
+    bootstrap_login = packaged_installer._bootstrap_casdoor_login_user(answers)
+
+    assert attempts["count"] >= 3
+    assert bootstrap_login is not None
+    assert bootstrap_login["username"] == "demo-login"
 
 
 def test_packaged_installer_targets_active_scripts_dir_for_editable_install(monkeypatch, tmp_path: Path) -> None:

@@ -2,12 +2,15 @@ from __future__ import annotations
 
 import os
 import platform
+from collections.abc import Mapping
 
 import click
 
 from . import installer
 from .common import (
     DEFAULT_ARCHIVE_URL,
+    configured_local_api_headers,
+    configured_local_api_url,
     detect_sandbox_backend,
     discover_agent_records,
     ensure_compose_env_file,
@@ -23,6 +26,15 @@ from .common import (
 )
 
 ROOT = repo_root()
+
+
+def _request_local_api(path: str, *, method: str = "GET", payload: Mapping[str, object] | None = None) -> object:
+    return request_json(
+        configured_local_api_url(path),
+        method=method,
+        payload=payload,
+        extra_headers=configured_local_api_headers(),
+    )
 
 
 def _full_compose(*extra: str) -> list[str]:
@@ -125,12 +137,12 @@ def logs() -> None:
 
 @cli.command()
 def health() -> None:
-    print_json(request_json("http://localhost:8000/healthz"))
+    print_json(_request_local_api("/healthz"))
 
 
 @cli.command()
 def smoke() -> None:
-    print_json(request_json("http://localhost:8000/healthz"))
+    print_json(_request_local_api("/healthz"))
 
 
 @cli.command()
@@ -210,7 +222,7 @@ def workflow() -> None:
 
 @workflow.command("list")
 def workflow_list() -> None:
-    print_json(request_json("http://localhost:8000/workflow-definitions"))
+    print_json(_request_local_api("/workflow-definitions"))
 
 
 @workflow.command("run")
@@ -218,7 +230,7 @@ def workflow_list() -> None:
 @click.option("--task", required=True)
 def workflow_run(workflow_name: str, task: str) -> None:
     payload = {"workflow_definition_id": workflow_name, "task": task, "input": {"task": task}}
-    print_json(request_json("http://localhost:8000/workflow-runs", method="POST", payload=payload))
+    print_json(_request_local_api("/workflow-runs", method="POST", payload=payload))
 
 
 @cli.group()

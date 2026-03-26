@@ -1,0 +1,3 @@
+*.sh text eol=lf
+*.bash text eol=lf
+docker/casdoor/start-casdoor.sh text eol=lf

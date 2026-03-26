@@ -36,6 +36,7 @@ def _download_url_bytes(url: str, *, redirects_remaining: int = 3) -> bytes:
     parsed = urlsplit(validated_url)
     connection: http.client.HTTPConnection
     if parsed.scheme.lower() == "https":
+        # nosemgrep: python.lang.security.audit.httpsconnection-detected.httpsconnection-detected
         connection = http.client.HTTPSConnection(
             parsed.hostname,
             parsed.port,

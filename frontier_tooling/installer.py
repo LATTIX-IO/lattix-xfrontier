@@ -36,6 +36,10 @@ from .common import (
 )
 
 
+CASDOOR_BOOTSTRAP_MAX_ATTEMPTS = 90
+CASDOOR_BOOTSTRAP_RETRY_DELAY_SECONDS = 2
+
+
 def bootstrap_url() -> str:
     return DEFAULT_ARCHIVE_URL
 
@@ -222,18 +226,25 @@ def _update_windows_user_path(scripts_dir: Path) -> tuple[bool, list[str]]:
     import ctypes
     import winreg
 
+    ctypes_api: Any = ctypes
+    winreg_api: Any = winreg
     modified = False
-    with winreg.OpenKey(winreg.HKEY_CURRENT_USER, "Environment", 0, winreg.KEY_READ | winreg.KEY_WRITE) as key:
+    with winreg_api.OpenKey(
+        winreg_api.HKEY_CURRENT_USER,
+        "Environment",
+        0,
+        winreg_api.KEY_READ | winreg_api.KEY_WRITE,
+    ) as key:
         try:
-            current_value, _ = winreg.QueryValueEx(key, "Path")
+            current_value, _ = winreg_api.QueryValueEx(key, "Path")
         except FileNotFoundError:
             current_value = ""
         updated_value = _append_path_once(str(current_value or ""), str(scripts_dir))
         if updated_value != str(current_value or ""):
-            winreg.SetValueEx(key, "Path", 0, winreg.REG_EXPAND_SZ, updated_value)
+            winreg_api.SetValueEx(key, "Path", 0, winreg_api.REG_EXPAND_SZ, updated_value)
             modified = True
     if modified:
-        ctypes.windll.user32.SendMessageTimeoutW(0xFFFF, 0x001A, 0, "Environment", 0x0002, 5000, 0)
+        ctypes_api.windll.user32.SendMessageTimeoutW(0xFFFF, 0x001A, 0, "Environment", 0x0002, 5000, 0)
     return modified, ["HKCU\\Environment\\Path"]
 
 
@@ -386,7 +397,7 @@ def _bootstrap_casdoor_login_user(answers: InstallerAnswers) -> dict[str, Any] |
     }
 
     last_error: Exception | None = None
-    for _ in range(30):
+    for _ in range(CASDOOR_BOOTSTRAP_MAX_ATTEMPTS):
         try:
             _casdoor_login_admin(opener, base_url, host_headers)
             user_id = urllib_parse.quote(f"built-in/{login_username}", safe="")
@@ -422,8 +433,11 @@ def _bootstrap_casdoor_login_user(answers: InstallerAnswers) -> dict[str, Any] |
             }
         except (urllib_error.URLError, TimeoutError, RuntimeError, OSError) as exc:
             last_error = exc
-            time.sleep(1)
-    raise RuntimeError(f"Unable to provision bootstrap Casdoor login user: {last_error}")
+            time.sleep(CASDOOR_BOOTSTRAP_RETRY_DELAY_SECONDS)
+    raise RuntimeError(
+        "Unable to provision bootstrap Casdoor login user after waiting for the local gateway and Casdoor to become ready: "
+        f"{last_error}"
+    )
 
 
 def _require_docker_stack_prerequisites(env: dict[str, str]) -> None:

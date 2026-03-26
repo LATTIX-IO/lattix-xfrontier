@@ -110,7 +110,12 @@ services:
   casdoor:
     <<: *default-logging
     image: casbin/casdoor-all-in-one:v1.765.0
-    entrypoint: ["/bin/bash", "/docker/casdoor/start-casdoor.sh"]
+    entrypoint:
+      [
+        "/bin/sh",
+        "-c",
+        "tr -d '\\r' < /docker/casdoor/start-casdoor.sh > /tmp/start-casdoor.sh && chmod +x /tmp/start-casdoor.sh && exec /bin/bash /tmp/start-casdoor.sh",
+      ]
     depends_on:
       postgres:
         condition: service_healthy

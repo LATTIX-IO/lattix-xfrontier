@@ -142,6 +142,25 @@ class FrontierInstaller:
     def __init__(self, repo_root: Path) -> None:
         self.repo_root = Path(repo_root)
 
+    def _existing_secure_env_values(self) -> dict[str, str]:
+        env_path = self.repo_root / ".installer" / "local-secure.env"
+        if not env_path.exists():
+            return {}
+        env_map: dict[str, str] = {}
+        for line in env_path.read_text(encoding="utf-8").splitlines():
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#") or "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            env_map[key] = value
+        return env_map
+
+    def _prompt_secret_with_existing(self, prompt: str, description: str, *, existing_value: str = "") -> str:
+        provided = self._prompt_secret(prompt, description)
+        if provided:
+            return provided
+        return str(existing_value or "").strip()
+
     @staticmethod
     def _terminal_width() -> int:
         return max(72, min(shutil.get_terminal_size(fallback=(100, 24)).columns, 120))
@@ -272,6 +291,22 @@ class FrontierInstaller:
         return getpass.getpass("› ").strip()
 
     @classmethod
+    def _prompt_required_secret(cls, prompt: str, description: str) -> str:
+        while True:
+            cls._print_panel(
+                "Installer secret",
+                [
+                    description,
+                    f"Secret     : {prompt}",
+                    "Action     : Enter a required value to continue.",
+                ],
+            )
+            candidate = getpass.getpass("› ").strip()
+            if candidate:
+                return candidate
+            print("A value is required.")  # noqa: T201
+
+    @classmethod
     def _render_answers_summary(cls, answers: InstallerAnswers) -> str:
         lines = [
             f"Install root: {answers.installation_root}",
@@ -323,21 +358,9 @@ class FrontierInstaller:
             "subject": username,
         }
 
-    @staticmethod
-    def _suggest_bootstrap_login_identity(hostname_prefix: str) -> dict[str, str]:
-        suffix = secrets.token_hex(3)
-        username = f"frontier-user-{suffix}"
-        email = f"{username}@{hostname_prefix}.localhost"
-        return {
-            "username": username,
-            "email": email,
-            "display_name": "Frontier Operator",
-        }
-
     def secure_local_answers(self, installation_root: Path) -> InstallerAnswers:
         hostname_prefix = self._default_local_hostname()
         bootstrap_admin = self._suggest_bootstrap_admin_identity(hostname_prefix)
-        bootstrap_login = self._suggest_bootstrap_login_identity(hostname_prefix)
         return InstallerAnswers(
             installation_root=str(installation_root),
             deployment_mode="local",
@@ -347,16 +370,14 @@ class FrontierInstaller:
             bootstrap_admin_username=bootstrap_admin["username"],
             bootstrap_admin_email=bootstrap_admin["email"],
             bootstrap_admin_subject=bootstrap_admin["subject"],
-            bootstrap_login_username=bootstrap_login["username"],
-            bootstrap_login_email=bootstrap_login["email"],
-            bootstrap_login_display_name=bootstrap_login["display_name"],
-            bootstrap_login_password=secrets.token_urlsafe(18),
-            bootstrap_login_password_generated=True,
         )
 
     def collect_local_answers(self, *, installation_root: Path, interactive: bool) -> InstallerAnswers:
         if not interactive:
-            return self.secure_local_answers(installation_root)
+            raise SystemExit(
+                "Interactive installer input is required to create the Casdoor bootstrap login user for local installs. "
+                "Rerun the installer in an interactive terminal."
+            )
 
         while True:
             answers = self.secure_local_answers(installation_root)
@@ -456,32 +477,23 @@ class FrontierInstaller:
             )
 
             if answers.local_auth_provider == "oidc" and answers.oidc_provider_template == "casdoor":
-                bootstrap_login = self._suggest_bootstrap_login_identity(answers.local_hostname)
-                answers.bootstrap_login_username = self._prompt_with_default(
+                answers.bootstrap_login_username = self._prompt_required_value(
                     "Bootstrap login username",
-                    bootstrap_login["username"],
                     description="Casdoor user created automatically so you can sign in from the login screen after install.",
                 )
-                answers.bootstrap_login_email = self._prompt_with_default(
+                answers.bootstrap_login_email = self._prompt_required_value(
                     "Bootstrap login email",
-                    bootstrap_login["email"],
                     description="Email address assigned to the installer-created Casdoor login user.",
                 )
-                answers.bootstrap_login_display_name = self._prompt_with_default(
+                answers.bootstrap_login_display_name = self._prompt_required_value(
                     "Bootstrap login display name",
-                    bootstrap_login["display_name"],
                     description="Friendly display name shown for the installer-created login user.",
                 )
-                provided_login_password = self._prompt_secret(
+                answers.bootstrap_login_password = self._prompt_required_secret(
                     "CASDOOR bootstrap login password",
-                    "Password for the installer-created Casdoor login user. Leave blank to generate a strong value and reveal it in the final install summary.",
+                    "Password for the installer-created Casdoor login user. This value must be entered explicitly.",
                 )
-                if provided_login_password:
-                    answers.bootstrap_login_password = provided_login_password
-                    answers.bootstrap_login_password_generated = False
-                else:
-                    answers.bootstrap_login_password = secrets.token_urlsafe(18)
-                    answers.bootstrap_login_password_generated = True
+                answers.bootstrap_login_password_generated = False
             else:
                 answers.bootstrap_login_username = ""
                 answers.bootstrap_login_email = ""
@@ -724,17 +736,21 @@ class FrontierInstaller:
     def _collect_local_secrets(self, answers: InstallerAnswers) -> dict[str, str]:
         if answers.deployment_mode == "enterprise":
             return {}
-        a2a_secret = self._prompt_secret(
+        existing_env = self._existing_secure_env_values()
+        a2a_secret = self._prompt_secret_with_existing(
             "A2A_JWT_SECRET",
             "Shared signing secret for authenticated agent-to-agent traffic in the secure local stack.",
+            existing_value=existing_env.get("A2A_JWT_SECRET", ""),
         ) or secrets.token_urlsafe(32)
-        postgres_password = self._prompt_secret(
+        postgres_password = self._prompt_secret_with_existing(
             "POSTGRES_PASSWORD",
             "Database password for the local PostgreSQL instance used by the secure local stack.",
+            existing_value=existing_env.get("POSTGRES_PASSWORD", ""),
         ) or secrets.token_urlsafe(24)
-        neo4j_password = self._prompt_secret(
+        neo4j_password = self._prompt_secret_with_existing(
             "NEO4J_PASSWORD",
             "Graph database password for the local Neo4j service.",
+            existing_value=existing_env.get("NEO4J_PASSWORD", ""),
         ) or secrets.token_urlsafe(24)
         secrets_map = {
             "A2A_JWT_SECRET": a2a_secret,
@@ -742,9 +758,10 @@ class FrontierInstaller:
             "NEO4J_PASSWORD": neo4j_password,
         }
         if self._normalize_auth_provider(answers.local_auth_provider) == "shared-token":
-            provided_bearer = self._prompt_secret(
+            provided_bearer = self._prompt_secret_with_existing(
                 "FRONTIER_API_BEARER_TOKEN",
                 "Fallback backend bearer token when you are not wiring operator auth through OIDC yet.",
+                existing_value=existing_env.get("FRONTIER_API_BEARER_TOKEN", ""),
             )
             secrets_map["FRONTIER_API_BEARER_TOKEN"] = provided_bearer or secrets.token_urlsafe(32)
         return secrets_map

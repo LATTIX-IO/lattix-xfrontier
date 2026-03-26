@@ -40,7 +40,7 @@ A future vanity URL such as `https://install.lattix.io/xfrontier.sh` can safely 
 2. Validates core commands like Docker, offers best-effort prerequisite installation when something is missing, and re-checks after any install attempt.
 3. Prompts the user for preferred local and/or enterprise configuration.
 4. Checks writable install location, vanity hostname safety, port availability, and enterprise tools (`helm`, `kubectl`) when needed.
-5. Prompts for secure local authentication mode, a platform bootstrap admin identity, and — when using the bundled Casdoor preset — a separate bootstrap login user that is created automatically for first sign-in. Sensitive values like `A2A_JWT_SECRET` and the bootstrap login password can still be securely auto-generated if left blank.
+5. Prompts for secure local authentication mode, a platform bootstrap admin identity, and — when using the bundled Casdoor preset — a separate bootstrap login user that is created automatically for first sign-in. The Casdoor login username, email, display name, and password must be entered explicitly by the operator; they are not auto-generated.
 6. Writes the installer-managed env file for the secure local stack at `.installer/local-secure.env`, plus generated Helm values.
 7. Applies best-effort owner-only file permissions to the local env file before launching Docker Compose.
 8. Ensures the user script directory is on `PATH` for the host OS.
@@ -121,7 +121,7 @@ When the bundled Casdoor preset is selected, the installer also collects a separ
 - `CASDOOR_BOOTSTRAP_LOGIN_DISPLAY_NAME`
 - `CASDOOR_BOOTSTRAP_LOGIN_PASSWORD`
 
-That login user is the human-facing account you can use from the `/auth` screen immediately after install, while the existing Frontier bootstrap admin identifiers remain the backend/operator allowlist contract. In secure-local mode, the installer-managed login user still lands with builder/admin capability via the local authenticated-operator bootstrap path.
+That login user is the human-facing account you can use from the `/auth` screen immediately after install, while the existing Frontier bootstrap admin identifiers remain the backend/operator allowlist contract. In secure-local mode, the installer-managed login user still lands with builder/admin capability via the local authenticated-operator bootstrap path. Because this account is intended to be a deliberate human login, the installer now requires explicit interactive input for all Casdoor bootstrap login fields rather than offering generated defaults.
 
 In both modes, the generated secure-local profile sets:
 

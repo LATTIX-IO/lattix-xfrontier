@@ -73,11 +73,13 @@ def test_compose_env_generation_uses_mode_specific_files_and_profiles(tmp_path: 
     assert "LOCAL_STACK_HOST=xfrontier.local" in secure_text
     assert "FRONTEND_ORIGIN=http://xfrontier.local" in secure_text
     assert "FRONTIER_LOCAL_BOOTSTRAP_AUTHENTICATED_OPERATOR=true" in secure_text
+    assert "FRONTIER_LOCAL_API_BASE_URL=http://127.0.0.1/api" in secure_text
 
     assert "FRONTIER_RUNTIME_PROFILE=local-lightweight" in lightweight_text
     assert "NEXT_PUBLIC_API_BASE_URL=http://localhost:8000" in lightweight_text
     assert "A2A_JWT_AUD=frontier-runtime" in lightweight_text
     assert "LOCAL_STACK_HOST=xfrontier.local" in lightweight_text
+    assert "FRONTIER_LOCAL_API_BASE_URL=http://localhost:8000" in lightweight_text
 
 
 def test_compose_env_generation_repairs_blank_a2a_secret(tmp_path: Path, monkeypatch) -> None:
@@ -149,6 +151,7 @@ def test_public_docs_expose_bootstrap_and_remove_flow() -> None:
     readme = _read("README.md")
     installer_docs = _read("docs/INSTALLER.md")
     deployment = _read("docs/DEPLOYMENT.md")
+    docs = (readme, installer_docs, deployment)
 
     assert "curl -fsSL https://raw.githubusercontent.com/LATTIX-IO/lattix-xfrontier/main/install/bootstrap.sh | sh" in readme
     assert "curl -fsSL https://raw.githubusercontent.com/LATTIX-IO/lattix-xfrontier/main/install/bootstrap.sh | sh" in installer_docs
@@ -165,9 +168,9 @@ def test_public_docs_expose_bootstrap_and_remove_flow() -> None:
     assert "lattix remove" in readme
     assert "lattix remove" in installer_docs
     assert "lattix remove" in deployment
-    assert "http://xfrontier.local" in readme
-    assert "http://xfrontier.local" in installer_docs
-    assert "http://xfrontier.local" in deployment
+    for doc in docs:
+        assert "xfrontier.local" in doc
+        assert "LOCAL_STACK_HOST" in doc
 
 
 def test_bootstrap_powershell_script_avoids_powershell7_only_syntax() -> None:
@@ -280,14 +283,30 @@ def test_remove_installer_artifacts_deletes_legacy_and_generated_files(tmp_path:
 
 def test_remove_command_tracks_failed_teardowns_and_radius_secret_is_not_hardcoded() -> None:
     cli = _read("frontier_tooling/cli.py")
+    tooling = _read("frontier_tooling/common.py")
+    powershell = _read("scripts/frontier.ps1")
     casdoor = _read("docker/casdoor/start-casdoor.sh")
+    compose = _read("docker-compose.yml")
+    gitattributes = _read(".gitattributes")
 
     assert '"failed_teardowns": failed_teardowns' in cli
     assert '"deleted_artifacts": [str(path) for path in removed_artifacts]' in cli
     assert '"removed": removed' in cli
+    assert 'def _request_local_api' in cli
+    assert 'configured_local_api_url(path)' in cli
+    assert 'def configured_local_api_base_url' in tooling
+    assert 'def configured_local_api_headers' in tooling
+    assert 'extra_headers=configured_local_api_headers()' in cli
+    assert 'FRONTIER_LOCAL_API_BASE_URL=http://127.0.0.1/api' in _read(".env.example")
+    assert 'function Get-ConfiguredApiBaseUrl' in powershell
+    assert 'function Get-ConfiguredApiHostHeader' in powershell
+    assert 'http://localhost:8000' not in powershell.split('function Show-Help', 1)[1].split('"local-up"', 1)[0]
     assert 'CASDOOR_RADIUS_SECRET="${CASDOOR_RADIUS_SECRET:-${POSTGRES_PASSWORD}}"' in casdoor
     assert 'radiusSecret = "${CASDOOR_RADIUS_SECRET}"' in casdoor
     assert 'radiusSecret = "secret"' not in casdoor
+    assert "tr -d '\\\\r' < /docker/casdoor/start-casdoor.sh > /tmp/start-casdoor.sh" in compose
+    assert "docker/casdoor/start-casdoor.sh text eol=lf" in gitattributes
+    assert "*.sh text eol=lf" in gitattributes
 
 def test_precommit_script_runs_repo_native_checks() -> None:
     precommit = _read("precommit.ps1")

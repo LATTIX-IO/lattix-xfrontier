@@ -65,4 +65,16 @@ describe("AuthPage", () => {
     expect(screen.getByText(/shared operator token/i)).toBeInTheDocument();
     expect(screen.getByText(/using the shared-token fallback/i)).toBeInTheDocument();
   });
+
+  it("does not offer a direct console bypass link", () => {
+    process.env.FRONTIER_AUTH_MODE = "oidc";
+    process.env.FRONTIER_AUTH_OIDC_PROVIDER = "casdoor";
+    process.env.FRONTIER_AUTH_OIDC_ISSUER = "http://casdoor.localhost";
+    process.env.FRONTIER_AUTH_OIDC_SIGNIN_URL = "http://casdoor.localhost/login/oauth/authorize";
+    process.env.FRONTIER_AUTH_OIDC_SIGNUP_URL = "http://casdoor.localhost/signup";
+
+    render(<AuthPage />);
+
+    expect(screen.queryByRole("link", { name: /continue to the console/i })).not.toBeInTheDocument();
+  });
 });

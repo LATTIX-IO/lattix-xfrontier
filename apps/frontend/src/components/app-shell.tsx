@@ -3,182 +3,23 @@
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ModeSwitch } from "@/components/mode-switch";
 import { ApiStatusBanner } from "@/components/api-status-banner";
+import { ModeSwitch } from "@/components/mode-switch";
+import { LeftNav } from "@/components/navigation/left-nav";
 import { getOperatorSession } from "@/lib/api";
 import type { AppMode, OperatorSession } from "@/types/frontier";
-
-type IconName = "inbox" | "workflow" | "artifact" | "studio" | "agent" | "nodes" | "guardrails" | "integrations" | "releases" | "settings";
-type NavItem = { href: string; label: string; icon: IconName };
-type NavGroup = { title: string; items: NavItem[] };
-
-function NavIcon({ name }: { name: IconName }) {
-  const cls = "h-4 w-4 text-[var(--foreground)]";
-
-  if (name === "inbox") {
-    return (
-      <svg viewBox="0 0 24 24" className={cls} fill="none" stroke="currentColor" strokeWidth="1.8">
-        <path d="M4 4h16v11H4z" />
-        <path d="M4 15h5l2 3h2l2-3h5" />
-      </svg>
-    );
-  }
-
-  if (name === "workflow") {
-    return (
-      <svg viewBox="0 0 24 24" className={cls} fill="none" stroke="currentColor" strokeWidth="1.8">
-        <circle cx="5" cy="12" r="2" />
-        <circle cx="12" cy="6" r="2" />
-        <circle cx="19" cy="12" r="2" />
-        <circle cx="12" cy="18" r="2" />
-        <path d="M7 11l3-3M14 8l3 3M14 16l3-3M10 16l-3-3" />
-      </svg>
-    );
-  }
-
-  if (name === "artifact") {
-    return (
-      <svg viewBox="0 0 24 24" className={cls} fill="none" stroke="currentColor" strokeWidth="1.8">
-        <path d="M6 3h9l3 3v15H6z" />
-        <path d="M15 3v3h3" />
-      </svg>
-    );
-  }
-
-  if (name === "studio") {
-    return (
-      <svg viewBox="0 0 24 24" className={cls} fill="none" stroke="currentColor" strokeWidth="1.8">
-        <rect x="3" y="3" width="7" height="7" />
-        <rect x="14" y="3" width="7" height="7" />
-        <rect x="3" y="14" width="7" height="7" />
-        <rect x="14" y="14" width="7" height="7" />
-      </svg>
-    );
-  }
-
-  if (name === "agent") {
-    return (
-      <svg viewBox="0 0 24 24" className={cls} fill="none" stroke="currentColor" strokeWidth="1.8">
-        <rect x="5" y="7" width="14" height="10" rx="2" />
-        <path d="M9 12h.01M15 12h.01M12 7V4" />
-      </svg>
-    );
-  }
-
-  if (name === "nodes") {
-    return (
-      <svg viewBox="0 0 24 24" className={cls} fill="none" stroke="currentColor" strokeWidth="1.8">
-        <circle cx="5" cy="5" r="2" />
-        <circle cx="19" cy="5" r="2" />
-        <circle cx="12" cy="19" r="2" />
-        <path d="M7 6.5l4 10M17 6.5l-4 10M7 5h10" />
-      </svg>
-    );
-  }
-
-  if (name === "guardrails") {
-    return (
-      <svg viewBox="0 0 24 24" className={cls} fill="none" stroke="currentColor" strokeWidth="1.8">
-        <path d="M12 3l8 3v6c0 4.5-3 7.5-8 9-5-1.5-8-4.5-8-9V6z" />
-      </svg>
-    );
-  }
-
-  if (name === "releases") {
-    return (
-      <svg viewBox="0 0 24 24" className={cls} fill="none" stroke="currentColor" strokeWidth="1.8">
-        <path d="M5 19l14-14" />
-        <path d="M14 5h5v5" />
-        <path d="M5 10V5h5" />
-      </svg>
-    );
-  }
-
-  if (name === "integrations") {
-    return (
-      <svg viewBox="0 0 24 24" className={cls} fill="none" stroke="currentColor" strokeWidth="1.8">
-        <rect x="3" y="4" width="7" height="6" />
-        <rect x="14" y="4" width="7" height="6" />
-        <rect x="8.5" y="14" width="7" height="6" />
-        <path d="M10 7h4M7 10v4M17 10v4" />
-      </svg>
-    );
-  }
-
-  return (
-    <svg viewBox="0 0 24 24" className={cls} fill="none" stroke="currentColor" strokeWidth="1.8">
-      <circle cx="12" cy="12" r="3" />
-      <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.6 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 8.92 4.6H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9c0 .67.26 1.31.73 1.78.47.47 1.11.73 1.78.73H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
-    </svg>
-  );
-}
-
-const userNavGroups: NavGroup[] = [
-  {
-    title: "Platform",
-    items: [
-      { href: "/inbox", label: "Inbox", icon: "inbox" },
-      { href: "/workflows/start", label: "Workflows", icon: "workflow" },
-      { href: "/artifacts", label: "Artifacts", icon: "artifact" },
-    ],
-  },
-  {
-    title: "Preferences",
-    items: [{ href: "/settings", label: "Settings", icon: "settings" }],
-  },
-];
-
-const builderNavGroups: NavGroup[] = [
-  {
-    title: "Platform",
-    items: [
-      { href: "/builder/agents", label: "Agent Studio", icon: "agent" },
-      { href: "/builder/workflows", label: "Workflow Studio", icon: "studio" },
-      { href: "/builder/templates", label: "Templates", icon: "artifact" },
-      { href: "/builder/playbooks", label: "Playbooks", icon: "workflow" },
-    ],
-  },
-  {
-    title: "Services",
-    items: [
-      { href: "/builder/observability", label: "Observability", icon: "workflow" },
-      { href: "/builder/integrations", label: "Integrations", icon: "integrations" },
-      { href: "/builder/nodes", label: "Node Library", icon: "nodes" },
-      { href: "/builder/guardrails", label: "Guardrails", icon: "guardrails" },
-      { href: "/builder/releases", label: "Releases", icon: "releases" },
-    ],
-  },
-  {
-    title: "Preferences",
-    items: [{ href: "/settings", label: "Settings", icon: "settings" }],
-  },
-];
-
-const adminNavGroup: NavGroup = {
-  title: "Admin",
-  items: [{ href: "/settings", label: "Administration", icon: "settings" }],
-};
 
 export function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const router = useRouter();
   const isPublicAuthRoute = pathname.startsWith("/auth");
+  const isProtectedRoute = !isPublicAuthRoute;
   const requestedMode: AppMode = pathname.startsWith("/builder") ? "builder" : "user";
   const inAdmin = pathname.startsWith("/admin");
   const [operatorSession, setOperatorSession] = useState<OperatorSession | null>(null);
   const sessionRequestIdRef = useRef(0);
   const [activeSessionRequestId, setActiveSessionRequestId] = useState(0);
   const [resolvedSessionRequestId, setResolvedSessionRequestId] = useState(0);
-  const navGroups = useMemo(() => {
-    const canBuilder = operatorSession?.capabilities.can_builder ?? false;
-    const canAdmin = operatorSession?.capabilities.can_admin ?? false;
-    const activeMode: AppMode = requestedMode === "builder" && canBuilder ? "builder" : "user";
-    const base = activeMode === "builder" ? [...builderNavGroups] : [...userNavGroups];
-    if (inAdmin && canAdmin) {
-      base.push(adminNavGroup);
-    }
-    return base;
-  }, [inAdmin, operatorSession?.capabilities.can_admin, operatorSession?.capabilities.can_builder, requestedMode]);
 
   const SHOW_SOFT_LAUNCH = true;
   const SHOW_CLASSIFICATION = true;
@@ -192,7 +33,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const topLayerOffset = (SHOW_SOFT_LAUNCH ? SOFT_LAUNCH_HEIGHT : 0) + (SHOW_CLASSIFICATION ? CLASSIFICATION_HEIGHT : 0);
   const contentTopOffset = topLayerOffset + TOP_NAV_HEIGHT + (SHOW_READ_ONLY ? READ_ONLY_HEIGHT : 0);
 
-  const sidebarWidthExpanded = 176;
+  const sidebarWidthExpanded = 248;
   const sidebarWidthCollapsed = 0;
   const [theme, setTheme] = useState<"light" | "dark">(() => {
     if (typeof window === "undefined") {
@@ -204,7 +45,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   });
   const [menuOpen, setMenuOpen] = useState(false);
   const [sidebarExpanded, setSidebarExpanded] = useState(() => {
-    if (typeof window === "undefined") return true;
+    if (typeof window === "undefined") {
+      return true;
+    }
     return window.innerWidth >= 768;
   });
 
@@ -228,6 +71,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     const requestId = sessionRequestIdRef.current + 1;
     sessionRequestIdRef.current = requestId;
     setActiveSessionRequestId(requestId);
+
     getOperatorSession()
       .then((session) => {
         if (!cancelled) {
@@ -244,12 +88,13 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           setResolvedSessionRequestId(requestId);
         }
       });
+
     return () => {
       cancelled = true;
     };
   }, [pathname]);
 
-  const sessionResolved = activeSessionRequestId != 0 && resolvedSessionRequestId === activeSessionRequestId;
+  const sessionResolved = activeSessionRequestId !== 0 && resolvedSessionRequestId === activeSessionRequestId;
 
   useEffect(() => {
     if (!sessionResolved || requestedMode !== "builder") {
@@ -261,7 +106,15 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     router.replace(operatorSession?.authenticated ? "/inbox" : "/auth");
   }, [operatorSession?.authenticated, operatorSession?.capabilities.can_builder, requestedMode, router, sessionResolved]);
 
+  useEffect(() => {
+    if (!isProtectedRoute || !sessionResolved || operatorSession?.authenticated) {
+      return;
+    }
+    router.replace("/auth");
+  }, [isProtectedRoute, operatorSession?.authenticated, router, sessionResolved]);
+
   const canBuilder = operatorSession?.capabilities.can_builder ?? false;
+  const canAdmin = operatorSession?.capabilities.can_admin ?? false;
   const activeMode: AppMode = requestedMode === "builder" && canBuilder ? "builder" : "user";
 
   if (isPublicAuthRoute) {
@@ -273,17 +126,42 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               <span className="text-xs font-semibold uppercase tracking-[0.16em] text-[var(--fx-muted)]">Lattix xFrontier</span>
               <span className="fx-badge-local px-2 py-0.5 text-[10px]">Identity</span>
             </div>
-            <div className="flex items-center gap-2">
-              <ModeSwitch activeMode="user" canAccessBuilder={false} />
-              <Link href="/inbox" className="fx-btn-secondary px-3 py-1.5 text-xs font-medium no-underline">
-                Skip to console
-              </Link>
-            </div>
+            <span className="text-[11px] font-medium text-[var(--fx-muted)]">Authentication required</span>
           </div>
         </div>
         <ApiStatusBanner />
-        <main className="min-h-screen pt-14">
-          {children}
+        <main className="min-h-screen pt-14">{children}</main>
+      </div>
+    );
+  }
+
+  if (!sessionResolved || !operatorSession?.authenticated) {
+    return (
+      <div className="fx-app min-h-screen text-[var(--foreground)]">
+        <div className="fixed inset-x-0 top-0 z-30 border-b border-[var(--ui-border)] bg-[color-mix(in_srgb,var(--fx-header)_94%,transparent)] backdrop-blur-sm">
+          <div className="mx-auto flex h-14 max-w-7xl items-center justify-between gap-3 px-4 sm:px-6 lg:px-8">
+            <div className="flex min-w-0 items-center gap-3">
+              <span className="text-xs font-semibold uppercase tracking-[0.16em] text-[var(--fx-muted)]">Lattix xFrontier</span>
+              <span className="fx-badge-local px-2 py-0.5 text-[10px]">Locked</span>
+            </div>
+            <span className="text-[11px] font-medium text-[var(--fx-muted)]">
+              {sessionResolved ? "Redirecting to login…" : "Checking operator session…"}
+            </span>
+          </div>
+        </div>
+        <ApiStatusBanner />
+        <main className="flex min-h-screen items-center justify-center px-4 pt-14">
+          <div className="fx-panel max-w-md p-6 text-center">
+            <p className="text-xs font-semibold uppercase tracking-[0.16em] text-[var(--fx-muted)]">Secure local access</p>
+            <h1 className="mt-3 text-xl font-semibold text-[hsl(var(--foreground))]">
+              {sessionResolved ? "Login required" : "Verifying your session"}
+            </h1>
+            <p className="mt-2 text-sm leading-6 text-[var(--fx-muted)]">
+              {sessionResolved
+                ? "Protected routes stay fail-closed until an authenticated operator session is present."
+                : "Hold tight while the console validates your operator session before rendering protected data."}
+            </p>
+          </div>
         </main>
       </div>
     );
@@ -338,7 +216,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             <a
               href="mailto:9ff6ac2b6c9d@intake.linear.app?subject=%5BFeedback%5D%20Lattix%20Frontier&body=%0A---%20Feedback%20---%0A%0AType%3A%20%5B%20Bug%20%7C%20Feature%20Request%20%7C%20Improvement%20%7C%20Other%20%5D%0A%0ADescription%3A%0A%0A%0ASteps%20to%20reproduce%20(if%20bug)%3A%0A1.%20%0A2.%20%0A3.%20%0A%0AExpected%20behavior%3A%0A%0A%0AActual%20behavior%3A%0A%0A%0AAdditional%20context%3A%0A"
               className="fx-btn-secondary px-2 py-1 text-[11px] no-underline"
-            >Feedback</a>
+            >
+              Feedback
+            </a>
             <button className="fx-btn-secondary h-7 w-7 px-0 text-[11px]" aria-label="Docs">
               ?
             </button>
@@ -350,22 +230,19 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               DB OK
             </span>
             <ModeSwitch activeMode={activeMode} canAccessBuilder={canBuilder} />
-            {activeMode === "user" && (
-              <Link
-                href="/workflows/start"
-                className="fx-btn-primary px-2.5 py-1 text-[11px] font-medium"
-              >
+            {activeMode === "user" ? (
+              <Link href="/workflows/start" className="fx-btn-primary px-2.5 py-1 text-[11px] font-medium">
                 Start Workflow
               </Link>
-            )}
+            ) : null}
             <button
-              onClick={() => setMenuOpen((v) => !v)}
+              onClick={() => setMenuOpen((value) => !value)}
               className="fx-btn-secondary h-7 w-7 px-0 text-[11px] font-semibold"
               aria-label="User menu"
             >
               LD
             </button>
-            {menuOpen && (
+            {menuOpen ? (
               <div className="fx-panel absolute right-0 top-9 z-50 min-w-44 p-1 shadow-xl">
                 <button
                   onClick={() => {
@@ -386,13 +263,16 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                   Dark mode
                 </button>
               </div>
-            )}
+            ) : null}
           </div>
         </div>
       </header>
 
       {SHOW_READ_ONLY ? (
-        <div className="fixed inset-x-0 z-30 flex items-center justify-center border-b border-[var(--ui-border)] bg-[hsl(var(--muted))] text-[10px]" style={{ top: `${topLayerOffset + TOP_NAV_HEIGHT}px`, height: `${READ_ONLY_HEIGHT}px` }}>
+        <div
+          className="fixed inset-x-0 z-30 flex items-center justify-center border-b border-[var(--ui-border)] bg-[hsl(var(--muted))] text-[10px]"
+          style={{ top: `${topLayerOffset + TOP_NAV_HEIGHT}px`, height: `${READ_ONLY_HEIGHT}px` }}
+        >
           Read-only mode enabled
         </div>
       ) : null}
@@ -407,40 +287,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             borderRightWidth: sidebarExpanded ? "1px" : "0px",
           }}
         >
-          <div className="h-full overflow-y-auto p-2">
-            <div className="fx-panel mb-2 p-2">
-              <p className="text-[10px] font-semibold uppercase tracking-[0.08em] text-[var(--fx-muted)]">Workspace</p>
-              <p className="mt-1 truncate text-xs font-medium">Default Tenant</p>
-              <p className="mt-0.5 text-[10px] text-[var(--fx-muted)]">local / single-tenant</p>
-            </div>
-
-            {navGroups.map((group) => (
-              <section key={group.title} className="mb-3">
-                <h3 className="px-1 pb-1 text-[10px] font-semibold uppercase tracking-[0.08em] text-[var(--fx-muted)]">{group.title}</h3>
-                <nav className="space-y-1">
-                  {group.items.map((item) => {
-                    const active = pathname === item.href || pathname.startsWith(`${item.href}/`);
-                    return (
-                      <Link
-                        key={item.href}
-                        href={item.href}
-                        className={`flex items-center gap-2 rounded-md px-2 py-1.5 text-xs transition ${
-                          active
-                            ? "fx-nav-active font-semibold text-[hsl(var(--foreground))]"
-                            : "text-[hsl(var(--foreground))] hover:bg-[var(--fx-nav-hover)]"
-                        }`}
-                      >
-                        <span className={active ? "text-[var(--fx-primary)]" : ""}>
-                          <NavIcon name={item.icon} />
-                        </span>
-                        <span className="truncate">{item.label}</span>
-                      </Link>
-                    );
-                  })}
-                </nav>
-              </section>
-            ))}
-          </div>
+          <LeftNav mode={activeMode} pathname={pathname} inAdmin={inAdmin && canAdmin} expanded={sidebarExpanded} />
         </aside>
 
         <main
@@ -449,19 +296,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           style={{ marginLeft: `${sidebarExpanded ? sidebarWidthExpanded : sidebarWidthCollapsed}px` }}
         >
           <ApiStatusBanner />
-          <div className="p-5 md:p-6">
-            {requestedMode === "builder" && !sessionResolved ? (
-              <div className="fx-panel max-w-2xl rounded-2xl border p-6">
-                <p className="text-xs font-semibold uppercase tracking-[0.16em] text-[var(--fx-muted)]">Checking access</p>
-                <h2 className="mt-3 text-xl font-semibold tracking-[-0.03em] text-[hsl(var(--foreground))]">Verifying builder permissions</h2>
-                <p className="mt-2 text-sm leading-6 text-[var(--fx-muted)]">
-                  One quick capability check so builder mode only opens for identities that actually have the keys.
-                </p>
-              </div>
-            ) : (
-              children
-            )}
-          </div>
+          <div className="p-5 md:p-6">{children}</div>
         </main>
       </div>
     </div>
