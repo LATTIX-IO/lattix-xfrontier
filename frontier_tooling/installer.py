@@ -551,13 +551,20 @@ def _casdoor_bootstrap_identity_enabled(answers: InstallerAnswers) -> bool:
     return bool(str(answers.bootstrap_login_username or "").strip() and str(answers.bootstrap_login_password or ""))
 
 
+def _effective_secure_gateway_settings() -> dict[str, str]:
+    install_root = Path(str(os.getenv(FRONTIER_APP_HOME_ENV) or source_repo_root())).expanduser().resolve(strict=False)
+    compose_env = ensure_compose_env_file(local_profile=False, root=install_root)
+    return _read_installer_env_map(compose_env)
+
+
 def _casdoor_bootstrap_endpoint(answers: InstallerAnswers) -> tuple[str, dict[str, str]]:
     issuer = FrontierInstaller._resolved_oidc_settings(answers)["issuer"]
     parsed = urlsplit(issuer)
     host = str(parsed.hostname or "").strip().lower()
     if host.endswith(".localhost") or host in {"localhost", "127.0.0.1", "::1"}:
-        bind_host = str(os.getenv("LOCAL_GATEWAY_BIND_HOST") or "127.0.0.1").strip() or "127.0.0.1"
-        port = str(os.getenv("LOCAL_GATEWAY_HTTP_PORT") or "80").strip() or "80"
+        gateway_settings = _effective_secure_gateway_settings()
+        bind_host = str(gateway_settings.get("LOCAL_GATEWAY_BIND_HOST") or os.getenv("LOCAL_GATEWAY_BIND_HOST") or "127.0.0.1").strip() or "127.0.0.1"
+        port = str(gateway_settings.get("LOCAL_GATEWAY_HTTP_PORT") or os.getenv("LOCAL_GATEWAY_HTTP_PORT") or "80").strip() or "80"
         netloc = bind_host if port == "80" else f"{bind_host}:{port}"
         return urlunsplit(("http", netloc, "", "", "")), {"Host": parsed.netloc}
     return issuer.rstrip("/"), {}
