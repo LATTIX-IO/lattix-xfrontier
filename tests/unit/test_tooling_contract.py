@@ -91,6 +91,17 @@ def test_compose_env_generation_uses_mode_specific_files_and_profiles(tmp_path: 
     assert "FRONTIER_LOCAL_API_BASE_URL=http://localhost:8000" in lightweight_text
 
 
+def test_compose_env_generation_respects_non_default_gateway_port(tmp_path: Path) -> None:
+    (tmp_path / ".env.example").write_text("LOCAL_GATEWAY_HTTP_PORT=8080\n", encoding="utf-8")
+
+    secure_env = ensure_compose_env_file(local_profile=False, root=tmp_path)
+    secure_text = secure_env.read_text(encoding="utf-8")
+
+    assert "LOCAL_GATEWAY_HTTP_PORT=8080" in secure_text
+    assert "FRONTEND_ORIGIN=http://xfrontier.local:8080" in secure_text
+    assert "FRONTIER_LOCAL_API_BASE_URL=http://127.0.0.1:8080/api" in secure_text
+
+
 def test_compose_env_generation_repairs_blank_a2a_secret(tmp_path: Path, monkeypatch) -> None:
     (tmp_path / ".env").write_text("A2A_JWT_SECRET=from-dot-env\n", encoding="utf-8")
     (tmp_path / ".installer").mkdir(parents=True, exist_ok=True)
