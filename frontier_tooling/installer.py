@@ -5,9 +5,11 @@ from pathlib import Path
 import platform
 import json
 import http.client
+import re
 import shutil
 import ssl
 import stat
+import socket
 import subprocess
 import sys
 import tempfile
@@ -41,6 +43,7 @@ from .common import (
 
 CASDOOR_BOOTSTRAP_MAX_ATTEMPTS = 90
 CASDOOR_BOOTSTRAP_RETRY_DELAY_SECONDS = 2
+_LOCAL_GATEWAY_PORT_FALLBACKS = (8080, 8081, 8088, 8888)
 
 
 def bootstrap_url() -> str:
@@ -691,8 +694,106 @@ def _require_docker_stack_prerequisites(env: dict[str, str]) -> None:
         raise SystemExit("Docker is installed but the daemon is not ready. Start Docker Desktop or the docker service and rerun the installer.")
 
 
+def _read_installer_env_map(path: Path) -> dict[str, str]:
+    env_map: dict[str, str] = {}
+    if not path.exists():
+        return env_map
+    for line in path.read_text(encoding="utf-8").splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        env_map[key] = value
+    return env_map
+
+
+def _write_installer_env_map(path: Path, env_map: dict[str, str]) -> None:
+    payload = "\n".join(f"{key}={value}" for key, value in env_map.items()) + "\n"
+    path.write_text(payload, encoding="utf-8")
+
+
+def _secure_gateway_origin(env_map: dict[str, str]) -> str:
+    host = str(env_map.get("LOCAL_STACK_HOST") or "xfrontier.local").strip() or "xfrontier.local"
+    port = str(env_map.get("LOCAL_GATEWAY_HTTP_PORT") or "80").strip() or "80"
+    authority = host if port == "80" else f"{host}:{port}"
+    return f"http://{authority}"
+
+
+def _secure_local_api_base(env_map: dict[str, str]) -> str:
+    bind_host = str(env_map.get("LOCAL_GATEWAY_BIND_HOST") or "127.0.0.1").strip() or "127.0.0.1"
+    if bind_host == "0.0.0.0":
+        bind_host = "127.0.0.1"
+    port = str(env_map.get("LOCAL_GATEWAY_HTTP_PORT") or "80").strip() or "80"
+    authority = bind_host if port == "80" else f"{bind_host}:{port}"
+    return f"http://{authority}/api"
+
+
+def _compose_up_with_output(command: list[str], *, cwd: Path, env: dict[str, str]) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(command, cwd=str(cwd), env=env, check=False, capture_output=True, text=True)
+
+
+def _port_conflict_from_compose_output(output: str) -> tuple[str, int] | None:
+    match = re.search(r"Bind for (?P<host>[^:]+):(?P<port>\d+) failed: port is already allocated", output)
+    if not match:
+        return None
+    return match.group("host"), int(match.group("port"))
+
+
+def _port_is_available(host: str, port: int) -> bool:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            probe.bind((host, port))
+        except OSError:
+            return False
+    return True
+
+
+def _select_fallback_gateway_port(bind_host: str, occupied_port: int) -> int | None:
+    for candidate in _LOCAL_GATEWAY_PORT_FALLBACKS:
+        if candidate == occupied_port:
+            continue
+        if _port_is_available(bind_host, candidate):
+            return candidate
+    return None
+
+
+def _rewrite_secure_gateway_port(install_root: Path, gateway_port: int) -> Path:
+    compose_env = ensure_compose_env_file(local_profile=False, root=install_root)
+    env_map = _read_installer_env_map(compose_env)
+    env_map["LOCAL_GATEWAY_HTTP_PORT"] = str(gateway_port)
+    env_map["FRONTEND_ORIGIN"] = _secure_gateway_origin(env_map)
+    env_map["FRONTIER_LOCAL_API_BASE_URL"] = _secure_local_api_base(env_map)
+    _write_installer_env_map(compose_env, env_map)
+    return compose_env
+
+
+def _raise_compose_failure(command: list[str], completed: subprocess.CompletedProcess[str]) -> None:
+    if completed.stdout:
+        print(completed.stdout, end="", file=sys.stdout)
+    if completed.stderr:
+        print(completed.stderr, end="", file=sys.stderr)
+    raise subprocess.CalledProcessError(completed.returncode, command, output=completed.stdout, stderr=completed.stderr)
+
+
 def _auto_start_stack(install_root: Path, env: dict[str, str]) -> list[str]:
-    run_command(compose_prefix(local=False, root=install_root) + ["up", "-d", "--remove-orphans"], cwd=install_root, env=env)
+    command = compose_prefix(local=False, root=install_root) + ["up", "-d", "--remove-orphans"]
+    completed = _compose_up_with_output(command, cwd=install_root, env=env)
+    if completed.returncode == 0:
+        return portal_urls(root=install_root)
+
+    combined_output = "\n".join(part for part in (completed.stdout, completed.stderr) if part)
+    port_conflict = _port_conflict_from_compose_output(combined_output)
+    if port_conflict is not None:
+        bind_host, occupied_port = port_conflict
+        fallback_port = _select_fallback_gateway_port(bind_host, occupied_port)
+        if fallback_port is not None:
+            _rewrite_secure_gateway_port(install_root, fallback_port)
+            completed = _compose_up_with_output(command, cwd=install_root, env=env)
+            if completed.returncode == 0:
+                return portal_urls(root=install_root)
+
+    _raise_compose_failure(command, completed)
     return portal_urls(root=install_root)
 
 

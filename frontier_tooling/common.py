@@ -30,10 +30,26 @@ def _normalized_gateway_bind_host(value: str | None) -> str:
     return host
 
 
+def _normalized_gateway_http_port(value: str | None) -> str:
+    port = str(value or "").strip()
+    return port or "80"
+
+
+def _http_authority(host: str, port: str) -> str:
+    normalized_port = _normalized_gateway_http_port(port)
+    return host if normalized_port == "80" else f"{host}:{normalized_port}"
+
+
+def _default_secure_frontend_origin(env_map: OrderedDict[str, str]) -> str:
+    host = str(env_map.get("LOCAL_STACK_HOST") or DEFAULT_LOCAL_STACK_HOST).strip() or DEFAULT_LOCAL_STACK_HOST
+    port = _normalized_gateway_http_port(env_map.get("LOCAL_GATEWAY_HTTP_PORT"))
+    return f"http://{_http_authority(host, port)}"
+
+
 def _default_secure_local_api_base_url(env_map: OrderedDict[str, str]) -> str:
     host = _normalized_gateway_bind_host(env_map.get("LOCAL_GATEWAY_BIND_HOST"))
-    port = str(env_map.get("LOCAL_GATEWAY_HTTP_PORT") or "80").strip() or "80"
-    authority = host if port == "80" else f"{host}:{port}"
+    port = _normalized_gateway_http_port(env_map.get("LOCAL_GATEWAY_HTTP_PORT"))
+    authority = _http_authority(host, port)
     return f"http://{authority}/api"
 
 
@@ -184,7 +200,7 @@ def ensure_compose_env_file(*, local_profile: bool = False, root: Path | None = 
         env_map["FRONTIER_RUNTIME_PROFILE"] = "local-secure"
         env_map["FRONTIER_LOCAL_BOOTSTRAP_AUTHENTICATED_OPERATOR"] = "true"
         env_map["NEXT_PUBLIC_API_BASE_URL"] = "/api"
-        env_map["FRONTEND_ORIGIN"] = f"http://{env_map['LOCAL_STACK_HOST']}"
+        env_map["FRONTEND_ORIGIN"] = _default_secure_frontend_origin(env_map)
         secure_api_base = _default_secure_local_api_base_url(env_map)
         configured_api_base = str(env_map.get("FRONTIER_LOCAL_API_BASE_URL") or "").strip()
         if not configured_api_base or configured_api_base == "http://localhost:8000":
@@ -345,10 +361,12 @@ def _detect_primary_ipv4() -> str | None:
 def portal_urls(*, root: Path | None = None) -> list[str]:
     env_map = _read_env_map(ensure_compose_env_file(local_profile=False, root=root))
     host = str(env_map.get("LOCAL_STACK_HOST") or DEFAULT_LOCAL_STACK_HOST).strip() or DEFAULT_LOCAL_STACK_HOST
-    urls = [f"http://{host}", "http://127.0.0.1"]
+    port = _normalized_gateway_http_port(env_map.get("LOCAL_GATEWAY_HTTP_PORT"))
+    bind_host = _normalized_gateway_bind_host(env_map.get("LOCAL_GATEWAY_BIND_HOST"))
+    urls = [f"http://{_http_authority(host, port)}", f"http://{_http_authority(bind_host, port)}"]
     lan_ip = _detect_primary_ipv4()
     if lan_ip and lan_ip != "127.0.0.1":
-        urls.append(f"http://{lan_ip}")
+        urls.append(f"http://{_http_authority(lan_ip, port)}")
     deduped: list[str] = []
     for url in urls:
         if url not in deduped:

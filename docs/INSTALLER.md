@@ -97,6 +97,8 @@ For editable/source-checkout installs, `lattix update` requires a clean Git work
 
 The Docker Compose stack now includes `local-gateway` powered by Caddy, which routes `LOCAL_STACK_HOST` to the Frontier frontend over plain HTTP for local development, proxies `/api/*` requests to the canonical backend service, and exposes the bundled Casdoor surface at `http://casdoor.localhost`.
 
+If loopback port `80` is already in use on the machine, the packaged installer automatically retries the secure gateway on a fallback loopback port and prints the adjusted URLs in the install summary.
+
 ## Local secret handling
 
 For local deployments, the installer now handles secrets such as `A2A_JWT_SECRET` during setup:

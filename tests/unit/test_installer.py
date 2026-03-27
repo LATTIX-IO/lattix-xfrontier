@@ -465,6 +465,52 @@ def test_packaged_installer_update_preserves_installer_state(tmp_path: Path) -> 
     assert (install_root / "README.md").read_text(encoding="utf-8") == "new build\n"
 
 
+def test_packaged_installer_retries_secure_gateway_on_fallback_port(monkeypatch, tmp_path: Path) -> None:
+    installer_dir = tmp_path / ".installer"
+    installer_dir.mkdir(parents=True, exist_ok=True)
+    compose_env = installer_dir / "local-secure.env"
+    compose_env.write_text(
+        "\n".join(
+            [
+                "LOCAL_STACK_HOST=xfrontier.local",
+                "LOCAL_GATEWAY_BIND_HOST=127.0.0.1",
+                "LOCAL_GATEWAY_HTTP_PORT=80",
+                "FRONTEND_ORIGIN=http://xfrontier.local",
+                "FRONTIER_LOCAL_API_BASE_URL=http://127.0.0.1/api",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    calls: list[list[str]] = []
+
+    def _fake_compose_run(command: list[str], *, cwd: Path, env: dict[str, str]) -> subprocess.CompletedProcess[str]:
+        calls.append(command)
+        current_env_lines = compose_env.read_text(encoding="utf-8").splitlines()
+        if "LOCAL_GATEWAY_HTTP_PORT=80" in current_env_lines:
+            return subprocess.CompletedProcess(
+                command,
+                1,
+                stdout="",
+                stderr="Error response from daemon: failed to set up container networking: driver failed programming external connectivity on endpoint xfrontier-local-gateway-1: Bind for 127.0.0.1:80 failed: port is already allocated\n",
+            )
+        return subprocess.CompletedProcess(command, 0, stdout="started\n", stderr="")
+
+    monkeypatch.setattr(packaged_installer, "_compose_up_with_output", _fake_compose_run)
+    monkeypatch.setattr(packaged_installer, "_select_fallback_gateway_port", lambda bind_host, occupied_port: 8080)
+    monkeypatch.setattr(packaged_installer, "portal_urls", lambda root=None: ["http://xfrontier.local:8080", "http://127.0.0.1:8080"])
+
+    urls = packaged_installer._auto_start_stack(tmp_path, {})
+    updated_env = compose_env.read_text(encoding="utf-8")
+
+    assert len(calls) == 2
+    assert urls == ["http://xfrontier.local:8080", "http://127.0.0.1:8080"]
+    assert "LOCAL_GATEWAY_HTTP_PORT=8080" in updated_env
+    assert "FRONTEND_ORIGIN=http://xfrontier.local:8080" in updated_env
+    assert "FRONTIER_LOCAL_API_BASE_URL=http://127.0.0.1:8080/api" in updated_env
+
+
 def test_installer_defaults_to_casdoor_oidc_preset(tmp_path: Path) -> None:
     installer = FrontierInstaller(repo_root=tmp_path)
     answers = InstallerAnswers(installation_root=str(tmp_path), deployment_mode="local")
