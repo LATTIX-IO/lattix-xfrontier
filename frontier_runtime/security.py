@@ -507,21 +507,69 @@ class VaultClient:
             raise RuntimeError("Vault client address must not include fragments")
         return parsed.geturl().rstrip("/")
 
-    def read_secret(self, path: str) -> dict[str, Any]:
+    @staticmethod
+    def _normalized_path(path: str) -> str:
         normalized_path = str(path or "").strip().strip("/")
         if not normalized_path:
             raise ValueError("Vault secret path is required")
+        return normalized_path
+
+    def _require_configured(self) -> str:
         if not self.addr or not self.token:
             raise RuntimeError("Vault client is not configured; set VAULT_ADDR and VAULT_TOKEN")
+        return self._validated_addr(self.addr)
 
-        url = f"{self._validated_addr(self.addr)}/v1/{urlparse.quote(normalized_path, safe='/')}"
+    def _request_json(
+        self,
+        method: str,
+        path: str,
+        *,
+        payload: dict[str, Any] | None = None,
+        include_token: bool = True,
+    ) -> dict[str, Any]:
+        base_url = self._validated_addr(self.addr) if self.addr else self._require_configured()
+        url = f"{base_url}/v1/{urlparse.quote(self._normalized_path(path), safe='/')}"
+        headers = {"Accept": "application/json"}
+        if include_token:
+            if not self.token:
+                raise RuntimeError("Vault client is not configured; set VAULT_ADDR and VAULT_TOKEN")
+            headers["X-Vault-Token"] = self.token
+        if payload is not None:
+            headers["Content-Type"] = "application/json"
+        try:
+            response = httpx.request(
+                method,
+                url,
+                headers=headers,
+                json=payload,
+                timeout=float(self.timeout_seconds),
+                follow_redirects=False,
+            )
+            response.raise_for_status()
+            parsed_payload = response.json()
+        except httpx.HTTPStatusError as exc:
+            detail = exc.response.text.strip()
+            raise RuntimeError(f"Vault {method.upper()} failed for '{path}': {exc.response.status_code} {detail}".strip()) from exc
+        except httpx.RequestError as exc:
+            raise RuntimeError(f"Vault {method.upper()} failed for '{path}': {exc}") from exc
+        except json.JSONDecodeError as exc:
+            raise RuntimeError(f"Vault {method.upper()} failed for '{path}': invalid JSON response") from exc
+
+        if not isinstance(parsed_payload, dict):
+            raise RuntimeError(f"Vault {method.upper()} failed for '{path}': unexpected response shape")
+        return parsed_payload
+
+    def health_status(self) -> dict[str, Any]:
+        if not self.addr:
+            raise RuntimeError("Vault client requires VAULT_ADDR to query health")
+        url = (
+            f"{self._validated_addr(self.addr)}/v1/sys/health"
+            "?standbyok=true&perfstandbyok=true&sealedcode=200&uninitcode=200"
+        )
         try:
             response = httpx.get(
                 url,
-                headers={
-                    "X-Vault-Token": self.token,
-                    "Accept": "application/json",
-                },
+                headers={"Accept": "application/json"},
                 timeout=float(self.timeout_seconds),
                 follow_redirects=False,
             )
@@ -529,14 +577,43 @@ class VaultClient:
             payload = response.json()
         except httpx.HTTPStatusError as exc:
             detail = exc.response.text.strip()
-            raise RuntimeError(f"Vault read failed for '{normalized_path}': {exc.response.status_code} {detail}".strip()) from exc
+            raise RuntimeError(f"Vault health query failed: {exc.response.status_code} {detail}".strip()) from exc
         except httpx.RequestError as exc:
-            raise RuntimeError(f"Vault read failed for '{normalized_path}': {exc}") from exc
+            raise RuntimeError(f"Vault health query failed: {exc}") from exc
         except json.JSONDecodeError as exc:
-            raise RuntimeError(f"Vault read failed for '{normalized_path}': invalid JSON response") from exc
+            raise RuntimeError("Vault health query failed: invalid JSON response") from exc
+        return payload if isinstance(payload, dict) else {}
 
-        if not isinstance(payload, dict):
-            raise RuntimeError(f"Vault read failed for '{normalized_path}': unexpected response shape")
+    def initialize(self, *, secret_shares: int = 1, secret_threshold: int = 1) -> dict[str, Any]:
+        payload = self._request_json(
+            "POST",
+            "sys/init",
+            payload={
+                "secret_shares": max(1, int(secret_shares)),
+                "secret_threshold": max(1, int(secret_threshold)),
+            },
+            include_token=False,
+        )
+        return payload
+
+    def unseal(self, key: str) -> dict[str, Any]:
+        key_text = str(key or "").strip()
+        if not key_text:
+            raise ValueError("Vault unseal key is required")
+        return self._request_json("POST", "sys/unseal", payload={"key": key_text}, include_token=False)
+
+    def write_secret(self, path: str, secret: dict[str, Any]) -> dict[str, Any]:
+        normalized_path = self._normalized_path(path)
+        secret_payload = secret if isinstance(secret, dict) else {}
+        if "/data/" in normalized_path:
+            payload = {"data": secret_payload}
+        else:
+            payload = secret_payload
+        return self._request_json("POST", normalized_path, payload=payload)
+
+    def read_secret(self, path: str) -> dict[str, Any]:
+        normalized_path = self._normalized_path(path)
+        payload = self._request_json("GET", normalized_path)
 
         data = payload.get("data")
         if isinstance(data, dict) and isinstance(data.get("data"), dict):

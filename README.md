@@ -93,6 +93,16 @@ make update
 
 The updater keeps the existing `.installer/` env files and local Docker data volumes in place, reapplies the current package, and restarts the active local stack with a build refresh.
 
+If you rerun the published bootstrap installer over an existing installed app home, it now follows the same non-destructive posture by preserving `.installer/` and `.env`, keeping Docker volumes intact, and reusing the prior secure-local passwords, bootstrap identities, and OIDC settings as the interactive defaults.
+
+That preservation path also keeps operator-owned agent asset directories that live inside the installed app home, such as an in-app `FRONTIER_AGENT_ASSETS_ROOT` override or user-added agent folders under `examples/agents/`.
+
+The installer now writes a versioned state manifest under `.installer/state-manifest.json` as part of that contract so future upgrades can evolve installer-managed state explicitly and safely.
+
+Secure-local installs now also mirror installer-managed secrets and configuration snapshots into the local Vault instance. The Docker Compose stack backs Vault with the durable `vault-data` volume, while PostgreSQL and Neo4j continue using their own persistent named volumes for long-term platform data.
+
+Older installs that do not already have this manifest are upgraded into it automatically during install/update.
+
 For the default secure/full browser experience, open `http://xfrontier.local` (or your configured `LOCAL_STACK_HOST`). The public installer also prints clickable `http://127.0.0.1` and LAN IP URLs after `lattix up` auto-starts. That path proxies `/api/*` through the local gateway to the backend at `http://localhost:8000`.
 
 If you intentionally want the lighter local-only stack, use `make local-up`. That path exposes the frontend directly at `http://localhost:3000` and talks to the backend at `http://localhost:8000` without the gateway-based `/api` path.

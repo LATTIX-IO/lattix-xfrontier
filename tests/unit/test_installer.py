@@ -1,6 +1,9 @@
+import base64
+import json
 from pathlib import Path
 import secrets
 import subprocess
+from typing import Any
 
 import pytest
 
@@ -164,6 +167,69 @@ def test_secure_local_answers_generate_randomized_bootstrap_identity(monkeypatch
     assert answers.bootstrap_login_password_generated is False
 
 
+def test_secure_local_answers_reuse_existing_install_settings(tmp_path: Path) -> None:
+    installer = FrontierInstaller(repo_root=tmp_path)
+    installer_dir = tmp_path / ".installer"
+    installer_dir.mkdir(parents=True, exist_ok=True)
+    (installer_dir / "local-secure.env").write_text(
+        "\n".join(
+            [
+                "LOCAL_STACK_HOST=existing.localhost",
+                "FRONTIER_AUTH_MODE=oidc",
+                "FRONTIER_AUTH_OIDC_PROVIDER=external",
+                "FRONTIER_AUTH_OIDC_ISSUER=https://login.example.com/realms/frontier",
+                "FRONTIER_AUTH_OIDC_AUDIENCE=frontier-api",
+                "FRONTIER_AUTH_OIDC_JWKS_URL=https://login.example.com/jwks",
+                "FRONTIER_AUTH_OIDC_CLIENT_ID=frontier-ui",
+                "FRONTIER_AUTH_OIDC_AUTHORIZATION_URL=https://login.example.com/auth",
+                "FRONTIER_AUTH_OIDC_TOKEN_URL=https://login.example.com/token",
+                "FRONTIER_AUTH_OIDC_SIGNIN_URL=https://login.example.com/sign-in",
+                "FRONTIER_AUTH_OIDC_SIGNUP_URL=https://login.example.com/sign-up",
+                "FRONTIER_AUTH_OIDC_SCOPES=openid profile email groups",
+                "FRONTIER_BOOTSTRAP_ADMIN_USERNAME=existing-admin",
+                "FRONTIER_BOOTSTRAP_ADMIN_EMAIL=admin@existing.localhost",
+                "FRONTIER_BOOTSTRAP_ADMIN_SUBJECT=existing-admin-subject",
+                "CASDOOR_BOOTSTRAP_LOGIN_USERNAME=existing-login",
+                "CASDOOR_BOOTSTRAP_LOGIN_EMAIL=login@existing.localhost",
+                "CASDOOR_BOOTSTRAP_LOGIN_DISPLAY_NAME=Existing Login",
+                "CASDOOR_BOOTSTRAP_LOGIN_PASSWORD=ExistingPass123!",
+                "FEDERATION_ENABLED=true",
+                "FEDERATION_CLUSTER_NAME=cluster-a",
+                "FEDERATION_REGION=us-east",
+                "FEDERATION_PEERS=https://peer-a.example.com,https://peer-b.example.com",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    answers = installer.secure_local_answers(tmp_path)
+
+    assert answers.local_hostname == "existing"
+    assert answers.local_auth_provider == "oidc"
+    assert answers.oidc_provider_template == "external"
+    assert answers.oidc_issuer == "https://login.example.com/realms/frontier"
+    assert answers.oidc_audience == "frontier-api"
+    assert answers.oidc_jwks_url == "https://login.example.com/jwks"
+    assert answers.oidc_client_id == "frontier-ui"
+    assert answers.oidc_authorization_url == "https://login.example.com/auth"
+    assert answers.oidc_token_url == "https://login.example.com/token"
+    assert answers.oidc_signin_url == "https://login.example.com/sign-in"
+    assert answers.oidc_signup_url == "https://login.example.com/sign-up"
+    assert answers.oidc_scopes == ["openid", "profile", "email", "groups"]
+    assert answers.bootstrap_admin_username == "existing-admin"
+    assert answers.bootstrap_admin_email == "admin@existing.localhost"
+    assert answers.bootstrap_admin_subject == "existing-admin-subject"
+    assert answers.bootstrap_login_username == "existing-login"
+    assert answers.bootstrap_login_email == "login@existing.localhost"
+    assert answers.bootstrap_login_display_name == "Existing Login"
+    assert answers.bootstrap_login_password == "ExistingPass123!"
+    assert answers.federation_enabled is True
+    assert answers.federation_cluster_name == "cluster-a"
+    assert answers.federation_region == "us-east"
+    assert answers.federation_peers == ["https://peer-a.example.com", "https://peer-b.example.com"]
+
+
 def test_collect_local_answers_interactively_prompts_for_external_oidc(monkeypatch, tmp_path: Path) -> None:
     installer = FrontierInstaller(repo_root=tmp_path)
     prompts = iter(
@@ -272,6 +338,43 @@ def test_collect_local_answers_prompts_for_casdoor_login_bootstrap(monkeypatch, 
     assert answers.bootstrap_login_display_name == "Demo Operator"
     assert answers.bootstrap_login_password == "LoginPass123!"
     assert answers.bootstrap_login_password_generated is False
+
+
+def test_collect_local_answers_reuses_existing_bootstrap_login_password_when_blank(monkeypatch, tmp_path: Path) -> None:
+    installer = FrontierInstaller(repo_root=tmp_path)
+    installer_dir = tmp_path / ".installer"
+    installer_dir.mkdir(parents=True, exist_ok=True)
+    (installer_dir / "local-secure.env").write_text(
+        "\n".join(
+            [
+                "LOCAL_STACK_HOST=existing.localhost",
+                "FRONTIER_AUTH_MODE=oidc",
+                "FRONTIER_AUTH_OIDC_PROVIDER=casdoor",
+                "FRONTIER_BOOTSTRAP_ADMIN_USERNAME=existing-admin",
+                "FRONTIER_BOOTSTRAP_ADMIN_EMAIL=admin@existing.localhost",
+                "FRONTIER_BOOTSTRAP_ADMIN_SUBJECT=existing-admin",
+                "CASDOOR_BOOTSTRAP_LOGIN_USERNAME=existing-login",
+                "CASDOOR_BOOTSTRAP_LOGIN_EMAIL=login@existing.localhost",
+                "CASDOOR_BOOTSTRAP_LOGIN_DISPLAY_NAME=Existing Login",
+                "CASDOOR_BOOTSTRAP_LOGIN_PASSWORD=ExistingPass123!",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    prompts = iter(["", "", "", "", "", "", "", "", "", "y"])
+    monkeypatch.setattr("builtins.input", lambda prompt: next(prompts))
+    monkeypatch.setattr("getpass.getpass", lambda prompt: "")
+
+    answers = installer.collect_local_answers(installation_root=tmp_path, interactive=True)
+
+    assert answers.local_hostname == "existing"
+    assert answers.bootstrap_admin_username == "existing-admin"
+    assert answers.bootstrap_login_username == "existing-login"
+    assert answers.bootstrap_login_email == "login@existing.localhost"
+    assert answers.bootstrap_login_display_name == "Existing Login"
+    assert answers.bootstrap_login_password == "ExistingPass123!"
 
 
 def test_collect_local_answers_reprompts_for_required_casdoor_login_fields(monkeypatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
@@ -461,8 +564,91 @@ def test_packaged_installer_update_preserves_installer_state(tmp_path: Path) -> 
 
     assert refreshed_root == install_root
     assert (install_root / ".installer" / "local-secure.env").read_text(encoding="utf-8") == "A2A_JWT_SECRET=existing-secret\n"
-    assert (install_root / ".env").read_text(encoding="utf-8") == "LOCAL_STACK_HOST=xfrontier.local\n"
+
+
+def test_packaged_installer_prepare_install_root_preserves_existing_installer_state(monkeypatch, tmp_path: Path) -> None:
+    source_root = tmp_path / "source"
+    install_root = tmp_path / "installed"
+    (source_root / "frontier_tooling").mkdir(parents=True, exist_ok=True)
+    (source_root / "pyproject.toml").write_text("[project]\nname='lattix-frontier'\nversion='0.2.0'\n", encoding="utf-8")
+    (source_root / "docker-compose.yml").write_text("services: {}\n", encoding="utf-8")
+    (source_root / "README.md").write_text("new build\n", encoding="utf-8")
+
+    (install_root / ".installer").mkdir(parents=True, exist_ok=True)
+    (install_root / ".installer" / "local-secure.env").write_text("POSTGRES_PASSWORD=existing-secret\n", encoding="utf-8")
+    (install_root / ".env").write_text("LOCAL_STACK_HOST=existing.localhost\n", encoding="utf-8")
+    (install_root / "README.md").write_text("old build\n", encoding="utf-8")
+    monkeypatch.setattr(packaged_installer, "default_app_home", lambda: install_root)
+
+    refreshed_root = packaged_installer._prepare_install_root(source_root)
+
+    assert refreshed_root == install_root
+    assert (install_root / ".installer" / "local-secure.env").read_text(encoding="utf-8") == "POSTGRES_PASSWORD=existing-secret\n"
+    assert (install_root / ".env").read_text(encoding="utf-8") == "LOCAL_STACK_HOST=existing.localhost\n"
     assert (install_root / "README.md").read_text(encoding="utf-8") == "new build\n"
+
+
+def test_packaged_installer_prepare_install_root_preserves_custom_in_app_agent_assets(monkeypatch, tmp_path: Path) -> None:
+    source_root = tmp_path / "source"
+    install_root = tmp_path / "installed"
+    (source_root / "frontier_tooling").mkdir(parents=True, exist_ok=True)
+    (source_root / "pyproject.toml").write_text("[project]\nname='lattix-frontier'\nversion='0.2.0'\n", encoding="utf-8")
+    (source_root / "docker-compose.yml").write_text("services: {}\n", encoding="utf-8")
+    (source_root / ".env.example").write_text("FRONTIER_AGENT_ASSETS_ROOT=private-agents\n", encoding="utf-8")
+
+    install_root.mkdir(parents=True, exist_ok=True)
+    (install_root / ".env").write_text("FRONTIER_AGENT_ASSETS_ROOT=private-agents\n", encoding="utf-8")
+    (install_root / "private-agents" / "custom-agent").mkdir(parents=True, exist_ok=True)
+    (install_root / "private-agents" / "custom-agent" / "system-prompt.md").write_text("keep me\n", encoding="utf-8")
+    monkeypatch.setattr(packaged_installer, "default_app_home", lambda: install_root)
+
+    refreshed_root = packaged_installer._prepare_install_root(source_root)
+
+    assert refreshed_root == install_root
+    assert (install_root / "private-agents" / "custom-agent" / "system-prompt.md").read_text(encoding="utf-8") == "keep me\n"
+
+
+def test_packaged_installer_prepare_install_root_preserves_user_added_sample_agent_dirs(monkeypatch, tmp_path: Path) -> None:
+    source_root = tmp_path / "source"
+    install_root = tmp_path / "installed"
+    (source_root / "frontier_tooling").mkdir(parents=True, exist_ok=True)
+    (source_root / "pyproject.toml").write_text("[project]\nname='lattix-frontier'\nversion='0.2.0'\n", encoding="utf-8")
+    (source_root / "docker-compose.yml").write_text("services: {}\n", encoding="utf-8")
+    (source_root / "examples" / "agents" / "built-in-agent").mkdir(parents=True, exist_ok=True)
+    (source_root / "examples" / "agents" / "built-in-agent" / "system-prompt.md").write_text("new built-in\n", encoding="utf-8")
+
+    (install_root / "examples" / "agents" / "user-agent").mkdir(parents=True, exist_ok=True)
+    (install_root / "examples" / "agents" / "user-agent" / "system-prompt.md").write_text("keep custom agent\n", encoding="utf-8")
+    (install_root / "examples" / "agents" / "built-in-agent").mkdir(parents=True, exist_ok=True)
+    (install_root / "examples" / "agents" / "built-in-agent" / "system-prompt.md").write_text("old built-in\n", encoding="utf-8")
+    monkeypatch.setattr(packaged_installer, "default_app_home", lambda: install_root)
+
+    refreshed_root = packaged_installer._prepare_install_root(source_root)
+
+    assert refreshed_root == install_root
+    assert (install_root / "examples" / "agents" / "user-agent" / "system-prompt.md").read_text(encoding="utf-8") == "keep custom agent\n"
+    assert (install_root / "examples" / "agents" / "built-in-agent" / "system-prompt.md").read_text(encoding="utf-8") == "new built-in\n"
+
+
+def test_packaged_installer_prepare_install_root_preserves_manifest_declared_in_app_asset_roots(monkeypatch, tmp_path: Path) -> None:
+    source_root = tmp_path / "source"
+    install_root = tmp_path / "installed"
+    (source_root / "frontier_tooling").mkdir(parents=True, exist_ok=True)
+    (source_root / "pyproject.toml").write_text("[project]\nname='lattix-frontier'\nversion='0.2.0'\n", encoding="utf-8")
+    (source_root / "docker-compose.yml").write_text("services: {}\n", encoding="utf-8")
+    (install_root / ".installer").mkdir(parents=True, exist_ok=True)
+    (install_root / ".installer" / "state-manifest.json").write_text(
+        '{"schema_version":1,"in_app_asset_roots":["private-agents"]}\n',
+        encoding="utf-8",
+    )
+    (install_root / "private-agents" / "manifest-agent").mkdir(parents=True, exist_ok=True)
+    (install_root / "private-agents" / "manifest-agent" / "system-prompt.md").write_text("keep via manifest\n", encoding="utf-8")
+    monkeypatch.setattr(packaged_installer, "default_app_home", lambda: install_root)
+
+    refreshed_root = packaged_installer._prepare_install_root(source_root)
+
+    assert refreshed_root == install_root
+    assert (install_root / "private-agents" / "manifest-agent" / "system-prompt.md").read_text(encoding="utf-8") == "keep via manifest\n"
 
 
 def test_packaged_installer_retries_secure_gateway_on_fallback_port(monkeypatch, tmp_path: Path) -> None:
@@ -540,6 +726,116 @@ def test_casdoor_bootstrap_endpoint_uses_effective_secure_gateway_port(monkeypat
 
     assert base_url == "http://127.0.0.1:8080"
     assert host_headers == {"Host": "casdoor.localhost"}
+
+
+def test_bootstrap_failure_reports_postgres_volume_guidance(monkeypatch, tmp_path: Path) -> None:
+    installer_dir = tmp_path / ".installer"
+    installer_dir.mkdir(parents=True, exist_ok=True)
+    (installer_dir / "local-secure.env").write_text("LOCAL_GATEWAY_HTTP_PORT=80\n", encoding="utf-8")
+    monkeypatch.setenv(packaged_installer.FRONTIER_APP_HOME_ENV, str(tmp_path))
+    monkeypatch.setattr(
+        packaged_installer,
+        "_compose_service_logs_text",
+        lambda install_root, service, tail=80: "panic: pq: password authentication failed for user \"frontier\"" if service == "casdoor" else "",
+    )
+
+    message = packaged_installer._diagnose_casdoor_bootstrap_failure()
+
+    assert "postgresql volume appears to be using different credentials" in message.lower()
+    assert "down -v --remove-orphans" in message
+    assert "lattix remove" in message
+
+
+def test_packaged_installer_ensure_local_vault_bootstrap_initializes_and_unseals(monkeypatch, tmp_path: Path) -> None:
+    installer_dir = tmp_path / ".installer"
+    installer_dir.mkdir(parents=True, exist_ok=True)
+    calls: list[tuple[list[str], str | None, bool]] = []
+
+    responses = iter(
+        [
+            {"initialized": False, "sealed": True},
+            {"root_token": "root-token", "unseal_keys_b64": ["unseal-key"]},
+            {"initialized": True, "sealed": True},
+            {"sealed": False},
+            {},
+        ]
+    )
+
+    def _fake_run_vault_cli_json(install_root, vault_args, *, token=None, allow_nonzero=False):
+        calls.append((vault_args, token, allow_nonzero))
+        if vault_args[:2] == ["secrets", "list"]:
+            return {}
+        if vault_args[:2] == ["secrets", "enable"]:
+            return {"enabled": True}
+        return next(responses)
+
+    monkeypatch.setattr(packaged_installer, "_run_vault_cli_json", _fake_run_vault_cli_json)
+
+    bootstrap = packaged_installer._ensure_local_vault_bootstrap(tmp_path)
+
+    assert bootstrap["root_token"] == "root-token"
+    assert bootstrap["unseal_key"] == "unseal-key"
+    bootstrap_file = installer_dir / "vault-bootstrap.json"
+    assert bootstrap_file.exists()
+    assert json.loads(bootstrap_file.read_text(encoding="utf-8"))["root_token"] == "root-token"
+    assert any(args[:2] == ["operator", "init"] for args, *_ in calls)
+    assert any(args[:2] == ["operator", "unseal"] for args, *_ in calls)
+    assert any(args[:2] == ["secrets", "enable"] for args, *_ in calls)
+
+
+def test_packaged_installer_syncs_sensitive_install_state_to_vault(monkeypatch, tmp_path: Path) -> None:
+    installer_dir = tmp_path / ".installer"
+    installer_dir.mkdir(parents=True, exist_ok=True)
+    (tmp_path / "pyproject.toml").write_text("[project]\nname='lattix-frontier'\nversion='1.2.3'\n", encoding="utf-8")
+    (tmp_path / ".env").write_text("FRONTIER_AGENT_ASSETS_ROOT=private-agents\nOPENAI_API_KEY=root-openai\n", encoding="utf-8")
+    (installer_dir / "local-secure.env").write_text(
+        "\n".join(
+            [
+                "LOCAL_STACK_HOST=xfrontier.local",
+                "FRONTIER_AUTH_MODE=oidc",
+                "A2A_JWT_SECRET=a2a-secret",
+                "POSTGRES_PASSWORD=postgres-secret",
+                "NEO4J_PASSWORD=neo4j-secret",
+                "CASDOOR_BOOTSTRAP_LOGIN_PASSWORD=login-secret",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (installer_dir / "generated-values.yaml").write_text("clusterName: demo\n", encoding="utf-8")
+
+    captured_writes: list[tuple[str, dict[str, Any], str]] = []
+
+    monkeypatch.setattr(packaged_installer, "_ensure_local_vault_bootstrap", lambda install_root: {"root_token": "root-token"})
+    monkeypatch.setattr(
+        packaged_installer,
+        "_vault_kv_put",
+        lambda install_root, api_path, payload, *, token: captured_writes.append((api_path, payload, token)) or {"written": True},
+    )
+
+    synced = packaged_installer._sync_installer_state_to_vault(tmp_path, install_mode="wheel")
+
+    assert synced["vault_secret_path"].startswith("secret/data/local/frontier/installations/")
+    assert synced["vault_state_path"].startswith("secret/data/local/frontier/installations/")
+    assert len(captured_writes) == 2
+
+    secret_write = next(item for item in captured_writes if item[0] == synced["vault_secret_path"])
+    state_write = next(item for item in captured_writes if item[0] == synced["vault_state_path"])
+
+    assert secret_write[2] == "root-token"
+    assert secret_write[1]["A2A_JWT_SECRET"] == "a2a-secret"
+    assert secret_write[1]["POSTGRES_PASSWORD"] == "postgres-secret"
+    assert secret_write[1]["NEO4J_PASSWORD"] == "neo4j-secret"
+    assert secret_write[1]["CASDOOR_BOOTSTRAP_LOGIN_PASSWORD"] == "login-secret"
+    assert secret_write[1]["OPENAI_API_KEY"] == "root-openai"
+    assert "LOCAL_STACK_HOST" not in secret_write[1]
+
+    decoded_state = json.loads(base64.b64decode(state_write[1]["payload_b64"]).decode("utf-8"))
+    assert decoded_state["install_mode"] == "wheel"
+    assert decoded_state["env_snapshots"]["secure_env"]["LOCAL_STACK_HOST"] == "xfrontier.local"
+    assert decoded_state["env_snapshots"]["root_env"]["FRONTIER_AGENT_ASSETS_ROOT"] == "private-agents"
+    assert "POSTGRES_PASSWORD" not in decoded_state["env_snapshots"]["secure_env"]
+    assert base64.b64decode(decoded_state["generated_helm_values_b64"]).decode("utf-8") == "clusterName: demo\n"
 
 
 def test_installer_defaults_to_casdoor_oidc_preset(tmp_path: Path) -> None:

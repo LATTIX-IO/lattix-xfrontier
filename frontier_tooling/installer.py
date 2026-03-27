@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import base64
+from datetime import datetime, timezone
 import os
 from pathlib import Path
 import platform
@@ -31,10 +33,15 @@ from .common import (
     compose_prefix,
     default_app_home,
     ensure_compose_env_file,
+    ensure_installer_state_manifest,
+    installer_vault_bootstrap_path,
+    installer_vault_secret_path,
+    installer_vault_state_path,
     portal_urls,
     print_json,
     python_scripts_dir,
     python_executable,
+    read_installer_state_manifest,
     run_command,
     source_repo_root,
     user_scripts_dir,
@@ -44,6 +51,9 @@ from .common import (
 CASDOOR_BOOTSTRAP_MAX_ATTEMPTS = 90
 CASDOOR_BOOTSTRAP_RETRY_DELAY_SECONDS = 2
 _LOCAL_GATEWAY_PORT_FALLBACKS = (8080, 8081, 8088, 8888)
+_INSTALLER_VAULT_BOOTSTRAP_SCHEMA_VERSION = 1
+_INSTALLER_VAULT_SECRET_KEY_FRAGMENTS = ("SECRET", "PASSWORD", "TOKEN", "API_KEY", "PRIVATE_KEY", "CLIENT_SECRET")
+_INSTALLER_VAULT_IGNORED_SECRET_KEYS = {"VAULT_TOKEN"}
 
 
 def bootstrap_url() -> str:
@@ -103,6 +113,10 @@ def _render_install_summary(payload: dict[str, Any]) -> str:
         f"Scripts dir : {path_info.get('scripts_dir')}",
         f"PATH update : {'Applied' if path_info.get('updated') else 'Already present'}",
     ]
+    if payload.get("vault_secret_path"):
+        lines.append(f"Vault secret: {payload.get('vault_secret_path')}")
+    if payload.get("vault_state_path"):
+        lines.append(f"Vault state : {payload.get('vault_state_path')}")
     if path_locations:
         lines.append(f"PATH scope  : {', '.join(str(item) for item in path_locations)}")
 
@@ -195,6 +209,201 @@ def _best_effort_owner_only_permissions(path: Path) -> None:
         return
 
 
+def _read_json_map(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _write_json_map(path: Path, payload: dict[str, Any]) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    _best_effort_owner_only_permissions(path)
+    return path
+
+
+def _vault_exec_command(
+    install_root: Path,
+    vault_args: list[str],
+    *,
+    token: str | None = None,
+    check: bool = False,
+) -> subprocess.CompletedProcess[str]:
+    command = compose_prefix(local=False, root=install_root) + ["exec", "-T"]
+    if token:
+        command.extend(["-e", f"VAULT_TOKEN={token}"])
+    command.extend(["-e", "VAULT_ADDR=http://127.0.0.1:8200", "vault", "vault", *vault_args])
+    return subprocess.run(command, cwd=str(install_root), check=check, capture_output=True, text=True)
+
+
+def _run_vault_cli_json(
+    install_root: Path,
+    vault_args: list[str],
+    *,
+    token: str | None = None,
+    allow_nonzero: bool = False,
+) -> dict[str, Any]:
+    completed = _vault_exec_command(install_root, vault_args, token=token, check=False)
+    raw_output = (completed.stdout or completed.stderr or "").strip()
+    payload: dict[str, Any] = {}
+    if raw_output:
+        try:
+            parsed = json.loads(raw_output)
+        except json.JSONDecodeError:
+            parsed = {}
+        if isinstance(parsed, dict):
+            payload = parsed
+    if completed.returncode != 0 and not allow_nonzero:
+        raise RuntimeError(raw_output or f"Vault command failed: {' '.join(vault_args)}")
+    return payload
+
+
+def _vault_kv_components(api_path: str) -> tuple[str, str]:
+    normalized = str(api_path or "").strip().strip("/")
+    parts = [part for part in normalized.split("/") if part]
+    if len(parts) < 3 or parts[1] != "data":
+        raise ValueError("Vault installer paths must use the KV-v2 <mount>/data/<path> form")
+    return parts[0], "/".join(parts[2:])
+
+
+def _ensure_local_vault_bootstrap(install_root: Path) -> dict[str, Any]:
+    bootstrap_path = installer_vault_bootstrap_path(root=install_root)
+    bootstrap = _read_json_map(bootstrap_path)
+
+    status = _run_vault_cli_json(install_root, ["status", "-format=json"], allow_nonzero=True)
+    initialized = bool(status.get("initialized"))
+    if not initialized:
+        init_payload = _run_vault_cli_json(
+            install_root,
+            ["operator", "init", "-format=json", "-key-shares=1", "-key-threshold=1"],
+        )
+        unseal_keys = init_payload.get("unseal_keys_b64") if isinstance(init_payload.get("unseal_keys_b64"), list) else []
+        root_token = str(init_payload.get("root_token") or "").strip()
+        unseal_key = str(unseal_keys[0] if unseal_keys else "").strip()
+        if not root_token or not unseal_key:
+            raise RuntimeError("Vault initialization did not return the expected root token and unseal key")
+        bootstrap = {
+            "schema_version": _INSTALLER_VAULT_BOOTSTRAP_SCHEMA_VERSION,
+            "vault_addr": "http://127.0.0.1:8200",
+            "root_token": root_token,
+            "unseal_key": unseal_key,
+            "initialized_at": datetime.now(timezone.utc).isoformat(),
+        }
+        _write_json_map(bootstrap_path, bootstrap)
+        status = _run_vault_cli_json(install_root, ["status", "-format=json"], allow_nonzero=True)
+
+    if not bootstrap:
+        raise RuntimeError(
+            "Local Vault is already initialized, but the installer does not have durable bootstrap metadata. "
+            f"Expected {bootstrap_path} to exist so it can unseal and update the local Vault-backed installer state."
+        )
+
+    if bool(status.get("sealed")):
+        unseal_key = str(bootstrap.get("unseal_key") or "").strip()
+        if not unseal_key:
+            raise RuntimeError("Vault is sealed and no durable unseal key is available in installer metadata")
+        status = _run_vault_cli_json(install_root, ["operator", "unseal", "-format=json", unseal_key])
+        if bool(status.get("sealed")):
+            raise RuntimeError("Vault remained sealed after the installer attempted to unseal it")
+
+    root_token = str(bootstrap.get("root_token") or "").strip()
+    if not root_token:
+        raise RuntimeError("Vault bootstrap metadata is missing the root token required for installer state writes")
+
+    mounts = _run_vault_cli_json(install_root, ["secrets", "list", "-format=json"], token=root_token)
+    secret_mount = mounts.get("secret/") if isinstance(mounts, dict) else None
+    mount_options: dict[str, Any] = {}
+    if isinstance(secret_mount, dict):
+        raw_mount_options = secret_mount.get("options")
+        if isinstance(raw_mount_options, dict):
+            mount_options = raw_mount_options
+    if not isinstance(secret_mount, dict):
+        _run_vault_cli_json(install_root, ["secrets", "enable", "-format=json", "-path=secret", "-version=2", "kv"], token=root_token)
+    elif str(secret_mount.get("type") or "") != "kv" or str(mount_options.get("version") or "") != "2":
+        raise RuntimeError("The local Vault secret/ mount is present but is not configured as KV v2")
+
+    return bootstrap
+
+
+def _vault_kv_put(install_root: Path, api_path: str, payload: dict[str, Any], *, token: str) -> dict[str, Any]:
+    mount, logical_path = _vault_kv_components(api_path)
+    kv_args = ["kv", "put", "-format=json", f"-mount={mount}", logical_path]
+    for key, value in payload.items():
+        kv_args.append(f"{key}={value}")
+    return _run_vault_cli_json(install_root, kv_args, token=token)
+
+
+def _is_sensitive_env_key(key: str) -> bool:
+    normalized = str(key or "").strip().upper()
+    if not normalized or normalized in _INSTALLER_VAULT_IGNORED_SECRET_KEYS:
+        return False
+    return any(fragment in normalized for fragment in _INSTALLER_VAULT_SECRET_KEY_FRAGMENTS)
+
+
+def _classified_installer_env_values(install_root: Path) -> tuple[dict[str, str], dict[str, dict[str, str]]]:
+    aggregated_secrets: dict[str, str] = {}
+    classified_maps: dict[str, dict[str, str]] = {}
+    sources = {
+        "root_env": install_root / ".env",
+        "secure_env": install_root / ".installer" / "local-secure.env",
+        "lightweight_env": install_root / ".installer" / "local-lightweight.env",
+    }
+    for label, path in sources.items():
+        non_secret_map: dict[str, str] = {}
+        env_map = _read_installer_env_map(path)
+        for key, value in env_map.items():
+            if _is_sensitive_env_key(key):
+                if str(value or "").strip():
+                    aggregated_secrets[key] = value
+                continue
+            non_secret_map[key] = value
+        classified_maps[label] = non_secret_map
+    return aggregated_secrets, classified_maps
+
+
+def _installer_state_snapshot(install_root: Path, *, install_mode: str) -> dict[str, Any]:
+    manifest = read_installer_state_manifest(root=install_root)
+    _secrets, classified_maps = _classified_installer_env_values(install_root)
+    generated_values_path = install_root / ".installer" / "generated-values.yaml"
+    generated_values_text = generated_values_path.read_text(encoding="utf-8") if generated_values_path.exists() else ""
+    return {
+        "schema_version": 1,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+        "install_mode": install_mode,
+        "install_root": str(install_root.resolve(strict=False)),
+        "manifest": manifest,
+        "env_snapshots": classified_maps,
+        "generated_helm_values_b64": base64.b64encode(generated_values_text.encode("utf-8")).decode("ascii") if generated_values_text else "",
+    }
+
+
+def _sync_installer_state_to_vault(install_root: Path, *, install_mode: str) -> dict[str, str]:
+    ensure_installer_state_manifest(root=install_root, install_mode=install_mode)
+    bootstrap = _ensure_local_vault_bootstrap(install_root)
+    root_token = str(bootstrap.get("root_token") or "").strip()
+    if not root_token:
+        raise RuntimeError("Vault bootstrap metadata is missing the root token required for durable installer writes")
+
+    secret_path = installer_vault_secret_path(root=install_root)
+    state_path = installer_vault_state_path(root=install_root)
+    secrets_payload, _classified_maps = _classified_installer_env_values(install_root)
+    if secrets_payload:
+        _vault_kv_put(install_root, secret_path, secrets_payload, token=root_token)
+
+    state_snapshot = _installer_state_snapshot(install_root, install_mode=install_mode)
+    state_record = {
+        "schema_version": str(state_snapshot.get("schema_version") or 1),
+        "updated_at": str(state_snapshot.get("updated_at") or ""),
+        "payload_b64": base64.b64encode(json.dumps(state_snapshot, sort_keys=True).encode("utf-8")).decode("ascii"),
+    }
+    _vault_kv_put(install_root, state_path, state_record, token=root_token)
+    return {"vault_secret_path": secret_path, "vault_state_path": state_path}
+
+
 def _collect_installer_answers(install_root: Path) -> InstallerAnswers:
     installer = FrontierInstaller(repo_root=install_root)
     return installer.collect_local_answers(installation_root=install_root, interactive=_interactive_install())
@@ -222,6 +431,7 @@ def _prepare_install_root(source_root: Path) -> Path:
     try:
         shutil.copytree(source_root, staged_root, ignore=_source_copy_ignore)
         if install_root.exists():
+            _preserve_existing_install_state(install_root, staged_root)
             shutil.rmtree(install_root)
         staged_root.replace(install_root)
     finally:
@@ -240,6 +450,101 @@ def _preserve_existing_install_state(existing_root: Path, staged_root: Path) -> 
         else:
             target_path.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(source_path, target_path)
+
+    for source_path, target_path, preserve_existing_only in _preserved_install_data_paths(existing_root, staged_root):
+        if not source_path.exists():
+            continue
+        if source_path.is_dir():
+            _merge_preserved_directory(source_path, target_path, preserve_existing_only=preserve_existing_only)
+            continue
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        if preserve_existing_only and target_path.exists():
+            continue
+        shutil.copy2(source_path, target_path)
+
+
+def _resolve_path_within_root(root: Path, configured_path: str) -> Path | None:
+    candidate = str(configured_path or "").strip()
+    if not candidate:
+        return None
+    raw_path = Path(candidate).expanduser()
+    combined = raw_path if raw_path.is_absolute() else root / raw_path
+    resolved_root = root.resolve(strict=False)
+    resolved_candidate = combined.resolve(strict=False)
+    try:
+        resolved_candidate.relative_to(resolved_root)
+    except ValueError:
+        return None
+    return resolved_candidate
+
+
+def _installer_env_value_maps(existing_root: Path) -> list[dict[str, str]]:
+    env_maps: list[dict[str, str]] = []
+    for path in (
+        existing_root / ".env",
+        existing_root / ".installer" / "local-secure.env",
+        existing_root / ".installer" / "local-lightweight.env",
+    ):
+        env_map = _read_installer_env_map(path)
+        if env_map:
+            env_maps.append(env_map)
+    return env_maps
+
+
+def _preserved_install_data_paths(existing_root: Path, staged_root: Path) -> list[tuple[Path, Path, bool]]:
+    preserved: list[tuple[Path, Path, bool]] = []
+    seen: set[str] = set()
+
+    default_agents_root = existing_root / "examples" / "agents"
+    if default_agents_root.exists():
+        target_default_agents_root = staged_root / "examples" / "agents"
+        preserved.append((default_agents_root, target_default_agents_root, True))
+        seen.add(str(default_agents_root.resolve(strict=False)).casefold())
+
+    ensure_installer_state_manifest(root=existing_root)
+    manifest = read_installer_state_manifest(root=existing_root)
+    raw_manifest_asset_roots = manifest.get("in_app_asset_roots")
+    manifest_asset_roots: list[Any] = raw_manifest_asset_roots if isinstance(raw_manifest_asset_roots, list) else []
+    for relative_path in manifest_asset_roots:
+        configured_root = _resolve_path_within_root(existing_root, str(relative_path))
+        if configured_root is None or not configured_root.exists():
+            continue
+        key = str(configured_root.resolve(strict=False)).casefold()
+        if key in seen:
+            continue
+        relative = configured_root.resolve(strict=False).relative_to(existing_root.resolve(strict=False))
+        preserved.append((configured_root, staged_root / relative, False))
+        seen.add(key)
+
+    for env_map in _installer_env_value_maps(existing_root):
+        configured_root = _resolve_path_within_root(existing_root, env_map.get("FRONTIER_AGENT_ASSETS_ROOT", ""))
+        if configured_root is None or not configured_root.exists():
+            continue
+        key = str(configured_root.resolve(strict=False)).casefold()
+        if key in seen:
+            continue
+        relative_path = configured_root.resolve(strict=False).relative_to(existing_root.resolve(strict=False))
+        preserved.append((configured_root, staged_root / relative_path, False))
+        seen.add(key)
+
+    return preserved
+
+
+def _merge_preserved_directory(source_dir: Path, target_dir: Path, *, preserve_existing_only: bool) -> None:
+    target_dir.mkdir(parents=True, exist_ok=True)
+    for source_path in source_dir.iterdir():
+        target_path = target_dir / source_path.name
+        if preserve_existing_only and target_path.exists():
+            continue
+        if source_path.is_dir():
+            if preserve_existing_only:
+                if not target_path.exists():
+                    shutil.copytree(source_path, target_path)
+                continue
+            shutil.copytree(source_path, target_path, dirs_exist_ok=True)
+            continue
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source_path, target_path)
 
 
 def _prepare_install_root_for_update(source_root: Path, existing_root: Path) -> Path:
@@ -475,6 +780,10 @@ def _print_update_result(payload: dict[str, Any]) -> None:
         f"CLI path    : {payload.get('path', {}).get('cli_path')}",
         f"Refresh     : {payload.get('refresh_status')}",
     ]
+    if payload.get("vault_secret_path"):
+        lines.append(f"Vault secret: {payload.get('vault_secret_path')}")
+    if payload.get("vault_state_path"):
+        lines.append(f"Vault state : {payload.get('vault_state_path')}")
 
     refreshed_profiles = payload.get("refreshed_profiles") if isinstance(payload.get("refreshed_profiles"), list) else []
     if refreshed_profiles:
@@ -519,10 +828,12 @@ def update() -> None:
         compose_env = ensure_compose_env_file(local_profile=False, root=install_root)
     else:
         compose_env = ensure_compose_env_file(local_profile=True, root=install_root)
+    ensure_installer_state_manifest(root=install_root, install_mode=mode)
     _best_effort_owner_only_permissions(compose_env)
     run_command(_pip_install_args(install_root), cwd=install_root, env=install_env)
     _require_docker_stack_prerequisites(install_env)
     refreshed_profiles, urls = _refresh_existing_local_stacks(install_root, install_env)
+    vault_sync = _sync_installer_state_to_vault(install_root, install_mode=mode)
     _print_update_result(
         {
             "updated": refresh_status == "updated",
@@ -533,8 +844,10 @@ def update() -> None:
             "refresh_status": refresh_status,
             "refreshed_profiles": refreshed_profiles,
             "urls": urls,
+            **vault_sync,
             "next_steps": [
                 "Local workflows, agents, settings, and installer env files were preserved in place.",
+                "Installer-generated passwords and env-backed install state were synchronized into the durable local Vault store.",
                 "Open one of the URLs above to verify the refreshed build.",
                 "Run `lattix health` if you want to confirm backend readiness after the update.",
             ],
@@ -557,6 +870,10 @@ def _effective_secure_gateway_settings() -> dict[str, str]:
     return _read_installer_env_map(compose_env)
 
 
+def _current_install_root() -> Path:
+    return Path(str(os.getenv(FRONTIER_APP_HOME_ENV) or source_repo_root())).expanduser().resolve(strict=False)
+
+
 def _casdoor_bootstrap_endpoint(answers: InstallerAnswers) -> tuple[str, dict[str, str]]:
     issuer = FrontierInstaller._resolved_oidc_settings(answers)["issuer"]
     parsed = urlsplit(issuer)
@@ -568,6 +885,32 @@ def _casdoor_bootstrap_endpoint(answers: InstallerAnswers) -> tuple[str, dict[st
         netloc = bind_host if port == "80" else f"{bind_host}:{port}"
         return urlunsplit(("http", netloc, "", "", "")), {"Host": parsed.netloc}
     return issuer.rstrip("/"), {}
+
+
+def _compose_service_logs_text(install_root: Path, service: str, *, tail: int = 80) -> str:
+    command = compose_prefix(local=False, root=install_root) + ["logs", "--tail", str(tail), service]
+    completed = subprocess.run(command, cwd=str(install_root), check=False, capture_output=True, text=True)
+    return "\n".join(part for part in (completed.stdout, completed.stderr) if part).strip()
+
+
+def _diagnose_casdoor_bootstrap_failure() -> str:
+    install_root = _current_install_root()
+    casdoor_logs = _compose_service_logs_text(install_root, "casdoor")
+    gateway_logs = _compose_service_logs_text(install_root, "local-gateway")
+    secure_env = ensure_compose_env_file(local_profile=False, root=install_root)
+
+    if "password authentication failed for user" in casdoor_logs:
+        return (
+            " Casdoor could not start because the local PostgreSQL volume appears to be using different credentials than the current installer env."
+            " This usually happens after a prior secure-local install or partial reinstall left the database volume in place."
+            f" For a clean reinstall, run `docker compose --env-file {secure_env} down -v --remove-orphans` (or `lattix remove`) and then retry the bootstrap."
+        )
+    if "lookup casdoor: i/o timeout" in gateway_logs:
+        return (
+            " The local gateway is up, but Casdoor never became reachable behind it."
+            f" Inspect `docker compose --env-file {secure_env} logs casdoor` for the underlying startup error, then retry once Casdoor is healthy."
+        )
+    return ""
 
 
 def _urlopen_json(
@@ -688,7 +1031,7 @@ def _bootstrap_casdoor_login_user(answers: InstallerAnswers) -> dict[str, Any] |
             time.sleep(CASDOOR_BOOTSTRAP_RETRY_DELAY_SECONDS)
     raise RuntimeError(
         "Unable to provision bootstrap Casdoor login user after waiting for the local gateway and Casdoor to become ready: "
-        f"{last_error}"
+        f"{last_error}{_diagnose_casdoor_bootstrap_failure()}"
     )
 
 
@@ -813,14 +1156,17 @@ def main() -> None:
     path_update = _ensure_scripts_path(mode)
     _write_secure_installer_env(install_root, answers)
     compose_env = ensure_compose_env_file(local_profile=False, root=install_root)
+    ensure_installer_state_manifest(root=install_root, install_mode=mode)
     _best_effort_owner_only_permissions(compose_env)
     install_env = _runtime_env(install_root, mode)
     run_command(_pip_install_args(install_root), cwd=install_root, env=install_env)
     _require_docker_stack_prerequisites(install_env)
     urls = _auto_start_stack(install_root, install_env)
+    vault_sync = _sync_installer_state_to_vault(install_root, install_mode=mode)
     bootstrap_login = _bootstrap_casdoor_login_user(answers)
     next_steps = [
         "Open one of the URLs above to reach the portal.",
+        "Installer-generated passwords and env-backed install state were synchronized into the durable local Vault store.",
         "Run ``lattix health`` to verify backend readiness.",
         "Use the hosted or enterprise deployment path when you need per-agent workload isolation beyond the secure local single-host profile.",
     ]
@@ -841,6 +1187,7 @@ def main() -> None:
             "security_posture": "Secure local profile (single-host compose, authenticated A2A)",
             "bootstrap_url": bootstrap_url(),
             "bootstrap_login": bootstrap_login,
+            **vault_sync,
             "next_steps": next_steps,
         }
     )
