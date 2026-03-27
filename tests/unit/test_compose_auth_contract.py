@@ -11,7 +11,7 @@ def test_secure_local_compose_includes_casdoor_service_and_oidc_envs() -> None:
 
     assert "casdoor:" in compose
     assert "casbin/casdoor-all-in-one" in compose
-    assert "FRONTIER_AUTH_OIDC_ISSUER: ${FRONTIER_AUTH_OIDC_ISSUER:-http://casdoor.localhost}" in compose
+    assert "FRONTIER_AUTH_OIDC_ISSUER: ${FRONTIER_AUTH_OIDC_ISSUER:-http://127.0.0.1:8081}" in compose
     assert "FRONTIER_ADMIN_ACTORS: ${FRONTIER_ADMIN_ACTORS:-frontier-admin,admin@frontier.localhost}" in compose
     assert "FRONTIER_BUILDER_ACTORS: ${FRONTIER_BUILDER_ACTORS:-frontier-admin,admin@frontier.localhost}" in compose
 
@@ -28,6 +28,8 @@ def test_secure_local_compose_casdoor_uses_postgres_by_default() -> None:
     assert 'CASDOOR_POSTGRES_HOST: ${CASDOOR_POSTGRES_HOST:-postgres}' in compose
     assert 'CASDOOR_POSTGRES_USER: ${CASDOOR_POSTGRES_USER:-${POSTGRES_USER:-frontier}}' in compose
     assert 'CASDOOR_POSTGRES_DB: ${CASDOOR_POSTGRES_DB:-${POSTGRES_DB:-frontier}}' in compose
+    assert 'CASDOOR_PUBLIC_URL: ${CASDOOR_PUBLIC_URL:-http://127.0.0.1:8081}' in compose
+    assert 'ports: ["${CASDOOR_BIND_HOST:-127.0.0.1}:${CASDOOR_HTTP_PORT:-8081}:8000"]' in compose
     assert 'condition: service_healthy' in compose
     assert 'driverName = postgres' in casdoor_script
     assert 'dbname=${POSTGRES_DB}' in casdoor_script

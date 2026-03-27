@@ -1,5 +1,5 @@
 import "@testing-library/jest-dom/vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { describe, expect, it, vi } from "vitest";
 
@@ -212,6 +212,44 @@ describe("AppShell", () => {
     expect(await screen.findByText(/authentication required/i)).toBeInTheDocument();
     expect(screen.queryByRole("link", { name: /skip to console/i })).not.toBeInTheDocument();
     expect(screen.getByText(/auth child/i)).toBeInTheDocument();
+  });
+
+  it("redirects authenticated operators away from the public auth route", async () => {
+    pathnameState.current = "/auth";
+    replaceMock.mockReset();
+    getOperatorSessionMock.mockResolvedValue(builderSession);
+    getPlatformVersionStatusMock.mockResolvedValue(currentVersion);
+
+    render(<AppShell><div>auth child</div></AppShell>);
+
+    await waitFor(() => expect(replaceMock).toHaveBeenCalledWith("/builder/workflows"));
+  });
+
+  it("shows the resolved operator identity and builder access in the user menu", async () => {
+    pathnameState.current = "/inbox";
+    replaceMock.mockReset();
+    getOperatorSessionMock.mockResolvedValue({
+      ...builderSession,
+      display_name: "James Booth",
+      email: "james@xfrontier.localhost",
+      preferred_username: "james",
+      roles: ["builder-admin", "member"],
+      default_mode: "user",
+    });
+    getPlatformVersionStatusMock.mockResolvedValue(currentVersion);
+
+    render(<AppShell><div>user child</div></AppShell>);
+
+    expect(await screen.findByText(/user child/i)).toBeInTheDocument();
+    const menuButton = screen.getByRole("button", { name: /user menu/i });
+    expect(menuButton).toHaveTextContent("JB");
+    fireEvent.click(menuButton);
+
+    await waitFor(() => expect(screen.getByText(/signed in as/i)).toBeInTheDocument());
+    expect(screen.getByText("James Booth")).toBeInTheDocument();
+    expect(screen.getByText("james@xfrontier.localhost")).toBeInTheDocument();
+    expect(screen.getByText(/builder access enabled/i)).toBeInTheDocument();
+    expect(screen.getByText("builder-admin")).toBeInTheDocument();
   });
 
   it("does not claim the current build is up to date when version status is unavailable", async () => {

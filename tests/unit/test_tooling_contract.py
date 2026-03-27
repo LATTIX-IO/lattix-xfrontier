@@ -219,6 +219,12 @@ def test_bootstrap_powershell_script_validates_python_runtime() -> None:
     assert "exit $installerExitCode" not in bootstrap_ps1
     assert "working 'py' or 'python' command" in bootstrap_ps1
     assert "App execution aliases" in bootstrap_ps1
+    assert "$LocalInstallerPath = if ($PSScriptRoot)" in bootstrap_ps1
+    assert "Using local checkout installer" in bootstrap_ps1
+    assert '$InstallerPath = $LocalInstallerPath' in bootstrap_ps1
+    assert "FRONTIER_INSTALLER_OUTPUT" in bootstrap_ps1
+    assert "[Console]::IsInputRedirected" in bootstrap_ps1
+    assert "$env:FRONTIER_INSTALLER_OUTPUT = 'tui'" in bootstrap_ps1
     assert "working Python 3 runtime" in installer_docs
     assert "working Python 3 runtime" in readme
 
@@ -228,6 +234,13 @@ def test_bootstrap_shell_script_does_not_replace_caller_shell() -> None:
 
     assert 'exec "$PYTHON_BIN" "$BOOTSTRAP_DIR/frontier-installer.py"' not in bootstrap_sh
     assert 'Installer failed with exit code $installer_exit_code. The current shell was left intact' in bootstrap_sh
+    assert 'LOCAL_INSTALLER="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)/frontier-installer.py"' in bootstrap_sh
+    assert 'echo "==> Using local checkout installer"' in bootstrap_sh
+    assert 'INSTALLER_PATH="$LOCAL_INSTALLER"' in bootstrap_sh
+    assert 'if "$PYTHON_BIN" "$INSTALLER_PATH"; then' in bootstrap_sh
+    assert 'FRONTIER_INSTALLER_OUTPUT' in bootstrap_sh
+    assert '[ -t 0 ] && [ -t 1 ]' in bootstrap_sh
+    assert 'export FRONTIER_INSTALLER_OUTPUT=tui' in bootstrap_sh
 
 
 def test_public_frontier_installer_imports_packaged_module() -> None:
@@ -240,6 +253,9 @@ def test_public_frontier_installer_imports_packaged_module() -> None:
 
     assert 'import importlib' in public_installer
     assert 'import sys' in public_installer
+    assert 'def _bundled_repo_root(script_path: Path) -> Path | None:' in public_installer
+    assert 'bundled_repo_root = _bundled_repo_root(Path(__file__))' in public_installer
+    assert 'os.chdir(bundled_repo_root)' in public_installer
     assert 'importlib.import_module("frontier_tooling.installer")' in public_installer
     assert 'module.main()' in public_installer
     assert 'runpy.run_path' not in public_installer
@@ -268,13 +284,14 @@ def test_public_frontier_installer_imports_packaged_module() -> None:
     assert '"auto_started": True' in packaged_installer
     assert '"urls": urls' in packaged_installer
     assert 'FRONTIER_INSTALLER_OUTPUT' in packaged_installer
-    assert 'return "tui" if sys.stdout.isatty() else "json"' in packaged_installer
+    assert 'return "tui" if sys.stdout.isatty() or sys.stdin.isatty() else "json"' in packaged_installer
     assert 'print_json(payload)' in packaged_installer
     assert 'Lattix xFrontier install complete' in packaged_installer
     assert 'Secure local profile (single-host compose, authenticated A2A)' in packaged_installer
     assert 'Use the hosted or enterprise deployment path when you need per-agent workload isolation' in packaged_installer
     assert 'Install src :' in packaged_installer
     assert 'def update() -> None:' in packaged_installer
+    assert 'os.environ["FRONTIER_INSTALLER_OUTPUT"] = "tui"' in packaged_installer
     assert 'lattix update' in manifest
     assert '"version": "0.1.0"' in manifest
     assert 'DEFAULT_LOCAL_STACK_HOST = "xfrontier.local"' in tooling_common

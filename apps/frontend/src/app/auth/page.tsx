@@ -1,5 +1,7 @@
 import type { Metadata } from "next";
 
+import { LocalAuthPanel } from "@/components/auth/local-auth-panel";
+
 export const dynamic = "force-dynamic";
 
 type AuthUiConfig = {
@@ -117,6 +119,10 @@ export const metadata: Metadata = {
 
 export default function AuthPage() {
   const config = getAuthUiConfig();
+  const issuerUrl = parseAbsoluteHttpUrl(config.issuer);
+  const useLocalCasdoorPanel = config.isConfigured
+    && config.provider === "casdoor"
+    && Boolean(issuerUrl?.hostname && isLocalHostname(issuerUrl.hostname));
 
   const statusTone = config.isConfigured
     ? "border-[color-mix(in_srgb,var(--fx-success)_45%,var(--ui-border)_55%)] bg-[color-mix(in_srgb,var(--fx-success)_10%,transparent)]"
@@ -138,7 +144,9 @@ export default function AuthPage() {
                   One frontier, whichever IAM your team already trusts.
                 </h1>
                 <p className="max-w-2xl text-pretty text-[clamp(0.98rem,1.45vw,1.12rem)] leading-7 text-[color-mix(in_srgb,hsl(var(--foreground))_72%,hsl(var(--muted-foreground))_28%)]">
-                  Sign in or create an account through the identity provider configured for this workspace. The same entry point supports a Casdoor preset or another standards-compliant OIDC solution without rewriting the console.
+                  {useLocalCasdoorPanel
+                    ? "Sign in or create an account without leaving xFrontier. Local Casdoor still backs the identity records, but the UI stays first-party and readable by actual humans."
+                    : "Sign in or create an account through the identity provider configured for this workspace. The same entry point supports a Casdoor preset or another standards-compliant OIDC solution without rewriting the console."}
                 </p>
               </div>
             </div>
@@ -175,7 +183,9 @@ export default function AuthPage() {
               {[
                 {
                   title: "Operator login",
-                  body: "Use the provider-hosted sign-in flow instead of passing actor headers around like it’s 2024 and we’ve learned nothing.",
+                  body: useLocalCasdoorPanel
+                    ? "Use the built-in xFrontier sign-in screen backed by local Casdoor instead of hopping to a bare authorize endpoint that forgot to bring context."
+                    : "Use the provider-hosted sign-in flow instead of passing actor headers around like it’s 2024 and we’ve learned nothing.",
                 },
                 {
                   title: "Flexible federation",
@@ -203,32 +213,38 @@ export default function AuthPage() {
                 Sign in or start your account in one place.
               </h2>
               <p className="text-sm leading-6 text-[var(--fx-muted)]">
-                The page stays provider-agnostic: both actions point at the configured IAM surface, whether that’s Casdoor or another OIDC-compliant identity service.
+                {useLocalCasdoorPanel
+                  ? "This workspace is running local Casdoor, so the console can handle sign-in and account creation directly, then establish a verified operator session without punting you into raw OAuth plumbing."
+                  : "The page stays provider-agnostic: both actions point at the configured IAM surface, whether that’s Casdoor or another OIDC-compliant identity service."}
               </p>
             </div>
 
-            <div className="grid gap-3">
-              <a
-                href={config.isConfigured ? config.signinUrl : "#auth-not-configured"}
-                className="fx-btn-primary inline-flex min-h-12 items-center justify-center px-4 py-3 text-sm font-semibold no-underline transition hover:translate-y-[-1px]"
-                aria-disabled={!config.isConfigured}
-              >
-                Sign in with {config.providerLabel}
-              </a>
-              <a
-                href={config.isConfigured ? config.signupUrl : "#auth-not-configured"}
-                className="fx-btn-secondary inline-flex min-h-12 items-center justify-center px-4 py-3 text-sm font-semibold no-underline transition hover:translate-y-[-1px]"
-                aria-disabled={!config.isConfigured}
-              >
-                Create account
-              </a>
-            </div>
+            {useLocalCasdoorPanel ? (
+              <LocalAuthPanel providerLabel={config.providerLabel} />
+            ) : (
+              <div className="grid gap-3">
+                <a
+                  href={config.isConfigured ? config.signinUrl : "#auth-not-configured"}
+                  className="fx-btn-primary inline-flex min-h-12 items-center justify-center px-4 py-3 text-sm font-semibold no-underline transition hover:translate-y-[-1px]"
+                  aria-disabled={!config.isConfigured}
+                >
+                  Sign in with {config.providerLabel}
+                </a>
+                <a
+                  href={config.isConfigured ? config.signupUrl : "#auth-not-configured"}
+                  className="fx-btn-secondary inline-flex min-h-12 items-center justify-center px-4 py-3 text-sm font-semibold no-underline transition hover:translate-y-[-1px]"
+                  aria-disabled={!config.isConfigured}
+                >
+                  Create account
+                </a>
+              </div>
+            )}
 
             <div className="rounded-[1.25rem] border border-dashed border-[var(--ui-border)] bg-[color-mix(in_srgb,hsl(var(--muted))_58%,transparent)] p-4" id="auth-not-configured">
               <h3 className="text-sm font-semibold text-[hsl(var(--foreground))]">What happens next</h3>
               <ol className="mt-3 space-y-2 pl-5 text-sm leading-6 text-[var(--fx-muted)]">
-                <li>Authenticate with your configured identity provider.</li>
-                <li>Return to xFrontier with a verified bearer token or provider session.</li>
+                <li>{useLocalCasdoorPanel ? "Authenticate with your local operator credentials right here in xFrontier." : "Authenticate with your configured identity provider."}</li>
+                <li>{useLocalCasdoorPanel ? "Receive a verified xFrontier operator session cookie backed by the identity record in Casdoor." : "Return to xFrontier with a verified bearer token or provider session."}</li>
                 <li>Let the backend enforce issuer, audience, JWKS, and admin policy from one consistent identity plane.</li>
               </ol>
             </div>

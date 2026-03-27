@@ -32,6 +32,8 @@ Both bootstrap variants require a working Python 3 runtime. On Windows, the boot
 
 The public bootstrap is intentionally pinned to the vetted `main` branch installer and archive so published installs only deploy tested content.
 
+When you run the bootstrap scripts from a local source checkout, they use the checkout's bundled `install/frontier-installer.py` instead of fetching `main` again. That makes branch-local bootstrap testing exercise the code you actually have checked out, while the public raw bootstrap URLs remain pinned to the vetted `main` branch.
+
 A future vanity URL such as `https://install.lattix.io/xfrontier.sh` can safely redirect or proxy to the same bootstrap script.
 
 ## What the installer does
@@ -111,7 +113,7 @@ For editable/source-checkout installs, `lattix update` requires a clean Git work
 
 ## Local vanity URL
 
-The Docker Compose stack now includes `local-gateway` powered by Caddy, which routes `LOCAL_STACK_HOST` to the Frontier frontend over plain HTTP for local development, proxies `/api/*` requests to the canonical backend service, and exposes the bundled Casdoor surface at `http://casdoor.localhost`.
+The Docker Compose stack now includes `local-gateway` powered by Caddy, which routes `LOCAL_STACK_HOST` to the Frontier frontend over plain HTTP for local development and proxies `/api/*` requests to the canonical backend service. The bundled Casdoor service is also exposed directly on a loopback-only port (default `http://127.0.0.1:8081`) so operator sign-in does not depend on `*.localhost` hostname resolution.
 
 If loopback port `80` is already in use on the machine, the packaged installer automatically retries the secure gateway on a fallback loopback port and prints the adjusted URLs in the install summary.
 
@@ -184,7 +186,7 @@ When the installer is configured for Casdoor or another OIDC provider, it keeps 
 - generated local database credentials are still unique per install
 
 The backend already validates OIDC bearer tokens generically through issuer, audience, and JWKS settings, so the installer-generated contract works for Casdoor and for other standards-compliant IAM providers.
-For local secure deployments, the default Casdoor endpoints intentionally use `http://casdoor.localhost` so they match the Docker Compose + Caddy topology exactly. Non-local OIDC providers are still expected to use HTTPS.
+For local secure deployments, the default Casdoor endpoints intentionally use a direct loopback URL (`http://127.0.0.1:8081` by default) so local login works even on systems that do not resolve `*.localhost` aliases consistently. The Caddy-hosted `http://casdoor.localhost` route remains available for environments where that hostname resolves. Non-local OIDC providers are still expected to use HTTPS.
 
 ## Public repository strategy
 

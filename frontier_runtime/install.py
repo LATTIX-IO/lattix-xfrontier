@@ -259,6 +259,25 @@ class FrontierInstaller:
         return candidate if validation.ok else "xfrontier"
 
     @staticmethod
+    def _normalized_local_bind_host(value: str | None) -> str:
+        host = str(value or "").strip()
+        if not host or host in {"0.0.0.0", "::", "[::]"}:
+            return "127.0.0.1"
+        return host
+
+    @staticmethod
+    def _normalized_local_http_port(value: str | None, *, default: str) -> str:
+        port = str(value or "").strip()
+        return port or default
+
+    @classmethod
+    def _default_casdoor_public_url(cls) -> str:
+        host = cls._normalized_local_bind_host(os.getenv("CASDOOR_BIND_HOST") or os.getenv("LOCAL_GATEWAY_BIND_HOST") or "127.0.0.1")
+        port = cls._normalized_local_http_port(os.getenv("CASDOOR_HTTP_PORT"), default="8081")
+        authority = host if port == "80" else f"{host}:{port}"
+        return f"http://{authority}"
+
+    @staticmethod
     def _raw_input(prompt: str = "› ") -> str:
         return builtins.input(prompt)
 
@@ -331,6 +350,17 @@ class FrontierInstaller:
                 )
                 candidate = cls._raw_input().strip()
             candidate = candidate.strip()
+            if candidate:
+                return candidate
+            print("A value is required.")  # noqa: T201
+
+    @classmethod
+    def _prompt_required_explicit_value(cls, prompt: str, description: str = "") -> str:
+        while True:
+            lines = [*( [description] if description else []), f"Field      : {prompt}"]
+            lines.append("Action     : Enter a required value to continue.")
+            cls._print_panel("Installer prompt", lines)
+            candidate = cls._raw_input().strip()
             if candidate:
                 return candidate
             print("A value is required.")  # noqa: T201
@@ -547,19 +577,16 @@ class FrontierInstaller:
             )
 
             if answers.local_auth_provider == "oidc" and answers.oidc_provider_template == "casdoor":
-                answers.bootstrap_login_username = self._prompt_required_value(
+                answers.bootstrap_login_username = self._prompt_required_explicit_value(
                     "Bootstrap login username",
-                    answers.bootstrap_login_username,
                     description="Casdoor user created automatically so you can sign in from the login screen after install.",
                 )
-                answers.bootstrap_login_email = self._prompt_required_value(
+                answers.bootstrap_login_email = self._prompt_required_explicit_value(
                     "Bootstrap login email",
-                    answers.bootstrap_login_email,
                     description="Email address assigned to the installer-created Casdoor login user.",
                 )
-                answers.bootstrap_login_display_name = self._prompt_required_value(
+                answers.bootstrap_login_display_name = self._prompt_required_explicit_value(
                     "Bootstrap login display name",
-                    answers.bootstrap_login_display_name,
                     description="Friendly display name shown for the installer-created login user.",
                 )
                 existing_bootstrap_password = str(answers.bootstrap_login_password or "")
@@ -617,7 +644,7 @@ class FrontierInstaller:
         provider_name = cls._normalized_oidc_provider_name(answers)
         if provider_name == "casdoor":
             issuer = _normalize_absolute_http_url(
-                answers.oidc_issuer or "http://casdoor.localhost",
+                answers.oidc_issuer or cls._default_casdoor_public_url(),
                 setting_name="FRONTIER_AUTH_OIDC_ISSUER",
             )
             authorization_url = _normalize_absolute_http_url(
@@ -724,7 +751,8 @@ class FrontierInstaller:
             *base_lines,
             f"LOCAL_STACK_HOST={answers.local_hostname}.localhost",
             "CASDOOR_LOCAL_HOST=casdoor.localhost",
-            "CASDOOR_PUBLIC_URL=http://casdoor.localhost",
+            f"CASDOOR_BIND_HOST={self._normalized_local_bind_host(os.getenv('CASDOOR_BIND_HOST') or os.getenv('LOCAL_GATEWAY_BIND_HOST') or '127.0.0.1')}",
+            f"CASDOOR_HTTP_PORT={self._normalized_local_http_port(os.getenv('CASDOOR_HTTP_PORT'), default='8081')}",
             "FRONTIER_RUNTIME_PROFILE=local-secure",
             "FRONTIER_SECURE_LOCAL_MODE=true",
             "FRONTIER_REQUIRE_AUTHENTICATED_REQUESTS=true",
@@ -740,6 +768,11 @@ class FrontierInstaller:
             f"FEDERATION_REGION={answers.federation_region}",
             f"FEDERATION_PEERS={','.join(answers.federation_peers)}",
         ]
+        casdoor_public_url = _normalize_absolute_http_url(
+            answers.oidc_issuer if self._normalized_oidc_provider_name(answers) == "casdoor" and str(answers.oidc_issuer or "").strip() else self._default_casdoor_public_url(),
+            setting_name="CASDOOR_PUBLIC_URL",
+        )
+        generated_lines.insert(3, f"CASDOOR_PUBLIC_URL={casdoor_public_url}")
         bootstrap_admin = self._resolved_bootstrap_admin_identity(answers)
         bootstrap_login = self._resolved_bootstrap_login_identity(answers)
         generated_lines.extend(

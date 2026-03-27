@@ -69,7 +69,7 @@ lattix up
 .\scripts\frontier.ps1 up
 ```
 
-For source-checkout testing, you can still run `pwsh -File .\install\bootstrap.ps1` on Windows or `sh ./install/bootstrap.sh` on POSIX shells.
+For source-checkout testing, you can still run `pwsh -File .\install\bootstrap.ps1` on Windows or `sh ./install/bootstrap.sh` on POSIX shells. When launched from a checkout, those bootstrap scripts now use the checkout's bundled installer instead of silently downloading `main` again.
 
 The bootstrap requires a working Python 3 runtime (`py -3` or `python`) on `PATH`. On Windows, the Microsoft Store placeholder alias is not sufficient by itself.
 
@@ -118,7 +118,7 @@ Set `FRONTIER_RUNTIME_PROFILE` when you need to pin the backend/runtime security
 
 Secure local installs now default to OIDC-backed operator authentication and disable unsigned header-only actor trust. The installer ships with a Casdoor preset by default, but can also emit generic OIDC settings for another IAM provider when you want to connect Frontier to an external identity plane.
 The frontend includes a generic `/auth` portal that points users to the configured provider-hosted sign-in and sign-up URLs, so the same console entry flow works with Casdoor or another OIDC-compliant IAM.
-The secure local stack now also routes Casdoor at `http://casdoor.localhost`, and the installer seeds a default bootstrap admin identity (`frontier-admin` / `admin@<hostname>.localhost`) into both the admin and builder actor allowlists so the first authenticated operator lands with the right keys.
+The secure local stack now exposes Casdoor directly on loopback (`http://127.0.0.1:8081` by default) and also keeps the optional `http://casdoor.localhost` gateway route for environments where that hostname resolves. The installer seeds a default bootstrap admin identity (`frontier-admin` / `admin@<hostname>.localhost`) into both the admin and builder actor allowlists so the first authenticated operator lands with the right keys.
 
 By default, local-first development seeds safe public demo agents from `examples/agents/`. Optional private or proprietary agent definitions can be layered in by setting `FRONTIER_AGENT_ASSETS_ROOT` to an external directory.
 

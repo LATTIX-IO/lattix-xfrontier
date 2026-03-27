@@ -18,6 +18,13 @@ import zipfile
 DEFAULT_ARCHIVE_URL = "https://github.com/LATTIX-IO/lattix-xfrontier/archive/refs/heads/main.zip"
 
 
+def _bundled_repo_root(script_path: Path) -> Path | None:
+    install_dir = script_path.resolve().parent
+    candidate = install_dir.parent
+    packaged = candidate / "frontier_tooling" / "installer.py"
+    return candidate if packaged.exists() else None
+
+
 def _validated_archive_url(url: str) -> str:
     parsed = urlsplit(str(url or "").strip())
     if parsed.scheme.lower() not in {"http", "https"}:
@@ -84,6 +91,12 @@ def _run_packaged_installer(repo_root: Path) -> None:
 
 
 def main() -> None:
+    bundled_repo_root = _bundled_repo_root(Path(__file__))
+    if bundled_repo_root is not None:
+        os.chdir(bundled_repo_root)
+        _run_packaged_installer(bundled_repo_root)
+        return
+
     temp_root = Path(tempfile.mkdtemp(prefix="frontier-public-installer-"))
     try:
         repo_root = _download_repo_archive(temp_root)

@@ -535,7 +535,7 @@ def portal_urls(*, root: Path | None = None) -> list[str]:
     host = str(env_map.get("LOCAL_STACK_HOST") or DEFAULT_LOCAL_STACK_HOST).strip() or DEFAULT_LOCAL_STACK_HOST
     port = _normalized_gateway_http_port(env_map.get("LOCAL_GATEWAY_HTTP_PORT"))
     bind_host = _normalized_gateway_bind_host(env_map.get("LOCAL_GATEWAY_BIND_HOST"))
-    urls = [f"http://{_http_authority(host, port)}", f"http://{_http_authority(bind_host, port)}"]
+    urls = [f"http://{_http_authority(bind_host, port)}", f"http://{_http_authority(host, port)}"]
     lan_ip = _detect_primary_ipv4()
     if lan_ip and lan_ip != "127.0.0.1":
         urls.append(f"http://{_http_authority(lan_ip, port)}")

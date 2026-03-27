@@ -27,6 +27,9 @@ class RouteAccessRule:
 _ROUTE_ACCESS_RULES: tuple[RouteAccessRule, ...] = (
     RouteAccessRule(("GET",), "/health", RouteAccessCategory.PUBLIC_MINIMAL),
     RouteAccessRule(("GET",), "/healthz", RouteAccessCategory.PUBLIC_MINIMAL),
+    RouteAccessRule(("POST",), "/auth/login", RouteAccessCategory.PUBLIC_MINIMAL, "auth.login"),
+    RouteAccessRule(("POST",), "/auth/register", RouteAccessCategory.PUBLIC_MINIMAL, "auth.register"),
+    RouteAccessRule(("POST",), "/auth/logout", RouteAccessCategory.PUBLIC_MINIMAL, "auth.logout"),
     RouteAccessRule(("GET",), "/auth/session", RouteAccessCategory.AUTHENTICATED_READ, "auth.session.read"),
     RouteAccessRule(("GET",), "/platform/version", RouteAccessCategory.PUBLIC_MINIMAL),
     RouteAccessRule(("GET",), "/healthz/details", RouteAccessCategory.AUTHENTICATED_READ, "health.details.read"),
