@@ -234,7 +234,6 @@ services:
   sandbox-egress-gateway:
     <<: *default-logging
     image: sameersbn/squid:3.5.27-2
-    container_name: frontier-sandbox-egress-gateway
     restart: unless-stopped
     volumes:
       - ./docker/sandbox/squid.conf:/etc/squid/squid.conf:ro
@@ -290,5 +289,4 @@ volumes:
 
 networks:
   sandbox-internal:
-    name: frontier-sandbox-internal
     internal: true
