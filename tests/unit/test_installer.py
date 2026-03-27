@@ -511,6 +511,37 @@ def test_packaged_installer_retries_secure_gateway_on_fallback_port(monkeypatch,
     assert "FRONTIER_LOCAL_API_BASE_URL=http://127.0.0.1:8080/api" in updated_env
 
 
+def test_casdoor_bootstrap_endpoint_uses_effective_secure_gateway_port(monkeypatch, tmp_path: Path) -> None:
+    installer_dir = tmp_path / ".installer"
+    installer_dir.mkdir(parents=True, exist_ok=True)
+    (installer_dir / "local-secure.env").write_text(
+        "\n".join(
+            [
+                "LOCAL_GATEWAY_BIND_HOST=127.0.0.1",
+                "LOCAL_GATEWAY_HTTP_PORT=8080",
+                "LOCAL_STACK_HOST=xfrontier.local",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv(packaged_installer.FRONTIER_APP_HOME_ENV, str(tmp_path))
+
+    answers = InstallerAnswers(
+        installation_root=str(tmp_path),
+        local_auth_provider="oidc",
+        oidc_provider_template="casdoor",
+        oidc_issuer="http://casdoor.localhost",
+        bootstrap_login_username="demo-login",
+        bootstrap_login_password="DemoPass123!",
+    )
+
+    base_url, host_headers = packaged_installer._casdoor_bootstrap_endpoint(answers)
+
+    assert base_url == "http://127.0.0.1:8080"
+    assert host_headers == {"Host": "casdoor.localhost"}
+
+
 def test_installer_defaults_to_casdoor_oidc_preset(tmp_path: Path) -> None:
     installer = FrontierInstaller(repo_root=tmp_path)
     answers = InstallerAnswers(installation_root=str(tmp_path), deployment_mode="local")
