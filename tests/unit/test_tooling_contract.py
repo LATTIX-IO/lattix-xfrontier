@@ -40,6 +40,15 @@ def test_ci_and_local_tooling_expose_helm_validation() -> None:
     assert '"helm-validate"' in powershell
 
 
+def test_compose_files_avoid_global_container_and_network_names() -> None:
+    secure_compose = _read("docker-compose.yml")
+    local_compose = _read("docker-compose.local.yml")
+
+    assert "container_name:" not in secure_compose
+    assert "container_name:" not in local_compose
+    assert "name: frontier-sandbox-internal" not in secure_compose
+
+
 def test_bootstrap_installer_reports_secure_compose_env_path() -> None:
     installer = _read("frontier_tooling/installer.py")
     installer_docs = _read("docs/INSTALLER.md")
