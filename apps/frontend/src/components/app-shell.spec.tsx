@@ -7,9 +7,11 @@ const replaceMock = vi.fn();
 
 const {
   getOperatorSessionMock,
+  getPlatformVersionStatusMock,
   pathnameState,
 } = vi.hoisted(() => ({
   getOperatorSessionMock: vi.fn(),
+  getPlatformVersionStatusMock: vi.fn(),
   pathnameState: { current: "/inbox" },
 }));
 
@@ -30,6 +32,7 @@ vi.mock("@/components/api-status-banner", () => ({
 
 vi.mock("@/lib/api", () => ({
   getOperatorSession: getOperatorSessionMock,
+  getPlatformVersionStatus: getPlatformVersionStatusMock,
 }));
 
 import { AppShell } from "@/components/app-shell";
@@ -76,11 +79,34 @@ const builderSession = {
   oidc: { configured: true, issuer: "http://casdoor.localhost", audience: "frontier-ui", provider: "casdoor", validation_error: "" },
 } as const;
 
+const currentVersion = {
+  current_version: "0.1.0",
+  latest_version: "0.1.0",
+  update_available: false,
+  status: "up_to_date",
+  install_mode: "wheel",
+  update_command: "lattix update",
+  release_notes_url: "",
+  checked_at: "2026-03-26T00:00:00Z",
+  source: "",
+  summary: "Your local app is up to date.",
+} as const;
+
+const updateAvailableVersion = {
+  ...currentVersion,
+  latest_version: "0.1.1",
+  update_available: true,
+  status: "update_available",
+  release_notes_url: "https://github.com/LATTIX-IO/lattix-xfrontier",
+  summary: "Version 0.1.1 is available.",
+} as const;
+
 describe("AppShell", () => {
   it("redirects unauthenticated users away from protected routes without rendering protected content", async () => {
     pathnameState.current = "/inbox";
     replaceMock.mockReset();
     getOperatorSessionMock.mockResolvedValue(guestSession);
+    getPlatformVersionStatusMock.mockResolvedValue(currentVersion);
 
     render(<AppShell><div>protected child</div></AppShell>);
 
@@ -92,6 +118,7 @@ describe("AppShell", () => {
   it("redirects authenticated non-builders away from builder routes", async () => {
     pathnameState.current = "/builder/workflows";
     replaceMock.mockReset();
+    getPlatformVersionStatusMock.mockResolvedValue(currentVersion);
     getOperatorSessionMock.mockResolvedValue({
       authenticated: true,
       actor: "member-user",
@@ -117,11 +144,16 @@ describe("AppShell", () => {
     pathnameState.current = "/builder/workflows";
     replaceMock.mockReset();
     getOperatorSessionMock.mockResolvedValue(builderSession);
+    getPlatformVersionStatusMock.mockResolvedValue(updateAvailableVersion);
 
     render(<AppShell><div>builder child</div></AppShell>);
 
     expect(await screen.findByText(/workflow studio/i)).toBeInTheDocument();
     expect(screen.getByRole("link", { name: /^settings$/i })).toHaveAttribute("href", "/builder/settings");
+    expect(screen.getByText(/platform version/i)).toBeInTheDocument();
+    expect(screen.getByText(/^v0\.1\.0$/i)).toBeInTheDocument();
+    expect(screen.getByText(/update available/i)).toBeInTheDocument();
+    expect(screen.getByText(/lattix update/i)).toBeInTheDocument();
     expect(screen.getByText(/builder child/i)).toBeInTheDocument();
     expect(replaceMock).not.toHaveBeenCalled();
   });
@@ -129,6 +161,7 @@ describe("AppShell", () => {
   it("shows user navigation with shared settings destination", async () => {
     pathnameState.current = "/inbox";
     replaceMock.mockReset();
+    getPlatformVersionStatusMock.mockResolvedValue(currentVersion);
     getOperatorSessionMock.mockResolvedValue({
       ...builderSession,
       default_mode: "user",
@@ -144,6 +177,7 @@ describe("AppShell", () => {
   it("does not let a stale session request resolve a later navigation", async () => {
     pathnameState.current = "/builder/workflows";
     replaceMock.mockReset();
+    getPlatformVersionStatusMock.mockResolvedValue(currentVersion);
 
     const firstRequest = deferred<typeof guestSession>();
     const secondRequest = deferred<typeof builderSession>();
@@ -171,11 +205,27 @@ describe("AppShell", () => {
     pathnameState.current = "/auth";
     replaceMock.mockReset();
     getOperatorSessionMock.mockResolvedValue(guestSession);
+    getPlatformVersionStatusMock.mockResolvedValue(currentVersion);
 
     render(<AppShell><div>auth child</div></AppShell>);
 
     expect(await screen.findByText(/authentication required/i)).toBeInTheDocument();
     expect(screen.queryByRole("link", { name: /skip to console/i })).not.toBeInTheDocument();
     expect(screen.getByText(/auth child/i)).toBeInTheDocument();
+  });
+
+  it("does not claim the current build is up to date when version status is unavailable", async () => {
+    pathnameState.current = "/inbox";
+    replaceMock.mockReset();
+    getOperatorSessionMock.mockResolvedValue({
+      ...builderSession,
+      default_mode: "user",
+    });
+    getPlatformVersionStatusMock.mockRejectedValue(new Error("version lookup failed"));
+
+    render(<AppShell><div>user child</div></AppShell>);
+
+    expect(await screen.findByText(/update status is unavailable right now/i)).toBeInTheDocument();
+    expect(screen.queryByText(/current build is up to date/i)).not.toBeInTheDocument();
   });
 });

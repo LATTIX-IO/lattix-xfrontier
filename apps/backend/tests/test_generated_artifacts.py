@@ -480,6 +480,69 @@ def test_auth_session_hides_oidc_validation_details(monkeypatch) -> None:
     assert "frontier_auth_oidc_issuer" not in body["oidc"]["validation_error"].lower()
 
 
+def test_platform_version_reports_update_metadata(monkeypatch) -> None:
+    monkeypatch.setattr(
+        main_module,
+        "_fetch_remote_release_manifest",
+        lambda: {
+            "version": "9.9.9",
+            "update_command": "lattix update",
+            "publicRepo": "https://github.com/LATTIX-IO/lattix-xfrontier",
+        },
+    )
+
+    response = client.get("/platform/version")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["current_version"]
+    assert body["latest_version"] == "9.9.9"
+    assert body["update_available"] is True
+    assert body["status"] == "update_available"
+    assert body["update_command"] == "lattix update"
+    assert body["source"] == "remote_manifest"
+    assert "without deleting workflows" in body["summary"].lower()
+
+
+def test_platform_version_prefers_installed_distribution_metadata(monkeypatch) -> None:
+    monkeypatch.delenv("FRONTIER_APP_VERSION", raising=False)
+    monkeypatch.setattr(main_module, "_fetch_remote_release_manifest", lambda: None)
+    monkeypatch.setattr(main_module.importlib_metadata, "version", lambda _name: "2.4.6")
+
+    body = client.get("/platform/version").json()
+
+    assert body["current_version"] == "2.4.6"
+    assert body["status"] == "unknown"
+    assert body["summary"] == "Version metadata is unavailable right now."
+
+
+def test_version_comparator_prefers_stable_over_prerelease() -> None:
+    assert main_module._version_is_newer("1.2.3", "1.2.3-rc.1") is True
+    assert main_module._version_is_newer("1.2.3-rc.1", "1.2.3") is False
+    assert main_module._version_is_newer("1.2.3+build.5", "1.2.3") is False
+    assert main_module._version_is_newer("1.2.4-beta.1", "1.2.3") is True
+
+
+def test_remote_release_manifest_uses_ttl_cache(monkeypatch) -> None:
+    call_count = {"count": 0}
+
+    monkeypatch.setenv("FRONTIER_UPDATE_MANIFEST_URL", "https://example.com/install/manifest.json")
+    monkeypatch.setenv("FRONTIER_UPDATE_MANIFEST_CACHE_TTL_SECONDS", "300")
+    monkeypatch.setitem(main_module._REMOTE_RELEASE_MANIFEST_CACHE, "manifest_url", "")
+    monkeypatch.setitem(main_module._REMOTE_RELEASE_MANIFEST_CACHE, "expires_at", main_module.datetime.fromtimestamp(0, tz=main_module.timezone.utc))
+    monkeypatch.setitem(main_module._REMOTE_RELEASE_MANIFEST_CACHE, "payload", None)
+
+    def _fake_fetch(_manifest_url: str) -> dict[str, object]:
+        call_count["count"] += 1
+        return {"version": "3.0.0"}
+
+    monkeypatch.setattr(main_module, "_fetch_remote_release_manifest_from_url", _fake_fetch)
+
+    assert main_module._fetch_remote_release_manifest() == {"version": "3.0.0"}
+    assert main_module._fetch_remote_release_manifest() == {"version": "3.0.0"}
+    assert call_count["count"] == 1
+
+
 def test_publish_workflow_definition_hides_internal_graph_parse_details() -> None:
     workflow_id = str(uuid4())
     payload = {

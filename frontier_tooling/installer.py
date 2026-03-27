@@ -4,8 +4,11 @@ import os
 from pathlib import Path
 import platform
 import json
+import http.client
 import shutil
+import ssl
 import stat
+import subprocess
 import sys
 import tempfile
 import textwrap
@@ -223,6 +226,35 @@ def _prepare_install_root(source_root: Path) -> Path:
     return install_root
 
 
+def _preserve_existing_install_state(existing_root: Path, staged_root: Path) -> None:
+    for relative_name in (".installer", ".env"):
+        source_path = existing_root / relative_name
+        if not source_path.exists():
+            continue
+        target_path = staged_root / relative_name
+        if source_path.is_dir():
+            shutil.copytree(source_path, target_path, dirs_exist_ok=True)
+        else:
+            target_path.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source_path, target_path)
+
+
+def _prepare_install_root_for_update(source_root: Path, existing_root: Path) -> Path:
+    install_root = existing_root.resolve(strict=False)
+    install_root.parent.mkdir(parents=True, exist_ok=True)
+    staging_parent = Path(tempfile.mkdtemp(prefix="frontier-app-update-", dir=str(install_root.parent)))
+    staged_root = staging_parent / install_root.name
+    try:
+        shutil.copytree(source_root, staged_root, ignore=_source_copy_ignore)
+        if install_root.exists():
+            _preserve_existing_install_state(install_root, staged_root)
+            shutil.rmtree(install_root)
+        staged_root.replace(install_root)
+    finally:
+        shutil.rmtree(staging_parent, ignore_errors=True)
+    return install_root
+
+
 def _append_path_once(current: str, addition: str) -> str:
     entries = [entry for entry in current.split(os.pathsep) if entry]
     lowered = {entry.casefold() for entry in entries}
@@ -305,6 +337,207 @@ def _ensure_scripts_path(mode: str) -> dict[str, object]:
         "locations": locations,
         "cli_path": str(cli_executable(scripts_dir=scripts_dir)),
     }
+
+
+def _refresh_existing_local_stacks(install_root: Path, env: dict[str, str]) -> tuple[list[str], list[str]]:
+    refreshed_profiles: list[str] = []
+    urls: list[str] = []
+    secure_env_path = install_root / ".installer" / "local-secure.env"
+    lightweight_env_path = install_root / ".installer" / "local-lightweight.env"
+
+    if secure_env_path.exists() or not lightweight_env_path.exists():
+        run_command(compose_prefix(local=False, root=install_root) + ["up", "-d", "--build", "--remove-orphans"], cwd=install_root, env=env)
+        refreshed_profiles.append("secure")
+        urls = portal_urls(root=install_root)
+
+    if lightweight_env_path.exists():
+        run_command(compose_prefix(local=True, root=install_root) + ["up", "-d", "--build", "--remove-orphans"], cwd=install_root, env=env)
+        refreshed_profiles.append("lightweight")
+
+    return refreshed_profiles, urls
+
+
+def _git_stdout(args: list[str], *, cwd: Path, env: dict[str, str]) -> str:
+    completed = subprocess.run(
+        args,
+        cwd=str(cwd),
+        env=env,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if completed.returncode != 0:
+        message = (completed.stderr or completed.stdout or "git command failed").strip()
+        raise SystemExit(message)
+    return (completed.stdout or "").strip()
+
+
+def _update_editable_checkout(install_root: Path, env: dict[str, str]) -> tuple[str, str]:
+    status_output = _git_stdout(["git", "status", "--porcelain"], cwd=install_root, env=env)
+    if status_output:
+        raise SystemExit(
+            "The editable xFrontier checkout has local changes. Commit or stash them before running `lattix update` so the updater does not overwrite work in progress."
+        )
+
+    branch = _git_stdout(["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=install_root, env=env) or "main"
+    before_ref = _git_stdout(["git", "rev-parse", "HEAD"], cwd=install_root, env=env)
+    run_command(["git", "pull", "--ff-only"], cwd=install_root, env=env)
+    after_ref = _git_stdout(["git", "rev-parse", "HEAD"], cwd=install_root, env=env)
+    return branch, "updated" if before_ref != after_ref else "already-current"
+
+
+def _validated_archive_download_url(url: str) -> str:
+    parsed = urlsplit(str(url or "").strip())
+    if parsed.scheme.lower() not in {"http", "https"}:
+        raise SystemExit("Installer archive URL must use http or https.")
+    if not parsed.hostname:
+        raise SystemExit("Installer archive URL must include a host.")
+    if parsed.username or parsed.password:
+        raise SystemExit("Installer archive URL must not include credentials.")
+    if parsed.fragment:
+        raise SystemExit("Installer archive URL must not include fragments.")
+    return parsed.geturl()
+
+
+def _download_url_bytes(url: str, *, redirects_remaining: int = 3) -> bytes:
+    validated_url = _validated_archive_download_url(url)
+    parsed = urlsplit(validated_url)
+    hostname = parsed.hostname
+    if not hostname:
+        raise SystemExit("Installer archive URL must include a host.")
+    connection: http.client.HTTPConnection
+    if parsed.scheme.lower() == "https":
+        # nosemgrep: python.lang.security.audit.httpsconnection-detected.httpsconnection-detected
+        connection = http.client.HTTPSConnection(
+            hostname,
+            parsed.port,
+            timeout=30,
+            context=ssl.create_default_context(),
+        )
+    else:
+        connection = http.client.HTTPConnection(hostname, parsed.port, timeout=30)
+
+    target = parsed.path or "/"
+    if parsed.query:
+        target = f"{target}?{parsed.query}"
+
+    try:
+        connection.request("GET", target, headers={"User-Agent": "frontier-updater/1.0"})
+        response = connection.getresponse()
+        if response.status in {301, 302, 303, 307, 308}:
+            location = response.getheader("Location")
+            if not location or redirects_remaining <= 0:
+                raise SystemExit("Installer archive download redirected too many times.")
+            return _download_url_bytes(urllib_parse.urljoin(validated_url, location), redirects_remaining=redirects_remaining - 1)
+        if response.status >= 400:
+            raise SystemExit(f"Installer archive download failed with HTTP {response.status}.")
+        return response.read()
+    finally:
+        connection.close()
+
+
+def _download_update_archive(target_dir: Path) -> Path:
+    archive_url = bootstrap_url()
+    archive_bytes = _download_url_bytes(archive_url)
+    archive_path = target_dir / "update.zip"
+    archive_path.write_bytes(archive_bytes)
+    unpack_dir = target_dir / "archive"
+    shutil.unpack_archive(str(archive_path), str(unpack_dir))
+    extracted_roots = [path for path in unpack_dir.iterdir() if path.is_dir()]
+    if not extracted_roots:
+        raise SystemExit("Downloaded update archive did not contain a repository directory.")
+    return extracted_roots[0]
+
+
+def _update_published_install(install_root: Path) -> str:
+    temp_root = Path(tempfile.mkdtemp(prefix="frontier-update-download-"))
+    try:
+        source_root = _download_update_archive(temp_root)
+        _prepare_install_root_for_update(source_root, install_root)
+    finally:
+        shutil.rmtree(temp_root, ignore_errors=True)
+    return "updated"
+
+
+def _print_update_result(payload: dict[str, Any]) -> None:
+    if _display_mode() == "json":
+        print_json(payload)
+        return
+
+    lines = [
+        f"Status      : {'Ready' if payload.get('updated') else 'No changes'}",
+        f"Mode        : {_friendly_install_mode(str(payload.get('install_mode') or 'unknown'))}",
+        f"App home    : {payload.get('repo_root')}",
+        f"Env file    : {payload.get('compose_env')}",
+        f"CLI path    : {payload.get('path', {}).get('cli_path')}",
+        f"Refresh     : {payload.get('refresh_status')}",
+    ]
+
+    refreshed_profiles = payload.get("refreshed_profiles") if isinstance(payload.get("refreshed_profiles"), list) else []
+    if refreshed_profiles:
+        lines.append(f"Profiles    : {', '.join(str(item) for item in refreshed_profiles)}")
+
+    urls = payload.get("urls") if isinstance(payload.get("urls"), list) else []
+    if urls:
+        lines.append("")
+        lines.append("Portal URLs")
+        for index, url in enumerate(urls, start=1):
+            lines.append(f"  [{index}] {url}")
+
+    next_steps = payload.get("next_steps") if isinstance(payload.get("next_steps"), list) else []
+    if next_steps:
+        lines.append("")
+        lines.append("Next steps")
+        for step in next_steps:
+            lines.append(f"  • {step}")
+
+    print(_render_box("Lattix xFrontier updated", lines))  # noqa: T201
+
+
+def update() -> None:
+    install_root = source_repo_root()
+    mode = _install_mode(install_root)
+
+    if mode == "wheel":
+        refresh_status = _update_published_install(install_root)
+
+    path_update = _ensure_scripts_path(mode)
+    install_env = _runtime_env(install_root, mode)
+
+    if mode == "editable":
+        branch, refresh_status = _update_editable_checkout(install_root, install_env)
+    else:
+        branch = "published"
+
+    os.environ[FRONTIER_APP_HOME_ENV] = str(install_root)
+    secure_env_path = install_root / ".installer" / "local-secure.env"
+    lightweight_env_path = install_root / ".installer" / "local-lightweight.env"
+    if secure_env_path.exists() or not lightweight_env_path.exists():
+        compose_env = ensure_compose_env_file(local_profile=False, root=install_root)
+    else:
+        compose_env = ensure_compose_env_file(local_profile=True, root=install_root)
+    _best_effort_owner_only_permissions(compose_env)
+    run_command(_pip_install_args(install_root), cwd=install_root, env=install_env)
+    _require_docker_stack_prerequisites(install_env)
+    refreshed_profiles, urls = _refresh_existing_local_stacks(install_root, install_env)
+    _print_update_result(
+        {
+            "updated": refresh_status == "updated",
+            "install_mode": mode,
+            "repo_root": str(install_root),
+            "compose_env": str(compose_env.resolve()),
+            "path": path_update,
+            "refresh_status": refresh_status,
+            "refreshed_profiles": refreshed_profiles,
+            "urls": urls,
+            "next_steps": [
+                "Local workflows, agents, settings, and installer env files were preserved in place.",
+                "Open one of the URLs above to verify the refreshed build.",
+                "Run `lattix health` if you want to confirm backend readiness after the update.",
+            ],
+            "branch": branch,
+        }
+    )
 
 
 def _casdoor_bootstrap_identity_enabled(answers: InstallerAnswers) -> bool:
