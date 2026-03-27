@@ -2636,21 +2636,22 @@ def test_local_password_login_sets_cookie_and_authenticates_session(monkeypatch)
             },
         )
 
-        login = client.post(
-            "/auth/login",
-            json={"username": "frontier-admin", "password": "correct horse battery staple"},
-        )
-        assert login.status_code == 200
-        assert main_module._operator_session_cookie_name() in login.headers.get("set-cookie", "")
+        with TestClient(app, base_url="http://localhost") as local_client:
+            login = local_client.post(
+                "/auth/login",
+                json={"username": "frontier-admin", "password": "correct horse battery staple"},
+            )
+            assert login.status_code == 200
+            assert main_module._operator_session_cookie_name() in login.headers.get("set-cookie", "")
 
-        session = client.get("/auth/session")
-        assert session.status_code == 200
-        body = session.json()
-        assert body["authenticated"] is True
-        assert body["preferred_username"] == "frontier-admin"
-        assert body["display_name"] == "Frontier Admin"
-        assert body["capabilities"]["can_admin"] is True
-        assert body["capabilities"]["can_builder"] is True
+            session = local_client.get("/auth/session")
+            assert session.status_code == 200
+            body = session.json()
+            assert body["authenticated"] is True
+            assert body["preferred_username"] == "frontier-admin"
+            assert body["display_name"] == "Frontier Admin"
+            assert body["capabilities"]["can_admin"] is True
+            assert body["capabilities"]["can_builder"] is True
     finally:
         store.platform_settings.require_authenticated_requests = original_require_auth
         client.cookies.clear()
@@ -2678,26 +2679,27 @@ def test_local_password_register_creates_member_session(monkeypatch) -> None:
             },
         )
 
-        register = client.post(
-            "/auth/register",
-            json={
-                "username": "member-user",
-                "email": "member@frontier.localhost",
-                "display_name": "Member User",
-                "password": "correct horse battery staple",
-            },
-        )
-        assert register.status_code == 200
-        assert register.json()["created"] is True
+        with TestClient(app, base_url="http://localhost") as local_client:
+            register = local_client.post(
+                "/auth/register",
+                json={
+                    "username": "member-user",
+                    "email": "member@frontier.localhost",
+                    "display_name": "Member User",
+                    "password": "correct horse battery staple",
+                },
+            )
+            assert register.status_code == 200
+            assert register.json()["created"] is True
 
-        session = client.get("/auth/session")
-        assert session.status_code == 200
-        body = session.json()
-        assert body["authenticated"] is True
-        assert body["preferred_username"] == "member-user"
-        assert body["display_name"] == "Member User"
-        assert body["capabilities"]["can_admin"] is False
-        assert body["capabilities"]["can_builder"] is False
+            session = local_client.get("/auth/session")
+            assert session.status_code == 200
+            body = session.json()
+            assert body["authenticated"] is True
+            assert body["preferred_username"] == "member-user"
+            assert body["display_name"] == "Member User"
+            assert body["capabilities"]["can_admin"] is False
+            assert body["capabilities"]["can_builder"] is False
     finally:
         store.platform_settings.require_authenticated_requests = original_require_auth
         client.cookies.clear()
@@ -2725,17 +2727,18 @@ def test_local_password_logout_clears_operator_session_cookie(monkeypatch) -> No
             },
         )
 
-        assert client.post(
-            "/auth/login",
-            json={"username": "frontier-admin", "password": "correct horse battery staple"},
-        ).status_code == 200
-        assert client.get("/auth/session").status_code == 200
+        with TestClient(app, base_url="http://localhost") as local_client:
+            assert local_client.post(
+                "/auth/login",
+                json={"username": "frontier-admin", "password": "correct horse battery staple"},
+            ).status_code == 200
+            assert local_client.get("/auth/session").status_code == 200
 
-        logout = client.post("/auth/logout")
-        assert logout.status_code == 200
+            logout = local_client.post("/auth/logout")
+            assert logout.status_code == 200
 
-        anonymous = client.get("/auth/session")
-        assert anonymous.status_code == 401
+            anonymous = local_client.get("/auth/session")
+            assert anonymous.status_code == 401
     finally:
         store.platform_settings.require_authenticated_requests = original_require_auth
         client.cookies.clear()

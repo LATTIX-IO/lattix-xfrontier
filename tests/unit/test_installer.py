@@ -1,5 +1,6 @@
 import base64
 import json
+import os
 from pathlib import Path
 import secrets
 import subprocess
@@ -672,9 +673,10 @@ def test_print_install_result_json_redacts_bootstrap_password(monkeypatch, capsy
     )
 
     captured = capsys.readouterr()
+    rendered = json.loads(captured.out)
     assert "DemoPass123!" not in captured.out
     assert '"password"' not in captured.out
-    assert "http://xfrontier.localhost:8080" in captured.out
+    assert rendered["urls"] == ["http://xfrontier.localhost:8080"]
 
 
 def test_packaged_installer_display_mode_prefers_tui_for_interactive_stdin(monkeypatch) -> None:
@@ -737,7 +739,9 @@ def test_collect_local_answers_requires_explicit_casdoor_identity_even_when_exis
     assert "Existing Login" not in captured.out
 
 
-def test_render_install_summary_never_echoes_bootstrap_password(tmp_path: Path) -> None:
+def test_render_install_summary_never_echoes_bootstrap_password(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(packaged_installer.shutil, "get_terminal_size", lambda fallback=(100, 24): os.terminal_size((160, 24)))
+
     summary = packaged_installer._render_install_summary(
         {
             "installed": True,
@@ -760,9 +764,11 @@ def test_render_install_summary_never_echoes_bootstrap_password(tmp_path: Path) 
         }
     )
 
+    body_lines = [line[2:-2].rstrip() for line in summary.splitlines()[1:-1]]
+
     assert "DemoPass123!" not in summary
     assert "Generated during install and stored securely" in summary
-    assert "http://xfrontier.localhost:8080" in summary
+    assert "  [1] http://xfrontier.localhost:8080" in body_lines
 
 
 def test_packaged_installer_targets_active_scripts_dir_for_editable_install(monkeypatch, tmp_path: Path) -> None:
