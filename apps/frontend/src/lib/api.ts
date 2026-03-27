@@ -705,6 +705,7 @@ export async function getPlatformVersionStatus(): Promise<PlatformVersionStatus>
     current_version: "0.0.0",
     latest_version: "0.0.0",
     update_available: false,
+    status: "unknown",
     install_mode: "wheel",
     update_command: "lattix update",
     release_notes_url: "",

@@ -157,6 +157,8 @@ export function LeftNav({ mode, pathname, inAdmin, expanded, platformVersion }: 
   const workspaceLabel = mode === "builder" ? "Builder workspace" : "Workspace";
   const versionLabel = platformVersion?.current_version ? `v${platformVersion.current_version}` : "Version unavailable";
   const latestVersionLabel = platformVersion?.latest_version ? `v${platformVersion.latest_version}` : "";
+  const versionStatus = platformVersion?.status ?? "unknown";
+  const updateVersionDetails = versionStatus === "update_available" && platformVersion ? platformVersion : null;
 
   if (!expanded) {
     return null;
@@ -205,7 +207,7 @@ export function LeftNav({ mode, pathname, inAdmin, expanded, platformVersion }: 
             </span>
           </div>
 
-          {platformVersion?.update_available ? (
+          {updateVersionDetails ? (
             <div className="mt-3 rounded-2xl border border-[color-mix(in_srgb,var(--fx-primary-strong)_28%,var(--ui-border))] bg-[color-mix(in_srgb,var(--fx-primary)_12%,var(--fx-sidebar))] p-3 shadow-[0_10px_24px_rgba(0,0,0,0.16)]">
               <p className="text-[0.68rem] font-semibold uppercase tracking-[0.12em] text-[var(--fx-primary-strong)]">Update available</p>
               <p className="mt-1 text-[0.9rem] font-semibold text-[hsl(var(--foreground))]">
@@ -220,11 +222,11 @@ export function LeftNav({ mode, pathname, inAdmin, expanded, platformVersion }: 
                 </summary>
                 <p className="mt-2 leading-5 text-[var(--fx-muted)]">Open a terminal on this machine and run the updater command below.</p>
                 <div className="mt-2 rounded-lg border border-[var(--ui-border)] bg-[var(--fx-sidebar)] px-2 py-2 font-mono text-[0.72rem] text-[hsl(var(--foreground))]">
-                  {platformVersion.update_command}
+                  {updateVersionDetails.update_command}
                 </div>
-                {platformVersion.release_notes_url ? (
+                {updateVersionDetails.release_notes_url ? (
                   <a
-                    href={platformVersion.release_notes_url}
+                    href={updateVersionDetails.release_notes_url}
                     target="_blank"
                     rel="noreferrer"
                     className="mt-2 inline-flex text-[0.72rem] font-medium text-[var(--fx-primary-strong)] no-underline hover:underline"
@@ -234,8 +236,10 @@ export function LeftNav({ mode, pathname, inAdmin, expanded, platformVersion }: 
                 ) : null}
               </details>
             </div>
-          ) : (
+          ) : versionStatus === "up_to_date" ? (
             <p className="mt-3 text-[0.74rem] leading-5 text-[var(--fx-muted)]">Current build is up to date.</p>
+          ) : (
+            <p className="mt-3 text-[0.74rem] leading-5 text-[var(--fx-muted)]">Update status is unavailable right now.</p>
           )}
         </div>
       </div>

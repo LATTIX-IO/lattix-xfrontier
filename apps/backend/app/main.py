@@ -11,6 +11,7 @@ import socket
 import tomllib
 import importlib
 import importlib.util
+from importlib import metadata as importlib_metadata
 from collections import Counter, defaultdict, deque
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -9224,10 +9225,34 @@ def _metadata_repo_root() -> Path:
     return Path(__file__).resolve().parents[3]
 
 
+_PLATFORM_DISTRIBUTION_NAMES = ("lattix-frontier", "lattix_frontier")
+_REMOTE_RELEASE_MANIFEST_CACHE_LOCK = Lock()
+_REMOTE_RELEASE_MANIFEST_CACHE: dict[str, Any] = {
+    "manifest_url": "",
+    "expires_at": datetime.fromtimestamp(0, tz=timezone.utc),
+    "payload": None,
+}
+
+
+def _installed_platform_version() -> str | None:
+    for distribution_name in _PLATFORM_DISTRIBUTION_NAMES:
+        try:
+            installed_version = str(importlib_metadata.version(distribution_name)).strip()
+        except importlib_metadata.PackageNotFoundError:
+            continue
+        if installed_version:
+            return installed_version
+    return None
+
+
 def _platform_version() -> str:
     override = str(os.getenv("FRONTIER_APP_VERSION") or "").strip()
     if override:
         return override
+
+    installed_version = _installed_platform_version()
+    if installed_version:
+        return installed_version
 
     pyproject_path = _metadata_repo_root() / "pyproject.toml"
     try:
@@ -9239,7 +9264,7 @@ def _platform_version() -> str:
 
 
 def _version_sort_key(value: str) -> tuple[tuple[int, object], ...]:
-    normalized = str(value or "").strip().lstrip("vV")
+    normalized = str(value or "").strip().lstrip("vV").split("+", 1)[0]
     parts = [part for part in re.split(r"[.\-+_]", normalized) if part]
     key: list[tuple[int, object]] = []
     for part in parts:
@@ -9250,10 +9275,70 @@ def _version_sort_key(value: str) -> tuple[tuple[int, object], ...]:
     return tuple(key)
 
 
+def _parse_semverish_version(value: str) -> tuple[tuple[int, int, int], tuple[tuple[int, object], ...] | None] | None:
+    normalized = str(value or "").strip().lstrip("vV")
+    if not normalized:
+        return None
+    normalized = normalized.split("+", 1)[0]
+    match = re.fullmatch(r"(?P<major>\d+)(?:\.(?P<minor>\d+))?(?:\.(?P<patch>\d+))?(?:-(?P<prerelease>[0-9A-Za-z.-]+))?", normalized)
+    if not match:
+        return None
+    core = (
+        int(match.group("major")),
+        int(match.group("minor") or 0),
+        int(match.group("patch") or 0),
+    )
+    prerelease_text = match.group("prerelease")
+    if not prerelease_text:
+        return core, None
+    prerelease: list[tuple[int, object]] = []
+    for identifier in prerelease_text.split("."):
+        prerelease.append((0, int(identifier)) if identifier.isdigit() else (1, identifier.casefold()))
+    return core, tuple(prerelease)
+
+
+def _compare_prerelease_identifiers(
+    left: tuple[tuple[int, object], ...] | None,
+    right: tuple[tuple[int, object], ...] | None,
+) -> int:
+    if left is None and right is None:
+        return 0
+    if left is None:
+        return 1
+    if right is None:
+        return -1
+
+    for left_part, right_part in zip(left, right):
+        if left_part == right_part:
+            continue
+        if left_part[0] != right_part[0]:
+            return -1 if left_part[0] < right_part[0] else 1
+        return -1 if left_part[1] < right_part[1] else 1
+
+    if len(left) == len(right):
+        return 0
+    return -1 if len(left) < len(right) else 1
+
+
+def _compare_versions(left: str, right: str) -> int:
+    left_semver = _parse_semverish_version(left)
+    right_semver = _parse_semverish_version(right)
+    if left_semver and right_semver:
+        if left_semver[0] != right_semver[0]:
+            return -1 if left_semver[0] < right_semver[0] else 1
+        return _compare_prerelease_identifiers(left_semver[1], right_semver[1])
+
+    left_key = _version_sort_key(left)
+    right_key = _version_sort_key(right)
+    if left_key == right_key:
+        return 0
+    return -1 if left_key < right_key else 1
+
+
 def _version_is_newer(candidate: str, current: str) -> bool:
     if not str(candidate or "").strip():
         return False
-    return _version_sort_key(candidate) > _version_sort_key(current)
+    return _compare_versions(candidate, current) > 0
 
 
 def _default_update_manifest_url() -> str:
@@ -9285,11 +9370,16 @@ def _validated_update_manifest_url(url: str) -> str:
     return parsed.geturl()
 
 
-def _fetch_remote_release_manifest() -> dict[str, Any] | None:
-    manifest_url = _default_update_manifest_url()
-    if not manifest_url:
-        return None
+def _platform_version_manifest_cache_ttl_seconds() -> int:
+    raw_value = str(os.getenv("FRONTIER_UPDATE_MANIFEST_CACHE_TTL_SECONDS") or "300").strip()
+    try:
+        parsed_value = int(raw_value)
+    except ValueError:
+        return 300
+    return max(parsed_value, 0)
 
+
+def _fetch_remote_release_manifest_from_url(manifest_url: str) -> dict[str, Any] | None:
     try:
         import httpx
 
@@ -9310,29 +9400,63 @@ def _fetch_remote_release_manifest() -> dict[str, Any] | None:
     return payload if isinstance(payload, dict) else None
 
 
+def _fetch_remote_release_manifest() -> dict[str, Any] | None:
+    manifest_url = _default_update_manifest_url()
+    if not manifest_url:
+        return None
+
+    now = datetime.now(timezone.utc)
+    ttl_seconds = _platform_version_manifest_cache_ttl_seconds()
+
+    with _REMOTE_RELEASE_MANIFEST_CACHE_LOCK:
+        cached_manifest_url = str(_REMOTE_RELEASE_MANIFEST_CACHE.get("manifest_url") or "")
+        cached_expires_at = _REMOTE_RELEASE_MANIFEST_CACHE.get("expires_at")
+        cached_payload = _REMOTE_RELEASE_MANIFEST_CACHE.get("payload")
+        if (
+            cached_manifest_url == manifest_url
+            and isinstance(cached_expires_at, datetime)
+            and cached_expires_at > now
+        ):
+            return dict(cached_payload) if isinstance(cached_payload, dict) else None
+
+    payload = _fetch_remote_release_manifest_from_url(manifest_url)
+    expires_at = now + timedelta(seconds=ttl_seconds)
+
+    with _REMOTE_RELEASE_MANIFEST_CACHE_LOCK:
+        _REMOTE_RELEASE_MANIFEST_CACHE["manifest_url"] = manifest_url
+        _REMOTE_RELEASE_MANIFEST_CACHE["expires_at"] = expires_at
+        _REMOTE_RELEASE_MANIFEST_CACHE["payload"] = dict(payload) if isinstance(payload, dict) else None
+
+    return dict(payload) if isinstance(payload, dict) else None
+
+
 def _platform_version_payload() -> dict[str, Any]:
     current_version = _platform_version()
     release_manifest = _fetch_remote_release_manifest() or {}
+    version_status = "unknown"
     latest_version = str(release_manifest.get("version") or current_version).strip() or current_version
     repo_root = _metadata_repo_root()
     install_mode = "editable" if (repo_root / ".git").exists() else "wheel"
     update_command = str(release_manifest.get("update_command") or "lattix update").strip() or "lattix update"
     update_available = _version_is_newer(latest_version, current_version)
     release_notes_url = str(release_manifest.get("release_notes_url") or release_manifest.get("publicRepo") or "").strip()
+    if release_manifest:
+        version_status = "update_available" if update_available else "up_to_date"
 
     return {
         "current_version": current_version,
         "latest_version": latest_version,
         "update_available": update_available,
+        "status": version_status,
         "install_mode": install_mode,
         "update_command": update_command,
         "release_notes_url": release_notes_url,
         "checked_at": _now_iso(),
-        "source": _default_update_manifest_url(),
+        "source": "remote_manifest" if release_manifest else "local_metadata",
         "summary": (
             f"Version {latest_version} is available. Run `{update_command}` to refresh the local app without deleting workflows, agents, settings, or installer-managed env files."
-            if update_available
-            else "Your local app is up to date."
+            if version_status == "update_available"
+            else ("Your local app is up to date." if version_status == "up_to_date" else "Version metadata is unavailable right now.")
         ),
     }
 

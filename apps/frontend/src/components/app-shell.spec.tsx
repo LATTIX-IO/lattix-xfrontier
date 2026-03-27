@@ -83,6 +83,7 @@ const currentVersion = {
   current_version: "0.1.0",
   latest_version: "0.1.0",
   update_available: false,
+  status: "up_to_date",
   install_mode: "wheel",
   update_command: "lattix update",
   release_notes_url: "",
@@ -95,6 +96,7 @@ const updateAvailableVersion = {
   ...currentVersion,
   latest_version: "0.1.1",
   update_available: true,
+  status: "update_available",
   release_notes_url: "https://github.com/LATTIX-IO/lattix-xfrontier",
   summary: "Version 0.1.1 is available.",
 } as const;
@@ -210,5 +212,20 @@ describe("AppShell", () => {
     expect(await screen.findByText(/authentication required/i)).toBeInTheDocument();
     expect(screen.queryByRole("link", { name: /skip to console/i })).not.toBeInTheDocument();
     expect(screen.getByText(/auth child/i)).toBeInTheDocument();
+  });
+
+  it("does not claim the current build is up to date when version status is unavailable", async () => {
+    pathnameState.current = "/inbox";
+    replaceMock.mockReset();
+    getOperatorSessionMock.mockResolvedValue({
+      ...builderSession,
+      default_mode: "user",
+    });
+    getPlatformVersionStatusMock.mockRejectedValue(new Error("version lookup failed"));
+
+    render(<AppShell><div>user child</div></AppShell>);
+
+    expect(await screen.findByText(/update status is unavailable right now/i)).toBeInTheDocument();
+    expect(screen.queryByText(/current build is up to date/i)).not.toBeInTheDocument();
   });
 });
