@@ -162,6 +162,63 @@ class FrontierInstaller:
         return str(existing_value or "").strip()
 
     @staticmethod
+    def _hostname_prefix_from_env(host_value: str) -> str:
+        normalized = str(host_value or "").strip().lower()
+        for suffix in (".localhost", ".local"):
+            if normalized.endswith(suffix):
+                normalized = normalized[: -len(suffix)]
+                break
+        validation = hostname_prefix_valid(normalized)
+        return normalized if validation.ok else FrontierInstaller._default_local_hostname()
+
+    @staticmethod
+    def _csv_env_values(value: str) -> list[str]:
+        return [item.strip() for item in str(value or "").split(",") if item.strip()]
+
+    def _existing_answers_defaults(self, installation_root: Path) -> InstallerAnswers | None:
+        existing_env = self._existing_secure_env_values()
+        if not existing_env:
+            return None
+
+        local_auth_provider = self._normalize_auth_provider(existing_env.get("FRONTIER_AUTH_MODE", "oidc"))
+        oidc_provider_template = ""
+        if local_auth_provider == "oidc":
+            provider_name = str(existing_env.get("FRONTIER_AUTH_OIDC_PROVIDER") or "").strip().lower()
+            oidc_provider_template = "casdoor" if provider_name == "casdoor" else "external"
+
+        federation_peers = self._csv_env_values(existing_env.get("FEDERATION_PEERS", ""))
+
+        return InstallerAnswers(
+            installation_root=str(installation_root),
+            deployment_mode="local",
+            local_hostname=self._hostname_prefix_from_env(existing_env.get("LOCAL_STACK_HOST", "")),
+            local_auth_provider=local_auth_provider,
+            oidc_provider_template=oidc_provider_template,
+            bootstrap_admin_username=str(existing_env.get("FRONTIER_BOOTSTRAP_ADMIN_USERNAME") or "").strip(),
+            bootstrap_admin_email=str(existing_env.get("FRONTIER_BOOTSTRAP_ADMIN_EMAIL") or "").strip(),
+            bootstrap_admin_subject=str(existing_env.get("FRONTIER_BOOTSTRAP_ADMIN_SUBJECT") or "").strip(),
+            bootstrap_login_username=str(existing_env.get("CASDOOR_BOOTSTRAP_LOGIN_USERNAME") or "").strip(),
+            bootstrap_login_email=str(existing_env.get("CASDOOR_BOOTSTRAP_LOGIN_EMAIL") or "").strip(),
+            bootstrap_login_display_name=str(existing_env.get("CASDOOR_BOOTSTRAP_LOGIN_DISPLAY_NAME") or "").strip(),
+            bootstrap_login_password=str(existing_env.get("CASDOOR_BOOTSTRAP_LOGIN_PASSWORD") or ""),
+            bootstrap_login_password_generated=False,
+            openai_api_key=str(existing_env.get("OPENAI_API_KEY") or "").strip(),
+            oidc_issuer=str(existing_env.get("FRONTIER_AUTH_OIDC_ISSUER") or "").strip(),
+            oidc_audience=str(existing_env.get("FRONTIER_AUTH_OIDC_AUDIENCE") or "").strip(),
+            oidc_jwks_url=str(existing_env.get("FRONTIER_AUTH_OIDC_JWKS_URL") or "").strip(),
+            oidc_client_id=str(existing_env.get("FRONTIER_AUTH_OIDC_CLIENT_ID") or "").strip(),
+            oidc_authorization_url=str(existing_env.get("FRONTIER_AUTH_OIDC_AUTHORIZATION_URL") or "").strip(),
+            oidc_token_url=str(existing_env.get("FRONTIER_AUTH_OIDC_TOKEN_URL") or "").strip(),
+            oidc_signin_url=str(existing_env.get("FRONTIER_AUTH_OIDC_SIGNIN_URL") or "").strip(),
+            oidc_signup_url=str(existing_env.get("FRONTIER_AUTH_OIDC_SIGNUP_URL") or "").strip(),
+            oidc_scopes=str(existing_env.get("FRONTIER_AUTH_OIDC_SCOPES") or "openid profile email").split(),
+            federation_enabled=str(existing_env.get("FEDERATION_ENABLED") or "").strip().lower() in {"1", "true", "yes", "on"},
+            federation_cluster_name=str(existing_env.get("FEDERATION_CLUSTER_NAME") or "").strip(),
+            federation_region=str(existing_env.get("FEDERATION_REGION") or "").strip(),
+            federation_peers=federation_peers,
+        )
+
+    @staticmethod
     def _terminal_width() -> int:
         return max(72, min(shutil.get_terminal_size(fallback=(100, 24)).columns, 120))
 
@@ -359,6 +416,10 @@ class FrontierInstaller:
         }
 
     def secure_local_answers(self, installation_root: Path) -> InstallerAnswers:
+        existing_answers = self._existing_answers_defaults(installation_root)
+        if existing_answers is not None:
+            return existing_answers
+
         hostname_prefix = self._default_local_hostname()
         bootstrap_admin = self._suggest_bootstrap_admin_identity(hostname_prefix)
         return InstallerAnswers(
@@ -378,6 +439,8 @@ class FrontierInstaller:
                 "Interactive installer input is required to create the Casdoor bootstrap login user for local installs. "
                 "Rerun the installer in an interactive terminal."
             )
+
+        has_existing_install_settings = bool(self._existing_secure_env_values())
 
         while True:
             answers = self.secure_local_answers(installation_root)
@@ -459,7 +522,14 @@ class FrontierInstaller:
             else:
                 answers.oidc_provider_template = ""
 
-            bootstrap_admin = self._suggest_bootstrap_admin_identity(answers.local_hostname)
+            if has_existing_install_settings:
+                bootstrap_admin = {
+                    "username": str(answers.bootstrap_admin_username or "").strip(),
+                    "email": str(answers.bootstrap_admin_email or "").strip(),
+                    "subject": str(answers.bootstrap_admin_subject or "").strip(),
+                }
+            else:
+                bootstrap_admin = self._suggest_bootstrap_admin_identity(answers.local_hostname)
             answers.bootstrap_admin_username = self._prompt_with_default(
                 "Bootstrap admin username",
                 bootstrap_admin["username"],
@@ -479,20 +549,31 @@ class FrontierInstaller:
             if answers.local_auth_provider == "oidc" and answers.oidc_provider_template == "casdoor":
                 answers.bootstrap_login_username = self._prompt_required_value(
                     "Bootstrap login username",
+                    answers.bootstrap_login_username,
                     description="Casdoor user created automatically so you can sign in from the login screen after install.",
                 )
                 answers.bootstrap_login_email = self._prompt_required_value(
                     "Bootstrap login email",
+                    answers.bootstrap_login_email,
                     description="Email address assigned to the installer-created Casdoor login user.",
                 )
                 answers.bootstrap_login_display_name = self._prompt_required_value(
                     "Bootstrap login display name",
+                    answers.bootstrap_login_display_name,
                     description="Friendly display name shown for the installer-created login user.",
                 )
-                answers.bootstrap_login_password = self._prompt_required_secret(
-                    "CASDOOR bootstrap login password",
-                    "Password for the installer-created Casdoor login user. This value must be entered explicitly.",
-                )
+                existing_bootstrap_password = str(answers.bootstrap_login_password or "")
+                if existing_bootstrap_password:
+                    answers.bootstrap_login_password = self._prompt_secret_with_existing(
+                        "CASDOOR bootstrap login password",
+                        "Password for the installer-created Casdoor login user. Leave blank to keep the existing password during an in-place reinstall.",
+                        existing_value=existing_bootstrap_password,
+                    )
+                else:
+                    answers.bootstrap_login_password = self._prompt_required_secret(
+                        "CASDOOR bootstrap login password",
+                        "Password for the installer-created Casdoor login user. This value must be entered explicitly.",
+                    )
                 answers.bootstrap_login_password_generated = False
             else:
                 answers.bootstrap_login_username = ""

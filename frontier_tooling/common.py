@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import base64
+from datetime import datetime, timezone
+import hashlib
 import json
 import os
 import platform
@@ -10,6 +12,7 @@ import socket
 import subprocess
 import sys
 import sysconfig
+import tomllib
 from collections import OrderedDict
 from pathlib import Path
 from typing import Any
@@ -21,6 +24,7 @@ PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 FRONTIER_APP_HOME_ENV = "FRONTIER_APP_HOME"
 DEFAULT_LOCAL_STACK_HOST = "xfrontier.local"
 DEFAULT_ARCHIVE_URL = "https://github.com/LATTIX-IO/lattix-xfrontier/archive/refs/heads/main.zip"
+INSTALLER_STATE_SCHEMA_VERSION = 1
 
 
 def _normalized_gateway_bind_host(value: str | None) -> str:
@@ -131,6 +135,14 @@ def lightweight_installer_env_path(*, root: Path | None = None) -> Path:
     return installer_dir(root=root) / "local-lightweight.env"
 
 
+def installer_state_manifest_path(*, root: Path | None = None) -> Path:
+    return installer_dir(root=root) / "state-manifest.json"
+
+
+def installer_vault_bootstrap_path(*, root: Path | None = None) -> Path:
+    return installer_dir(root=root) / "vault-bootstrap.json"
+
+
 def _read_env_map(path: Path) -> OrderedDict[str, str]:
     env_map: OrderedDict[str, str] = OrderedDict()
     if not path.exists():
@@ -173,7 +185,167 @@ def installer_artifact_paths(*, root: Path | None = None) -> list[Path]:
         lightweight_installer_env_path(root=root),
         base / "local.env",
         base / "generated-values.yaml",
+        installer_state_manifest_path(root=root),
+        installer_vault_bootstrap_path(root=root),
     ]
+
+
+def _project_version(*, root: Path | None = None) -> str:
+    pyproject_path = (root or repo_root()) / "pyproject.toml"
+    if not pyproject_path.exists():
+        return "0.0.0"
+    try:
+        pyproject = tomllib.loads(pyproject_path.read_text(encoding="utf-8"))
+    except (OSError, tomllib.TOMLDecodeError):
+        return "0.0.0"
+    project = pyproject.get("project")
+    if not isinstance(project, dict):
+        return "0.0.0"
+    version = str(project.get("version") or "").strip()
+    return version or "0.0.0"
+
+
+def _installer_installation_id(*, root: Path | None = None) -> str:
+    resolved_root = (root or repo_root()).resolve(strict=False)
+    digest = hashlib.sha256(str(resolved_root).encode("utf-8")).hexdigest()
+    return digest[:16]
+
+
+def installer_vault_secret_path(*, root: Path | None = None) -> str:
+    installation_id = _installer_installation_id(root=root)
+    return f"secret/data/local/frontier/installations/{installation_id}/secrets"
+
+
+def installer_vault_state_path(*, root: Path | None = None) -> str:
+    installation_id = _installer_installation_id(root=root)
+    return f"secret/data/local/frontier/installations/{installation_id}/installer-state"
+
+
+def read_installer_state_manifest(*, root: Path | None = None) -> dict[str, Any]:
+    path = installer_state_manifest_path(root=root)
+    if not path.exists():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _normalized_installer_state_schema_version(manifest: dict[str, Any]) -> int:
+    raw_value = manifest.get("schema_version") if isinstance(manifest, dict) else None
+    if raw_value is None:
+        return 0
+    try:
+        version = int(str(raw_value).strip())
+    except (TypeError, ValueError):
+        return 0
+    return version if version >= 0 else 0
+
+
+def _installer_profiles(*, root: Path | None = None) -> list[str]:
+    profiles: list[str] = []
+    if secure_installer_env_path(root=root).exists():
+        profiles.append("secure")
+    if lightweight_installer_env_path(root=root).exists():
+        profiles.append("lightweight")
+    return profiles
+
+
+def _in_app_asset_roots(*, root: Path | None = None) -> list[str]:
+    resolved_root = (root or repo_root()).resolve(strict=False)
+    candidate_maps = [
+        _read_env_map(resolved_root / ".env"),
+        _read_env_map(secure_installer_env_path(root=resolved_root)),
+        _read_env_map(lightweight_installer_env_path(root=resolved_root)),
+    ]
+    preserved: list[str] = []
+    seen: set[str] = set()
+    for env_map in candidate_maps:
+        configured = str(env_map.get("FRONTIER_AGENT_ASSETS_ROOT") or "").strip()
+        if not configured:
+            continue
+        raw_path = Path(configured).expanduser()
+        candidate = raw_path if raw_path.is_absolute() else resolved_root / raw_path
+        resolved_candidate = candidate.resolve(strict=False)
+        try:
+            relative = resolved_candidate.relative_to(resolved_root)
+        except ValueError:
+            continue
+        relative_text = str(relative).replace("\\", "/")
+        key = relative_text.casefold()
+        if key in seen:
+            continue
+        preserved.append(relative_text)
+        seen.add(key)
+    return preserved
+
+
+def _installer_state_payload(*, root: Path | None = None, install_mode: str | None = None) -> OrderedDict[str, Any]:
+    resolved_root = (root or repo_root()).resolve(strict=False)
+    secure_env = _read_env_map(secure_installer_env_path(root=resolved_root))
+    return OrderedDict(
+        [
+            ("schema_version", INSTALLER_STATE_SCHEMA_VERSION),
+            ("installation_id", _installer_installation_id(root=resolved_root)),
+            ("package_version", _project_version(root=resolved_root)),
+            ("install_mode", str(install_mode or ("editable" if (resolved_root / ".git").exists() else "wheel"))),
+            ("install_root", str(resolved_root)),
+            ("updated_at", datetime.now(timezone.utc).isoformat()),
+            ("profiles", _installer_profiles(root=resolved_root)),
+            ("auth_mode", str(secure_env.get("FRONTIER_AUTH_MODE") or "").strip()),
+            ("local_stack_host", str(secure_env.get("LOCAL_STACK_HOST") or "").strip()),
+            ("in_app_asset_roots", _in_app_asset_roots(root=resolved_root)),
+            ("vault_bootstrap_file", str(installer_vault_bootstrap_path(root=resolved_root).relative_to(resolved_root)).replace("\\", "/")),
+            ("vault_secret_path", installer_vault_secret_path(root=resolved_root)),
+            ("vault_state_path", installer_vault_state_path(root=resolved_root)),
+            (
+                "managed_artifacts",
+                [str(path.relative_to(resolved_root)).replace("\\", "/") for path in installer_artifact_paths(root=resolved_root)],
+            ),
+        ]
+    )
+
+
+def _merged_in_app_asset_roots(current_manifest: dict[str, Any], discovered_roots: list[str]) -> list[str]:
+    merged: list[str] = []
+    seen: set[str] = set()
+    raw_current_roots = current_manifest.get("in_app_asset_roots") if isinstance(current_manifest, dict) else None
+    current_roots: list[str] = [str(item) for item in raw_current_roots] if isinstance(raw_current_roots, list) else []
+    for item in [*current_roots, *discovered_roots]:
+        normalized = str(item or "").strip().replace("\\", "/")
+        if not normalized:
+            continue
+        key = normalized.casefold()
+        if key in seen:
+            continue
+        merged.append(normalized)
+        seen.add(key)
+    return merged
+
+
+def ensure_installer_state_manifest(*, root: Path | None = None, install_mode: str | None = None) -> Path:
+    resolved_root = (root or repo_root()).resolve(strict=False)
+    current_manifest = read_installer_state_manifest(root=resolved_root)
+    current_version = _normalized_installer_state_schema_version(current_manifest)
+    payload = _installer_state_payload(root=resolved_root, install_mode=install_mode)
+    discovered_roots = payload["in_app_asset_roots"] if isinstance(payload.get("in_app_asset_roots"), list) else []
+    payload["in_app_asset_roots"] = _merged_in_app_asset_roots(
+        current_manifest,
+        [str(item) for item in discovered_roots],
+    )
+
+    if current_version > INSTALLER_STATE_SCHEMA_VERSION:
+        payload["schema_version"] = current_version
+
+    path = installer_state_manifest_path(root=resolved_root)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    return path
+
+
+def write_installer_state_manifest(*, root: Path | None = None, install_mode: str | None = None) -> Path:
+    return ensure_installer_state_manifest(root=root, install_mode=install_mode)
 
 
 def ensure_compose_env_file(*, local_profile: bool = False, root: Path | None = None) -> Path:

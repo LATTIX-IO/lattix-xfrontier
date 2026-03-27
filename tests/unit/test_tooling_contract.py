@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from frontier_tooling.common import ensure_compose_env_file, remove_installer_artifacts, remove_installer_env_files
+from frontier_tooling.common import ensure_compose_env_file, ensure_installer_state_manifest, installer_vault_bootstrap_path, read_installer_state_manifest, remove_installer_artifacts, remove_installer_env_files, write_installer_state_manifest
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -300,16 +300,99 @@ def test_remove_installer_artifacts_deletes_legacy_and_generated_files(tmp_path:
     lightweight = installer_root / "local-lightweight.env"
     legacy = installer_root / "local.env"
     generated_values = installer_root / "generated-values.yaml"
+    manifest = installer_root / "state-manifest.json"
+    vault_bootstrap = installer_root / "vault-bootstrap.json"
     installer_root.mkdir(parents=True, exist_ok=True)
     secure.write_text("A2A_JWT_SECRET=test\n", encoding="utf-8")
     lightweight.write_text("A2A_JWT_SECRET=test\n", encoding="utf-8")
     legacy.write_text("A2A_JWT_SECRET=legacy\n", encoding="utf-8")
     generated_values.write_text("clusterName: demo\n", encoding="utf-8")
+    manifest.write_text("{}\n", encoding="utf-8")
+    vault_bootstrap.write_text('{"root_token":"root-token"}\n', encoding="utf-8")
 
     removed = remove_installer_artifacts(root=tmp_path)
 
-    assert removed == [secure, lightweight, legacy, generated_values]
+    assert removed == [secure, lightweight, legacy, generated_values, manifest, vault_bootstrap]
     assert not installer_root.exists()
+
+
+def test_write_installer_state_manifest_records_versioned_installer_metadata(tmp_path: Path) -> None:
+    (tmp_path / "pyproject.toml").write_text("[project]\nname='lattix-frontier'\nversion='9.8.7'\n", encoding="utf-8")
+    (tmp_path / ".installer").mkdir(parents=True, exist_ok=True)
+    (tmp_path / ".installer" / "local-secure.env").write_text(
+        "\n".join(
+            [
+                "LOCAL_STACK_HOST=xfrontier.local",
+                "FRONTIER_AUTH_MODE=oidc",
+                "FRONTIER_AGENT_ASSETS_ROOT=private-agents",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (tmp_path / ".env").write_text("FRONTIER_AGENT_ASSETS_ROOT=private-agents\n", encoding="utf-8")
+
+    manifest_path = write_installer_state_manifest(root=tmp_path, install_mode="wheel")
+    manifest = read_installer_state_manifest(root=tmp_path)
+
+    assert manifest_path == tmp_path / ".installer" / "state-manifest.json"
+    assert manifest["schema_version"] == 1
+    assert manifest["package_version"] == "9.8.7"
+    assert manifest["install_mode"] == "wheel"
+    assert manifest["profiles"] == ["secure"]
+    assert manifest["auth_mode"] == "oidc"
+    assert manifest["local_stack_host"] == "xfrontier.local"
+    assert manifest["in_app_asset_roots"] == ["private-agents"]
+    assert manifest["installation_id"]
+    assert manifest["vault_bootstrap_file"] == ".installer/vault-bootstrap.json"
+    assert manifest["vault_secret_path"].startswith("secret/data/local/frontier/installations/")
+    assert manifest["vault_state_path"].startswith("secret/data/local/frontier/installations/")
+    assert ".installer/state-manifest.json" in manifest["managed_artifacts"]
+    assert ".installer/vault-bootstrap.json" in manifest["managed_artifacts"]
+
+
+def test_ensure_installer_state_manifest_migrates_legacy_installer_state(tmp_path: Path) -> None:
+    (tmp_path / "pyproject.toml").write_text("[project]\nname='lattix-frontier'\nversion='1.2.3'\n", encoding="utf-8")
+    (tmp_path / ".installer").mkdir(parents=True, exist_ok=True)
+    (tmp_path / ".installer" / "local-secure.env").write_text(
+        "\n".join(
+            [
+                "LOCAL_STACK_HOST=legacy.localhost",
+                "FRONTIER_AUTH_MODE=shared-token",
+                "FRONTIER_AGENT_ASSETS_ROOT=private-agents",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    manifest_path = ensure_installer_state_manifest(root=tmp_path, install_mode="wheel")
+    manifest = read_installer_state_manifest(root=tmp_path)
+
+    assert manifest_path == tmp_path / ".installer" / "state-manifest.json"
+    assert manifest["schema_version"] == 1
+    assert manifest["package_version"] == "1.2.3"
+    assert manifest["auth_mode"] == "shared-token"
+    assert manifest["local_stack_host"] == "legacy.localhost"
+    assert manifest["in_app_asset_roots"] == ["private-agents"]
+    assert manifest["vault_bootstrap_file"] == ".installer/vault-bootstrap.json"
+
+
+def test_ensure_installer_state_manifest_rewrites_invalid_schema_payload(tmp_path: Path) -> None:
+    (tmp_path / "pyproject.toml").write_text("[project]\nname='lattix-frontier'\nversion='1.2.3'\n", encoding="utf-8")
+    installer_root = tmp_path / ".installer"
+    installer_root.mkdir(parents=True, exist_ok=True)
+    (installer_root / "state-manifest.json").write_text('{"schema_version":"banana"}\n', encoding="utf-8")
+
+    ensure_installer_state_manifest(root=tmp_path, install_mode="wheel")
+    manifest = read_installer_state_manifest(root=tmp_path)
+
+    assert manifest["schema_version"] == 1
+    assert manifest["package_version"] == "1.2.3"
+
+
+def test_installer_vault_bootstrap_path_tracks_managed_artifact_location(tmp_path: Path) -> None:
+    assert installer_vault_bootstrap_path(root=tmp_path) == tmp_path / ".installer" / "vault-bootstrap.json"
 
 def test_remove_command_tracks_failed_teardowns_and_radius_secret_is_not_hardcoded() -> None:
     cli = _read("frontier_tooling/cli.py")

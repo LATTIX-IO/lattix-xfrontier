@@ -25,21 +25,64 @@ def test_vault_client_reads_kv_v2_secret(monkeypatch) -> None:
         def json(self) -> dict[str, object]:
             return json.loads(self.text)
 
-    def _fake_get(url, headers=None, timeout=0, follow_redirects=False):
+    def _fake_request(method, url, headers=None, json=None, timeout=0, follow_redirects=False):
+        captured["method"] = method
         captured["url"] = url
         captured["token"] = headers.get("X-Vault-Token") if headers else None
         captured["accept"] = headers.get("Accept") if headers else None
+        captured["json"] = json
         captured["timeout"] = timeout
         captured["follow_redirects"] = follow_redirects
         return _FakeResponse()
 
-    monkeypatch.setattr("frontier_runtime.security.httpx.get", _fake_get)
+    monkeypatch.setattr("frontier_runtime.security.httpx.request", _fake_request)
 
     client = VaultClient(addr="http://vault:8200", token="vault-token", timeout_seconds=7)
     secret = client.read_secret("secret/data/demo/path")
 
     assert secret == {"value": "super-secret", "enabled": True}
+    assert captured["method"] == "GET"
     assert captured["url"] == "http://vault:8200/v1/secret/data/demo/path"
     assert captured["token"] == "vault-token"
     assert captured["accept"] == "application/json"
+    assert captured["json"] is None
     assert captured["timeout"] == 7
+
+
+def test_vault_client_writes_kv_v2_secret(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    class _FakeResponse:
+        status_code = 200
+        text = json.dumps({"data": {"written": True}})
+
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict[str, object]:
+            return json.loads(self.text)
+
+    def _fake_request(method, url, headers=None, json=None, timeout=0, follow_redirects=False):
+        captured["method"] = method
+        captured["url"] = url
+        captured["token"] = headers.get("X-Vault-Token") if headers else None
+        captured["content_type"] = headers.get("Content-Type") if headers else None
+        captured["accept"] = headers.get("Accept") if headers else None
+        captured["json"] = json
+        captured["timeout"] = timeout
+        captured["follow_redirects"] = follow_redirects
+        return _FakeResponse()
+
+    monkeypatch.setattr("frontier_runtime.security.httpx.request", _fake_request)
+
+    client = VaultClient(addr="http://vault:8200", token="vault-token", timeout_seconds=9)
+    response = client.write_secret("secret/data/demo/path", {"value": "super-secret", "enabled": True})
+
+    assert response == {"data": {"written": True}}
+    assert captured["method"] == "POST"
+    assert captured["url"] == "http://vault:8200/v1/secret/data/demo/path"
+    assert captured["token"] == "vault-token"
+    assert captured["content_type"] == "application/json"
+    assert captured["accept"] == "application/json"
+    assert captured["json"] == {"data": {"value": "super-secret", "enabled": True}}
+    assert captured["timeout"] == 9

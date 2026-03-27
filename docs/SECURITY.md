@@ -19,7 +19,9 @@ Policies live in `policies/` and are tested through `policies/tests/`.
 
 ## Vault
 
-Local development uses a dev token. Kubernetes is designed to migrate to Kubernetes auth and per-service-account roles.
+Secure local deployments use HashiCorp Vault as the local secret-management service. The secure Compose stack runs Vault with file-backed storage mounted on the persistent `vault-data` Docker volume, and the installer now bootstraps Vault as needed, writes installer-generated passwords/secrets into KV storage, and mirrors installer configuration snapshots there for durable recovery.
+
+Installer compatibility env files still exist for Compose/runtime startup, but they are no longer the only durable copy of sensitive setup state. Kubernetes is still designed to migrate to Kubernetes auth and per-service-account roles.
 
 ## DLP pipeline
 

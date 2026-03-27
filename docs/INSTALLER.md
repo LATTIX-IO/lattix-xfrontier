@@ -41,11 +41,18 @@ A future vanity URL such as `https://install.lattix.io/xfrontier.sh` can safely 
 3. Prompts the user for preferred local and/or enterprise configuration.
 4. Checks writable install location, vanity hostname safety, port availability, and enterprise tools (`helm`, `kubectl`) when needed.
 5. Prompts for secure local authentication mode, a platform bootstrap admin identity, and — when using the bundled Casdoor preset — a separate bootstrap login user that is created automatically for first sign-in. The Casdoor login username, email, display name, and password must be entered explicitly by the operator; they are not auto-generated.
-6. Writes the installer-managed env file for the secure local stack at `.installer/local-secure.env`, plus generated Helm values.
-7. Applies best-effort owner-only file permissions to the local env file before launching Docker Compose.
-8. Ensures the user script directory is on `PATH` for the host OS.
-9. Automatically runs `lattix up` for the secure local stack.
-10. Prints portal URLs including `http://xfrontier.local`, `http://127.0.0.1`, and the detected LAN IP.
+6. Writes the installer-managed env file for the secure local stack at `.installer/local-secure.env`, generated Helm values, and a versioned installer state manifest at `.installer/state-manifest.json`.
+7. Bootstraps the local Vault instance when needed, stores installer-generated passwords/secrets there, and writes a durable installer-state snapshot so env/file-backed setup data is recoverable from Vault-backed storage.
+8. Applies best-effort owner-only file permissions to the local env file before launching Docker Compose.
+9. Ensures the user script directory is on `PATH` for the host OS.
+10. Automatically runs `lattix up` for the secure local stack.
+11. Prints portal URLs including `http://xfrontier.local`, `http://127.0.0.1`, and the detected LAN IP.
+
+When the published installer is rerun over an existing installed app home, it preserves the installer-managed state before replacing the package contents. That keeps the existing `.installer/` env files, top-level `.env`, Docker volumes, and previously configured secure-local credentials/settings compatible with the refreshed build instead of rotating them underneath persisted data.
+
+The durable local secret store for that flow is HashiCorp Vault running in the secure Compose stack with file storage mounted on the persistent `vault-data` Docker volume. PostgreSQL and Neo4j likewise keep their user/platform data on persistent named volumes, so installer reruns do not wipe passwords, graph state, or relational state unless the operator explicitly removes volumes.
+
+The reinstall preservation logic also keeps operator-owned agent assets when they live inside the installed app home. Explicit in-app `FRONTIER_AGENT_ASSETS_ROOT` directories are carried forward, and user-added agent folders under `examples/agents/` are retained while package-owned sample agents still refresh from the new build.
 
 The public installer provisions the **secure local** profile by default. That profile enables fail-closed auth, signed A2A messaging, and replay protection, but it still runs on a single local Docker host. It is not the same as a hosted or enterprise deployment with separate workload, cluster, or network isolation boundaries per agent.
 
@@ -68,7 +75,8 @@ The remove flow:
 
 1. Stops the secure and lightweight Docker Compose stacks when installer-managed env files are present.
 2. Removes the Compose volumes and orphaned containers for those stacks.
-3. Deletes installer-managed artifacts under `.installer/`, including the secure/lightweight env files plus generated installer leftovers such as `generated-values.yaml` and legacy `local.env`.
+3. Deletes installer-managed artifacts under `.installer/`, including the secure/lightweight env files, the installer state manifest, plus generated installer leftovers such as `generated-values.yaml` and legacy `local.env`.
+4. Removes the installer-managed Vault bootstrap metadata file (`.installer/vault-bootstrap.json`) along with the rest of the installer artifact set.
 
 It intentionally does **not** delete the repository checkout, your top-level `.env` file, editable installs, virtual environments, or PATH entries.
 
@@ -91,6 +99,14 @@ The update flow is intentionally non-destructive:
 4. Restarts the active local stack(s) with `docker compose up -d --build --remove-orphans`.
 5. Leaves Docker volumes intact, so local workflows, agents, settings, and other persisted operator data survive the refresh.
 
+The published bootstrap installer now uses the same preservation model when it detects an existing installed app home, and the interactive prompts are seeded from the current secure-local env values. Operators can still change passwords or identity settings intentionally, but pressing Enter now keeps the current values instead of forcing a secret reset during an in-place upgrade.
+
+The installer also records a small versioned manifest in `.installer/state-manifest.json` so future upgrade logic can reason about installer-managed state explicitly instead of inferring everything from ad hoc file discovery.
+
+That manifest now also tracks the local installation identifier plus the Vault secret/state paths used for the secure-local install. Those references let upgrade logic keep the env compatibility files in sync with the durable Vault-backed copy instead of treating plaintext files as the only source of truth.
+
+Legacy installs that predate the manifest are normalized into that contract automatically during install/update, so upgrade logic can migrate forward from a stable metadata shape instead of relying on one-off heuristics forever.
+
 For editable/source-checkout installs, `lattix update` requires a clean Git working tree and then performs a fast-forward pull before refreshing the local stack.
 
 ## Local vanity URL
@@ -110,6 +126,8 @@ For local deployments, the installer now handles secrets such as `A2A_JWT_SECRET
 - The installer applies best-effort owner-only permissions to the generated env file before launching the local stack.
 
 This keeps required runtime secrets out of the interactive answer manifest and out of the normal repo workflow.
+
+For the secure local profile, those same secrets are also mirrored into Vault under installer-managed KV paths. The `.installer/local-secure.env` file remains a compatibility surface for Compose and local tooling, but Vault is the durable local secret store and also holds a serialized snapshot of non-secret installer state that would otherwise live only in env/files.
 
 ## Local authentication options
 
