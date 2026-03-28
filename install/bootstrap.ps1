@@ -3,6 +3,7 @@ $ErrorActionPreference = 'Stop'
 $TempRoot = if ([string]::IsNullOrWhiteSpace($env:TEMP)) { '.\tmp' } else { $env:TEMP }
 $BootstrapDir = Join-Path $TempRoot 'frontier-install'
 $InstallerUrl = 'https://raw.githubusercontent.com/LATTIX-IO/lattix-xfrontier/main/install/frontier-installer.py'
+$LocalInstallerPath = if ($PSScriptRoot) { Join-Path $PSScriptRoot 'frontier-installer.py' } else { '' }
 
 function Test-PythonCommand {
     param(
@@ -58,10 +59,25 @@ if ($null -eq $Python) {
 }
 
 $InstallerPath = Join-Path $BootstrapDir 'frontier-installer.py'
-Write-Host '==> Downloading installer'
-Invoke-WebRequest -Uri $InstallerUrl -OutFile $InstallerPath
+if ($LocalInstallerPath -and (Test-Path $LocalInstallerPath)) {
+    Write-Host '==> Using local checkout installer'
+    $InstallerPath = $LocalInstallerPath
+}
+else {
+    Write-Host '==> Downloading installer'
+    Invoke-WebRequest -Uri $InstallerUrl -OutFile $InstallerPath
+}
 
 Write-Host '==> Launching interactive installer'
+if ([string]::IsNullOrWhiteSpace($env:FRONTIER_INSTALLER_OUTPUT)) {
+    try {
+        if (-not [Console]::IsInputRedirected -and -not [Console]::IsOutputRedirected) {
+            $env:FRONTIER_INSTALLER_OUTPUT = 'tui'
+        }
+    }
+    catch {
+    }
+}
 if ($Python.Name -eq 'py.exe' -or $Python.Name -eq 'py') {
     & $Python.Source -3 $InstallerPath
 } else {

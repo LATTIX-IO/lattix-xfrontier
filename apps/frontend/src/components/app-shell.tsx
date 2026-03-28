@@ -6,8 +6,36 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { ApiStatusBanner } from "@/components/api-status-banner";
 import { ModeSwitch } from "@/components/mode-switch";
 import { LeftNav } from "@/components/navigation/left-nav";
-import { getOperatorSession, getPlatformVersionStatus } from "@/lib/api";
+import { getOperatorSession, getPlatformVersionStatus, logoutOperator } from "@/lib/api";
 import type { AppMode, OperatorSession, PlatformVersionStatus } from "@/types/frontier";
+
+function resolveOperatorLabel(session: OperatorSession | null): string {
+  if (!session) {
+    return "Operator";
+  }
+  return session.display_name || session.preferred_username || session.email || session.actor || "Operator";
+}
+
+function resolveOperatorSecondaryLabel(session: OperatorSession | null): string {
+  if (!session) {
+    return "";
+  }
+  return session.email || session.subject || session.principal_id || "";
+}
+
+function resolveOperatorInitials(session: OperatorSession | null): string {
+  const label = resolveOperatorLabel(session)
+    .trim()
+    .replace(/[^\p{L}\p{N}\s]+/gu, " ");
+  if (!label) {
+    return "OP";
+  }
+  const parts = label.split(/\s+/).filter(Boolean);
+  if (parts.length >= 2) {
+    return `${parts[0][0] ?? ""}${parts[1][0] ?? ""}`.toUpperCase();
+  }
+  return label.slice(0, 2).toUpperCase();
+}
 
 export function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
@@ -116,6 +144,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   }, []);
 
   const sessionResolved = activeSessionRequestId !== 0 && resolvedSessionRequestId === activeSessionRequestId;
+  const operatorLabel = resolveOperatorLabel(operatorSession);
+  const operatorSecondaryLabel = resolveOperatorSecondaryLabel(operatorSession);
+  const operatorInitials = resolveOperatorInitials(operatorSession);
 
   useEffect(() => {
     if (!sessionResolved || requestedMode !== "builder") {
@@ -133,6 +164,16 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     }
     router.replace("/auth");
   }, [isProtectedRoute, operatorSession?.authenticated, router, sessionResolved]);
+
+  useEffect(() => {
+    if (!isPublicAuthRoute || !sessionResolved || !operatorSession?.authenticated) {
+      return;
+    }
+    const defaultHref = operatorSession.capabilities.can_builder && operatorSession.default_mode === "builder"
+      ? "/builder/workflows"
+      : "/inbox";
+    router.replace(defaultHref);
+  }, [isPublicAuthRoute, operatorSession?.authenticated, operatorSession?.capabilities.can_builder, operatorSession?.default_mode, router, sessionResolved]);
 
   const canBuilder = operatorSession?.capabilities.can_builder ?? false;
   const canAdmin = operatorSession?.capabilities.can_admin ?? false;
@@ -260,17 +301,43 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               onClick={() => setMenuOpen((value) => !value)}
               className="fx-btn-secondary h-7 w-7 px-0 text-[11px] font-semibold"
               aria-label="User menu"
+              title={operatorLabel}
             >
-              LD
+              {operatorInitials}
             </button>
             {menuOpen ? (
-              <div className="fx-panel absolute right-0 top-9 z-50 min-w-44 p-1 shadow-xl">
+              <div className="fx-panel absolute right-0 top-9 z-50 min-w-72 p-1 shadow-xl">
+                <div className="border-b border-[var(--ui-border)] px-3 py-3">
+                  <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[var(--fx-muted)]">Signed in as</p>
+                  <p className="mt-1 text-sm font-semibold text-[hsl(var(--foreground))]">{operatorLabel}</p>
+                  {operatorSecondaryLabel ? (
+                    <p className="mt-1 break-all text-[11px] text-[var(--fx-muted)]">{operatorSecondaryLabel}</p>
+                  ) : null}
+                  <div className="mt-3 flex flex-wrap gap-1.5">
+                    <span className="rounded-full border border-[var(--ui-border)] bg-[hsl(var(--card))] px-2 py-1 text-[10px] font-medium text-[hsl(var(--foreground))]">
+                      {operatorSession?.authenticated ? "Authenticated" : "Anonymous"}
+                    </span>
+                    <span className="rounded-full border border-[var(--ui-border)] bg-[hsl(var(--card))] px-2 py-1 text-[10px] font-medium text-[hsl(var(--foreground))]">
+                      {canBuilder ? "Builder access enabled" : "Builder access locked"}
+                    </span>
+                    {canAdmin ? (
+                      <span className="rounded-full border border-[var(--ui-border)] bg-[hsl(var(--card))] px-2 py-1 text-[10px] font-medium text-[hsl(var(--foreground))]">
+                        Admin access enabled
+                      </span>
+                    ) : null}
+                    {(operatorSession?.roles ?? []).map((role) => (
+                      <span key={role} className="rounded-full border border-[var(--ui-border)] bg-[hsl(var(--card))] px-2 py-1 text-[10px] font-medium text-[hsl(var(--foreground))]">
+                        {role}
+                      </span>
+                    ))}
+                  </div>
+                </div>
                 <button
                   onClick={() => {
                     setTheme("light");
                     setMenuOpen(false);
                   }}
-                  className="block w-full rounded-md px-2 py-1.5 text-left text-xs text-[var(--foreground)] hover:bg-[var(--fx-nav-hover)]"
+                  className="block w-full rounded-md px-3 py-2 text-left text-xs text-[var(--foreground)] hover:bg-[var(--fx-nav-hover)]"
                 >
                   Light mode
                 </button>
@@ -279,9 +346,24 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                     setTheme("dark");
                     setMenuOpen(false);
                   }}
-                  className="block w-full rounded-md px-2 py-1.5 text-left text-xs text-[var(--foreground)] hover:bg-[var(--fx-nav-hover)]"
+                  className="block w-full rounded-md px-3 py-2 text-left text-xs text-[var(--foreground)] hover:bg-[var(--fx-nav-hover)]"
                 >
                   Dark mode
+                </button>
+                <button
+                  onClick={async () => {
+                    try {
+                      await logoutOperator();
+                    } finally {
+                      setOperatorSession(null);
+                      setMenuOpen(false);
+                      router.replace("/auth");
+                      router.refresh();
+                    }
+                  }}
+                  className="block w-full rounded-md px-3 py-2 text-left text-xs text-[var(--foreground)] hover:bg-[var(--fx-nav-hover)]"
+                >
+                  Sign out
                 </button>
               </div>
             ) : null}

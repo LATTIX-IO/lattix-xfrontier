@@ -9,6 +9,7 @@ import hmac
 import ipaddress
 import socket
 import tomllib
+import http.cookiejar
 import importlib
 import importlib.util
 from importlib import metadata as importlib_metadata
@@ -19,6 +20,9 @@ from pathlib import Path
 from pprint import pformat
 from threading import Lock
 from typing import Any, Callable, Literal
+from urllib import error as urllib_error
+from urllib import parse as urllib_parse
+from urllib import request as urllib_request
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
@@ -31,6 +35,7 @@ from app.platform_services import Neo4jRunGraph, PostgresLongTermMemoryStore, Po
 from app.request_security import RouteAccessCategory, RouteAccessRule, classify_route_access, validate_route_inventory
 from app.security_headers import apply_security_headers
 from frontier_runtime.security import decode_token as decode_runtime_token
+from frontier_runtime.security import mint_token as mint_runtime_token
 from frontier_runtime.security import token_identity_from_claims
 
 try:
@@ -418,6 +423,18 @@ class RuntimeProviderStatus(BaseModel):
     configured: bool
     model: str
     mode: Literal["live", "simulated"]
+
+
+class PasswordLoginRequest(BaseModel):
+    username: str = Field(min_length=1, max_length=128)
+    password: str = Field(min_length=1, max_length=512)
+
+
+class PasswordRegisterRequest(BaseModel):
+    username: str = Field(min_length=1, max_length=128)
+    email: str = Field(min_length=3, max_length=320)
+    display_name: str = Field(min_length=1, max_length=160)
+    password: str = Field(min_length=8, max_length=512)
 
 
 def _normalize_version(raw_version: Any) -> int:
@@ -866,6 +883,347 @@ def _bootstrap_configured_iam_provider() -> tuple[str, str]:
     if provider or issuer:
         return provider or "oidc", issuer
     return "frontier-runtime", ""
+
+
+def _operator_session_cookie_name() -> str:
+    value = str(os.getenv("FRONTIER_OPERATOR_SESSION_COOKIE") or "frontier_operator_session").strip()
+    return value or "frontier_operator_session"
+
+
+def _operator_session_ttl_seconds() -> int:
+    return _env_int("FRONTIER_OPERATOR_SESSION_TTL_SECONDS", 60 * 60 * 8, minimum=300, maximum=60 * 60 * 24)
+
+
+def _operator_session_cookie_secure(request: Request) -> bool:
+    try:
+        hostname = str(request.url.hostname or "").strip().lower()
+    except Exception:  # noqa: BLE001
+        hostname = ""
+    if str(request.url.scheme or "").strip().lower() == "https":
+        return True
+    return False if _hostname_is_local(hostname) else True
+
+
+def _set_operator_session_cookie(response: JSONResponse, request: Request, token: str) -> None:
+    response.set_cookie(
+        key=_operator_session_cookie_name(),
+        value=token,
+        httponly=True,
+        secure=_operator_session_cookie_secure(request),
+        samesite="lax",
+        max_age=_operator_session_ttl_seconds(),
+        path="/",
+    )
+
+
+def _clear_operator_session_cookie(response: JSONResponse, request: Request) -> None:
+    response.delete_cookie(
+        key=_operator_session_cookie_name(),
+        httponly=True,
+        secure=_operator_session_cookie_secure(request),
+        samesite="lax",
+        path="/",
+    )
+
+
+def _request_operator_session_token(request: Request | None) -> str:
+    if request is None:
+        return ""
+    try:
+        return str(request.cookies.get(_operator_session_cookie_name()) or "").strip()
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def _configured_casdoor_oidc() -> dict[str, str]:
+    config = _configured_operator_oidc()
+    if str(config.get("provider") or "").strip().lower() != "casdoor":
+        return {}
+    return config
+
+
+def _configured_casdoor_public_origin() -> str:
+    candidate = str(os.getenv("CASDOOR_PUBLIC_URL") or "").strip()
+    if candidate:
+        normalized = _normalize_absolute_http_url(candidate, setting_name="CASDOOR_PUBLIC_URL")
+        parts = urlsplit(normalized)
+        return urlunsplit((parts.scheme, parts.netloc, "", "", "")).rstrip("/")
+    config = _configured_casdoor_oidc()
+    issuer = str(config.get("issuer") or "").strip()
+    if issuer:
+        parts = urlsplit(issuer)
+        return urlunsplit((parts.scheme, parts.netloc, "", "", "")).rstrip("/")
+    return ""
+
+
+def _local_casdoor_password_auth_enabled() -> bool:
+    config = _configured_casdoor_oidc()
+    issuer = str(config.get("issuer") or "").strip()
+    if not issuer:
+        return False
+    issuer_parts = urlsplit(issuer)
+    hostname = str(issuer_parts.hostname or "").strip().lower()
+    return _hostname_is_local(hostname)
+
+
+def _require_local_casdoor_password_auth() -> None:
+    if _local_casdoor_password_auth_enabled():
+        return
+    raise HTTPException(
+        status_code=400,
+        detail="Custom username/password auth is only available for the local Casdoor secure-local profile.",
+    )
+
+
+def _casdoor_http_base_candidates() -> list[tuple[str, dict[str, str]]]:
+    candidates: list[tuple[str, dict[str, str]]] = []
+    seen: set[tuple[str, tuple[tuple[str, str], ...]]] = set()
+
+    def _append(base_url: str, headers: dict[str, str] | None = None) -> None:
+        candidate = str(base_url or "").strip().rstrip("/")
+        if not candidate:
+            return
+        header_items = tuple(sorted((headers or {}).items()))
+        key = (candidate, header_items)
+        if key in seen:
+            return
+        seen.add(key)
+        candidates.append((candidate, dict(headers or {})))
+
+    configured = _configured_casdoor_oidc()
+    issuer = str(configured.get("issuer") or "").strip()
+    public_origin = _configured_casdoor_public_origin()
+    issuer_host = str(urlsplit(issuer).hostname or "").strip().lower()
+    casdoor_virtual_host = str(os.getenv("CASDOOR_LOCAL_HOST") or "casdoor.localhost").strip() or "casdoor.localhost"
+    if _hostname_is_local(issuer_host):
+        _append("http://casdoor:8000")
+        _append("http://local-gateway", {"Host": casdoor_virtual_host})
+    if public_origin:
+        _append(public_origin)
+    if issuer:
+        issuer_parts = urlsplit(issuer)
+        _append(urlunsplit((issuer_parts.scheme, issuer_parts.netloc, "", "", "")).rstrip("/"))
+    return candidates
+
+
+def _casdoor_urlopen_json(
+    opener: urllib_request.OpenerDirector,
+    url: str,
+    *,
+    method: str = "GET",
+    data: bytes | None = None,
+    headers: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    request = urllib_request.Request(url, data=data, method=method)
+    for key, value in (headers or {}).items():
+        request.add_header(key, value)
+    with opener.open(request, timeout=10) as response:
+        payload = response.read().decode("utf-8", errors="replace")
+    try:
+        parsed = json.loads(payload)
+    except json.JSONDecodeError:
+        return {"status": "error", "msg": payload.strip() or "non-json response", "data": None}
+    return parsed if isinstance(parsed, dict) else {"status": "error", "msg": "unexpected response shape", "data": parsed}
+
+
+def _normalize_local_casdoor_username(username: str) -> str:
+    candidate = str(username or "").strip()
+    if not candidate:
+        raise HTTPException(status_code=400, detail="Username is required")
+    if "/" in candidate:
+        return candidate
+    return f"built-in/{candidate}"
+
+
+def _casdoor_get_account(opener: urllib_request.OpenerDirector, base_url: str, headers: dict[str, str]) -> dict[str, Any] | None:
+    account = _casdoor_urlopen_json(
+        opener,
+        f"{base_url.rstrip('/')}/api/get-account",
+        headers={**headers, "Accept": "application/json"},
+    )
+    account_data = account.get("data") if isinstance(account.get("data"), dict) else None
+    if account.get("status") == "ok" and isinstance(account_data, dict):
+        return account_data
+    return None
+
+
+def _casdoor_login_admin(opener: urllib_request.OpenerDirector, base_url: str, headers: dict[str, str]) -> None:
+    login_url = (
+        f"{base_url.rstrip('/')}"
+        "/api/login?clientId=app-built-in&responseType=code&redirectUri=http://localhost"
+        "&scope=openid%20profile%20email&state=frontier-local-auth"
+    )
+    login_payload = urllib_parse.urlencode(
+        {
+            "application": "app-built-in",
+            "organization": "built-in",
+            "username": "built-in/admin",
+            "password": "123",
+        }
+    ).encode("utf-8")
+    response = _casdoor_urlopen_json(
+        opener,
+        login_url,
+        method="POST",
+        data=login_payload,
+        headers={
+            **headers,
+            "Content-Type": "application/x-www-form-urlencoded",
+            "Accept": "application/json",
+        },
+    )
+    if _casdoor_get_account(opener, base_url, headers) is not None:
+        return
+    raise RuntimeError(str(response.get("msg") or "Unable to authenticate Casdoor admin"))
+
+
+def _authenticate_local_casdoor_user(username: str, password: str) -> dict[str, Any]:
+    _require_local_casdoor_password_auth()
+    normalized_username = _normalize_local_casdoor_username(username)
+    password_value = str(password or "")
+    if not password_value:
+        raise HTTPException(status_code=400, detail="Password is required")
+
+    last_error = ""
+    for base_url, headers in _casdoor_http_base_candidates():
+        cookie_jar = http.cookiejar.CookieJar()
+        opener = urllib_request.build_opener(urllib_request.HTTPCookieProcessor(cookie_jar))
+        login_url = (
+            f"{base_url.rstrip('/')}"
+            "/api/login?clientId=app-built-in&responseType=code&redirectUri=http://localhost"
+            "&scope=openid%20profile%20email&state=frontier-local-auth"
+        )
+        login_payload = urllib_parse.urlencode(
+            {
+                "application": "app-built-in",
+                "organization": "built-in",
+                "username": normalized_username,
+                "password": password_value,
+            }
+        ).encode("utf-8")
+        try:
+            login_response = _casdoor_urlopen_json(
+                opener,
+                login_url,
+                method="POST",
+                data=login_payload,
+                headers={
+                    **headers,
+                    "Content-Type": "application/x-www-form-urlencoded",
+                    "Accept": "application/json",
+                },
+            )
+            account_data = _casdoor_get_account(opener, base_url, headers)
+            if account_data is not None:
+                return account_data
+            last_error = str(login_response.get("msg") or "Invalid username or password")
+        except urllib_error.HTTPError as exc:
+            last_error = f"HTTP {exc.code}"
+        except (urllib_error.URLError, TimeoutError, OSError, RuntimeError) as exc:
+            last_error = str(exc)
+    raise HTTPException(status_code=401, detail=last_error or "Invalid username or password")
+
+
+def _provision_local_casdoor_user(username: str, email: str, display_name: str, password: str) -> dict[str, Any]:
+    _require_local_casdoor_password_auth()
+    normalized_username = _normalize_local_casdoor_username(username)
+    owner, _, name = normalized_username.partition("/")
+    if not name:
+        raise HTTPException(status_code=400, detail="Username is invalid")
+    normalized_email = str(email or "").strip()
+    normalized_display_name = str(display_name or "").strip()
+    password_value = str(password or "")
+    if not normalized_email:
+        raise HTTPException(status_code=400, detail="Email is required")
+    if not normalized_display_name:
+        raise HTTPException(status_code=400, detail="Display name is required")
+    if len(password_value) < 8:
+        raise HTTPException(status_code=400, detail="Password must be at least 8 characters long")
+
+    last_error = ""
+    for base_url, headers in _casdoor_http_base_candidates():
+        cookie_jar = http.cookiejar.CookieJar()
+        opener = urllib_request.build_opener(urllib_request.HTTPCookieProcessor(cookie_jar))
+        try:
+            _casdoor_login_admin(opener, base_url, headers)
+            user_id = urllib_parse.quote(f"{owner}/{name}", safe="")
+            existing = _casdoor_urlopen_json(
+                opener,
+                f"{base_url.rstrip('/')}/api/get-user?id={user_id}",
+                headers={**headers, "Accept": "application/json"},
+            )
+            existing_data = existing.get("data") if isinstance(existing.get("data"), dict) else None
+            if existing.get("status") == "ok" and isinstance(existing_data, dict) and str(existing_data.get("name") or "").strip() == name:
+                raise HTTPException(status_code=409, detail="An account with that username already exists")
+
+            response = _casdoor_urlopen_json(
+                opener,
+                f"{base_url.rstrip('/')}/api/add-user",
+                method="POST",
+                data=json.dumps(
+                    {
+                        "owner": owner,
+                        "name": name,
+                        "displayName": normalized_display_name,
+                        "email": normalized_email,
+                        "password": password_value,
+                        "passwordType": "plain",
+                        "signupApplication": "app-built-in",
+                        "type": "normal-user",
+                        "isAdmin": False,
+                        "isForbidden": False,
+                        "isDeleted": False,
+                    }
+                ).encode("utf-8"),
+                headers={
+                    **headers,
+                    "Content-Type": "application/json",
+                    "Accept": "application/json",
+                },
+            )
+            if response.get("status") != "ok":
+                last_error = str(response.get("msg") or "Unable to create account")
+                continue
+            return _authenticate_local_casdoor_user(username, password_value)
+        except HTTPException:
+            raise
+        except urllib_error.HTTPError as exc:
+            last_error = f"HTTP {exc.code}"
+        except (urllib_error.URLError, TimeoutError, OSError, RuntimeError) as exc:
+            last_error = str(exc)
+    raise HTTPException(status_code=502, detail=last_error or "Unable to reach the local Casdoor identity service")
+
+
+def _claims_from_casdoor_account(account: dict[str, Any]) -> dict[str, Any]:
+    owner = str(account.get("owner") or "built-in").strip() or "built-in"
+    name = str(account.get("name") or "").strip()
+    preferred_username = name or str(account.get("preferredUsername") or "").strip()
+    email = str(account.get("email") or "").strip()
+    display_name = str(account.get("displayName") or account.get("name") or email or preferred_username).strip()
+    roles = ["member"]
+    if _claim_as_bool(account.get("isAdmin")):
+        roles.extend(["admin", "builder"])
+    unique_roles: list[str] = []
+    for role in roles:
+        normalized = str(role or "").strip().lower()
+        if normalized and normalized not in unique_roles:
+            unique_roles.append(normalized)
+    return {
+        "actor": preferred_username or email or f"{owner}/{name}",
+        "preferred_username": preferred_username,
+        "email": email,
+        "name": display_name,
+        "principal_id": f"user:{owner}/{name}" if name else (preferred_username or email or "user:anonymous"),
+        "principal_type": "user",
+        "subject": f"{owner}/{name}" if name else (preferred_username or email or "anonymous"),
+        "roles": unique_roles,
+    }
+
+
+def _mint_operator_session_token_from_casdoor_account(account: dict[str, Any]) -> str:
+    claims = _claims_from_casdoor_account(account)
+    subject = str(claims.get("subject") or claims.get("actor") or "anonymous").strip() or "anonymous"
+    return mint_runtime_token(subject, ttl_seconds=_operator_session_ttl_seconds(), additional_claims=claims)
 
 
 def _bootstrap_default_agent_service_account_id(agent_id: str, agent_name: str, current_value: str = "") -> str:
@@ -3130,6 +3488,27 @@ def _configured_agent_assets_root(repo_root: Path) -> Path | None:
     return candidate.resolve()
 
 
+def _repository_root() -> Path:
+    current = Path(__file__).resolve()
+    for parent in current.parents:
+        if (parent / "pyproject.toml").exists() or (parent / "docker-compose.yml").exists():
+            return parent
+    return current.parents[3]
+
+
+def _seed_source_path(config_path: Path, repo_root: Path) -> str:
+    candidate_roots: list[Path] = [repo_root, *_agent_assets_roots(repo_root)]
+
+    for root in candidate_roots:
+        try:
+            relative = config_path.relative_to(root)
+            return str(relative).replace("\\", "/")
+        except ValueError:
+            continue
+
+    return config_path.name
+
+
 def _path_is_within_allowed_roots(candidate: str | Path, allowed_roots: list[Path]) -> bool:
     try:
         candidate_path = Path(candidate).expanduser().resolve(strict=False)
@@ -3195,7 +3574,7 @@ def _iter_agent_assets_dirs(repo_root: Path) -> list[Path]:
 
 
 def _load_seeded_agents_from_repo() -> dict[str, AgentDefinition]:
-    repo_root = Path(__file__).resolve().parents[2]
+    repo_root = _repository_root()
 
     seeded: dict[str, AgentDefinition] = {}
 
@@ -3222,7 +3601,7 @@ def _load_seeded_agents_from_repo() -> dict[str, AgentDefinition]:
 
         canonical_config = _canonicalize_agent_config(
             {
-                "seed_source": str(config_path.relative_to(repo_root)).replace("\\", "/"),
+                "seed_source": _seed_source_path(config_path, repo_root),
                 "source_agent_id": source_agent_id,
                 "tags": config.get("tags", []),
                 "capabilities": config.get("capabilities", []),
@@ -3242,7 +3621,7 @@ def _load_seeded_agents_from_repo() -> dict[str, AgentDefinition]:
             capabilities=_normalize_text_list(config.get("capabilities")),
             owners=_normalize_text_list(config.get("owners")),
             tools=config.get("tools") if isinstance(config.get("tools"), list) else None,
-            seed_source=str(config_path.relative_to(repo_root)).replace("\\", "/"),
+            seed_source=_seed_source_path(config_path, repo_root),
             prompt_file=str(config.get("prompt_file") or "").strip() or None,
             url_manifest=str(config.get("url_manifest") or "").strip() or None,
         )
@@ -3364,7 +3743,7 @@ def _ensure_default_chat_agent_present(*, actor: str = "system/default-chat-agen
 
 
 def _load_agent_system_prompt(agent_slug: str) -> str:
-    repo_root = Path(__file__).resolve().parents[2]
+    repo_root = _repository_root()
     for assets_root in _agent_assets_roots(repo_root):
         prompt_path = assets_root / agent_slug / "system-prompt.md"
         if prompt_path.exists() and prompt_path.is_file():
@@ -3380,7 +3759,7 @@ def _load_prompt_from_relative_path(path_value: str) -> str:
     if not candidate:
         return ""
 
-    repo_root = Path(__file__).resolve().parents[2]
+    repo_root = _repository_root()
     search_roots = [repo_root]
     for assets_root in _agent_assets_roots(repo_root):
         search_roots.append(assets_root)
@@ -6691,6 +7070,8 @@ def _enforce_request_authn(
     internal_route = isinstance(route_rule, RouteAccessRule) and route_rule.category == RouteAccessCategory.INTERNAL_ONLY
     bearer_prefix = "bearer "
     provided_token = auth_header[len(bearer_prefix):].strip() if auth_header.lower().startswith(bearer_prefix) else ""
+    if not provided_token:
+        provided_token = _request_operator_session_token(request)
     used_bearer_token = False
     bearer_auth_kind = "none"
     runtime_token_claims: dict[str, Any] = {}
@@ -9517,6 +9898,47 @@ def get_auth_session(request: Request) -> dict[str, Any]:
             "validation_error": oidc_validation_error,
         },
     }
+
+
+@app.post("/auth/login")
+def login_with_local_password(payload: PasswordLoginRequest, request: Request) -> JSONResponse:
+    account = _authenticate_local_casdoor_user(payload.username, payload.password)
+    token = _mint_operator_session_token_from_casdoor_account(account)
+    response = JSONResponse({
+        "ok": True,
+        "authenticated": True,
+        "provider": "casdoor",
+        "mode": "password",
+    })
+    _set_operator_session_cookie(response, request, token)
+    return response
+
+
+@app.post("/auth/register")
+def register_with_local_password(payload: PasswordRegisterRequest, request: Request) -> JSONResponse:
+    account = _provision_local_casdoor_user(
+        username=payload.username,
+        email=payload.email,
+        display_name=payload.display_name,
+        password=payload.password,
+    )
+    token = _mint_operator_session_token_from_casdoor_account(account)
+    response = JSONResponse({
+        "ok": True,
+        "authenticated": True,
+        "provider": "casdoor",
+        "mode": "password",
+        "created": True,
+    })
+    _set_operator_session_cookie(response, request, token)
+    return response
+
+
+@app.post("/auth/logout")
+def logout_operator(request: Request) -> JSONResponse:
+    response = JSONResponse({"ok": True})
+    _clear_operator_session_cookie(response, request)
+    return response
 
 
 def _build_health_payload() -> dict[str, str]:

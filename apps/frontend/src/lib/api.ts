@@ -700,6 +700,35 @@ export async function getOperatorSession(): Promise<OperatorSession> {
   });
 }
 
+export async function loginWithLocalPassword(payload: {
+  username: string;
+  password: string;
+}): Promise<{ ok: boolean; authenticated: boolean; provider: string; mode: string }> {
+  return strictFetch<{ ok: boolean; authenticated: boolean; provider: string; mode: string }>("/auth/login", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function registerWithLocalPassword(payload: {
+  username: string;
+  email: string;
+  display_name: string;
+  password: string;
+}): Promise<{ ok: boolean; authenticated: boolean; provider: string; mode: string; created: boolean }> {
+  return strictFetch<{ ok: boolean; authenticated: boolean; provider: string; mode: string; created: boolean }>("/auth/register", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function logoutOperator(): Promise<{ ok: boolean }> {
+  return strictFetch<{ ok: boolean }>("/auth/logout", {
+    method: "POST",
+    body: JSON.stringify({}),
+  });
+}
+
 export async function getPlatformVersionStatus(): Promise<PlatformVersionStatus> {
   return safeFetch<PlatformVersionStatus>("/platform/version", {
     current_version: "0.0.0",

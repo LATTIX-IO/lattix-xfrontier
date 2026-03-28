@@ -1,6 +1,14 @@
 import "@testing-library/jest-dom/vitest";
 import { render, screen } from "@testing-library/react";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+
+vi.mock("next/navigation", () => ({
+  useRouter: () => ({
+    replace: vi.fn(),
+    refresh: vi.fn(),
+    push: vi.fn(),
+  }),
+}));
 
 import AuthPage from "@/app/auth/page";
 
@@ -14,19 +22,22 @@ describe("AuthPage", () => {
   it("renders Casdoor-backed sign-in and sign-up actions", () => {
     process.env.FRONTIER_AUTH_MODE = "oidc";
     process.env.FRONTIER_AUTH_OIDC_PROVIDER = "casdoor";
-    process.env.FRONTIER_AUTH_OIDC_ISSUER = "http://casdoor.localhost";
+    process.env.FRONTIER_AUTH_OIDC_ISSUER = "http://127.0.0.1:8081";
     process.env.FRONTIER_AUTH_OIDC_AUDIENCE = "frontier-ui";
     process.env.FRONTIER_AUTH_OIDC_CLIENT_ID = "frontier-web";
-    process.env.FRONTIER_AUTH_OIDC_SIGNIN_URL = "http://casdoor.localhost/login/oauth/authorize";
-    process.env.FRONTIER_AUTH_OIDC_SIGNUP_URL = "http://casdoor.localhost/signup";
+    process.env.FRONTIER_AUTH_OIDC_SIGNIN_URL = "http://127.0.0.1:8081/login/oauth/authorize";
+    process.env.FRONTIER_AUTH_OIDC_SIGNUP_URL = "http://127.0.0.1:8081/signup";
     process.env.FRONTIER_AUTH_OIDC_SCOPES = "openid profile email";
 
     render(<AuthPage />);
 
     expect(screen.getByRole("heading", { name: /one frontier, whichever iam your team already trusts/i })).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: /sign in with casdoor/i })).toHaveAttribute("href", "http://casdoor.localhost/login/oauth/authorize");
-    expect(screen.getByRole("link", { name: /create account/i })).toHaveAttribute("href", "http://casdoor.localhost/signup");
-    expect(screen.getByText(/configured against http:\/\/casdoor\.localhost/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Sign in" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Create account" })).toBeInTheDocument();
+    expect(screen.getByLabelText(/username/i)).toBeInTheDocument();
+    expect(screen.getByLabelText(/password/i)).toBeInTheDocument();
+    expect(screen.getByText(/why this stays inside xfrontier/i)).toBeInTheDocument();
+    expect(screen.getByText(/configured against http:\/\/127\.0\.0\.1:8081/i)).toBeInTheDocument();
   });
 
   it("shows setup guidance when oidc is incomplete", () => {
@@ -69,12 +80,25 @@ describe("AuthPage", () => {
   it("does not offer a direct console bypass link", () => {
     process.env.FRONTIER_AUTH_MODE = "oidc";
     process.env.FRONTIER_AUTH_OIDC_PROVIDER = "casdoor";
-    process.env.FRONTIER_AUTH_OIDC_ISSUER = "http://casdoor.localhost";
-    process.env.FRONTIER_AUTH_OIDC_SIGNIN_URL = "http://casdoor.localhost/login/oauth/authorize";
-    process.env.FRONTIER_AUTH_OIDC_SIGNUP_URL = "http://casdoor.localhost/signup";
+    process.env.FRONTIER_AUTH_OIDC_ISSUER = "http://127.0.0.1:8081";
+    process.env.FRONTIER_AUTH_OIDC_SIGNIN_URL = "http://127.0.0.1:8081/login/oauth/authorize";
+    process.env.FRONTIER_AUTH_OIDC_SIGNUP_URL = "http://127.0.0.1:8081/signup";
 
     render(<AuthPage />);
 
     expect(screen.queryByRole("link", { name: /continue to the console/i })).not.toBeInTheDocument();
+  });
+
+  it("falls back to provider-hosted links for non-local oidc issuers", () => {
+    process.env.FRONTIER_AUTH_MODE = "oidc";
+    process.env.FRONTIER_AUTH_OIDC_PROVIDER = "oidc";
+    process.env.FRONTIER_AUTH_OIDC_ISSUER = "https://issuer.example.com";
+    process.env.FRONTIER_AUTH_OIDC_SIGNIN_URL = "https://issuer.example.com/login";
+    process.env.FRONTIER_AUTH_OIDC_SIGNUP_URL = "https://issuer.example.com/signup";
+
+    render(<AuthPage />);
+
+    expect(screen.getByRole("link", { name: /sign in with oidc provider/i })).toHaveAttribute("href", "https://issuer.example.com/login");
+    expect(screen.getByRole("link", { name: /create account/i })).toHaveAttribute("href", "https://issuer.example.com/signup");
   });
 });

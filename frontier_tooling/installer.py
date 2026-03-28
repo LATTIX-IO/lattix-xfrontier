@@ -64,7 +64,7 @@ def _display_mode() -> str:
     configured = str(os.getenv("FRONTIER_INSTALLER_OUTPUT") or "").strip().lower()
     if configured in {"json", "tui"}:
         return configured
-    return "tui" if sys.stdout.isatty() else "json"
+    return "tui" if sys.stdout.isatty() or sys.stdin.isatty() else "json"
 
 
 def _friendly_install_mode(mode: str) -> str:
@@ -102,6 +102,13 @@ def _render_install_summary(payload: dict[str, Any]) -> str:
     raw_path_locations = path_info.get("locations")
     path_locations: list[str] = [str(item) for item in raw_path_locations] if isinstance(raw_path_locations, list) else []
 
+    password_status = "Password not recorded in installer output"
+    if bootstrap_login:
+        if bootstrap_login.get("password_generated"):
+            password_status = "Generated during install and stored securely"
+        else:
+            password_status = "Uses the password entered during install"
+
     lines = [
         f"Status      : {'Ready' if payload.get('installed') else 'Not installed'}",
         f"Mode        : {_friendly_install_mode(str(payload.get('install_mode') or 'unknown'))}",
@@ -126,10 +133,7 @@ def _render_install_summary(payload: dict[str, Any]) -> str:
         lines.append(f"  User      : {bootstrap_login.get('username')}")
         lines.append(f"  Email     : {bootstrap_login.get('email')}")
         lines.append(f"  Name      : {bootstrap_login.get('display_name')}")
-        if bootstrap_login.get("password_generated"):
-            lines.append(f"  Password  : {bootstrap_login.get('password')}")
-        else:
-            lines.append("  Password  : Uses the password entered during install")
+        lines.append(f"  Password  : {password_status}")
 
     lines.append("")
     lines.append("Portal URLs")
@@ -148,10 +152,17 @@ def _render_install_summary(payload: dict[str, Any]) -> str:
 
 
 def _print_install_result(payload: dict[str, Any]) -> None:
+    safe_payload = dict(payload)
+    raw_bootstrap_login = safe_payload.get("bootstrap_login")
+    if isinstance(raw_bootstrap_login, dict):
+        sanitized_bootstrap_login = dict(raw_bootstrap_login)
+        sanitized_bootstrap_login.pop("password", None)
+        safe_payload["bootstrap_login"] = sanitized_bootstrap_login
+
     if _display_mode() == "json":
-        print_json(payload)
+        print_json(safe_payload)
         return
-    print(_render_install_summary(payload))  # noqa: T201
+    print(_render_install_summary(safe_payload))  # noqa: T201
 
 
 def _install_mode(root: Path) -> str:
@@ -262,6 +273,20 @@ def _run_vault_cli_json(
     return payload
 
 
+def _run_vault_cli(
+    install_root: Path,
+    vault_args: list[str],
+    *,
+    token: str | None = None,
+    allow_nonzero: bool = False,
+) -> str:
+    completed = _vault_exec_command(install_root, vault_args, token=token, check=False)
+    raw_output = (completed.stdout or completed.stderr or "").strip()
+    if completed.returncode != 0 and not allow_nonzero:
+        raise RuntimeError(raw_output or f"Vault command failed: {' '.join(vault_args)}")
+    return raw_output
+
+
 def _vault_kv_components(api_path: str) -> tuple[str, str]:
     normalized = str(api_path or "").strip().strip("/")
     parts = [part for part in normalized.split("/") if part]
@@ -306,7 +331,8 @@ def _ensure_local_vault_bootstrap(install_root: Path) -> dict[str, Any]:
         unseal_key = str(bootstrap.get("unseal_key") or "").strip()
         if not unseal_key:
             raise RuntimeError("Vault is sealed and no durable unseal key is available in installer metadata")
-        status = _run_vault_cli_json(install_root, ["operator", "unseal", "-format=json", unseal_key])
+        _run_vault_cli(install_root, ["operator", "unseal", unseal_key])
+        status = _run_vault_cli_json(install_root, ["status", "-format=json"], allow_nonzero=True)
         if bool(status.get("sealed")):
             raise RuntimeError("Vault remained sealed after the installer attempted to unseal it")
 
@@ -322,7 +348,7 @@ def _ensure_local_vault_bootstrap(install_root: Path) -> dict[str, Any]:
         if isinstance(raw_mount_options, dict):
             mount_options = raw_mount_options
     if not isinstance(secret_mount, dict):
-        _run_vault_cli_json(install_root, ["secrets", "enable", "-format=json", "-path=secret", "-version=2", "kv"], token=root_token)
+        _run_vault_cli(install_root, ["secrets", "enable", "-path=secret", "-version=2", "kv"], token=root_token)
     elif str(secret_mount.get("type") or "") != "kv" or str(mount_options.get("version") or "") != "2":
         raise RuntimeError("The local Vault secret/ mount is present but is not configured as KV v2")
 
@@ -878,7 +904,7 @@ def _casdoor_bootstrap_endpoint(answers: InstallerAnswers) -> tuple[str, dict[st
     issuer = FrontierInstaller._resolved_oidc_settings(answers)["issuer"]
     parsed = urlsplit(issuer)
     host = str(parsed.hostname or "").strip().lower()
-    if host.endswith(".localhost") or host in {"localhost", "127.0.0.1", "::1"}:
+    if host.endswith(".localhost"):
         gateway_settings = _effective_secure_gateway_settings()
         bind_host = str(gateway_settings.get("LOCAL_GATEWAY_BIND_HOST") or os.getenv("LOCAL_GATEWAY_BIND_HOST") or "127.0.0.1").strip() or "127.0.0.1"
         port = str(gateway_settings.get("LOCAL_GATEWAY_HTTP_PORT") or os.getenv("LOCAL_GATEWAY_HTTP_PORT") or "80").strip() or "80"
@@ -969,6 +995,20 @@ def _casdoor_login_admin(opener: urllib_request.OpenerDirector, base_url: str, h
         raise RuntimeError("Unable to authenticate the seeded Casdoor admin account for bootstrap user creation.")
 
 
+def _casdoor_existing_user_matches_login_contract(existing_user: dict[str, Any], answers: InstallerAnswers) -> bool:
+    return (
+        str(existing_user.get("owner") or "").strip() == "built-in"
+        and str(existing_user.get("name") or "").strip() == str(answers.bootstrap_login_username or "").strip()
+        and str(existing_user.get("email") or "").strip() == str(answers.bootstrap_login_email or "").strip()
+        and str(existing_user.get("displayName") or "").strip() == str(answers.bootstrap_login_display_name or "").strip()
+        and str(existing_user.get("type") or "").strip() == "normal-user"
+        and bool(existing_user.get("isAdmin")) is True
+        and bool(existing_user.get("isForbidden")) is False
+        and bool(existing_user.get("isDeleted")) is False
+        and str(existing_user.get("signupApplication") or "").strip() == "app-built-in"
+    )
+
+
 def _bootstrap_casdoor_login_user(answers: InstallerAnswers) -> dict[str, Any] | None:
     if not _casdoor_bootstrap_identity_enabled(answers):
         return None
@@ -977,7 +1017,7 @@ def _bootstrap_casdoor_login_user(answers: InstallerAnswers) -> dict[str, Any] |
     cookie_jar = http.cookiejar.CookieJar()
     opener = urllib_request.build_opener(urllib_request.HTTPCookieProcessor(cookie_jar))
     login_username = str(answers.bootstrap_login_username or "").strip()
-    payload = {
+    create_payload = {
         "owner": "built-in",
         "name": login_username,
         "displayName": str(answers.bootstrap_login_display_name or "").strip(),
@@ -1001,11 +1041,32 @@ def _bootstrap_casdoor_login_user(answers: InstallerAnswers) -> dict[str, Any] |
                 f"{base_url.rstrip('/')}/api/get-user?id={user_id}",
                 headers={**host_headers, "Accept": "application/json"},
             )
-            exists = existing.get("status") == "ok" and isinstance(existing.get("data"), dict) and existing["data"].get("name") == login_username
+            existing_data = existing.get("data") if isinstance(existing.get("data"), dict) else None
+            exists = existing.get("status") == "ok" and isinstance(existing_data, dict) and existing_data.get("name") == login_username
+            if exists and isinstance(existing_data, dict) and _casdoor_existing_user_matches_login_contract(existing_data, answers):
+                return {
+                    "username": login_username,
+                    "email": str(answers.bootstrap_login_email or "").strip(),
+                    "display_name": str(answers.bootstrap_login_display_name or "").strip(),
+                    "password_generated": bool(answers.bootstrap_login_password_generated),
+                }
             endpoint = "/api/update-user" if exists else "/api/add-user"
             request_url = f"{base_url.rstrip('/')}{endpoint}"
             if exists:
                 request_url = f"{request_url}?id={user_id}"
+            payload = {
+                "displayName": str(answers.bootstrap_login_display_name or "").strip(),
+                "email": str(answers.bootstrap_login_email or "").strip(),
+                "password": str(answers.bootstrap_login_password or ""),
+                "passwordType": "plain",
+                "signupApplication": "app-built-in",
+                "type": "normal-user",
+                "isAdmin": True,
+                "isForbidden": False,
+                "isDeleted": False,
+            }
+            if not exists:
+                payload = create_payload
             response = _urlopen_json(
                 opener,
                 request_url,
@@ -1021,9 +1082,8 @@ def _bootstrap_casdoor_login_user(answers: InstallerAnswers) -> dict[str, Any] |
                 raise RuntimeError(str(response.get("msg") or "Casdoor bootstrap user operation failed"))
             return {
                 "username": login_username,
-                "email": payload["email"],
-                "display_name": payload["displayName"],
-                "password": payload["password"],
+                "email": str(answers.bootstrap_login_email or "").strip(),
+                "display_name": str(answers.bootstrap_login_display_name or "").strip(),
                 "password_generated": bool(answers.bootstrap_login_password_generated),
             }
         except (urllib_error.URLError, TimeoutError, RuntimeError, OSError) as exc:
@@ -1153,6 +1213,8 @@ def main() -> None:
     install_root = source_root if mode == "editable" else _prepare_install_root(source_root)
     os.environ[FRONTIER_APP_HOME_ENV] = str(install_root)
     answers = _collect_installer_answers(install_root)
+    if _interactive_install() and not str(os.getenv("FRONTIER_INSTALLER_OUTPUT") or "").strip():
+        os.environ["FRONTIER_INSTALLER_OUTPUT"] = "tui"
     path_update = _ensure_scripts_path(mode)
     _write_secure_installer_env(install_root, answers)
     compose_env = ensure_compose_env_file(local_profile=False, root=install_root)

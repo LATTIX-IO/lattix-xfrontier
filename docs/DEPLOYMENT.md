@@ -15,7 +15,7 @@ Steps:
 4. Open `http://xfrontier.local` (or your configured `LOCAL_STACK_HOST`) for the gateway-routed frontend and use the local gateway or host-only admin bindings for health checks.
 5. Validate with `lattix health` and `make test`.
 
-For source-checkout testing, the bootstrap scripts also work directly as `pwsh -File .\install\bootstrap.ps1` and `sh ./install/bootstrap.sh`.
+For source-checkout testing, the bootstrap scripts also work directly as `pwsh -File .\install\bootstrap.ps1` and `sh ./install/bootstrap.sh`. When run that way, they use the checkout's bundled installer instead of redownloading `main`, so local branch testing actually exercises the checkout you launched.
 
 The intended default local deployment path uses the root `docker-compose.yml`. It includes the added security and platform infrastructure needed for the primary local deployment experience.
 

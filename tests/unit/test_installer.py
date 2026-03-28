@@ -1,5 +1,6 @@
 import base64
 import json
+import os
 from pathlib import Path
 import secrets
 import subprocess
@@ -53,7 +54,9 @@ def test_installer_writes_env_file(tmp_path: Path) -> None:
     assert "FRONTIER_LOCAL_BOOTSTRAP_AUTHENTICATED_OPERATOR=true" in text
     assert "FRONTIER_AUTH_MODE=oidc" in text
     assert "CASDOOR_LOCAL_HOST=casdoor.localhost" in text
-    assert "CASDOOR_PUBLIC_URL=http://casdoor.localhost" in text
+    assert "CASDOOR_BIND_HOST=127.0.0.1" in text
+    assert "CASDOOR_HTTP_PORT=8081" in text
+    assert "CASDOOR_PUBLIC_URL=http://casdoor.demo.localhost" in text
     assert "FRONTIER_BOOTSTRAP_ADMIN_USERNAME=frontier-admin" in text
     assert "FRONTIER_BOOTSTRAP_ADMIN_EMAIL=admin@demo.localhost" in text
     assert "FRONTIER_BOOTSTRAP_ADMIN_SUBJECT=frontier-admin" in text
@@ -363,7 +366,7 @@ def test_collect_local_answers_reuses_existing_bootstrap_login_password_when_bla
         encoding="utf-8",
     )
 
-    prompts = iter(["", "", "", "", "", "", "", "", "", "y"])
+    prompts = iter(["", "", "", "", "", "", "replacement-login", "replacement@example.localhost", "Replacement Login", "y"])
     monkeypatch.setattr("builtins.input", lambda prompt: next(prompts))
     monkeypatch.setattr("getpass.getpass", lambda prompt: "")
 
@@ -371,9 +374,9 @@ def test_collect_local_answers_reuses_existing_bootstrap_login_password_when_bla
 
     assert answers.local_hostname == "existing"
     assert answers.bootstrap_admin_username == "existing-admin"
-    assert answers.bootstrap_login_username == "existing-login"
-    assert answers.bootstrap_login_email == "login@existing.localhost"
-    assert answers.bootstrap_login_display_name == "Existing Login"
+    assert answers.bootstrap_login_username == "replacement-login"
+    assert answers.bootstrap_login_email == "replacement@example.localhost"
+    assert answers.bootstrap_login_display_name == "Replacement Login"
     assert answers.bootstrap_login_password == "ExistingPass123!"
 
 
@@ -464,7 +467,6 @@ def test_packaged_installer_bootstraps_casdoor_login_user(monkeypatch, tmp_path:
         "username": "demo-login",
         "email": "demo-login@demo.localhost",
         "display_name": "Demo Login",
-        "password": "DemoPass123!",
         "password_generated": True,
     }
     assert any(url.endswith("/api/get-account") for url, *_ in captured_requests)
@@ -524,6 +526,249 @@ def test_packaged_installer_retries_transient_casdoor_gateway_failures(monkeypat
     assert attempts["count"] >= 3
     assert bootstrap_login is not None
     assert bootstrap_login["username"] == "demo-login"
+    assert "password" not in bootstrap_login
+
+
+def test_packaged_installer_updates_existing_casdoor_login_without_immutable_identity_fields(monkeypatch, tmp_path: Path) -> None:
+    answers = InstallerAnswers(
+        installation_root=str(tmp_path),
+        local_auth_provider="oidc",
+        oidc_provider_template="casdoor",
+        oidc_issuer="http://casdoor.localhost",
+        bootstrap_login_username="demo-login",
+        bootstrap_login_email="demo-login@demo.localhost",
+        bootstrap_login_display_name="Demo Login",
+        bootstrap_login_password="DemoPass123!",
+        bootstrap_login_password_generated=False,
+    )
+
+    captured_requests: list[tuple[str, str, str | None, dict[str, str]]] = []
+
+    class DummyOpener:
+        def open(self, request, timeout=10):
+            captured_requests.append(
+                (
+                    request.full_url,
+                    request.get_method(),
+                    request.data.decode("utf-8") if request.data else None,
+                    dict(request.header_items()),
+                )
+            )
+
+            class DummyResponse:
+                def __init__(self, payload: str) -> None:
+                    self._payload = payload
+
+                def read(self) -> bytes:
+                    return self._payload.encode("utf-8")
+
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, exc_type, exc, tb) -> bool:
+                    return False
+
+            if request.full_url.endswith("/api/get-account"):
+                return DummyResponse('{"status":"ok","data":{"owner":"built-in","name":"admin"}}')
+            if "/api/get-user" in request.full_url:
+                return DummyResponse('{"status":"ok","data":{"owner":"built-in","name":"demo-login","id":"built-in/demo-login"}}')
+            if "/api/update-user?id=" in request.full_url:
+                return DummyResponse('{"status":"ok","data":"Affected"}')
+            return DummyResponse('{"status":"error","msg":"ignored"}')
+
+    monkeypatch.setattr(packaged_installer.urllib_request, "build_opener", lambda *args: DummyOpener())
+
+    bootstrap_login = packaged_installer._bootstrap_casdoor_login_user(answers)
+
+    assert bootstrap_login is not None
+    assert bootstrap_login["username"] == "demo-login"
+    assert "password" not in bootstrap_login
+    update_request = next(item for item in captured_requests if "/api/update-user?id=" in item[0])
+    assert update_request[1] == "POST"
+    assert '"displayName": "Demo Login"' in str(update_request[2])
+    assert '"owner":' not in str(update_request[2])
+    assert '"name":' not in str(update_request[2])
+    assert '"id":' not in str(update_request[2])
+
+
+def test_packaged_installer_reuses_matching_existing_casdoor_login_without_update(monkeypatch, tmp_path: Path) -> None:
+    answers = InstallerAnswers(
+        installation_root=str(tmp_path),
+        local_auth_provider="oidc",
+        oidc_provider_template="casdoor",
+        oidc_issuer="http://casdoor.localhost",
+        bootstrap_login_username="demo-login",
+        bootstrap_login_email="demo-login@demo.localhost",
+        bootstrap_login_display_name="Demo Login",
+        bootstrap_login_password="DemoPass123!",
+        bootstrap_login_password_generated=False,
+    )
+
+    captured_requests: list[tuple[str, str, str | None, dict[str, str]]] = []
+
+    class DummyOpener:
+        def open(self, request, timeout=10):
+            captured_requests.append(
+                (
+                    request.full_url,
+                    request.get_method(),
+                    request.data.decode("utf-8") if request.data else None,
+                    dict(request.header_items()),
+                )
+            )
+
+            class DummyResponse:
+                def __init__(self, payload: str) -> None:
+                    self._payload = payload
+
+                def read(self) -> bytes:
+                    return self._payload.encode("utf-8")
+
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, exc_type, exc, tb) -> bool:
+                    return False
+
+            if request.full_url.endswith("/api/get-account"):
+                return DummyResponse('{"status":"ok","data":{"owner":"built-in","name":"admin"}}')
+            if "/api/get-user" in request.full_url:
+                return DummyResponse('{"status":"ok","data":{"owner":"built-in","name":"demo-login","email":"demo-login@demo.localhost","displayName":"Demo Login","type":"normal-user","isAdmin":true,"isForbidden":false,"isDeleted":false,"signupApplication":"app-built-in"}}')
+            return DummyResponse('{"status":"error","msg":"unexpected request"}')
+
+    monkeypatch.setattr(packaged_installer.urllib_request, "build_opener", lambda *args: DummyOpener())
+
+    bootstrap_login = packaged_installer._bootstrap_casdoor_login_user(answers)
+
+    assert bootstrap_login is not None
+    assert bootstrap_login["username"] == "demo-login"
+    assert "password" not in bootstrap_login
+    assert not any("/api/update-user" in item[0] for item in captured_requests)
+    assert not any("/api/add-user" in item[0] for item in captured_requests)
+
+
+def test_print_install_result_json_redacts_bootstrap_password(monkeypatch, capsys: pytest.CaptureFixture[str]) -> None:
+    monkeypatch.setenv("FRONTIER_INSTALLER_OUTPUT", "json")
+
+    packaged_installer._print_install_result(
+        {
+            "installed": True,
+            "install_mode": "editable",
+            "repo_root": "D:/demo",
+            "compose_env": "D:/demo/.installer/local-secure.env",
+            "auth_mode": "oidc",
+            "security_posture": "Secure local profile (single-host compose, authenticated A2A)",
+            "urls": ["http://xfrontier.localhost:8080"],
+            "path": {"cli_path": "C:/Python/Scripts/lattix.exe", "scripts_dir": "C:/Python/Scripts", "updated": False, "locations": []},
+            "bootstrap_login": {
+                "username": "demo-login",
+                "email": "demo-login@demo.localhost",
+                "display_name": "Demo Login",
+                "password": "DemoPass123!",
+                "password_generated": False,
+            },
+            "next_steps": ["Open one of the URLs above to reach the portal."],
+            "bootstrap_url": "https://example.invalid/main.zip",
+        }
+    )
+
+    captured = capsys.readouterr()
+    rendered = json.loads(captured.out)
+    assert "DemoPass123!" not in captured.out
+    assert '"password"' not in captured.out
+    assert rendered["urls"] == ["http://xfrontier.localhost:8080"]
+
+
+def test_packaged_installer_display_mode_prefers_tui_for_interactive_stdin(monkeypatch) -> None:
+    class DummyStream:
+        def __init__(self, tty: bool) -> None:
+            self._tty = tty
+
+        def isatty(self) -> bool:
+            return self._tty
+
+    monkeypatch.delenv("FRONTIER_INSTALLER_OUTPUT", raising=False)
+    monkeypatch.setattr(packaged_installer.sys, "stdout", DummyStream(False))
+    monkeypatch.setattr(packaged_installer.sys, "stdin", DummyStream(True))
+
+    assert packaged_installer._display_mode() == "tui"
+
+
+def test_collect_local_answers_requires_explicit_casdoor_identity_even_when_existing_values_present(
+    monkeypatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    installer = FrontierInstaller(repo_root=tmp_path)
+    installer_dir = tmp_path / ".installer"
+    installer_dir.mkdir(parents=True, exist_ok=True)
+    (installer_dir / "local-secure.env").write_text(
+        "\n".join(
+            [
+                "LOCAL_STACK_HOST=existing.localhost",
+                "FRONTIER_AUTH_MODE=oidc",
+                "FRONTIER_AUTH_OIDC_PROVIDER=casdoor",
+                "FRONTIER_BOOTSTRAP_ADMIN_USERNAME=existing-admin",
+                "FRONTIER_BOOTSTRAP_ADMIN_EMAIL=admin@existing.localhost",
+                "FRONTIER_BOOTSTRAP_ADMIN_SUBJECT=existing-admin",
+                "CASDOOR_BOOTSTRAP_LOGIN_USERNAME=existing-login",
+                "CASDOOR_BOOTSTRAP_LOGIN_EMAIL=login@existing.localhost",
+                "CASDOOR_BOOTSTRAP_LOGIN_DISPLAY_NAME=Existing Login",
+                "CASDOOR_BOOTSTRAP_LOGIN_PASSWORD=ExistingPass123!",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    prompts = iter(["", "", "", "", "", "", "", "typed-login", "", "typed@example.localhost", "", "Typed Login", "y"])
+    monkeypatch.setattr("builtins.input", lambda prompt: next(prompts))
+    monkeypatch.setattr("getpass.getpass", lambda prompt: "")
+
+    answers = installer.collect_local_answers(installation_root=tmp_path, interactive=True)
+
+    captured = capsys.readouterr()
+    assert answers.bootstrap_login_username == "typed-login"
+    assert answers.bootstrap_login_email == "typed@example.localhost"
+    assert answers.bootstrap_login_display_name == "Typed Login"
+    assert answers.bootstrap_login_password == "ExistingPass123!"
+    assert captured.out.count("A value is required.") >= 3
+    assert "Current    :" not in captured.out
+    assert "existing-login" not in captured.out
+    assert "login@existing.localhost" not in captured.out
+    assert "Existing Login" not in captured.out
+
+
+def test_render_install_summary_never_echoes_bootstrap_password(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(packaged_installer.shutil, "get_terminal_size", lambda fallback=(100, 24): os.terminal_size((160, 24)))
+
+    summary = packaged_installer._render_install_summary(
+        {
+            "installed": True,
+            "install_mode": "editable",
+            "repo_root": str(tmp_path),
+            "compose_env": str(tmp_path / ".installer" / "local-secure.env"),
+            "auth_mode": "oidc",
+            "security_posture": "Secure local profile (single-host compose, authenticated A2A)",
+            "urls": ["http://xfrontier.localhost:8080"],
+            "path": {"cli_path": "C:/Python/Scripts/lattix.exe", "scripts_dir": "C:/Python/Scripts", "updated": False, "locations": []},
+            "bootstrap_login": {
+                "username": "demo-login",
+                "email": "demo-login@demo.localhost",
+                "display_name": "Demo Login",
+                "password": "DemoPass123!",
+                "password_generated": True,
+            },
+            "next_steps": ["Open one of the URLs above to reach the portal."],
+            "bootstrap_url": "https://example.invalid/main.zip",
+        }
+    )
+
+    body_lines = [line[2:-2].rstrip() for line in summary.splitlines()[1:-1]]
+
+    assert "DemoPass123!" not in summary
+    assert "Generated during install and stored securely" in summary
+    assert "  [1] http://xfrontier.localhost:8080" in body_lines
 
 
 def test_packaged_installer_targets_active_scripts_dir_for_editable_install(monkeypatch, tmp_path: Path) -> None:
@@ -728,6 +973,22 @@ def test_casdoor_bootstrap_endpoint_uses_effective_secure_gateway_port(monkeypat
     assert host_headers == {"Host": "casdoor.localhost"}
 
 
+def test_casdoor_bootstrap_endpoint_uses_direct_loopback_issuer_without_gateway_rewrite(tmp_path: Path) -> None:
+    answers = InstallerAnswers(
+        installation_root=str(tmp_path),
+        local_auth_provider="oidc",
+        oidc_provider_template="casdoor",
+        oidc_issuer="http://127.0.0.1:8081",
+        bootstrap_login_username="demo-login",
+        bootstrap_login_password="DemoPass123!",
+    )
+
+    base_url, host_headers = packaged_installer._casdoor_bootstrap_endpoint(answers)
+
+    assert base_url == "http://127.0.0.1:8081"
+    assert host_headers == {}
+
+
 def test_bootstrap_failure_reports_postgres_volume_guidance(monkeypatch, tmp_path: Path) -> None:
     installer_dir = tmp_path / ".installer"
     installer_dir.mkdir(parents=True, exist_ok=True)
@@ -750,6 +1011,7 @@ def test_packaged_installer_ensure_local_vault_bootstrap_initializes_and_unseals
     installer_dir = tmp_path / ".installer"
     installer_dir.mkdir(parents=True, exist_ok=True)
     calls: list[tuple[list[str], str | None, bool]] = []
+    raw_calls: list[tuple[list[str], str | None, bool]] = []
 
     responses = iter(
         [
@@ -757,7 +1019,6 @@ def test_packaged_installer_ensure_local_vault_bootstrap_initializes_and_unseals
             {"root_token": "root-token", "unseal_keys_b64": ["unseal-key"]},
             {"initialized": True, "sealed": True},
             {"sealed": False},
-            {},
         ]
     )
 
@@ -765,11 +1026,14 @@ def test_packaged_installer_ensure_local_vault_bootstrap_initializes_and_unseals
         calls.append((vault_args, token, allow_nonzero))
         if vault_args[:2] == ["secrets", "list"]:
             return {}
-        if vault_args[:2] == ["secrets", "enable"]:
-            return {"enabled": True}
         return next(responses)
 
+    def _fake_run_vault_cli(install_root, vault_args, *, token=None, allow_nonzero=False):
+        raw_calls.append((vault_args, token, allow_nonzero))
+        return "ok"
+
     monkeypatch.setattr(packaged_installer, "_run_vault_cli_json", _fake_run_vault_cli_json)
+    monkeypatch.setattr(packaged_installer, "_run_vault_cli", _fake_run_vault_cli)
 
     bootstrap = packaged_installer._ensure_local_vault_bootstrap(tmp_path)
 
@@ -779,8 +1043,9 @@ def test_packaged_installer_ensure_local_vault_bootstrap_initializes_and_unseals
     assert bootstrap_file.exists()
     assert json.loads(bootstrap_file.read_text(encoding="utf-8"))["root_token"] == "root-token"
     assert any(args[:2] == ["operator", "init"] for args, *_ in calls)
-    assert any(args[:2] == ["operator", "unseal"] for args, *_ in calls)
-    assert any(args[:2] == ["secrets", "enable"] for args, *_ in calls)
+    assert any(args[:2] == ["operator", "unseal"] for args, *_ in raw_calls)
+    assert any(args[:2] == ["secrets", "enable"] for args, *_ in raw_calls)
+    assert all("-format=json" not in args for args, *_ in raw_calls)
 
 
 def test_packaged_installer_syncs_sensitive_install_state_to_vault(monkeypatch, tmp_path: Path) -> None:
@@ -854,12 +1119,12 @@ def test_installer_defaults_to_casdoor_oidc_preset(tmp_path: Path) -> None:
 
     assert "FRONTIER_AUTH_MODE=oidc" in text
     assert "FRONTIER_AUTH_OIDC_PROVIDER=casdoor" in text
-    assert "FRONTIER_AUTH_OIDC_ISSUER=http://casdoor.localhost" in text
+    assert "FRONTIER_AUTH_OIDC_ISSUER=http://127.0.0.1:8081" in text
     assert "FRONTIER_AUTH_OIDC_AUDIENCE=frontier-ui" in text
-    assert "FRONTIER_AUTH_OIDC_JWKS_URL=http://casdoor.localhost/.well-known/jwks.json" in text
+    assert "FRONTIER_AUTH_OIDC_JWKS_URL=http://127.0.0.1:8081/.well-known/jwks.json" in text
     assert "FRONTIER_AUTH_OIDC_CLIENT_ID=frontier-web" in text
-    assert "FRONTIER_AUTH_OIDC_AUTHORIZATION_URL=http://casdoor.localhost/login/oauth/authorize" in text
-    assert "FRONTIER_AUTH_OIDC_TOKEN_URL=http://casdoor.localhost/api/login/oauth/access_token" in text
+    assert "FRONTIER_AUTH_OIDC_AUTHORIZATION_URL=http://127.0.0.1:8081/login/oauth/authorize" in text
+    assert "FRONTIER_AUTH_OIDC_TOKEN_URL=http://127.0.0.1:8081/api/login/oauth/access_token" in text
 
 
 def test_installer_writes_casdoor_preset_when_selected(monkeypatch, tmp_path: Path) -> None:
@@ -869,12 +1134,12 @@ def test_installer_writes_casdoor_preset_when_selected(monkeypatch, tmp_path: Pa
         deployment_mode="local",
         local_auth_provider="oidc",
         oidc_provider_template="casdoor",
-        oidc_issuer="http://casdoor.localhost",
+        oidc_issuer="http://127.0.0.1:8081",
         oidc_audience="frontier-ui",
-        oidc_jwks_url="http://casdoor.localhost/.well-known/jwks.json",
+        oidc_jwks_url="http://127.0.0.1:8081/.well-known/jwks.json",
         oidc_client_id="frontier-web",
-        oidc_authorization_url="http://casdoor.localhost/login/oauth/authorize",
-        oidc_token_url="http://casdoor.localhost/api/login/oauth/access_token",
+        oidc_authorization_url="http://127.0.0.1:8081/login/oauth/authorize",
+        oidc_token_url="http://127.0.0.1:8081/api/login/oauth/access_token",
     )
     monkeypatch.setattr("getpass.getpass", lambda prompt: "")
 
@@ -885,14 +1150,14 @@ def test_installer_writes_casdoor_preset_when_selected(monkeypatch, tmp_path: Pa
     assert "FRONTIER_API_BEARER_TOKEN=" in text
     assert "FRONTIER_AUTH_MODE=oidc" in text
     assert "FRONTIER_AUTH_OIDC_PROVIDER=casdoor" in text
-    assert "FRONTIER_AUTH_OIDC_ISSUER=http://casdoor.localhost" in text
+    assert "FRONTIER_AUTH_OIDC_ISSUER=http://127.0.0.1:8081" in text
     assert "FRONTIER_AUTH_OIDC_AUDIENCE=frontier-ui" in text
-    assert "FRONTIER_AUTH_OIDC_JWKS_URL=http://casdoor.localhost/.well-known/jwks.json" in text
+    assert "FRONTIER_AUTH_OIDC_JWKS_URL=http://127.0.0.1:8081/.well-known/jwks.json" in text
     assert "FRONTIER_AUTH_OIDC_CLIENT_ID=frontier-web" in text
-    assert "FRONTIER_AUTH_OIDC_AUTHORIZATION_URL=http://casdoor.localhost/login/oauth/authorize" in text
-    assert "FRONTIER_AUTH_OIDC_TOKEN_URL=http://casdoor.localhost/api/login/oauth/access_token" in text
-    assert "FRONTIER_AUTH_OIDC_SIGNIN_URL=http://casdoor.localhost/login/oauth/authorize" in text
-    assert "FRONTIER_AUTH_OIDC_SIGNUP_URL=http://casdoor.localhost/login/oauth/authorize" in text
+    assert "FRONTIER_AUTH_OIDC_AUTHORIZATION_URL=http://127.0.0.1:8081/login/oauth/authorize" in text
+    assert "FRONTIER_AUTH_OIDC_TOKEN_URL=http://127.0.0.1:8081/api/login/oauth/access_token" in text
+    assert "FRONTIER_AUTH_OIDC_SIGNIN_URL=http://127.0.0.1:8081/login/oauth/authorize" in text
+    assert "FRONTIER_AUTH_OIDC_SIGNUP_URL=http://127.0.0.1:8081/login/oauth/authorize" in text
     assert "FRONTIER_AUTH_OIDC_SCOPES=openid profile email" in text
     assert "FRONTIER_API_BEARER_TOKEN" not in secrets_map
 
@@ -912,8 +1177,8 @@ def test_installer_treats_legacy_casdoor_mode_as_oidc(monkeypatch, tmp_path: Pat
 
     assert "FRONTIER_AUTH_MODE=oidc" in text
     assert "FRONTIER_AUTH_OIDC_PROVIDER=casdoor" in text
-    assert "FRONTIER_AUTH_OIDC_SIGNIN_URL=http://casdoor.localhost/login/oauth/authorize" in text
-    assert "FRONTIER_AUTH_OIDC_SIGNUP_URL=http://casdoor.localhost/login/oauth/authorize" in text
+    assert "FRONTIER_AUTH_OIDC_SIGNIN_URL=http://127.0.0.1:8081/login/oauth/authorize" in text
+    assert "FRONTIER_AUTH_OIDC_SIGNUP_URL=http://127.0.0.1:8081/login/oauth/authorize" in text
     assert "FRONTIER_API_BEARER_TOKEN" not in secrets_map
 
 

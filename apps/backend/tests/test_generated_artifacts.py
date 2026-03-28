@@ -516,6 +516,38 @@ def test_platform_version_prefers_installed_distribution_metadata(monkeypatch) -
     assert body["summary"] == "Version metadata is unavailable right now."
 
 
+def test_load_seeded_agents_supports_asset_roots_outside_repo(monkeypatch, tmp_path: Path) -> None:
+    repo_root = tmp_path / "repo"
+    external_assets_root = tmp_path / "external-assets"
+    agent_dir = external_assets_root / "demo-external-agent"
+    agent_dir.mkdir(parents=True)
+
+    (agent_dir / "agent.config.json").write_text(
+        json.dumps(
+            {
+                "id": "demo-external-agent",
+                "name": "External Demo Agent",
+                "version": 1,
+                "tags": ["demo"],
+                "capabilities": ["research"],
+                "owners": ["platform"],
+                "tools": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    (agent_dir / "system-prompt.md").write_text("You are the external demo agent.", encoding="utf-8")
+
+    monkeypatch.setattr(main_module, "_repository_root", lambda: repo_root)
+    monkeypatch.setenv("FRONTIER_AGENT_ASSETS_ROOT", str(external_assets_root))
+
+    seeded = main_module._load_seeded_agents_from_repo()
+
+    seeded_agent = next(agent for agent in seeded.values() if agent.name == "External Demo Agent")
+    assert seeded_agent.config_json["seed_source"] == "demo-external-agent/agent.config.json"
+    assert seeded_agent.config_json["system_prompt"] == "You are the external demo agent."
+
+
 def test_version_comparator_prefers_stable_over_prerelease() -> None:
     assert main_module._version_is_newer("1.2.3", "1.2.3-rc.1") is True
     assert main_module._version_is_newer("1.2.3-rc.1", "1.2.3") is False
@@ -2580,6 +2612,196 @@ def test_auth_session_requires_authentication_in_secure_profiles(monkeypatch) ->
         assert header_only.status_code == 401
     finally:
         store.platform_settings.require_authenticated_requests = original_require_auth
+
+
+def test_local_password_login_sets_cookie_and_authenticates_session(monkeypatch) -> None:
+    original_require_auth = store.platform_settings.require_authenticated_requests
+
+    try:
+        store.platform_settings.require_authenticated_requests = False
+        monkeypatch.setenv("FRONTIER_RUNTIME_PROFILE", "local-secure")
+        monkeypatch.setenv("FRONTIER_AUTH_OIDC_PROVIDER", "casdoor")
+        monkeypatch.setenv("FRONTIER_AUTH_OIDC_ISSUER", "http://casdoor.localhost")
+        monkeypatch.setenv("FRONTIER_AUTH_OIDC_AUDIENCE", "frontier-ui")
+        monkeypatch.setenv("FRONTIER_AUTH_OIDC_JWKS_URL", "http://casdoor.localhost/.well-known/jwks.json")
+        monkeypatch.setattr(
+            main_module,
+            "_authenticate_local_casdoor_user",
+            lambda username, password: {
+                "owner": "built-in",
+                "name": username,
+                "displayName": "Frontier Admin",
+                "email": "admin@frontier.localhost",
+                "isAdmin": True,
+            },
+        )
+
+        with TestClient(app, base_url="http://localhost") as local_client:
+            login = local_client.post(
+                "/auth/login",
+                json={"username": "frontier-admin", "password": "correct horse battery staple"},
+            )
+            assert login.status_code == 200
+            assert main_module._operator_session_cookie_name() in login.headers.get("set-cookie", "")
+
+            session = local_client.get("/auth/session")
+            assert session.status_code == 200
+            body = session.json()
+            assert body["authenticated"] is True
+            assert body["preferred_username"] == "frontier-admin"
+            assert body["display_name"] == "Frontier Admin"
+            assert body["capabilities"]["can_admin"] is True
+            assert body["capabilities"]["can_builder"] is True
+    finally:
+        store.platform_settings.require_authenticated_requests = original_require_auth
+        client.cookies.clear()
+
+
+def test_local_password_register_creates_member_session(monkeypatch) -> None:
+    original_require_auth = store.platform_settings.require_authenticated_requests
+
+    try:
+        store.platform_settings.require_authenticated_requests = False
+        monkeypatch.setenv("FRONTIER_RUNTIME_PROFILE", "local-secure")
+        monkeypatch.setenv("FRONTIER_AUTH_OIDC_PROVIDER", "casdoor")
+        monkeypatch.setenv("FRONTIER_AUTH_OIDC_ISSUER", "http://casdoor.localhost")
+        monkeypatch.setenv("FRONTIER_AUTH_OIDC_AUDIENCE", "frontier-ui")
+        monkeypatch.setenv("FRONTIER_AUTH_OIDC_JWKS_URL", "http://casdoor.localhost/.well-known/jwks.json")
+        monkeypatch.setattr(
+            main_module,
+            "_provision_local_casdoor_user",
+            lambda username, email, display_name, password: {
+                "owner": "built-in",
+                "name": username,
+                "displayName": display_name,
+                "email": email,
+                "isAdmin": False,
+            },
+        )
+
+        with TestClient(app, base_url="http://localhost") as local_client:
+            register = local_client.post(
+                "/auth/register",
+                json={
+                    "username": "member-user",
+                    "email": "member@frontier.localhost",
+                    "display_name": "Member User",
+                    "password": "correct horse battery staple",
+                },
+            )
+            assert register.status_code == 200
+            assert register.json()["created"] is True
+
+            session = local_client.get("/auth/session")
+            assert session.status_code == 200
+            body = session.json()
+            assert body["authenticated"] is True
+            assert body["preferred_username"] == "member-user"
+            assert body["display_name"] == "Member User"
+            assert body["capabilities"]["can_admin"] is False
+            assert body["capabilities"]["can_builder"] is False
+    finally:
+        store.platform_settings.require_authenticated_requests = original_require_auth
+        client.cookies.clear()
+
+
+def test_local_password_logout_clears_operator_session_cookie(monkeypatch) -> None:
+    original_require_auth = store.platform_settings.require_authenticated_requests
+
+    try:
+        store.platform_settings.require_authenticated_requests = False
+        monkeypatch.setenv("FRONTIER_RUNTIME_PROFILE", "local-secure")
+        monkeypatch.setenv("FRONTIER_AUTH_OIDC_PROVIDER", "casdoor")
+        monkeypatch.setenv("FRONTIER_AUTH_OIDC_ISSUER", "http://casdoor.localhost")
+        monkeypatch.setenv("FRONTIER_AUTH_OIDC_AUDIENCE", "frontier-ui")
+        monkeypatch.setenv("FRONTIER_AUTH_OIDC_JWKS_URL", "http://casdoor.localhost/.well-known/jwks.json")
+        monkeypatch.setattr(
+            main_module,
+            "_authenticate_local_casdoor_user",
+            lambda username, password: {
+                "owner": "built-in",
+                "name": username,
+                "displayName": "Frontier Admin",
+                "email": "admin@frontier.localhost",
+                "isAdmin": True,
+            },
+        )
+
+        with TestClient(app, base_url="http://localhost") as local_client:
+            assert local_client.post(
+                "/auth/login",
+                json={"username": "frontier-admin", "password": "correct horse battery staple"},
+            ).status_code == 200
+            assert local_client.get("/auth/session").status_code == 200
+
+            logout = local_client.post("/auth/logout")
+            assert logout.status_code == 200
+
+            anonymous = local_client.get("/auth/session")
+            assert anonymous.status_code == 401
+    finally:
+        store.platform_settings.require_authenticated_requests = original_require_auth
+        client.cookies.clear()
+
+
+def test_authenticate_local_casdoor_user_accepts_malformed_login_payload_when_account_session_exists(monkeypatch) -> None:
+    monkeypatch.setenv("FRONTIER_RUNTIME_PROFILE", "local-secure")
+    monkeypatch.setenv("FRONTIER_AUTH_OIDC_PROVIDER", "casdoor")
+    monkeypatch.setenv("FRONTIER_AUTH_OIDC_ISSUER", "http://casdoor.localhost")
+    monkeypatch.setenv("FRONTIER_AUTH_OIDC_AUDIENCE", "frontier-ui")
+    monkeypatch.setenv("FRONTIER_AUTH_OIDC_JWKS_URL", "http://casdoor.localhost/.well-known/jwks.json")
+    monkeypatch.setattr(main_module, "_casdoor_http_base_candidates", lambda: [("http://casdoor:8000", {})])
+
+    def _fake_urlopen_json(opener, url, **kwargs):
+        if url.endswith("/api/get-account"):
+            return {
+                "status": "ok",
+                "data": {
+                    "owner": "built-in",
+                    "name": "jpbooth",
+                    "displayName": "jpbooth",
+                    "email": "jpbooth@lattix.io",
+                },
+            }
+        return {
+            "status": "error",
+            "msg": "invalid character 'a' looking for beginning of value",
+            "data": None,
+        }
+
+    monkeypatch.setattr(main_module, "_casdoor_urlopen_json", _fake_urlopen_json)
+
+    account = main_module._authenticate_local_casdoor_user("jpbooth", "PhenoiX1!")
+
+    assert account["name"] == "jpbooth"
+    assert account["owner"] == "built-in"
+
+
+def test_casdoor_login_admin_accepts_malformed_login_payload_when_session_exists(monkeypatch) -> None:
+    monkeypatch.setattr(
+        main_module,
+        "_casdoor_urlopen_json",
+        lambda opener, url, **kwargs: (
+            {
+                "status": "ok",
+                "data": {
+                    "owner": "built-in",
+                    "name": "admin",
+                    "displayName": "Admin",
+                },
+            }
+            if url.endswith("/api/get-account")
+            else {
+                "status": "error",
+                "msg": "invalid character 'a' looking for beginning of value",
+                "data": None,
+            }
+        ),
+    )
+
+    opener = main_module.urllib_request.build_opener()
+
+    main_module._casdoor_login_admin(opener, "http://casdoor:8000", {})
 
 
 def test_auth_session_hides_identity_and_capabilities_for_header_actor_only_requests(monkeypatch) -> None:
