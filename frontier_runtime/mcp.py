@@ -1,6 +1,13 @@
 from __future__ import annotations
 
-from frontier_runtime.sandbox import ExecutionPlanResult, ExecutionSpec, SandboxPolicy, ToolJailService, detect_host_platform
+from frontier_runtime.sandbox import (
+    ExecutionPlanResult,
+    ExecutionSpec,
+    SandboxManager,
+    SandboxPolicy,
+    ToolJailService,
+    detect_host_platform,
+)
 
 
 class ToolRegistry:
@@ -15,9 +22,19 @@ class ToolRegistry:
 
 
 class MCPGateway:
-    def __init__(self, registry: ToolRegistry, jail: ToolJailService | None = None) -> None:
+    def __init__(
+        self,
+        registry: ToolRegistry,
+        jail: ToolJailService | None = None,
+        manager: SandboxManager | None = None,
+    ) -> None:
         self._registry = registry
-        self._jail = jail or ToolJailService()
+        self._manager = manager or SandboxManager()
+        self._jail = jail or ToolJailService(manager=self._manager)
+
+    @property
+    def active_strategy(self) -> str:
+        return self._manager.active_strategy.value
 
     async def plan_tool_execution(self, agent_id: str, spec: ExecutionSpec) -> ExecutionPlanResult:
         if not self._registry.contains(spec.tool_id):

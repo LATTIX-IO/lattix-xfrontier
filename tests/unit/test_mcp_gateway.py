@@ -14,4 +14,8 @@ def test_mcp_gateway_plans_tool_execution() -> None:
             spec=ExecutionSpec(tool_id="python", command=["python", "-c", "print('hi')"]),
         )
     )
-    assert result.plan.backend in {"docker-linux", "docker-macos", "docker-windows"}
+    valid_backends = {
+        "kernel-bwrap", "kernel-seatbelt", "hardened-docker",
+        "k8s-gvisor", "k8s-kata", "restricted-process",
+    }
+    assert result.plan.backend in valid_backends

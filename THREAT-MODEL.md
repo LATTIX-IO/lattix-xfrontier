@@ -208,6 +208,25 @@ The following must remain true as the system evolves:
 8. Backend/runtime error responses do not reveal guardrail rule internals to untrusted callers.
 9. Deployment docs and runtime defaults describe the same security posture.
 
+## Sandbox hardening status (three-tier hybrid)
+
+The sandbox subsystem has been hardened with the following controls:
+
+| Control | Status | Implementation |
+|---------|--------|---------------|
+| Custom seccomp BPF profile | **Implemented** | `docker/sandbox/seccomp-strict.json` blocks ptrace, io_uring, mount, bpf, setuid, and 30+ other syscalls |
+| Read-only root filesystem | **Implemented** | `--read-only` flag in hardened Docker; `--ro-bind / /` in bubblewrap |
+| Network isolation (namespace) | **Implemented** | `--network=none` (Docker) / `--unshare-net` (bubblewrap) when `allow_network=False` |
+| Non-root execution | **Implemented** | `--user=1000:1000` (Docker) / `--unshare-user` (bubblewrap) |
+| Resource limits | **Implemented** | `--memory=512m --cpus=1.0 --pids-limit=256` in hardened Docker |
+| IPC namespace isolation | **Implemented** | `--ipc=private` (Docker) / `--unshare-ipc` (bubblewrap) |
+| Capability token expiration | **Implemented** | `exp` field with 10-minute TTL; verifier rejects expired tokens |
+| Squid domain allowlist | **Implemented** | Fail-closed domain allowlist replacing open IP-range ACL |
+| Kernel sandbox (no Docker) | **Implemented** | bubblewrap (Linux) / seatbelt (macOS) auto-detected by `SandboxManager` |
+| K8s gVisor RuntimeClass | **Implemented** | Helm chart deploys `frontier-sandbox` RuntimeClass with `runsc` handler |
+| K8s Kata RuntimeClass | **Implemented** | Optional `frontier-sandbox-vm` RuntimeClass for hardware-level isolation |
+| K8s seccomp ConfigMap | **Implemented** | `frontier-strict.json` deployed as ConfigMap for node sync |
+
 ## Known failure modes and current mitigation status
 
 | Area | Current issue | Impact | Current mitigation / compensating control | Planned remediation |

@@ -26,13 +26,13 @@ block-beta
             columns 1
             L4a["Topic Pub/Sub · Tenant Isolation · Memory Scope AuthZ · Time + Token Budget Enforcement"]
 
-            block:L5["📦 LAYER 5 — Container Isolation"]
+            block:L5["📦 LAYER 5 — Hybrid Sandbox (Three-Tier)"]
               columns 1
-              L5a["Per-Agent Docker Containers · Non-root (UID 1000) · cap-drop=ALL · no-new-privileges · Read-only rootfs"]
+              L5a["Tier 1: Kernel (bwrap/seatbelt) · Tier 2: Hardened Docker (seccomp + read-only + resource limits) · Tier 3: K8s (gVisor/Kata RuntimeClass)"]
 
-              block:L6["🔒 LAYER 6 — Sandbox (Tool Jail)"]
+              block:L6["🔒 LAYER 6 — Tool Jail & Egress Control"]
                 columns 1
-                L6a["Guardrails Filter Chain · Squid Egress Proxy · Executable Allowlist · DLP Filter · Capability Tokens"]
+                L6a["Custom seccomp BPF (40+ blocked syscalls) · Squid domain allowlist · Time-limited capability tokens · DLP filter · Guardrails chain"]
               end
             end
           end
@@ -124,7 +124,7 @@ flowchart TB
     A2H -->|Tool Exec| GR
     A3H -->|Tool Exec| GR
 
-    GR -->|"cap-drop=ALL\nno-new-privileges\nreadonly rootfs"| SB
+    GR -->|"seccomp-strict.json\ncap-drop=ALL\nno-new-privileges\nreadonly rootfs\nnetwork=none"| SB
     SB -->|Mediated Egress| Squid
 
     A1H -.->|Secrets| Vault
@@ -208,8 +208,10 @@ graph LR
         LS1["Full auth stack"]
         LS2["A2A signed transport"]
         LS3["OPA policy enforcement"]
-        LS4["Sandbox + egress proxy"]
-        LS5["Tenant isolation"]
+        LS4["Hardened Docker sandbox"]
+        LS5["Custom seccomp profile"]
+        LS6["Squid domain allowlist"]
+        LS7["Tenant isolation"]
     end
 
     subgraph H["hosted"]
@@ -218,7 +220,8 @@ graph LR
         H3["Strict replay protection"]
         H4["No localhost exceptions"]
         H5["Full identity enforcement"]
-        H6["Clock skew validation"]
+        H6["gVisor/Kata RuntimeClass"]
+        H7["K8s seccomp + network policies"]
     end
 
     LW -->|"Hardened"| LS

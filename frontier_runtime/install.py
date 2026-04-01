@@ -74,6 +74,24 @@ def _normalize_absolute_http_url(value: str, *, setting_name: str, allow_query: 
     return urlunsplit((scheme, parsed.netloc, parsed.path or "", parsed.query if allow_query else "", ""))
 
 
+def sandbox_backend_available() -> DiagnosticResult:
+    """Check if any sandbox backend (bubblewrap, seatbelt, or Docker) is available."""
+    import platform as _platform
+
+    system = _platform.system().lower()
+    if system == "linux" and shutil.which("bwrap"):
+        return DiagnosticResult("sandbox-backend", True, "bubblewrap (kernel sandbox)")
+    if system == "darwin" and Path("/usr/bin/sandbox-exec").is_file():
+        return DiagnosticResult("sandbox-backend", True, "seatbelt (macOS kernel sandbox)")
+    if shutil.which("docker"):
+        return DiagnosticResult("sandbox-backend", True, "Docker (hardened container)")
+    return DiagnosticResult(
+        "sandbox-backend",
+        False,
+        "No sandbox backend found. Install bubblewrap (Linux: apt install bubblewrap) or Docker.",
+    )
+
+
 def docker_daemon_available() -> DiagnosticResult:
     if shutil.which("docker") is None:
         return DiagnosticResult("docker-daemon", False, "Docker is not installed or not on PATH")

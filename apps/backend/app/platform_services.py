@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 from contextlib import contextmanager
+from pathlib import Path
 from typing import Any, Iterator
 from uuid import uuid4
 
@@ -157,6 +159,8 @@ class RedisMemoryStore:
 		self.enabled = bool(self.url) and redis is not None
 		self._client = redis.from_url(self.url, decode_responses=True) if self.enabled else None
 		self.max_entries = max(10, int(os.getenv("FRONTIER_SHORT_TERM_MEMORY_MAX", "200")))
+		self.wal_enabled = os.getenv("FRONTIER_MEMORY_WAL_ENABLED", "").strip().lower() in {"1", "true", "yes"}
+		self.wal_dir = Path(os.getenv("FRONTIER_MEMORY_WAL_DIR", ".frontier/memory-wal"))
 
 	def _key(self, session_id: str) -> str:
 		return f"frontier:memory:short:{session_id}"
@@ -174,27 +178,34 @@ class RedisMemoryStore:
 
 	def get_entries(self, session_id: str, *, limit: int = 100) -> list[dict[str, Any]]:
 		if not self.enabled or self._client is None:
-			return []
+			return self._wal_recover(session_id, limit=limit)
 		try:
 			start = -max(1, limit)
 			payloads = self._client.lrange(self._key(session_id), start, -1)
 		except Exception:  # noqa: BLE001
-			return []
+			payloads = []
 		entries: list[dict[str, Any]] = []
 		for item in payloads:
 			decoded = _safe_json_loads(item)
 			if isinstance(decoded, dict):
 				entries.append(decoded)
+		if not entries:
+			recovered = self._wal_recover(session_id, limit=limit)
+			if recovered:
+				self.load_entries(session_id, recovered)
+				return recovered
 		return entries
 
 	def append_entry(self, session_id: str, entry: dict[str, Any]) -> None:
 		if not self.enabled or self._client is None:
+			self._wal_append(session_id, entry)
 			return
 		try:
 			self._client.rpush(self._key(session_id), json.dumps(entry, default=_json_default))
 			self._client.ltrim(self._key(session_id), -self.max_entries, -1)
 		except Exception:  # noqa: BLE001
-			return
+			pass
+		self._wal_append(session_id, entry)
 
 	def load_entries(self, session_id: str, entries: list[dict[str, Any]]) -> None:
 		if not self.enabled or self._client is None or not entries:
@@ -227,6 +238,48 @@ class RedisMemoryStore:
 		except Exception:  # noqa: BLE001
 			return False
 		return bool(created)
+
+	# -- Write-Ahead Log (WAL) for Redis durability --
+
+	def _wal_path(self, session_id: str) -> Path:
+		return self.wal_dir / f"{session_id}.jsonl"
+
+	def _wal_append(self, session_id: str, entry: dict[str, Any]) -> None:
+		if not self.wal_enabled:
+			return
+		try:
+			self.wal_dir.mkdir(parents=True, exist_ok=True)
+			with open(self._wal_path(session_id), "a", encoding="utf-8") as fh:
+				fh.write(json.dumps(entry, default=_json_default) + "\n")
+		except Exception:  # noqa: BLE001
+			return
+
+	def _wal_recover(self, session_id: str, *, limit: int = 200) -> list[dict[str, Any]]:
+		if not self.wal_enabled:
+			return []
+		wal_file = self._wal_path(session_id)
+		if not wal_file.exists():
+			return []
+		entries: list[dict[str, Any]] = []
+		try:
+			with open(wal_file, encoding="utf-8") as fh:
+				for line in fh:
+					decoded = _safe_json_loads(line.strip())
+					if isinstance(decoded, dict):
+						entries.append(decoded)
+		except Exception:  # noqa: BLE001
+			return []
+		return entries[-max(1, limit):]
+
+	def cleanup_wal(self, session_id: str) -> None:
+		if not self.wal_enabled:
+			return
+		try:
+			wal_file = self._wal_path(session_id)
+			if wal_file.exists():
+				wal_file.unlink()
+		except Exception:  # noqa: BLE001
+			return
 
 
 class PostgresLongTermMemoryStore(_BasePostgresService):
@@ -760,6 +813,71 @@ class PostgresLongTermMemoryStore(_BasePostgresService):
 						memory_scope,
 					),
 				)
+
+
+	def find_similar_entries(
+		self,
+		text: str,
+		*,
+		bucket_id: str | None = None,
+		memory_scope: str | None = None,
+		threshold: float = 0.92,
+		limit: int = 5,
+	) -> list[dict[str, Any]]:
+		if not self.enabled or not self.vector_enabled:
+			return []
+		normalized_text = str(text or "").strip()
+		if not normalized_text:
+			return []
+		self.initialize()
+		vector, _model = self._embed_text(normalized_text)
+		if not vector:
+			return []
+		with self._connect() as connection:
+			with connection.cursor() as cursor:
+				cursor.execute(
+					"""
+					SELECT id, bucket_id, session_id, memory_scope, source, task_id, content, metadata, created_at,
+						1 - (embedding <=> %s::vector) AS similarity
+					FROM frontier_long_term_memory
+					WHERE embedding IS NOT NULL
+					AND (%s IS NULL OR bucket_id = %s)
+					AND (%s IS NULL OR memory_scope = %s)
+					AND 1 - (embedding <=> %s::vector) > %s
+					ORDER BY similarity DESC
+					LIMIT %s
+					""",
+					(
+						_vector_literal(vector),
+						bucket_id,
+						bucket_id,
+						memory_scope,
+						memory_scope,
+						_vector_literal(vector),
+						float(threshold),
+						max(1, limit),
+					),
+				)
+				rows = cursor.fetchall()
+		results: list[dict[str, Any]] = []
+		for row in rows:
+			entry = self._row_to_entry(row[:9])
+			entry["similarity"] = float(row[9]) if row[9] is not None else 0.0
+			results.append(entry)
+		return results
+
+	def count_consolidation_candidates(self, *, status: str = "pending") -> int:
+		if not self.enabled:
+			return 0
+		self.initialize()
+		with self._connect() as connection:
+			with connection.cursor() as cursor:
+				cursor.execute(
+					"SELECT COUNT(*) FROM frontier_memory_consolidation_queue WHERE status = %s",
+					(str(status or "pending"),),
+				)
+				row = cursor.fetchone()
+		return int(row[0]) if row else 0
 
 
 class Neo4jRunGraph:

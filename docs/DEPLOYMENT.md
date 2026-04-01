@@ -60,6 +60,46 @@ For interactive setup, you can run:
 
 `lattix install run`
 
+## Sandbox Requirements
+
+xFrontier uses a three-tier hybrid sandbox that auto-detects the strongest isolation available.
+
+### Local desktop (no Docker)
+
+Install bubblewrap for kernel-level sandboxing without Docker:
+
+- **Debian/Ubuntu:** `sudo apt install bubblewrap`
+- **Fedora/RHEL:** `sudo dnf install bubblewrap`
+- **macOS:** Seatbelt is built-in. No installation needed.
+- **Windows:** Use WSL2 with bubblewrap, or install Docker Desktop.
+
+Verify: `bwrap --version` (Linux) or `ls /usr/bin/sandbox-exec` (macOS).
+
+When bubblewrap or seatbelt is available, tool execution uses direct kernel namespace isolation with a custom seccomp profile. No Docker daemon is required.
+
+### Docker Compose (local-secure)
+
+The default `docker-compose.yml` stack uses hardened Docker containers with:
+
+- Custom seccomp profile (`docker/sandbox/seccomp-strict.json`)
+- Read-only root filesystem
+- Non-root execution (UID 1000)
+- `--network=none` for isolated tool execution
+- Squid egress proxy with domain allowlist for network-enabled tools
+- Resource limits (512MB memory, 1 CPU, 256 PIDs)
+
+Extend the Squid domain allowlist in `docker/sandbox/squid.conf` for your environment.
+
+### Kubernetes (hosted)
+
+The Helm chart deploys gVisor RuntimeClass by default. For Kata Containers (microVM isolation), set `sandbox.kata.enabled=true` in your values file.
+
+**Prerequisites:**
+- gVisor: Install `runsc` on cluster nodes ([gVisor docs](https://gvisor.dev/docs/user_guide/install/))
+- Kata: Install Kata Containers runtime ([Kata docs](https://katacontainers.io/docs/))
+
+The seccomp profile is deployed as a ConfigMap and must be synced to `/var/lib/kubelet/seccomp/profiles/frontier-strict.json` on each node (via DaemonSet or node provisioning).
+
 ## Kubernetes with Helm
 
 Install with:
@@ -85,4 +125,14 @@ Scaffold a new agent with:
 
 Then implement the agent logic, add tests, and package the resulting container for Compose or Helm deployment.
 
-If the agent needs tool execution, route those calls through the sandbox subsystem instead of executing directly on the host or inside the agent container.
+If the agent needs tool execution, route those calls through the `SandboxManager` (`frontier_runtime/sandbox.py`) instead of executing directly on the host or inside the agent container. The manager auto-selects the strongest available isolation (kernel sandbox > hardened Docker > K8s RuntimeClass) based on the deployment context.
+
+## Environment Variables (Sandbox)
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `FRONTIER_RUNTIME_PROFILE` | `local-lightweight` | Controls sandbox tier: `local-lightweight`, `local-secure`, `hosted` |
+| `FRONTIER_SECCOMP_PROFILE` | `docker/sandbox/seccomp-strict.json` | Custom seccomp BPF profile path |
+| `SANDBOX_RUNNER_IMAGE` | `python:3.12.10-slim-bookworm` | Docker image for sandboxed tool execution |
+| `SANDBOX_INTERNAL_NETWORK` | `frontier-sandbox-internal` | Docker network for sandbox containers |
+| `SANDBOX_EGRESS_GATEWAY` | `sandbox-egress-gateway:3128` | Squid proxy for network-enabled tools |

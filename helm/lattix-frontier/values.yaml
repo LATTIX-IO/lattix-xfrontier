@@ -88,6 +88,29 @@ security:
   opa:
     policyConfigMap: lattix-opa-policies
 
+sandbox:
+  enabled: true
+  gvisor:
+    runtimeClassName: frontier-sandbox
+    handler: runsc
+    nodeSelector: {}
+    overhead:
+      memory: "64Mi"
+      cpu: "100m"
+  kata:
+    enabled: false
+    runtimeClassName: frontier-sandbox-vm
+    handler: kata-qemu
+    nodeSelector: {}
+    overhead:
+      memory: "128Mi"
+      cpu: "250m"
+  defaults:
+    memoryLimit: "512Mi"
+    cpuLimit: "1"
+    pidLimit: 256
+    timeoutSeconds: 60
+
 vendorImages:
   envoy: envoyproxy/envoy:v1.32.4
   opa: openpolicyagent/opa:0.68.0-static
