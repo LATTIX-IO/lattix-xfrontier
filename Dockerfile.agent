@@ -26,7 +26,10 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
     HOME=/home/lattix
 
-RUN groupadd --gid 1000 lattix \
+RUN apt-get update \
+    && apt-get install --yes --no-install-recommends bubblewrap \
+    && rm -rf /var/lib/apt/lists/* \
+    && groupadd --gid 1000 lattix \
     && useradd --uid 1000 --gid 1000 --create-home lattix
 
 WORKDIR /app

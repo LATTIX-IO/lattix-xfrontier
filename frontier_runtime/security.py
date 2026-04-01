@@ -63,13 +63,17 @@ class CapabilityMinter:
         allowed_read_paths: list[str],
         allowed_write_paths: list[str],
         max_tool_calls: int,
+        ttl_seconds: int = 600,
     ) -> bytes:
+        now = int(time.time())
         payload = {
             "agent_id": agent_id,
             "allowed_tools": allowed_tools,
             "allowed_read_paths": allowed_read_paths,
             "allowed_write_paths": allowed_write_paths,
             "max_tool_calls": max_tool_calls,
+            "iat": now,
+            "exp": now + ttl_seconds,
         }
         payload_bytes = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
         signature = hmac.new(self._key, payload_bytes, hashlib.sha256).digest()
@@ -102,6 +106,15 @@ class CapabilityVerifier:
             return False
         if payload.get("agent_id") != agent_id or action not in (payload.get("allowed_tools") or []):
             return False
+
+        # Enforce token expiration
+        exp = payload.get("exp")
+        if exp is not None:
+            try:
+                if int(time.time()) > int(exp):
+                    return False
+            except (TypeError, ValueError):
+                return False
 
         if tool_call_count is not None:
             try:

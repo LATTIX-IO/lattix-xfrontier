@@ -3,13 +3,23 @@ from pathlib import Path
 
 import pytest
 
-from frontier_runtime.sandbox import ExecutionSpec, HostPlatform, SandboxPolicy, ToolJailService
+from frontier_runtime.sandbox import (
+    ExecutionSpec,
+    HostPlatform,
+    IsolationStrategy,
+    SandboxManager,
+    SandboxPolicy,
+    ToolJailService,
+)
 
 
 def test_tool_jail_plans_linux_hardened_execution(tmp_path: Path) -> None:
     input_file = tmp_path / "input.txt"
     input_file.write_text("hello", encoding="utf-8")
-    service = ToolJailService()
+    # Force hardened-docker strategy so the test is deterministic regardless
+    # of whether bwrap is installed on the CI host.
+    manager = SandboxManager(force_strategy=IsolationStrategy.HARDENED_DOCKER)
+    service = ToolJailService(manager=manager)
     spec = ExecutionSpec(
         tool_id="python",
         command=["python", "-c", "print('hi')"],
@@ -26,13 +36,18 @@ def test_tool_jail_plans_linux_hardened_execution(tmp_path: Path) -> None:
     )
     result = asyncio.run(service.plan(spec, policy=policy))
     assert result.executed is False
-    assert result.plan.backend == "docker-linux"
+    assert result.plan.backend == "hardened-docker"
     assert result.plan.network_name == "frontier-sandbox-internal"
-    assert any("--cap-drop=ALL" == item for item in result.plan.docker_command)
+    cmd = result.plan.docker_command
+    assert "--cap-drop=ALL" in cmd
+    assert "--read-only" in cmd
+    assert "--user=1000:1000" in cmd
+    assert "--ipc=private" in cmd
 
 
 def test_tool_jail_denies_unallowlisted_host() -> None:
-    service = ToolJailService()
+    manager = SandboxManager(force_strategy=IsolationStrategy.HARDENED_DOCKER)
+    service = ToolJailService(manager=manager)
     spec = ExecutionSpec(tool_id="python", command=["python", "-c", "print('hi')"], requested_hosts=["evil.example.com"])
     policy = SandboxPolicy(
         platform=HostPlatform.LINUX,

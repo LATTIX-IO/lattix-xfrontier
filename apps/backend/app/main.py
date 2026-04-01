@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import asyncio
@@ -3369,6 +3370,7 @@ def _run_openai_chat(
     user_prompt: str,
     model: str,
     temperature: float,
+    messages: list[dict[str, str]] | None = None,
 ) -> tuple[str, dict[str, Any]]:
     client = _get_openai_client()
     if client is None:
@@ -3382,10 +3384,11 @@ def _run_openai_chat(
             },
         )
 
-    messages: list[dict[str, str]] = []
-    if system_prompt.strip():
-        messages.append({"role": "system", "content": system_prompt})
-    messages.append({"role": "user", "content": user_prompt})
+    if messages is None:
+        messages = []
+        if system_prompt.strip():
+            messages.append({"role": "system", "content": system_prompt})
+        messages.append({"role": "user", "content": user_prompt})
 
     attempt_models: list[str] = []
     primary_model = str(model or "").strip() or _default_openai_model()
@@ -5260,10 +5263,18 @@ def _execute_node(
             or upstream_system_prompt
             or "You are a specialist execution agent in a collaborative workflow. Keep answers concise and actionable."
         )
+        # WS2: Include session notes from prior turns
+        session_notes_context = ""
+        if _env_flag("FRONTIER_SESSION_NOTES_ENABLED", False):
+            prior_notes = execution_state.get("session_notes", [])
+            if isinstance(prior_notes, list) and prior_notes:
+                session_notes_context = "\n".join(f"- {note}" for note in prior_notes)
+
         user_prompt = (
             f"Workflow task for node '{node.title}'\n"
             f"Current input:\n{str(upstream_message)[:2000]}\n\n"
             f"Recent collaborator outputs:\n{collaboration_context or '- none'}\n\n"
+            f"Session notes:\n{session_notes_context or '- none'}\n\n"
             f"Memory context:\n{memory_context or '- none'}\n\n"
             f"World graph context:\n{world_graph_context or '- none'}\n\n"
             f"World graph topics:\n{world_graph_topic_context or '- none'}\n\n"
@@ -5274,6 +5285,33 @@ def _execute_node(
         selected_engine = _normalize_runtime_engine(node_runtime.get("selected_engine") or "native")
         executed_engine = _normalize_runtime_engine(node_runtime.get("executed_engine") or "native")
         node_runtime_mode = str(node_runtime.get("mode") or runtime_info.get("mode") or "native")
+
+        # WS1: Conversation history support
+        conversation_messages: list[dict[str, str]] | None = None
+        _conversation_manager = None
+        if _env_flag("FRONTIER_CONVERSATION_ENABLED", False):
+            from frontier_runtime.conversation import ConversationManager
+            conv_max_tokens = _env_int("FRONTIER_CONVERSATION_MAX_TOKENS", 8000, minimum=500, maximum=32000)
+            conv_threshold = float(os.getenv("FRONTIER_CONVERSATION_COMPACTION_THRESHOLD", "0.75"))
+            conv_redis_key = f"frontier:conversation:{session_id}:{execution_state.get('run_id', 'default')}"
+            _conversation_manager = None
+            if _REDIS_MEMORY.enabled and _REDIS_MEMORY._client is not None:
+                try:
+                    stored = _REDIS_MEMORY._client.get(conv_redis_key)
+                    if stored:
+                        _conversation_manager = ConversationManager.deserialize(stored)
+                except Exception:  # noqa: BLE001
+                    pass
+            if _conversation_manager is None:
+                _conversation_manager = ConversationManager(
+                    session_id=session_id,
+                    run_id=str(execution_state.get("run_id", "default")),
+                    max_tokens=conv_max_tokens,
+                    compaction_threshold=conv_threshold,
+                )
+            _conversation_manager.add_turn("system", system_prompt)
+            _conversation_manager.add_turn("user", user_prompt)
+            conversation_messages = _conversation_manager.get_messages()
 
         if executed_engine != "native":
             response_text, model_meta = _run_framework_chat(
@@ -5289,7 +5327,21 @@ def _execute_node(
                 user_prompt=user_prompt,
                 model=model,
                 temperature=temperature,
+                messages=conversation_messages,
             )
+
+        # WS1: Persist conversation state after LLM call
+        if _conversation_manager is not None:
+            reasoning_summaries = model_meta.get("reasoning", {}).get("summaries", []) if isinstance(model_meta.get("reasoning"), dict) else []
+            _conversation_manager.add_turn("assistant", response_text, metadata={
+                "reasoning_summaries": reasoning_summaries,
+                "node_title": node.title,
+            })
+            if _REDIS_MEMORY.enabled and _REDIS_MEMORY._client is not None:
+                try:
+                    _REDIS_MEMORY._client.set(conv_redis_key, _conversation_manager.serialize(), ex=3600)
+                except Exception:  # noqa: BLE001
+                    pass
 
         model_meta["framework"] = selected_engine
         model_meta["executed_engine"] = executed_engine
@@ -5297,6 +5349,39 @@ def _execute_node(
         model_meta["runtime_strategy"] = str(runtime_info.get("strategy") or "single")
         model_meta["runtime_role"] = role
         prior_agent_outputs.append(f"{node.title}: {response_text[:240]}")
+
+        # WS2: Session auto-notes
+        if _env_flag("FRONTIER_SESSION_NOTES_ENABLED", False):
+            from frontier_runtime.session_notes import generate_session_note
+            session_note = generate_session_note(
+                node_title=node.title,
+                user_input=str(upstream_message)[:2000],
+                assistant_output=response_text,
+                model_meta=model_meta,
+                session_id=session_id,
+                run_id=str(execution_state.get("run_id", "")),
+                turn_index=len(prior_agent_outputs),
+            )
+            note_entry = {
+                "id": str(uuid4()),
+                "at": _now_iso(),
+                "content": session_note.to_context_string(),
+                "source": "session-auto-note",
+                "kind": "session-auto-note",
+                "metadata": session_note.to_dict(),
+            }
+            _memory_append_entry(
+                session_id,
+                note_entry,
+                memory_scope="session",
+                source="session-auto-note",
+                persist_long_term=False,
+            )
+            # Inject last N session notes into execution state for subsequent nodes
+            session_notes_list = execution_state.setdefault("session_notes", [])
+            max_inject = _env_int("FRONTIER_SESSION_NOTES_MAX_INJECT", 3, minimum=1, maximum=10)
+            session_notes_list.append(session_note.to_context_string())
+            execution_state["session_notes"] = session_notes_list[-max_inject:]
         runtime_dispatches = execution_state.setdefault("runtime_dispatches", [])
         if isinstance(runtime_dispatches, list):
             runtime_dispatches.append(
@@ -8774,12 +8859,34 @@ def _memory_runtime_role_bonus(entry: dict[str, Any], runtime_role: str) -> int:
     return bonus
 
 
+def _memory_age_decay_factor(entry: dict[str, Any], *, half_life_days: float) -> float:
+    if half_life_days <= 0:
+        return 1.0
+    entry_time = str(entry.get("at") or entry.get("created_at") or "").strip()
+    if not entry_time:
+        return 1.0
+    try:
+        from datetime import datetime, timezone as _tz
+        if entry_time.endswith("Z"):
+            entry_time = entry_time[:-1] + "+00:00"
+        created = datetime.fromisoformat(entry_time)
+        if created.tzinfo is None:
+            created = created.replace(tzinfo=_tz.utc)
+        now = datetime.now(_tz.utc)
+        age_days = max(0.0, (now - created).total_seconds() / 86400.0)
+    except Exception:  # noqa: BLE001
+        return 1.0
+    return math.exp(-0.693 * age_days / half_life_days)
+
+
 def _rank_hybrid_memory_entries(
     entries: list[dict[str, Any]],
     *,
     query_text: str,
     runtime_role: str,
 ) -> list[dict[str, Any]]:
+    decay_enabled = _env_flag("FRONTIER_MEMORY_DECAY_ENABLED", False)
+    decay_half_life = float(_env_int("FRONTIER_MEMORY_DECAY_HALF_LIFE_DAYS", 30, minimum=1, maximum=365))
     tier_base = {
         "short-term": 90,
         "long-term": 70,
@@ -8790,9 +8897,12 @@ def _rank_hybrid_memory_entries(
         if not isinstance(entry, dict):
             continue
         content = str(entry.get("content") or "")
-        score = tier_base.get(str(entry.get("tier") or "").strip().lower(), 50)
+        tier = str(entry.get("tier") or "").strip().lower()
+        score = tier_base.get(tier, 50)
         score += _memory_query_overlap_score(content, query_text)
         score += _memory_runtime_role_bonus(entry, runtime_role)
+        if decay_enabled and tier != "short-term":
+            score = int(score * _memory_age_decay_factor(entry, half_life_days=decay_half_life))
         ranked_entry = dict(entry)
         ranked_entry["retrieval_score"] = score
         ranked_entry["retrieval_tokens"] = _memory_token_estimate(content)
@@ -8911,6 +9021,9 @@ def _memory_get_hybrid_context(
     short_term_rankable = [dict(item, tier=str(item.get("tier") or "short-term")) for item in short_term if isinstance(item, dict)]
     long_term_rankable = [dict(item, tier=str(item.get("tier") or "long-term")) for item in long_term if isinstance(item, dict)]
     merged = _merge_memory_entries(short_term_rankable, long_term_rankable, graph_memories, limit=limit * 3)
+    if _env_flag("FRONTIER_MEMORY_FILE_DEDUP_ENABLED", False):
+        from frontier_runtime.context_dedup import dedup_file_operations
+        merged = dedup_file_operations(merged)
     ranked = _rank_hybrid_memory_entries(merged, query_text=query_text, runtime_role=runtime_role)
     token_budget = _env_int("FRONTIER_MEMORY_HYBRID_MAX_TOKENS", 1200, minimum=100, maximum=12000)
     entries = _apply_memory_token_budget(ranked[: max(1, limit * 2)], max_tokens=token_budget)[:limit]
@@ -8974,6 +9087,30 @@ def _memory_append_entry(
         task_id=task_id,
         long_term_session_id=long_term_session_id,
     )
+    _maybe_trigger_inline_consolidation(session_id, memory_scope=memory_scope)
+
+
+def _maybe_trigger_inline_consolidation(bucket_id: str, *, memory_scope: str = "session") -> None:
+    """WS4: Trigger inline consolidation when pending candidates exceed threshold."""
+    if not _env_flag("FRONTIER_MEMORY_INLINE_CONSOLIDATION_ENABLED", False):
+        return
+    if not _POSTGRES_MEMORY.enabled or not _POSTGRES_MEMORY.healthcheck():
+        return
+    threshold = _env_int("FRONTIER_MEMORY_INLINE_CONSOLIDATION_THRESHOLD", 10, minimum=2, maximum=100)
+    pending_count = _POSTGRES_MEMORY.count_consolidation_candidates(status="pending")
+    if pending_count < threshold:
+        return
+    import threading
+    threading.Thread(
+        daemon=True,
+        target=_run_memory_consolidation,
+        kwargs={
+            "actor": "inline-consolidation",
+            "bucket_id": bucket_id,
+            "memory_scope": memory_scope,
+            "limit": threshold,
+        },
+    ).start()
 
 
 def _memory_should_schedule_consolidation(entry: dict[str, Any], *, memory_scope: str, source: str) -> bool:
@@ -9324,6 +9461,26 @@ def _find_duplicate_memory_consolidation(
 ) -> dict[str, Any] | None:
     if not str(consolidated_content or "").strip():
         return None
+
+    # WS8: Try vector similarity first when enabled
+    if (
+        _env_flag("FRONTIER_MEMORY_VECTOR_DEDUP_ENABLED", False)
+        and _POSTGRES_MEMORY.enabled
+        and _POSTGRES_MEMORY.vector_enabled
+    ):
+        vector_threshold = float(os.getenv("FRONTIER_MEMORY_VECTOR_DEDUP_THRESHOLD", "0.92"))
+        similar = _POSTGRES_MEMORY.find_similar_entries(
+            consolidated_content,
+            bucket_id=bucket_id,
+            memory_scope=memory_scope,
+            threshold=vector_threshold,
+            limit=1,
+        )
+        for entry in similar:
+            if str(entry.get("kind") or entry.get("metadata", {}).get("kind") or "").strip().lower() == "memory-consolidation":
+                return entry
+
+    # Fall back to token overlap
     overlap_threshold = _env_int("FRONTIER_MEMORY_CONSOLIDATION_DUPLICATE_MIN_OVERLAP", 80, minimum=1, maximum=100)
     history_limit = _env_int("FRONTIER_MEMORY_CONSOLIDATION_DUPLICATE_HISTORY_LIMIT", 25, minimum=1, maximum=200)
     existing_entries = _POSTGRES_MEMORY.get_entries(bucket_id=bucket_id, memory_scope=memory_scope, limit=history_limit)

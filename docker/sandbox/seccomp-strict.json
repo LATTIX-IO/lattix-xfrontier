@@ -1,0 +1,112 @@
+{
+  "_comment": "xFrontier strict seccomp profile — matches Codex kernel sandbox restrictions. Blocks dangerous syscalls while allowing normal tool execution.",
+  "defaultAction": "SCMP_ACT_ALLOW",
+  "syscalls": [
+    {
+      "_comment": "Always blocked: debugging, tracing, io_uring (major attack surface)",
+      "names": [
+        "ptrace",
+        "process_vm_readv",
+        "process_vm_writev",
+        "kcmp",
+        "io_uring_setup",
+        "io_uring_enter",
+        "io_uring_register"
+      ],
+      "action": "SCMP_ACT_ERRNO",
+      "errnoRet": 1
+    },
+    {
+      "_comment": "Blocked: kernel module loading, system modification",
+      "names": [
+        "init_module",
+        "finit_module",
+        "delete_module",
+        "kexec_load",
+        "kexec_file_load",
+        "reboot",
+        "swapon",
+        "swapoff",
+        "acct",
+        "settimeofday",
+        "stime",
+        "adjtimex",
+        "clock_adjtime",
+        "clock_settime"
+      ],
+      "action": "SCMP_ACT_ERRNO",
+      "errnoRet": 1
+    },
+    {
+      "_comment": "Blocked: mount/namespace manipulation (container escape vectors)",
+      "names": [
+        "mount",
+        "umount2",
+        "pivot_root",
+        "unshare",
+        "setns"
+      ],
+      "action": "SCMP_ACT_ERRNO",
+      "errnoRet": 1
+    },
+    {
+      "_comment": "Blocked: keyring operations (credential theft)",
+      "names": [
+        "keyctl",
+        "request_key",
+        "add_key"
+      ],
+      "action": "SCMP_ACT_ERRNO",
+      "errnoRet": 1
+    },
+    {
+      "_comment": "Blocked: BPF program loading (seccomp bypass, rootkit installation)",
+      "names": [
+        "bpf",
+        "perf_event_open"
+      ],
+      "action": "SCMP_ACT_ERRNO",
+      "errnoRet": 1
+    },
+    {
+      "_comment": "Blocked: user/group namespace manipulation",
+      "names": [
+        "setuid",
+        "setgid",
+        "setreuid",
+        "setregid",
+        "setresuid",
+        "setresgid",
+        "setgroups",
+        "setfsgid",
+        "setfsuid"
+      ],
+      "action": "SCMP_ACT_ERRNO",
+      "errnoRet": 1
+    },
+    {
+      "_comment": "Blocked: personality and virtualization (used in exploits)",
+      "names": [
+        "personality",
+        "modify_ldt",
+        "arch_prctl_multiop"
+      ],
+      "action": "SCMP_ACT_ERRNO",
+      "errnoRet": 1
+    },
+    {
+      "_comment": "Blocked: raw device and VM access",
+      "names": [
+        "open_by_handle_at",
+        "name_to_handle_at",
+        "lookup_dcookie",
+        "quotactl",
+        "nfsservctl",
+        "vm86",
+        "vm86old"
+      ],
+      "action": "SCMP_ACT_ERRNO",
+      "errnoRet": 1
+    }
+  ]
+}
