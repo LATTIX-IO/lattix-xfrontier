@@ -6,15 +6,22 @@ import sys
 import types
 from collections import defaultdict
 from pathlib import Path
+import tempfile
 from uuid import uuid4
 
 import pytest
 from fastapi.testclient import TestClient
 from frontier_runtime.security import mint_token
 
-if not str(os.environ.get("A2A_JWT_SECRET") or "").strip() or "placeholder" in str(os.environ.get("A2A_JWT_SECRET") or "").lower():
+if (
+    not str(os.environ.get("A2A_JWT_SECRET") or "").strip()
+    or "placeholder" in str(os.environ.get("A2A_JWT_SECRET") or "").lower()
+):
     os.environ["A2A_JWT_SECRET"] = "unit-test-super-secret-value-32bytes"
-if not str(os.environ.get("FRONTIER_API_BEARER_TOKEN") or "").strip() or "placeholder" in str(os.environ.get("FRONTIER_API_BEARER_TOKEN") or "").lower():
+if (
+    not str(os.environ.get("FRONTIER_API_BEARER_TOKEN") or "").strip()
+    or "placeholder" in str(os.environ.get("FRONTIER_API_BEARER_TOKEN") or "").lower()
+):
     os.environ["FRONTIER_API_BEARER_TOKEN"] = "unit-test-bearer"
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -42,22 +49,66 @@ class _FakeRedisMemoryStore:
         self.enabled = True
         self._entries: dict[str, list[dict[str, object]]] = defaultdict(list)
         self._nonces: dict[str, int] = {}
+        self.wal_enabled = False
+        self.wal_dir = Path(tempfile.gettempdir()) / "frontier-test-memory-wal"
+
+    def _entry_store(self) -> dict[str, list[dict[str, object]]]:
+        entries = getattr(self, "_entries", None)
+        if not isinstance(entries, dict):
+            entries = defaultdict(list)
+            self._entries = entries
+        return entries
+
+    def _wal_path(self, session_id: str) -> Path:
+        wal_dir = getattr(self, "wal_dir", Path(tempfile.gettempdir()) / "frontier-test-memory-wal")
+        return Path(wal_dir) / f"{session_id}.jsonl"
+
+    def _wal_append(self, session_id: str, entry: dict[str, object]) -> None:
+        if not bool(getattr(self, "wal_enabled", False)):
+            return
+        wal_path = self._wal_path(session_id)
+        wal_path.parent.mkdir(parents=True, exist_ok=True)
+        with wal_path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(entry) + "\n")
+
+    def _wal_recover(self, session_id: str, *, limit: int = 200) -> list[dict[str, object]]:
+        if not bool(getattr(self, "wal_enabled", False)):
+            return []
+        wal_path = self._wal_path(session_id)
+        if not wal_path.exists():
+            return []
+        entries: list[dict[str, object]] = []
+        for line in wal_path.read_text(encoding="utf-8").splitlines():
+            try:
+                payload = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(payload, dict):
+                entries.append(payload)
+        return entries[-max(1, limit) :]
+
+    def cleanup_wal(self, session_id: str) -> None:
+        if not bool(getattr(self, "wal_enabled", False)):
+            return
+        self._wal_path(session_id).unlink(missing_ok=True)
 
     def healthcheck(self) -> bool:
         return True
 
     def get_entries(self, session_id: str, *, limit: int = 100) -> list[dict[str, object]]:
-        return self._entries.get(session_id, [])[-limit:]
+        entries = self._entry_store().get(session_id, [])[-limit:]
+        return entries or self._wal_recover(session_id, limit=limit)
 
     def append_entry(self, session_id: str, entry: dict[str, object]) -> None:
-        self._entries.setdefault(session_id, []).append(dict(entry))
+        self._entry_store().setdefault(session_id, []).append(dict(entry))
+        self._wal_append(session_id, entry)
 
     def load_entries(self, session_id: str, entries: list[dict[str, object]]) -> None:
         for entry in entries:
             self.append_entry(session_id, entry)
 
     def clear_entries(self, session_id: str) -> None:
-        self._entries[session_id] = []
+        self._entry_store()[session_id] = []
 
     def register_nonce_once(self, nonce: str, *, ttl_seconds: int) -> bool:
         nonce_text = str(nonce or "").strip()
@@ -131,10 +182,18 @@ class _FakeLongTermMemoryStore:
         needle = str(query_text or "").lower()
         matches = [
             entry
-            for entry in self.get_entries(bucket_id=bucket_id, session_id=session_id, memory_scope=memory_scope, limit=1000)
+            for entry in self.get_entries(
+                bucket_id=bucket_id, session_id=session_id, memory_scope=memory_scope, limit=1000
+            )
             if needle in str(entry.get("content") or "").lower()
         ]
-        return matches[:limit] if matches else self.get_entries(bucket_id=bucket_id, session_id=session_id, memory_scope=memory_scope, limit=limit)
+        return (
+            matches[:limit]
+            if matches
+            else self.get_entries(
+                bucket_id=bucket_id, session_id=session_id, memory_scope=memory_scope, limit=limit
+            )
+        )
 
     def clear_entries(
         self,
@@ -214,7 +273,9 @@ class _FakeLongTermMemoryStore:
             return
         candidate["status"] = status
         if extra_metadata:
-            metadata = candidate.get("metadata") if isinstance(candidate.get("metadata"), dict) else {}
+            metadata = (
+                candidate.get("metadata") if isinstance(candidate.get("metadata"), dict) else {}
+            )
             metadata.update(extra_metadata)
             candidate["metadata"] = metadata
         self._consolidation_candidates[candidate_id] = candidate
@@ -271,7 +332,7 @@ class _FakeNeo4jRunGraph:
         return {
             "memories": memories[-limit:],
             "topics": list(topics_by_id.values())[:limit],
-            "relations": relations[:limit * 3],
+            "relations": relations[: limit * 3],
         }
 
 
@@ -290,18 +351,30 @@ client = TestClient(app)
 
 AUTH_HEADERS = {"Authorization": "Bearer unit-test-bearer", "x-frontier-actor": "tester"}
 ADMIN_HEADERS = {"Authorization": "Bearer unit-test-bearer", "x-frontier-actor": "frontier-admin"}
-MEMBER_AUTH_HEADERS = {"Authorization": "Bearer unit-test-bearer", "x-frontier-actor": "member-user"}
+MEMBER_AUTH_HEADERS = {
+    "Authorization": "Bearer unit-test-bearer",
+    "x-frontier-actor": "member-user",
+}
 OWNER_AUTH_HEADERS = {"Authorization": "Bearer unit-test-bearer", "x-frontier-actor": "owner-user"}
 NON_ADMIN_HEADERS = {"x-frontier-actor": "member-user"}
 
 
-def _signed_internal_headers(*, payload: bytes = b"", actor: str = "tester", subject: str = "backend", nonce: str = "nonce-1", correlation_id: str = "corr-1") -> dict[str, str]:
+def _signed_internal_headers(
+    *,
+    payload: bytes = b"",
+    actor: str = "tester",
+    subject: str = "backend",
+    nonce: str = "nonce-1",
+    correlation_id: str = "corr-1",
+) -> dict[str, str]:
     return {
         "x-frontier-actor": actor,
         "x-correlation-id": correlation_id,
         "x-frontier-subject": subject,
         "x-frontier-nonce": nonce,
-        "x-frontier-signature": main_module._build_runtime_signature(subject, nonce, correlation_id, payload),
+        "x-frontier-signature": main_module._build_runtime_signature(
+            subject, nonce, correlation_id, payload
+        ),
         "content-type": "application/json",
     }
 
@@ -309,10 +382,38 @@ def _signed_internal_headers(*, payload: bytes = b"", actor: str = "tester", sub
 def _sample_graph() -> dict[str, list[dict[str, object]]]:
     return {
         "nodes": [
-            {"id": "trigger", "title": "Trigger", "type": "trigger", "x": 70, "y": 90, "config": {"trigger_mode": "manual"}},
-            {"id": "prompt", "title": "Prompt", "type": "prompt", "x": 280, "y": 90, "config": {"system_prompt_text": "Help the user safely."}},
-            {"id": "agent", "title": "Agent", "type": "agent", "x": 520, "y": 90, "config": {"agent_id": "generated-agent", "model": "gpt-5.2"}},
-            {"id": "output", "title": "Output", "type": "output", "x": 790, "y": 90, "config": {"destination": "artifact_store", "format": "json"}},
+            {
+                "id": "trigger",
+                "title": "Trigger",
+                "type": "trigger",
+                "x": 70,
+                "y": 90,
+                "config": {"trigger_mode": "manual"},
+            },
+            {
+                "id": "prompt",
+                "title": "Prompt",
+                "type": "prompt",
+                "x": 280,
+                "y": 90,
+                "config": {"system_prompt_text": "Help the user safely."},
+            },
+            {
+                "id": "agent",
+                "title": "Agent",
+                "type": "agent",
+                "x": 520,
+                "y": 90,
+                "config": {"agent_id": "generated-agent", "model": "gpt-5.2"},
+            },
+            {
+                "id": "output",
+                "title": "Output",
+                "type": "output",
+                "x": 790,
+                "y": 90,
+                "config": {"destination": "artifact_store", "format": "json"},
+            },
         ],
         "links": [
             {"from": "trigger", "to": "agent", "from_port": "out", "to_port": "in"},
@@ -366,7 +467,11 @@ def test_publish_agent_definition_generates_code_artifacts() -> None:
     assert detail_response.status_code == 200
     detail = detail_response.json()
     assert len(detail["generated_artifacts"]) == 2
-    langgraph_artifact = next(artifact for artifact in detail["generated_artifacts"] if artifact["framework"] == "langgraph")
+    langgraph_artifact = next(
+        artifact
+        for artifact in detail["generated_artifacts"]
+        if artifact["framework"] == "langgraph"
+    )
     assert "EFFECTIVE_SECURITY_POLICY" in langgraph_artifact["content"]
     assert "restricted" in langgraph_artifact["content"]
     assert langgraph_artifact["path"].endswith("langgraph_agent.py")
@@ -379,7 +484,11 @@ def test_publish_agent_definition_generates_code_artifacts() -> None:
     assert artifact_detail["content"] == langgraph_artifact["content"]
 
     store.agent_definitions.pop(agent_id, None)
-    store.artifacts = [artifact for artifact in store.artifacts if artifact.id not in {item['id'] for item in body['generated_artifacts']}]
+    store.artifacts = [
+        artifact
+        for artifact in store.artifacts
+        if artifact.id not in {item["id"] for item in body["generated_artifacts"]}
+    ]
 
 
 def test_publish_workflow_definition_generates_code_artifacts() -> None:
@@ -405,7 +514,11 @@ def test_publish_workflow_definition_generates_code_artifacts() -> None:
     assert body["ok"] is True
     assert len(body["generated_artifacts"]) == 2
 
-    maf_artifact = next(artifact for artifact in body["generated_artifacts"] if artifact["framework"] == "microsoft-agent-framework")
+    maf_artifact = next(
+        artifact
+        for artifact in body["generated_artifacts"]
+        if artifact["framework"] == "microsoft-agent-framework"
+    )
     assert "AzureAIClient" in maf_artifact["content"]
     assert "GRAPH_SPEC" in maf_artifact["content"]
 
@@ -420,7 +533,11 @@ def test_publish_workflow_definition_generates_code_artifacts() -> None:
     assert maf_artifact["id"] in artifact_ids
 
     store.workflow_definitions.pop(workflow_id, None)
-    store.artifacts = [artifact for artifact in store.artifacts if artifact.id not in {item['id'] for item in body['generated_artifacts']}]
+    store.artifacts = [
+        artifact
+        for artifact in store.artifacts
+        if artifact.id not in {item["id"] for item in body["generated_artifacts"]}
+    ]
 
 
 def test_workflow_definition_defaults_graph_schema_version_when_missing() -> None:
@@ -462,7 +579,10 @@ def test_workflow_definition_rejects_unsupported_graph_schema_version() -> None:
 
 
 def test_clean_inbox_prompt_strips_leading_agent_mentions() -> None:
-    assert main_module._clean_inbox_prompt("@planner   @reviewer   Build the deployment plan") == "Build the deployment plan"
+    assert (
+        main_module._clean_inbox_prompt("@planner   @reviewer   Build the deployment plan")
+        == "Build the deployment plan"
+    )
     assert main_module._clean_inbox_prompt("No mentions here") == "No mentions here"
 
 
@@ -536,7 +656,9 @@ def test_load_seeded_agents_supports_asset_roots_outside_repo(monkeypatch, tmp_p
         ),
         encoding="utf-8",
     )
-    (agent_dir / "system-prompt.md").write_text("You are the external demo agent.", encoding="utf-8")
+    (agent_dir / "system-prompt.md").write_text(
+        "You are the external demo agent.", encoding="utf-8"
+    )
 
     monkeypatch.setattr(main_module, "_repository_root", lambda: repo_root)
     monkeypatch.setenv("FRONTIER_AGENT_ASSETS_ROOT", str(external_assets_root))
@@ -561,7 +683,11 @@ def test_remote_release_manifest_uses_ttl_cache(monkeypatch) -> None:
     monkeypatch.setenv("FRONTIER_UPDATE_MANIFEST_URL", "https://example.com/install/manifest.json")
     monkeypatch.setenv("FRONTIER_UPDATE_MANIFEST_CACHE_TTL_SECONDS", "300")
     monkeypatch.setitem(main_module._REMOTE_RELEASE_MANIFEST_CACHE, "manifest_url", "")
-    monkeypatch.setitem(main_module._REMOTE_RELEASE_MANIFEST_CACHE, "expires_at", main_module.datetime.fromtimestamp(0, tz=main_module.timezone.utc))
+    monkeypatch.setitem(
+        main_module._REMOTE_RELEASE_MANIFEST_CACHE,
+        "expires_at",
+        main_module.datetime.fromtimestamp(0, tz=main_module.timezone.utc),
+    )
     monkeypatch.setitem(main_module._REMOTE_RELEASE_MANIFEST_CACHE, "payload", None)
 
     def _fake_fetch(_manifest_url: str) -> dict[str, object]:
@@ -635,7 +761,9 @@ def test_workflow_definition_versions_and_rollback_restore_prior_snapshot() -> N
         assert save_v1.status_code == 200
 
         updated_graph = _sample_graph()
-        updated_graph["nodes"][1]["config"] = {"system_prompt_text": "Use the updated instructions."}
+        updated_graph["nodes"][1]["config"] = {
+            "system_prompt_text": "Use the updated instructions."
+        }
         save_v2 = client.post(
             "/workflow-definitions",
             json={
@@ -655,8 +783,12 @@ def test_workflow_definition_versions_and_rollback_restore_prior_snapshot() -> N
         versions = versions_response.json()["versions"]
         assert [item["action"] for item in versions] == ["publish", "save", "save"]
 
-        initial_revision = next(item for item in versions if item["action"] == "save" and item["version"] == 1)
-        revision_detail = client.get(f"/workflow-definitions/{workflow_id}/versions/{initial_revision['id']}")
+        initial_revision = next(
+            item for item in versions if item["action"] == "save" and item["version"] == 1
+        )
+        revision_detail = client.get(
+            f"/workflow-definitions/{workflow_id}/versions/{initial_revision['id']}"
+        )
         assert revision_detail.status_code == 200
         assert revision_detail.json()["snapshot"]["name"] == "Initial Workflow"
 
@@ -675,7 +807,9 @@ def test_workflow_definition_versions_and_rollback_restore_prior_snapshot() -> N
         assert restored.description == "First draft of the workflow."
         assert restored.generated_artifacts == []
 
-        versions_after = client.get(f"/workflow-definitions/{workflow_id}/versions").json()["versions"]
+        versions_after = client.get(f"/workflow-definitions/{workflow_id}/versions").json()[
+            "versions"
+        ]
         assert versions_after[0]["action"] == "rollback"
         assert versions_after[0]["metadata"]["source_revision_id"] == initial_revision["id"]
     finally:
@@ -762,7 +896,10 @@ def test_guardrail_ruleset_versions_and_rollback_restore_prior_config() -> None:
             json={
                 "id": ruleset_id,
                 "name": "Versioned Guardrail",
-                "config_json": {"blocked_keywords": ["secret"], "tripwire_action": "reject_content"},
+                "config_json": {
+                    "blocked_keywords": ["secret"],
+                    "tripwire_action": "reject_content",
+                },
             },
             headers=ADMIN_HEADERS,
         )
@@ -776,7 +913,10 @@ def test_guardrail_ruleset_versions_and_rollback_restore_prior_config() -> None:
             json={
                 "id": ruleset_id,
                 "name": "Versioned Guardrail v2",
-                "config_json": {"blocked_keywords": ["secret", "token"], "tripwire_action": "reject_content"},
+                "config_json": {
+                    "blocked_keywords": ["secret", "token"],
+                    "tripwire_action": "reject_content",
+                },
             },
             headers=ADMIN_HEADERS,
         )
@@ -788,7 +928,9 @@ def test_guardrail_ruleset_versions_and_rollback_restore_prior_config() -> None:
         assert [item["action"] for item in versions] == ["save", "publish", "save"]
 
         published_revision = next(item for item in versions if item["action"] == "publish")
-        revision_detail = client.get(f"/guardrail-rulesets/{ruleset_id}/versions/{published_revision['id']}")
+        revision_detail = client.get(
+            f"/guardrail-rulesets/{ruleset_id}/versions/{published_revision['id']}"
+        )
         assert revision_detail.status_code == 200
         assert revision_detail.json()["snapshot"]["status"] == "published"
 
@@ -851,7 +993,9 @@ def test_workflow_save_after_publish_preserves_active_published_snapshot() -> No
 
         published_listing = client.get("/workflows/published")
         assert published_listing.status_code == 200
-        published_workflow = next(item for item in published_listing.json() if item["id"] == workflow_id)
+        published_workflow = next(
+            item for item in published_listing.json() if item["id"] == workflow_id
+        )
         assert published_workflow["name"] == "Published Workflow"
         assert published_workflow["description"] == "First published description."
     finally:
@@ -874,7 +1018,9 @@ def test_agent_and_guardrail_runtime_resolution_use_pinned_published_revisions()
             headers=ADMIN_HEADERS,
         )
         assert ruleset_create.status_code == 200
-        ruleset_publish = client.post(f"/guardrail-rulesets/{ruleset_id}/publish", headers=ADMIN_HEADERS)
+        ruleset_publish = client.post(
+            f"/guardrail-rulesets/{ruleset_id}/publish", headers=ADMIN_HEADERS
+        )
         assert ruleset_publish.status_code == 200
         published_ruleset_pointer = store.guardrail_rulesets[ruleset_id].published_revision_id
         assert published_ruleset_pointer
@@ -890,7 +1036,9 @@ def test_agent_and_guardrail_runtime_resolution_use_pinned_published_revisions()
         )
         assert ruleset_draft.status_code == 200
         assert store.guardrail_rulesets[ruleset_id].status == "draft"
-        assert store.guardrail_rulesets[ruleset_id].published_revision_id == published_ruleset_pointer
+        assert (
+            store.guardrail_rulesets[ruleset_id].published_revision_id == published_ruleset_pointer
+        )
 
         workflow_using_ruleset = client.post(
             "/workflow-definitions",
@@ -998,9 +1146,13 @@ def test_republish_requires_explicit_activation_before_runtime_moves_forward() -
 
         published_listing = client.get("/workflows/published")
         assert published_listing.status_code == 200
-        published_workflow = next(item for item in published_listing.json() if item["id"] == workflow_id)
+        published_workflow = next(
+            item for item in published_listing.json() if item["id"] == workflow_id
+        )
         assert published_workflow["name"] == "Release Workflow v2"
-        assert published_workflow["description"] == "Second published release waiting on activation."
+        assert (
+            published_workflow["description"] == "Second published release waiting on activation."
+        )
 
         active_listing = client.get("/workflows/active")
         assert active_listing.status_code == 200
@@ -1014,7 +1166,9 @@ def test_republish_requires_explicit_activation_before_runtime_moves_forward() -
 
         active_listing_after = client.get("/workflows/active")
         assert active_listing_after.status_code == 200
-        active_workflow_after = next(item for item in active_listing_after.json() if item["id"] == workflow_id)
+        active_workflow_after = next(
+            item for item in active_listing_after.json() if item["id"] == workflow_id
+        )
         assert active_workflow_after["name"] == "Release Workflow v2"
     finally:
         store.workflow_definitions.pop(workflow_id, None)
@@ -1036,7 +1190,12 @@ def test_agent_and_guardrail_activation_control_runtime_resolution() -> None:
             headers=ADMIN_HEADERS,
         )
         assert ruleset_v1.status_code == 200
-        assert client.post(f"/guardrail-rulesets/{ruleset_id}/publish", headers=ADMIN_HEADERS).status_code == 200
+        assert (
+            client.post(
+                f"/guardrail-rulesets/{ruleset_id}/publish", headers=ADMIN_HEADERS
+            ).status_code
+            == 200
+        )
 
         ruleset_v2 = client.post(
             "/guardrail-rulesets",
@@ -1048,20 +1207,31 @@ def test_agent_and_guardrail_activation_control_runtime_resolution() -> None:
             headers=ADMIN_HEADERS,
         )
         assert ruleset_v2.status_code == 200
-        assert client.post(f"/guardrail-rulesets/{ruleset_id}/publish", headers=ADMIN_HEADERS).status_code == 200
+        assert (
+            client.post(
+                f"/guardrail-rulesets/{ruleset_id}/publish", headers=ADMIN_HEADERS
+            ).status_code
+            == 200
+        )
 
         guardrail_current = store.guardrail_rulesets[ruleset_id]
         assert guardrail_current.published_revision_id
         assert guardrail_current.active_revision_id
         assert guardrail_current.active_revision_id != guardrail_current.published_revision_id
 
-        resolved_guardrail_before, _, _ = main_module._resolve_guardrail_config({"ruleset_id": ruleset_id})
+        resolved_guardrail_before, _, _ = main_module._resolve_guardrail_config(
+            {"ruleset_id": ruleset_id}
+        )
         assert resolved_guardrail_before["blocked_keywords"] == ["alpha"]
 
-        activate_ruleset = client.post(f"/guardrail-rulesets/{ruleset_id}/activate", headers=ADMIN_HEADERS)
+        activate_ruleset = client.post(
+            f"/guardrail-rulesets/{ruleset_id}/activate", headers=ADMIN_HEADERS
+        )
         assert activate_ruleset.status_code == 200
 
-        resolved_guardrail_after, _, _ = main_module._resolve_guardrail_config({"ruleset_id": ruleset_id})
+        resolved_guardrail_after, _, _ = main_module._resolve_guardrail_config(
+            {"ruleset_id": ruleset_id}
+        )
         assert resolved_guardrail_after["blocked_keywords"] == ["beta"]
 
         agent_v1 = client.post(
@@ -1077,7 +1247,10 @@ def test_agent_and_guardrail_activation_control_runtime_resolution() -> None:
             headers=ADMIN_HEADERS,
         )
         assert agent_v1.status_code == 200
-        assert client.post(f"/agent-definitions/{agent_id}/publish", headers=ADMIN_HEADERS).status_code == 200
+        assert (
+            client.post(f"/agent-definitions/{agent_id}/publish", headers=ADMIN_HEADERS).status_code
+            == 200
+        )
 
         agent_v2 = client.post(
             "/agent-definitions",
@@ -1092,7 +1265,10 @@ def test_agent_and_guardrail_activation_control_runtime_resolution() -> None:
             headers=ADMIN_HEADERS,
         )
         assert agent_v2.status_code == 200
-        assert client.post(f"/agent-definitions/{agent_id}/publish", headers=ADMIN_HEADERS).status_code == 200
+        assert (
+            client.post(f"/agent-definitions/{agent_id}/publish", headers=ADMIN_HEADERS).status_code
+            == 200
+        )
 
         agent_current = store.agent_definitions[agent_id]
         assert agent_current.published_revision_id
@@ -1104,7 +1280,9 @@ def test_agent_and_guardrail_activation_control_runtime_resolution() -> None:
         assert resolved_agent_before.name == "Runtime Agent v1"
         assert resolved_agent_before.config_json["system_prompt"] == "Use the first runtime prompt."
 
-        activate_agent = client.post(f"/agent-definitions/{agent_id}/activate", headers=ADMIN_HEADERS)
+        activate_agent = client.post(
+            f"/agent-definitions/{agent_id}/activate", headers=ADMIN_HEADERS
+        )
         assert activate_agent.status_code == 200
 
         resolved_agent_after = main_module._resolve_published_agent_definition(agent_id)
@@ -1121,7 +1299,9 @@ def test_agent_and_guardrail_activation_control_runtime_resolution() -> None:
 def test_memory_endpoint_loads_long_term_entries_into_short_term() -> None:
     session_id = "session:tester"
     store.memory_by_session[session_id] = []
-    main_module._POSTGRES_MEMORY.clear_entries(bucket_id=session_id, session_id=session_id, memory_scope="session")
+    main_module._POSTGRES_MEMORY.clear_entries(
+        bucket_id=session_id, session_id=session_id, memory_scope="session"
+    )
     main_module._POSTGRES_MEMORY.append_entry(
         bucket_id=session_id,
         session_id=session_id,
@@ -1135,7 +1315,9 @@ def test_memory_endpoint_loads_long_term_entries_into_short_term() -> None:
     body = response.json()
     assert body["long_term_count"] == 1
     assert any("weekly update cadence" in entry["content"] for entry in body["entries"])
-    assert any("weekly update cadence" in entry["content"] for entry in store.memory_by_session[session_id])
+    assert any(
+        "weekly update cadence" in entry["content"] for entry in store.memory_by_session[session_id]
+    )
 
 
 def test_memory_node_append_persists_short_and_long_term_memory() -> None:
@@ -1155,10 +1337,16 @@ def test_memory_node_append_persists_short_and_long_term_memory() -> None:
 
     assert result["memory_state"]["entries"] >= 1
     assert any("SOC 2 evidence" in entry["content"] for entry in store.memory_by_session[bucket_id])
-    long_term_entries = main_module._POSTGRES_MEMORY.get_entries(bucket_id=bucket_id, memory_scope="agent", limit=10)
+    long_term_entries = main_module._POSTGRES_MEMORY.get_entries(
+        bucket_id=bucket_id, memory_scope="agent", limit=10
+    )
     assert any("SOC 2 evidence" in entry["content"] for entry in long_term_entries)
-    consolidation_candidates = main_module._POSTGRES_MEMORY.list_consolidation_candidates(bucket_id=bucket_id, memory_scope="agent")
-    assert any("SOC 2 evidence" in str(entry.get("content") or "") for entry in consolidation_candidates)
+    consolidation_candidates = main_module._POSTGRES_MEMORY.list_consolidation_candidates(
+        bucket_id=bucket_id, memory_scope="agent"
+    )
+    assert any(
+        "SOC 2 evidence" in str(entry.get("content") or "") for entry in consolidation_candidates
+    )
 
 
 def test_task_learning_persists_agent_memory_entry() -> None:
@@ -1176,10 +1364,14 @@ def test_task_learning_persists_agent_memory_entry() -> None:
         requested_tags=["memory", "learning"],
     )
 
-    learned_entries = main_module._POSTGRES_MEMORY.get_entries(bucket_id=f"agent:{agent_id}", memory_scope="agent", limit=10)
+    learned_entries = main_module._POSTGRES_MEMORY.get_entries(
+        bucket_id=f"agent:{agent_id}", memory_scope="agent", limit=10
+    )
     assert learned_entries
     assert any("Acme prefers weekly status emails" in entry["content"] for entry in learned_entries)
-    consolidation_candidates = main_module._POSTGRES_MEMORY.list_consolidation_candidates(bucket_id=f"agent:{agent_id}", memory_scope="agent")
+    consolidation_candidates = main_module._POSTGRES_MEMORY.list_consolidation_candidates(
+        bucket_id=f"agent:{agent_id}", memory_scope="agent"
+    )
     assert any(entry.get("candidate_kind") == "task-learning" for entry in consolidation_candidates)
 
 
@@ -1197,24 +1389,35 @@ def test_memory_consolidation_processor_generates_summary_and_marks_candidates()
     )
     main_module._memory_append_entry(
         bucket_id,
-        {"id": "mem-2", "content": "Acme also wants proposal packets to include recent SOC 2 evidence."},
+        {
+            "id": "mem-2",
+            "content": "Acme also wants proposal packets to include recent SOC 2 evidence.",
+        },
         memory_scope="agent",
         source="memory-node",
     )
 
-    result = main_module._run_memory_consolidation(actor="tester", bucket_id=bucket_id, memory_scope="agent", limit=10)
+    result = main_module._run_memory_consolidation(
+        actor="tester", bucket_id=bucket_id, memory_scope="agent", limit=10
+    )
 
     assert result["ok"] is True
     assert result["status"] == "processed"
     assert result["consolidated_candidates"] >= 2
     assert result["generated_entries"]
-    assert any("Consolidated memory summary" in entry["content"] for entry in result["generated_entries"])
+    assert any(
+        "Consolidated memory summary" in entry["content"] for entry in result["generated_entries"]
+    )
     assert any(entry.get("world_graph_projection") for entry in result["generated_entries"])
 
-    long_term_entries = main_module._POSTGRES_MEMORY.get_entries(bucket_id=bucket_id, memory_scope="agent", limit=20)
+    long_term_entries = main_module._POSTGRES_MEMORY.get_entries(
+        bucket_id=bucket_id, memory_scope="agent", limit=20
+    )
     assert any(entry.get("kind") == "memory-consolidation" for entry in long_term_entries)
 
-    candidates = main_module._POSTGRES_MEMORY.list_consolidation_candidates(bucket_id=bucket_id, memory_scope="agent", status="consolidated")
+    candidates = main_module._POSTGRES_MEMORY.list_consolidation_candidates(
+        bucket_id=bucket_id, memory_scope="agent", status="consolidated"
+    )
     assert len(candidates) >= 2
     assert len(main_module._NEO4J_GRAPH.memory_projections) >= 1
     assert any(
@@ -1231,13 +1434,19 @@ def test_internal_memory_consolidation_endpoint_runs_processor() -> None:
 
     main_module._memory_append_entry(
         bucket_id,
-        {"id": "wf-mem-1", "content": "Ops workflow should escalate Sev-1 incidents to humans within five minutes."},
+        {
+            "id": "wf-mem-1",
+            "content": "Ops workflow should escalate Sev-1 incidents to humans within five minutes.",
+        },
         memory_scope="workflow",
         source="memory-node",
     )
     main_module._memory_append_entry(
         bucket_id,
-        {"id": "wf-mem-2", "content": "The same workflow should notify the incident commander immediately after the human escalation."},
+        {
+            "id": "wf-mem-2",
+            "content": "The same workflow should notify the incident commander immediately after the human escalation.",
+        },
         memory_scope="workflow",
         source="memory-node",
     )
@@ -1254,7 +1463,9 @@ def test_internal_memory_consolidation_endpoint_runs_processor() -> None:
     body = response.json()
     assert body["ok"] is True
     assert body["processed_candidates"] >= 1
-    assert any("summary" in str(entry.get("content") or "").lower() for entry in body["generated_entries"])
+    assert any(
+        "summary" in str(entry.get("content") or "").lower() for entry in body["generated_entries"]
+    )
     assert len(main_module._NEO4J_GRAPH.memory_projections) >= 1
 
 
@@ -1265,16 +1476,23 @@ def test_memory_consolidation_defers_when_evidence_threshold_not_met() -> None:
 
     main_module._memory_append_entry(
         bucket_id,
-        {"id": "defer-1", "content": "Capture that weekly executive reports should mention control drift."},
+        {
+            "id": "defer-1",
+            "content": "Capture that weekly executive reports should mention control drift.",
+        },
         memory_scope="agent",
         source="memory-node",
     )
 
-    result = main_module._run_memory_consolidation(actor="tester", bucket_id=bucket_id, memory_scope="agent", limit=10)
+    result = main_module._run_memory_consolidation(
+        actor="tester", bucket_id=bucket_id, memory_scope="agent", limit=10
+    )
 
     assert result["ok"] is True
     assert result["generated_entries"] == []
-    deferred_candidates = main_module._POSTGRES_MEMORY.list_consolidation_candidates(bucket_id=bucket_id, memory_scope="agent", status="deferred")
+    deferred_candidates = main_module._POSTGRES_MEMORY.list_consolidation_candidates(
+        bucket_id=bucket_id, memory_scope="agent", status="deferred"
+    )
     assert len(deferred_candidates) == 1
     assert deferred_candidates[0]["metadata"].get("reason") == "insufficient_evidence"
 
@@ -1290,37 +1508,55 @@ def test_memory_consolidation_skips_duplicate_summaries() -> None:
     try:
         main_module._memory_append_entry(
             bucket_id,
-            {"id": "dup-1", "content": "Acme requires weekly executive reports with control drift highlights."},
+            {
+                "id": "dup-1",
+                "content": "Acme requires weekly executive reports with control drift highlights.",
+            },
             memory_scope="agent",
             source="memory-node",
         )
         main_module._memory_append_entry(
             bucket_id,
-            {"id": "dup-2", "content": "Acme wants weekly executive reports that call out control drift and risks."},
+            {
+                "id": "dup-2",
+                "content": "Acme wants weekly executive reports that call out control drift and risks.",
+            },
             memory_scope="agent",
             source="memory-node",
         )
 
-        first_result = main_module._run_memory_consolidation(actor="tester", bucket_id=bucket_id, memory_scope="agent", limit=10)
+        first_result = main_module._run_memory_consolidation(
+            actor="tester", bucket_id=bucket_id, memory_scope="agent", limit=10
+        )
         assert len(first_result["generated_entries"]) == 1
 
         main_module._memory_append_entry(
             bucket_id,
-            {"id": "dup-3", "content": "Weekly executive reports should keep calling out control drift for Acme leadership."},
+            {
+                "id": "dup-3",
+                "content": "Weekly executive reports should keep calling out control drift for Acme leadership.",
+            },
             memory_scope="agent",
             source="memory-node",
         )
         main_module._memory_append_entry(
             bucket_id,
-            {"id": "dup-4", "content": "Leadership updates for Acme must continue to include control drift highlights each week."},
+            {
+                "id": "dup-4",
+                "content": "Leadership updates for Acme must continue to include control drift highlights each week.",
+            },
             memory_scope="agent",
             source="memory-node",
         )
 
-        second_result = main_module._run_memory_consolidation(actor="tester", bucket_id=bucket_id, memory_scope="agent", limit=10)
+        second_result = main_module._run_memory_consolidation(
+            actor="tester", bucket_id=bucket_id, memory_scope="agent", limit=10
+        )
         assert second_result["generated_entries"] == []
 
-        duplicate_candidates = main_module._POSTGRES_MEMORY.list_consolidation_candidates(bucket_id=bucket_id, memory_scope="agent", status="duplicate")
+        duplicate_candidates = main_module._POSTGRES_MEMORY.list_consolidation_candidates(
+            bucket_id=bucket_id, memory_scope="agent", status="duplicate"
+        )
         assert len(duplicate_candidates) >= 2
     finally:
         if original_overlap is None:
@@ -1382,22 +1618,34 @@ def test_hybrid_memory_context_includes_world_graph_results() -> None:
 
     main_module._memory_append_entry(
         bucket_id,
-        {"id": "hyb-1", "content": "Acme needs executive updates to highlight control drift and SOC 2 status."},
+        {
+            "id": "hyb-1",
+            "content": "Acme needs executive updates to highlight control drift and SOC 2 status.",
+        },
         memory_scope="agent",
         source="memory-node",
     )
     main_module._memory_append_entry(
         bucket_id,
-        {"id": "hyb-2", "content": "Acme also expects proposal packets to include recent SOC 2 evidence."},
+        {
+            "id": "hyb-2",
+            "content": "Acme also expects proposal packets to include recent SOC 2 evidence.",
+        },
         memory_scope="agent",
         source="memory-node",
     )
-    main_module._run_memory_consolidation(actor="tester", bucket_id=bucket_id, memory_scope="agent", limit=10)
+    main_module._run_memory_consolidation(
+        actor="tester", bucket_id=bucket_id, memory_scope="agent", limit=10
+    )
 
-    hybrid = main_module._memory_get_hybrid_context(bucket_id, limit=20, memory_scope="agent", query_text="SOC 2")
+    hybrid = main_module._memory_get_hybrid_context(
+        bucket_id, limit=20, memory_scope="agent", query_text="SOC 2"
+    )
     assert hybrid["entries"]
     assert hybrid["world_graph_entries"]
-    assert any("SOC 2" in str(entry.get("content") or "") for entry in hybrid["world_graph_entries"])
+    assert any(
+        "SOC 2" in str(entry.get("content") or "") for entry in hybrid["world_graph_entries"]
+    )
     assert hybrid["world_graph_topics"]
 
 
@@ -1409,17 +1657,25 @@ def test_memory_read_returns_world_graph_context() -> None:
 
     main_module._memory_append_entry(
         bucket_id,
-        {"id": "read-1", "content": "Incident workflows must notify the incident commander immediately."},
+        {
+            "id": "read-1",
+            "content": "Incident workflows must notify the incident commander immediately.",
+        },
         memory_scope="workflow",
         source="memory-node",
     )
     main_module._memory_append_entry(
         bucket_id,
-        {"id": "read-2", "content": "Incident workflows should escalate Sev-1 cases to humans within five minutes."},
+        {
+            "id": "read-2",
+            "content": "Incident workflows should escalate Sev-1 cases to humans within five minutes.",
+        },
         memory_scope="workflow",
         source="memory-node",
     )
-    main_module._run_memory_consolidation(actor="tester", bucket_id=bucket_id, memory_scope="workflow", limit=10)
+    main_module._run_memory_consolidation(
+        actor="tester", bucket_id=bucket_id, memory_scope="workflow", limit=10
+    )
 
     result, _meta = main_module._run_framework_memory(
         engine="native",
@@ -1489,7 +1745,10 @@ def test_definition_mutations_require_auth_when_enabled_and_emit_audit_events() 
             },
         )
         assert unauthorized_response.status_code == 401
-        assert any(event.action == "workflow.definition.save" and event.outcome == "blocked" for event in store.audit_events)
+        assert any(
+            event.action == "workflow.definition.save" and event.outcome == "blocked"
+            for event in store.audit_events
+        )
 
         authorized_response = client.post(
             "/workflow-definitions",
@@ -1509,8 +1768,16 @@ def test_definition_mutations_require_auth_when_enabled_and_emit_audit_events() 
         )
         assert publish_response.status_code == 200
 
-        save_events = [event for event in store.audit_events if event.action == "workflow.definition.save" and event.outcome == "allowed"]
-        publish_events = [event for event in store.audit_events if event.action == "workflow.definition.publish" and event.outcome == "allowed"]
+        save_events = [
+            event
+            for event in store.audit_events
+            if event.action == "workflow.definition.save" and event.outcome == "allowed"
+        ]
+        publish_events = [
+            event
+            for event in store.audit_events
+            if event.action == "workflow.definition.publish" and event.outcome == "allowed"
+        ]
         assert save_events
         assert publish_events
         assert save_events[0].metadata.get("entity_type") == "workflow_definition"
@@ -1579,7 +1846,10 @@ def test_integration_mutations_require_auth_and_emit_audit_events() -> None:
             },
         )
         assert unauthorized_response.status_code == 401
-        assert any(event.action == "integration.save" and event.outcome == "blocked" for event in store.audit_events)
+        assert any(
+            event.action == "integration.save" and event.outcome == "blocked"
+            for event in store.audit_events
+        )
 
         authorized_response = client.post(
             "/integrations",
@@ -1605,9 +1875,18 @@ def test_integration_mutations_require_auth_and_emit_audit_events() -> None:
         )
         assert delete_response.status_code == 200
 
-        assert any(event.action == "integration.save" and event.outcome == "allowed" for event in store.audit_events)
-        assert any(event.action == "integration.test" and event.outcome == "allowed" for event in store.audit_events)
-        assert any(event.action == "integration.delete" and event.outcome == "allowed" for event in store.audit_events)
+        assert any(
+            event.action == "integration.save" and event.outcome == "allowed"
+            for event in store.audit_events
+        )
+        assert any(
+            event.action == "integration.test" and event.outcome == "allowed"
+            for event in store.audit_events
+        )
+        assert any(
+            event.action == "integration.delete" and event.outcome == "allowed"
+            for event in store.audit_events
+        )
     finally:
         store.platform_settings.require_authenticated_requests = original_require_auth
         store.integrations.pop(integration_id, None)
@@ -1675,9 +1954,18 @@ def test_template_and_collaboration_mutations_require_auth_and_emit_audit_events
         )
         assert sync_response.status_code == 200
 
-        assert any(event.action == "template.agent.instantiate" and event.outcome == "allowed" for event in store.audit_events)
-        assert any(event.action == "collab.session.join" and event.outcome == "allowed" for event in store.audit_events)
-        assert any(event.action == "collab.session.sync" and event.outcome == "allowed" for event in store.audit_events)
+        assert any(
+            event.action == "template.agent.instantiate" and event.outcome == "allowed"
+            for event in store.audit_events
+        )
+        assert any(
+            event.action == "collab.session.join" and event.outcome == "allowed"
+            for event in store.audit_events
+        )
+        assert any(
+            event.action == "collab.session.sync" and event.outcome == "allowed"
+            for event in store.audit_events
+        )
     finally:
         store.platform_settings.require_authenticated_requests = original_require_auth
         store.agent_templates.pop(template_id, None)
@@ -1720,14 +2008,31 @@ def test_sensitive_read_routes_require_auth_when_enabled() -> None:
         assert client.get(f"/memory/{session_id}", headers=headers).status_code == 200
         assert client.get("/audit/events", headers=headers).status_code == 403
         assert client.get("/audit/events", headers=ADMIN_HEADERS).status_code == 200
-        assert client.get(f"/collab/sessions/{collab_session.id}", headers=headers).status_code == 200
+        assert (
+            client.get(f"/collab/sessions/{collab_session.id}", headers=headers).status_code == 200
+        )
         assert client.delete(f"/memory/{session_id}", headers=headers).status_code == 200
 
-        assert any(event.action == "platform.settings.read" and event.outcome == "allowed" for event in store.audit_events)
-        assert any(event.action == "memory.read" and event.outcome == "allowed" for event in store.audit_events)
-        assert any(event.action == "audit.events.read" and event.outcome == "allowed" for event in store.audit_events)
-        assert any(event.action == "collab.session.read" and event.outcome == "allowed" for event in store.audit_events)
-        assert any(event.action == "memory.clear" and event.outcome == "allowed" for event in store.audit_events)
+        assert any(
+            event.action == "platform.settings.read" and event.outcome == "allowed"
+            for event in store.audit_events
+        )
+        assert any(
+            event.action == "memory.read" and event.outcome == "allowed"
+            for event in store.audit_events
+        )
+        assert any(
+            event.action == "audit.events.read" and event.outcome == "allowed"
+            for event in store.audit_events
+        )
+        assert any(
+            event.action == "collab.session.read" and event.outcome == "allowed"
+            for event in store.audit_events
+        )
+        assert any(
+            event.action == "memory.clear" and event.outcome == "allowed"
+            for event in store.audit_events
+        )
     finally:
         store.platform_settings.require_authenticated_requests = original_require_auth
         store.audit_events = original_audit_events
@@ -1753,11 +2058,19 @@ def test_secure_local_mode_fail_closes_sensitive_diagnostics(monkeypatch) -> Non
         headers = AUTH_HEADERS
         assert client.get("/platform/security-policy", headers=headers).status_code == 200
         assert client.get("/runtime/providers", headers=headers).status_code == 200
-        assert client.get("/runtime/local-integration-readiness", headers=headers).status_code == 200
+        assert (
+            client.get("/runtime/local-integration-readiness", headers=headers).status_code == 200
+        )
         assert client.get("/runtime/l3-parity-report", headers=headers).status_code == 200
 
-        assert any(event.action == "platform.security_policy.read" and event.outcome == "blocked" for event in store.audit_events)
-        assert any(event.action == "runtime.providers.read" and event.outcome == "allowed" for event in store.audit_events)
+        assert any(
+            event.action == "platform.security_policy.read" and event.outcome == "blocked"
+            for event in store.audit_events
+        )
+        assert any(
+            event.action == "runtime.providers.read" and event.outcome == "allowed"
+            for event in store.audit_events
+        )
     finally:
         store.platform_settings.require_authenticated_requests = original_require_auth
         store.audit_events = original_audit_events
@@ -1783,7 +2096,10 @@ def test_secure_local_mode_keeps_public_health_minimal_and_gates_details(monkeyp
         detailed_health = client.get("/healthz/details", headers=AUTH_HEADERS)
         assert detailed_health.status_code == 200
         assert "postgres" in detailed_health.json()
-        assert any(event.action == "health.details.read" and event.outcome == "allowed" for event in store.audit_events)
+        assert any(
+            event.action == "health.details.read" and event.outcome == "allowed"
+            for event in store.audit_events
+        )
     finally:
         store.platform_settings.require_authenticated_requests = original_require_auth
         store.audit_events = original_audit_events
@@ -1892,7 +2208,9 @@ def test_signed_a2a_nonce_replay_survives_in_memory_reset_with_redis_cache(monke
         store.a2a_seen_nonces = original_seen_nonces
 
 
-def test_signed_a2a_nonce_replay_survives_restart_via_state_snapshot_when_redis_unavailable(monkeypatch) -> None:
+def test_signed_a2a_nonce_replay_survives_restart_via_state_snapshot_when_redis_unavailable(
+    monkeypatch,
+) -> None:
     original_require_auth = store.platform_settings.require_authenticated_requests
     original_seen_nonces = dict(store.a2a_seen_nonces)
     original_redis_enabled = main_module._REDIS_MEMORY.enabled
@@ -1946,12 +2264,17 @@ def test_signed_a2a_json_requests_require_raw_request_body_for_signature_verific
             request,
             subject="backend",
             nonce="raw-body-nonce",
-            signature=main_module._build_runtime_signature("backend", "raw-body-nonce", "corr-raw-body", payload_bytes),
+            signature=main_module._build_runtime_signature(
+                "backend", "raw-body-nonce", "corr-raw-body", payload_bytes
+            ),
             payload=payload,
         )
 
     assert missing_raw_body.value.status_code == 401
-    assert missing_raw_body.value.detail == "Signed A2A request body must be verified from raw request bytes"
+    assert (
+        missing_raw_body.value.detail
+        == "Signed A2A request body must be verified from raw request bytes"
+    )
 
 
 def test_runtime_profile_local_secure_matches_fail_closed_local_behavior(monkeypatch) -> None:
@@ -2002,7 +2325,12 @@ def test_runtime_profile_hosted_is_immutable_and_requires_a2a_headers(monkeypatc
         assert "postgres" not in public_health.json()
 
         assert client.get("/platform/security-policy").status_code == 401
-        assert client.get("/platform/security-policy", headers={"x-frontier-actor": "tester"}).status_code == 401
+        assert (
+            client.get(
+                "/platform/security-policy", headers={"x-frontier-actor": "tester"}
+            ).status_code
+            == 401
+        )
 
         hosted_headers = _signed_internal_headers(nonce="hosted-profile-nonce-1")
         allowed = client.get("/platform/security-policy", headers=hosted_headers)
@@ -2043,9 +2371,15 @@ def test_security_headers_are_applied_from_shared_policy() -> None:
     assert response.status_code == 200
     assert response.headers["x-content-type-options"] == "nosniff"
     assert response.headers["x-frame-options"] == "DENY"
-    assert response.headers["content-security-policy"] == "default-src 'none'; frame-ancestors 'none'; base-uri 'none'"
+    assert (
+        response.headers["content-security-policy"]
+        == "default-src 'none'; frame-ancestors 'none'; base-uri 'none'"
+    )
     assert response.headers["referrer-policy"] == "no-referrer"
-    assert response.headers["permissions-policy"] == "camera=(), microphone=(), geolocation=(), browsing-topics=()"
+    assert (
+        response.headers["permissions-policy"]
+        == "camera=(), microphone=(), geolocation=(), browsing-topics=()"
+    )
 
 
 def test_hosted_runtime_profile_adds_hsts_header(monkeypatch) -> None:
@@ -2083,7 +2417,12 @@ def test_central_route_policy_protects_previously_unenforced_read_surfaces() -> 
             header_only = client.get(path, headers={"x-frontier-actor": "tester"})
             assert header_only.status_code == 401, path
 
-            authorized = client.get(path, headers=ADMIN_HEADERS if path in {"/templates/agents", "/observability/dashboard"} else AUTH_HEADERS)
+            authorized = client.get(
+                path,
+                headers=ADMIN_HEADERS
+                if path in {"/templates/agents", "/observability/dashboard"}
+                else AUTH_HEADERS,
+            )
             assert authorized.status_code == 200, path
     finally:
         store.platform_settings.require_authenticated_requests = original_require_auth
@@ -2173,12 +2512,24 @@ def test_inbox_and_artifacts_are_scoped_by_run_owner_when_auth_required() -> Non
             progressLabel="Awaiting review",
         )
         store.run_details[owner_run_id] = {
-            "artifacts": [{"id": owner_artifact_id, "name": "Owner Artifact", "status": "Needs Review", "version": 1}],
+            "artifacts": [
+                {
+                    "id": owner_artifact_id,
+                    "name": "Owner Artifact",
+                    "status": "Needs Review",
+                    "version": 1,
+                }
+            ],
             "status": "Needs Review",
             "graph": {"nodes": [], "links": []},
             "agent_traces": [{"output": "owner artifact body"}],
             "response_text": "owner artifact body",
-            "approvals": {"required": True, "pending": True, "artifact_id": owner_artifact_id, "version": 1},
+            "approvals": {
+                "required": True,
+                "pending": True,
+                "artifact_id": owner_artifact_id,
+                "version": 1,
+            },
             "access": _run_access("tester"),
         }
         store.run_events[owner_run_id] = [
@@ -2200,12 +2551,24 @@ def test_inbox_and_artifacts_are_scoped_by_run_owner_when_auth_required() -> Non
             progressLabel="Awaiting review",
         )
         store.run_details[other_run_id] = {
-            "artifacts": [{"id": other_artifact_id, "name": "Foreign Artifact", "status": "Needs Review", "version": 1}],
+            "artifacts": [
+                {
+                    "id": other_artifact_id,
+                    "name": "Foreign Artifact",
+                    "status": "Needs Review",
+                    "version": 1,
+                }
+            ],
             "status": "Needs Review",
             "graph": {"nodes": [], "links": []},
             "agent_traces": [{"output": "foreign artifact body"}],
             "response_text": "foreign artifact body",
-            "approvals": {"required": True, "pending": True, "artifact_id": other_artifact_id, "version": 1},
+            "approvals": {
+                "required": True,
+                "pending": True,
+                "artifact_id": other_artifact_id,
+                "version": 1,
+            },
             "access": _run_access("member-user"),
         }
         store.run_events[other_run_id] = [
@@ -2271,7 +2634,9 @@ def test_inbox_and_artifacts_are_scoped_by_run_owner_when_auth_required() -> Non
         store.run_details.pop(other_run_id, None)
         store.run_events.pop(owner_run_id, None)
         store.run_events.pop(other_run_id, None)
-        store.inbox = [item for item in store.inbox if item.id not in {owner_inbox_id, other_inbox_id}]
+        store.inbox = [
+            item for item in store.inbox if item.id not in {owner_inbox_id, other_inbox_id}
+        ]
 
 
 def test_run_mutations_require_owner_or_builder_when_auth_required() -> None:
@@ -2290,11 +2655,24 @@ def test_run_mutations_require_owner_or_builder_when_auth_required() -> None:
             progressLabel="Awaiting approval",
         )
         store.run_details[run_id] = {
-            "artifacts": [{"id": artifact_id, "name": "Approval Artifact", "status": "Needs Review", "version": 1}],
+            "artifacts": [
+                {
+                    "id": artifact_id,
+                    "name": "Approval Artifact",
+                    "status": "Needs Review",
+                    "version": 1,
+                }
+            ],
             "status": "Needs Review",
             "graph": {"nodes": [], "links": []},
             "agent_traces": [],
-            "approvals": {"required": True, "pending": True, "artifact_id": artifact_id, "version": 1, "scope": "final send/export"},
+            "approvals": {
+                "required": True,
+                "pending": True,
+                "artifact_id": artifact_id,
+                "version": 1,
+                "scope": "final send/export",
+            },
             "access": _run_access("tester"),
         }
         store.run_events[run_id] = []
@@ -2341,7 +2719,9 @@ def test_run_mutations_require_owner_or_builder_when_auth_required() -> None:
             ),
         )
 
-        denied_archive = client.post(f"/workflow-runs/{run_id}/archive", headers=MEMBER_AUTH_HEADERS)
+        denied_archive = client.post(
+            f"/workflow-runs/{run_id}/archive", headers=MEMBER_AUTH_HEADERS
+        )
         assert denied_archive.status_code == 403
 
         allowed_archive = client.post(f"/workflow-runs/{run_id}/archive", headers=ADMIN_HEADERS)
@@ -2417,14 +2797,22 @@ def test_admin_only_mutation_routes_block_non_admin_and_allow_admin(monkeypatch)
         store.platform_settings.require_authenticated_requests = False
         denied_agent = client.post(
             "/agent-definitions",
-            json={"id": agent_id, "name": "Blocked Agent", "config_json": {"graph_json": _sample_graph()}},
+            json={
+                "id": agent_id,
+                "name": "Blocked Agent",
+                "config_json": {"graph_json": _sample_graph()},
+            },
             headers=MEMBER_AUTH_HEADERS,
         )
         assert denied_agent.status_code == 403
 
         denied_ruleset = client.post(
             "/guardrail-rulesets",
-            json={"id": ruleset_id, "name": "Blocked Ruleset", "config_json": {"tripwire_action": "reject_content"}},
+            json={
+                "id": ruleset_id,
+                "name": "Blocked Ruleset",
+                "config_json": {"tripwire_action": "reject_content"},
+            },
             headers=MEMBER_AUTH_HEADERS,
         )
         assert denied_ruleset.status_code == 403
@@ -2438,14 +2826,22 @@ def test_admin_only_mutation_routes_block_non_admin_and_allow_admin(monkeypatch)
 
         allowed_agent = client.post(
             "/agent-definitions",
-            json={"id": agent_id, "name": "Allowed Agent", "config_json": {"graph_json": _sample_graph()}},
+            json={
+                "id": agent_id,
+                "name": "Allowed Agent",
+                "config_json": {"graph_json": _sample_graph()},
+            },
             headers=ADMIN_HEADERS,
         )
         assert allowed_agent.status_code == 200
 
         allowed_ruleset = client.post(
             "/guardrail-rulesets",
-            json={"id": ruleset_id, "name": "Allowed Ruleset", "config_json": {"tripwire_action": "reject_content"}},
+            json={
+                "id": ruleset_id,
+                "name": "Allowed Ruleset",
+                "config_json": {"tripwire_action": "reject_content"},
+            },
             headers=ADMIN_HEADERS,
         )
         assert allowed_ruleset.status_code == 200
@@ -2521,7 +2917,9 @@ def test_builder_routes_require_builder_capability_in_secure_mode(monkeypatch) -
         store.workflow_definition_revisions.pop(workflow_id, None)
 
 
-def test_auth_session_reports_bootstrap_admin_capabilities_from_claim_references(monkeypatch) -> None:
+def test_auth_session_reports_bootstrap_admin_capabilities_from_claim_references(
+    monkeypatch,
+) -> None:
     original_require_auth = store.platform_settings.require_authenticated_requests
     admin_token = mint_token(
         "bootstrap-admin-subject",
@@ -2542,7 +2940,9 @@ def test_auth_session_reports_bootstrap_admin_capabilities_from_claim_references
         monkeypatch.setenv("FRONTIER_AUTH_OIDC_PROVIDER", "casdoor")
         monkeypatch.setenv("FRONTIER_AUTH_OIDC_ISSUER", "http://casdoor.localhost")
         monkeypatch.setenv("FRONTIER_AUTH_OIDC_AUDIENCE", "frontier-ui")
-        monkeypatch.setenv("FRONTIER_AUTH_OIDC_JWKS_URL", "http://casdoor.localhost/.well-known/jwks.json")
+        monkeypatch.setenv(
+            "FRONTIER_AUTH_OIDC_JWKS_URL", "http://casdoor.localhost/.well-known/jwks.json"
+        )
 
         response = client.get(
             "/auth/session",
@@ -2562,7 +2962,9 @@ def test_auth_session_reports_bootstrap_admin_capabilities_from_claim_references
         store.platform_settings.require_authenticated_requests = original_require_auth
 
 
-def test_auth_session_treats_local_oidc_operator_as_bootstrap_admin_when_enabled(monkeypatch) -> None:
+def test_auth_session_treats_local_oidc_operator_as_bootstrap_admin_when_enabled(
+    monkeypatch,
+) -> None:
     original_require_auth = store.platform_settings.require_authenticated_requests
     operator_token = mint_token(
         "different-local-operator",
@@ -2582,11 +2984,15 @@ def test_auth_session_treats_local_oidc_operator_as_bootstrap_admin_when_enabled
         monkeypatch.setenv("FRONTIER_AUTH_OIDC_PROVIDER", "casdoor")
         monkeypatch.setenv("FRONTIER_AUTH_OIDC_ISSUER", "http://casdoor.localhost")
         monkeypatch.setenv("FRONTIER_AUTH_OIDC_AUDIENCE", "frontier-ui")
-        monkeypatch.setenv("FRONTIER_AUTH_OIDC_JWKS_URL", "http://casdoor.localhost/.well-known/jwks.json")
+        monkeypatch.setenv(
+            "FRONTIER_AUTH_OIDC_JWKS_URL", "http://casdoor.localhost/.well-known/jwks.json"
+        )
         monkeypatch.setenv("FRONTIER_ADMIN_ACTORS", "frontier-admin,admin@frontier.localhost")
         monkeypatch.setenv("FRONTIER_BUILDER_ACTORS", "frontier-admin,admin@frontier.localhost")
 
-        response = client.get("/auth/session", headers={"authorization": f"Bearer {operator_token}"})
+        response = client.get(
+            "/auth/session", headers={"authorization": f"Bearer {operator_token}"}
+        )
         assert response.status_code == 200
         body = response.json()
         assert body["authenticated"] is True
@@ -2623,7 +3029,9 @@ def test_local_password_login_sets_cookie_and_authenticates_session(monkeypatch)
         monkeypatch.setenv("FRONTIER_AUTH_OIDC_PROVIDER", "casdoor")
         monkeypatch.setenv("FRONTIER_AUTH_OIDC_ISSUER", "http://casdoor.localhost")
         monkeypatch.setenv("FRONTIER_AUTH_OIDC_AUDIENCE", "frontier-ui")
-        monkeypatch.setenv("FRONTIER_AUTH_OIDC_JWKS_URL", "http://casdoor.localhost/.well-known/jwks.json")
+        monkeypatch.setenv(
+            "FRONTIER_AUTH_OIDC_JWKS_URL", "http://casdoor.localhost/.well-known/jwks.json"
+        )
         monkeypatch.setattr(
             main_module,
             "_authenticate_local_casdoor_user",
@@ -2642,7 +3050,9 @@ def test_local_password_login_sets_cookie_and_authenticates_session(monkeypatch)
                 json={"username": "frontier-admin", "password": "correct horse battery staple"},
             )
             assert login.status_code == 200
-            assert main_module._operator_session_cookie_name() in login.headers.get("set-cookie", "")
+            assert main_module._operator_session_cookie_name() in login.headers.get(
+                "set-cookie", ""
+            )
 
             session = local_client.get("/auth/session")
             assert session.status_code == 200
@@ -2666,7 +3076,9 @@ def test_local_password_register_creates_member_session(monkeypatch) -> None:
         monkeypatch.setenv("FRONTIER_AUTH_OIDC_PROVIDER", "casdoor")
         monkeypatch.setenv("FRONTIER_AUTH_OIDC_ISSUER", "http://casdoor.localhost")
         monkeypatch.setenv("FRONTIER_AUTH_OIDC_AUDIENCE", "frontier-ui")
-        monkeypatch.setenv("FRONTIER_AUTH_OIDC_JWKS_URL", "http://casdoor.localhost/.well-known/jwks.json")
+        monkeypatch.setenv(
+            "FRONTIER_AUTH_OIDC_JWKS_URL", "http://casdoor.localhost/.well-known/jwks.json"
+        )
         monkeypatch.setattr(
             main_module,
             "_provision_local_casdoor_user",
@@ -2714,7 +3126,9 @@ def test_local_password_logout_clears_operator_session_cookie(monkeypatch) -> No
         monkeypatch.setenv("FRONTIER_AUTH_OIDC_PROVIDER", "casdoor")
         monkeypatch.setenv("FRONTIER_AUTH_OIDC_ISSUER", "http://casdoor.localhost")
         monkeypatch.setenv("FRONTIER_AUTH_OIDC_AUDIENCE", "frontier-ui")
-        monkeypatch.setenv("FRONTIER_AUTH_OIDC_JWKS_URL", "http://casdoor.localhost/.well-known/jwks.json")
+        monkeypatch.setenv(
+            "FRONTIER_AUTH_OIDC_JWKS_URL", "http://casdoor.localhost/.well-known/jwks.json"
+        )
         monkeypatch.setattr(
             main_module,
             "_authenticate_local_casdoor_user",
@@ -2728,10 +3142,13 @@ def test_local_password_logout_clears_operator_session_cookie(monkeypatch) -> No
         )
 
         with TestClient(app, base_url="http://localhost") as local_client:
-            assert local_client.post(
-                "/auth/login",
-                json={"username": "frontier-admin", "password": "correct horse battery staple"},
-            ).status_code == 200
+            assert (
+                local_client.post(
+                    "/auth/login",
+                    json={"username": "frontier-admin", "password": "correct horse battery staple"},
+                ).status_code
+                == 200
+            )
             assert local_client.get("/auth/session").status_code == 200
 
             logout = local_client.post("/auth/logout")
@@ -2744,13 +3161,19 @@ def test_local_password_logout_clears_operator_session_cookie(monkeypatch) -> No
         client.cookies.clear()
 
 
-def test_authenticate_local_casdoor_user_accepts_malformed_login_payload_when_account_session_exists(monkeypatch) -> None:
+def test_authenticate_local_casdoor_user_accepts_malformed_login_payload_when_account_session_exists(
+    monkeypatch,
+) -> None:
     monkeypatch.setenv("FRONTIER_RUNTIME_PROFILE", "local-secure")
     monkeypatch.setenv("FRONTIER_AUTH_OIDC_PROVIDER", "casdoor")
     monkeypatch.setenv("FRONTIER_AUTH_OIDC_ISSUER", "http://casdoor.localhost")
     monkeypatch.setenv("FRONTIER_AUTH_OIDC_AUDIENCE", "frontier-ui")
-    monkeypatch.setenv("FRONTIER_AUTH_OIDC_JWKS_URL", "http://casdoor.localhost/.well-known/jwks.json")
-    monkeypatch.setattr(main_module, "_casdoor_http_base_candidates", lambda: [("http://casdoor:8000", {})])
+    monkeypatch.setenv(
+        "FRONTIER_AUTH_OIDC_JWKS_URL", "http://casdoor.localhost/.well-known/jwks.json"
+    )
+    monkeypatch.setattr(
+        main_module, "_casdoor_http_base_candidates", lambda: [("http://casdoor:8000", {})]
+    )
 
     def _fake_urlopen_json(opener, url, **kwargs):
         if url.endswith("/api/get-account"):
@@ -2777,7 +3200,9 @@ def test_authenticate_local_casdoor_user_accepts_malformed_login_payload_when_ac
     assert account["owner"] == "built-in"
 
 
-def test_casdoor_login_admin_accepts_malformed_login_payload_when_session_exists(monkeypatch) -> None:
+def test_casdoor_login_admin_accepts_malformed_login_payload_when_session_exists(
+    monkeypatch,
+) -> None:
     monkeypatch.setattr(
         main_module,
         "_casdoor_urlopen_json",
@@ -2804,7 +3229,9 @@ def test_casdoor_login_admin_accepts_malformed_login_payload_when_session_exists
     main_module._casdoor_login_admin(opener, "http://casdoor:8000", {})
 
 
-def test_auth_session_hides_identity_and_capabilities_for_header_actor_only_requests(monkeypatch) -> None:
+def test_auth_session_hides_identity_and_capabilities_for_header_actor_only_requests(
+    monkeypatch,
+) -> None:
     original_require_auth = store.platform_settings.require_authenticated_requests
 
     try:
@@ -2816,7 +3243,9 @@ def test_auth_session_hides_identity_and_capabilities_for_header_actor_only_requ
         monkeypatch.setenv("FRONTIER_AUTH_OIDC_PROVIDER", "casdoor")
         monkeypatch.setenv("FRONTIER_AUTH_OIDC_ISSUER", "http://casdoor.localhost")
         monkeypatch.setenv("FRONTIER_AUTH_OIDC_AUDIENCE", "frontier-ui")
-        monkeypatch.setenv("FRONTIER_AUTH_OIDC_JWKS_URL", "http://casdoor.localhost/.well-known/jwks.json")
+        monkeypatch.setenv(
+            "FRONTIER_AUTH_OIDC_JWKS_URL", "http://casdoor.localhost/.well-known/jwks.json"
+        )
 
         response = client.get("/auth/session", headers={"x-frontier-actor": "frontier-admin"})
         assert response.status_code == 200
@@ -2834,7 +3263,9 @@ def test_auth_session_hides_identity_and_capabilities_for_header_actor_only_requ
         store.platform_settings.require_authenticated_requests = original_require_auth
 
 
-def test_boolean_admin_and_builder_claims_do_not_grant_privileges_without_roles_or_bootstrap_reference(monkeypatch) -> None:
+def test_boolean_admin_and_builder_claims_do_not_grant_privileges_without_roles_or_bootstrap_reference(
+    monkeypatch,
+) -> None:
     original_require_auth = store.platform_settings.require_authenticated_requests
     elevated_flags_token = mint_token(
         "flagged-user",
@@ -2923,11 +3354,15 @@ def test_header_actor_auth_is_disabled_outside_lightweight_profile(monkeypatch) 
         store.platform_settings.require_authenticated_requests = original_require_auth
 
 
-def test_configured_operator_oidc_requires_trusted_issuer_allowlist_for_non_local_hosts(monkeypatch) -> None:
+def test_configured_operator_oidc_requires_trusted_issuer_allowlist_for_non_local_hosts(
+    monkeypatch,
+) -> None:
     monkeypatch.setenv("FRONTIER_AUTH_OIDC_PROVIDER", "oidc")
     monkeypatch.setenv("FRONTIER_AUTH_OIDC_ISSUER", "https://issuer.example.com")
     monkeypatch.setenv("FRONTIER_AUTH_OIDC_AUDIENCE", "frontier-ui")
-    monkeypatch.setenv("FRONTIER_AUTH_OIDC_JWKS_URL", "https://issuer.example.com/.well-known/jwks.json")
+    monkeypatch.setenv(
+        "FRONTIER_AUTH_OIDC_JWKS_URL", "https://issuer.example.com/.well-known/jwks.json"
+    )
     monkeypatch.delenv("FRONTIER_AUTH_TRUSTED_ISSUERS", raising=False)
 
     with pytest.raises(ValueError, match="FRONTIER_AUTH_TRUSTED_ISSUERS"):
@@ -2942,14 +3377,18 @@ def test_localhost_oidc_issuer_remains_valid_without_trusted_issuer_allowlist(mo
     monkeypatch.setenv("FRONTIER_AUTH_OIDC_PROVIDER", "casdoor")
     monkeypatch.setenv("FRONTIER_AUTH_OIDC_ISSUER", "http://casdoor.localhost")
     monkeypatch.setenv("FRONTIER_AUTH_OIDC_AUDIENCE", "frontier-ui")
-    monkeypatch.setenv("FRONTIER_AUTH_OIDC_JWKS_URL", "http://casdoor.localhost/.well-known/jwks.json")
+    monkeypatch.setenv(
+        "FRONTIER_AUTH_OIDC_JWKS_URL", "http://casdoor.localhost/.well-known/jwks.json"
+    )
     monkeypatch.delenv("FRONTIER_AUTH_TRUSTED_ISSUERS", raising=False)
 
     config = main_module._configured_operator_oidc()
     assert config["issuer"] == "http://casdoor.localhost"
 
 
-def test_validate_runtime_security_configuration_requires_a2a_secret_when_signed_transport_enabled(monkeypatch) -> None:
+def test_validate_runtime_security_configuration_requires_a2a_secret_when_signed_transport_enabled(
+    monkeypatch,
+) -> None:
     original_signed_messages = store.platform_settings.a2a_require_signed_messages
     original_require_a2a_headers = store.platform_settings.require_a2a_runtime_headers
 
@@ -2984,8 +3423,13 @@ def test_cors_allowed_origins_reject_invalid_urls(monkeypatch) -> None:
     with pytest.raises(ValueError, match="bare origins"):
         main_module._cors_allowed_origins()
 
-    monkeypatch.setenv("FRONTIER_CORS_ALLOWED_ORIGINS", "https://console.example.com, http://localhost:3000")
-    assert main_module._cors_allowed_origins() == ["https://console.example.com", "http://localhost:3000"]
+    monkeypatch.setenv(
+        "FRONTIER_CORS_ALLOWED_ORIGINS", "https://console.example.com, http://localhost:3000"
+    )
+    assert main_module._cors_allowed_origins() == [
+        "https://console.example.com",
+        "http://localhost:3000",
+    ]
 
 
 def test_agent_definition_save_and_template_instantiation_attach_iam_identity(monkeypatch) -> None:
@@ -2995,7 +3439,9 @@ def test_agent_definition_save_and_template_instantiation_attach_iam_identity(mo
     monkeypatch.setenv("FRONTIER_AUTH_OIDC_PROVIDER", "casdoor")
     monkeypatch.setenv("FRONTIER_AUTH_OIDC_ISSUER", "https://casdoor.example.com")
     monkeypatch.setenv("FRONTIER_AUTH_OIDC_AUDIENCE", "frontier-ui")
-    monkeypatch.setenv("FRONTIER_AUTH_OIDC_JWKS_URL", "https://casdoor.example.com/.well-known/jwks.json")
+    monkeypatch.setenv(
+        "FRONTIER_AUTH_OIDC_JWKS_URL", "https://casdoor.example.com/.well-known/jwks.json"
+    )
 
     store.agent_templates[template_id] = main_module.AgentTemplate(
         id=template_id,
@@ -3007,7 +3453,11 @@ def test_agent_definition_save_and_template_instantiation_attach_iam_identity(mo
     try:
         save_response = client.post(
             "/agent-definitions",
-            json={"id": agent_id, "name": "Planner Agent", "config_json": {"graph_json": _sample_graph()}},
+            json={
+                "id": agent_id,
+                "name": "Planner Agent",
+                "config_json": {"graph_json": _sample_graph()},
+            },
             headers=ADMIN_HEADERS,
         )
         assert save_response.status_code == 200
@@ -3052,7 +3502,11 @@ def test_delete_agent_definition_deprovisions_identity_and_removes_collaboration
     try:
         save_response = client.post(
             "/agent-definitions",
-            json={"id": agent_id, "name": "Delete Me", "config_json": {"graph_json": _sample_graph()}},
+            json={
+                "id": agent_id,
+                "name": "Delete Me",
+                "config_json": {"graph_json": _sample_graph()},
+            },
             headers=ADMIN_HEADERS,
         )
         assert save_response.status_code == 200
@@ -3079,7 +3533,10 @@ def test_delete_agent_definition_deprovisions_identity_and_removes_collaboration
         delete_revision = history[-1]
         assert delete_revision.action == "delete"
         assert delete_revision.metadata["deleted_collaboration_session"] is True
-        assert delete_revision.snapshot["config_json"]["iam"]["provisioning"]["state"] == "deprovisioned"
+        assert (
+            delete_revision.snapshot["config_json"]["iam"]["provisioning"]["state"]
+            == "deprovisioned"
+        )
         assert delete_revision.metadata["revoked_principal_id"] == f"agent:{agent_id}"
     finally:
         store.agent_definitions.pop(agent_id, None)
@@ -3152,7 +3609,11 @@ def test_agent_principal_can_collaborate_with_principal_id_claims() -> None:
             headers={"authorization": f"Bearer {agent_token}"},
         )
         assert permissions_ok.status_code == 200
-        member = next(item for item in permissions_ok.json()["session"]["participants"] if item["user_id"] == "member-user")
+        member = next(
+            item
+            for item in permissions_ok.json()["session"]["participants"]
+            if item["user_id"] == "member-user"
+        )
         assert member["role"] == "viewer"
     finally:
         store.platform_settings.require_authenticated_requests = original_require_auth
@@ -3164,10 +3625,14 @@ def test_memory_scope_authorization_denies_cross_actor_user_bucket_reads() -> No
     store.memory_by_session[bucket_id] = [{"id": "mem-user-1", "content": "owner-only memory"}]
 
     try:
-        denied = client.get(f"/memory/{bucket_id}?scope=user", headers={"x-frontier-actor": "other-user"})
+        denied = client.get(
+            f"/memory/{bucket_id}?scope=user", headers={"x-frontier-actor": "other-user"}
+        )
         assert denied.status_code == 403
 
-        allowed = client.get(f"/memory/{bucket_id}?scope=user", headers={"x-frontier-actor": "owner-user"})
+        allowed = client.get(
+            f"/memory/{bucket_id}?scope=user", headers={"x-frontier-actor": "owner-user"}
+        )
         assert allowed.status_code == 200
         assert allowed.json()["session_id"] == bucket_id
     finally:
@@ -3220,7 +3685,9 @@ def test_memory_scope_authorization_requires_tenant_claim_for_tenant_bucket() ->
 
 def test_runtime_bearer_token_supplies_actor_and_tenant_claims() -> None:
     bucket_id = "tenant:acme"
-    store.memory_by_session[bucket_id] = [{"id": "mem-tenant-jwt", "content": "tenant-scoped memory"}]
+    store.memory_by_session[bucket_id] = [
+        {"id": "mem-tenant-jwt", "content": "tenant-scoped memory"}
+    ]
 
     token = mint_token(
         "tenant-user",
@@ -3279,7 +3746,9 @@ def test_non_internal_runtime_bearer_token_cannot_access_internal_memory_endpoin
         main_module._POSTGRES_MEMORY.clear_entries(bucket_id=bucket_id, memory_scope="agent")
 
 
-def test_internal_runtime_bearer_token_requires_signed_headers_for_internal_memory_endpoints() -> None:
+def test_internal_runtime_bearer_token_requires_signed_headers_for_internal_memory_endpoints() -> (
+    None
+):
     bucket_id = "agent:runtime-bearer-internal"
     store.memory_by_session[bucket_id] = []
     main_module._POSTGRES_MEMORY.clear_entries(bucket_id=bucket_id, memory_scope="agent")
@@ -3313,7 +3782,9 @@ def test_internal_runtime_bearer_token_requires_signed_headers_for_internal_memo
             "/internal/memory/consolidation/run",
             content=payload_bytes,
             headers={
-                **_signed_internal_headers(payload=payload_bytes, nonce="internal-runtime-bearer-nonce"),
+                **_signed_internal_headers(
+                    payload=payload_bytes, nonce="internal-runtime-bearer-nonce"
+                ),
                 "authorization": f"Bearer {token}",
             },
         )
@@ -3327,19 +3798,28 @@ def test_resolve_memory_bucket_id_requires_verified_tenant_claim() -> None:
     execution_state = {"run_id": "run-1", "session_id": "session:run-1", "auth_context": {}}
 
     with pytest.raises(main_module.HTTPException) as missing_claim:
-        main_module._resolve_memory_bucket_id({"scope": "tenant"}, {"currentTenant": "spoofed-tenant"}, execution_state)
+        main_module._resolve_memory_bucket_id(
+            {"scope": "tenant"}, {"currentTenant": "spoofed-tenant"}, execution_state
+        )
 
     assert missing_claim.value.status_code == 403
-    assert missing_claim.value.detail == "Verified tenant claim required for tenant-scoped memory access"
+    assert (
+        missing_claim.value.detail
+        == "Verified tenant claim required for tenant-scoped memory access"
+    )
 
     execution_state["auth_context"] = {"tenant": "acme"}
     with pytest.raises(main_module.HTTPException) as mismatched_claim:
-        main_module._resolve_memory_bucket_id({"scope": "tenant"}, {"currentTenant": "spoofed-tenant"}, execution_state)
+        main_module._resolve_memory_bucket_id(
+            {"scope": "tenant"}, {"currentTenant": "spoofed-tenant"}, execution_state
+        )
 
     assert mismatched_claim.value.status_code == 403
     assert mismatched_claim.value.detail == "Requested tenant does not match authenticated tenant"
 
-    bucket_id = main_module._resolve_memory_bucket_id({"scope": "tenant"}, {"currentTenant": "acme"}, execution_state)
+    bucket_id = main_module._resolve_memory_bucket_id(
+        {"scope": "tenant"}, {"currentTenant": "acme"}, execution_state
+    )
     assert bucket_id == "tenant:acme"
 
 
@@ -3366,10 +3846,14 @@ def test_memory_scope_authorization_requires_collaboration_membership_for_agent_
     )
 
     try:
-        denied = client.get(f"/memory/{bucket_id}?scope=agent", headers={"x-frontier-actor": "other-user"})
+        denied = client.get(
+            f"/memory/{bucket_id}?scope=agent", headers={"x-frontier-actor": "other-user"}
+        )
         assert denied.status_code == 403
 
-        allowed = client.get(f"/memory/{bucket_id}?scope=agent", headers={"x-frontier-actor": "member-user"})
+        allowed = client.get(
+            f"/memory/{bucket_id}?scope=agent", headers={"x-frontier-actor": "member-user"}
+        )
         assert allowed.status_code == 200
     finally:
         store.memory_by_session.pop(bucket_id, None)
@@ -3377,7 +3861,9 @@ def test_memory_scope_authorization_requires_collaboration_membership_for_agent_
 
 
 def test_memory_scope_authorization_rejects_bucket_scope_mismatch() -> None:
-    denied = client.get("/memory/agent:scope-mismatch?scope=session", headers={"x-frontier-actor": "tester"})
+    denied = client.get(
+        "/memory/agent:scope-mismatch?scope=session", headers={"x-frontier-actor": "tester"}
+    )
     assert denied.status_code == 403
 
 
@@ -3402,9 +3888,13 @@ def test_internal_memory_endpoints_require_internal_service_access() -> None:
 
         allowed = client.post(
             "/internal/memory/consolidation/run",
-            content=json.dumps({"bucket_id": bucket_id, "scope": "agent", "limit": 10}).encode("utf-8"),
+            content=json.dumps({"bucket_id": bucket_id, "scope": "agent", "limit": 10}).encode(
+                "utf-8"
+            ),
             headers=_signed_internal_headers(
-                payload=json.dumps({"bucket_id": bucket_id, "scope": "agent", "limit": 10}).encode("utf-8"),
+                payload=json.dumps({"bucket_id": bucket_id, "scope": "agent", "limit": 10}).encode(
+                    "utf-8"
+                ),
                 nonce="internal-maintenance-nonce",
             ),
         )
@@ -3412,11 +3902,15 @@ def test_internal_memory_endpoints_require_internal_service_access() -> None:
 
         projection = client.post(
             "/internal/memory/world-graph/project",
-                content=json.dumps({"bucket_id": bucket_id, "scope": "agent", "limit": 10}).encode("utf-8"),
-                headers=_signed_internal_headers(
-                    payload=json.dumps({"bucket_id": bucket_id, "scope": "agent", "limit": 10}).encode("utf-8"),
-                    nonce="internal-projection-nonce",
+            content=json.dumps({"bucket_id": bucket_id, "scope": "agent", "limit": 10}).encode(
+                "utf-8"
+            ),
+            headers=_signed_internal_headers(
+                payload=json.dumps({"bucket_id": bucket_id, "scope": "agent", "limit": 10}).encode(
+                    "utf-8"
                 ),
+                nonce="internal-projection-nonce",
+            ),
         )
         assert projection.status_code == 200
     finally:
@@ -3584,7 +4078,11 @@ def test_collaboration_routes_bind_payload_identity_to_authenticated_actor() -> 
 
         permissions_mismatch = client.post(
             f"/collab/sessions/{session_id}/permissions",
-            json={"actor_user_id": "spoofed-user", "target_user_id": "member-user", "role": "viewer"},
+            json={
+                "actor_user_id": "spoofed-user",
+                "target_user_id": "member-user",
+                "role": "viewer",
+            },
             headers=OWNER_AUTH_HEADERS,
         )
         assert permissions_mismatch.status_code == 403
@@ -3597,11 +4095,22 @@ def test_collaboration_routes_bind_payload_identity_to_authenticated_actor() -> 
         assert permissions_ok.status_code == 200
 
         updated_session = permissions_ok.json()["session"]
-        member = next(item for item in updated_session["participants"] if item["user_id"] == "member-user")
+        member = next(
+            item for item in updated_session["participants"] if item["user_id"] == "member-user"
+        )
         assert member["role"] == "viewer"
-        assert any(event.action == "collab.session.join" and event.outcome == "blocked" for event in store.audit_events)
-        assert any(event.action == "collab.session.sync" and event.outcome == "blocked" for event in store.audit_events)
-        assert any(event.action == "collab.session.permissions.update" and event.outcome == "blocked" for event in store.audit_events)
+        assert any(
+            event.action == "collab.session.join" and event.outcome == "blocked"
+            for event in store.audit_events
+        )
+        assert any(
+            event.action == "collab.session.sync" and event.outcome == "blocked"
+            for event in store.audit_events
+        )
+        assert any(
+            event.action == "collab.session.permissions.update" and event.outcome == "blocked"
+            for event in store.audit_events
+        )
     finally:
         store.platform_settings.require_authenticated_requests = original_require_auth
         store.audit_events = original_audit_events
@@ -3610,8 +4119,16 @@ def test_collaboration_routes_bind_payload_identity_to_authenticated_actor() -> 
 
 def test_rank_hybrid_memory_entries_prefers_query_relevance() -> None:
     entries = [
-        {"id": "general", "content": "General customer context without compliance specifics.", "tier": "short-term"},
-        {"id": "relevant", "content": "Customer requires SOC 2 evidence in every proposal packet and review.", "tier": "long-term"},
+        {
+            "id": "general",
+            "content": "General customer context without compliance specifics.",
+            "tier": "short-term",
+        },
+        {
+            "id": "relevant",
+            "content": "Customer requires SOC 2 evidence in every proposal packet and review.",
+            "tier": "long-term",
+        },
     ]
 
     ranked = main_module._rank_hybrid_memory_entries(

@@ -4,9 +4,7 @@ from __future__ import annotations
 
 import json
 import os
-import tempfile
-from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -20,10 +18,13 @@ def wal_dir(tmp_path):
 
 @pytest.fixture
 def store_with_wal(wal_dir):
-    with patch.dict(os.environ, {
-        "FRONTIER_MEMORY_WAL_ENABLED": "true",
-        "FRONTIER_MEMORY_WAL_DIR": str(wal_dir),
-    }):
+    with patch.dict(
+        os.environ,
+        {
+            "FRONTIER_MEMORY_WAL_ENABLED": "true",
+            "FRONTIER_MEMORY_WAL_DIR": str(wal_dir),
+        },
+    ):
         store = RedisMemoryStore.__new__(RedisMemoryStore)
         store.url = ""
         store.enabled = False

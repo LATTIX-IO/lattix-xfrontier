@@ -36,3 +36,13 @@ def test_helm_network_policy_targets_control_plane_workloads() -> None:
     assert "app: lattix-api" in network_policies
     assert "app: lattix-orchestrator" in network_policies
     assert "app: lattix-envoy" in network_policies
+
+
+def test_helm_seccomp_and_runtimeclass_templates_share_labels_helper() -> None:
+    helpers = _read("helm/lattix-frontier/templates/_helpers.tpl")
+    seccomp_template = _read("helm/lattix-frontier/templates/seccomp-profile.yaml")
+    runtimeclass_template = _read("helm/lattix-frontier/templates/runtimeclass-sandbox.yaml")
+
+    assert '{{- define "lattix-frontier.labels" -}}' in helpers
+    assert 'include "lattix-frontier.labels" .' in seccomp_template
+    assert 'include "lattix-frontier.labels" .' in runtimeclass_template

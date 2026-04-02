@@ -1,6 +1,14 @@
 from pathlib import Path
 
-from frontier_tooling.common import ensure_compose_env_file, ensure_installer_state_manifest, installer_vault_bootstrap_path, read_installer_state_manifest, remove_installer_artifacts, remove_installer_env_files, write_installer_state_manifest
+from frontier_tooling.common import (
+    ensure_compose_env_file,
+    ensure_installer_state_manifest,
+    installer_vault_bootstrap_path,
+    read_installer_state_manifest,
+    remove_installer_artifacts,
+    remove_installer_env_files,
+    write_installer_state_manifest,
+)
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -32,11 +40,14 @@ def test_ci_and_local_tooling_expose_helm_validation() -> None:
     assert "opa_linux_amd64_static" in ci
     assert "python scripts/run_opa.py test policies/ -v" in ci
     assert "helm lint ./helm/lattix-frontier" in ci
-    assert "helm template lattix ./helm/lattix-frontier -f helm/lattix-frontier/values-prod.yaml > /dev/null" in ci
+    assert (
+        "helm template lattix ./helm/lattix-frontier -f helm/lattix-frontier/values-prod.yaml > /dev/null"
+        in ci
+    )
     assert "helm-validate:" in makefile
-    assert 'function Get-HelmCommand' in powershell
-    assert '.tools\\helm\\windows-amd64\\helm.exe' in powershell
-    assert 'Get-Command helm.exe' in powershell
+    assert "function Get-HelmCommand" in powershell
+    assert ".tools\\helm\\windows-amd64\\helm.exe" in powershell
+    assert "Get-Command helm.exe" in powershell
     assert '"helm-validate"' in powershell
 
 
@@ -53,13 +64,13 @@ def test_bootstrap_installer_reports_secure_compose_env_path() -> None:
     installer = _read("frontier_tooling/installer.py")
     installer_docs = _read("docs/INSTALLER.md")
 
-    assert 'ensure_compose_env_file(local_profile=False, root=install_root)' in installer
-    assert 'FrontierInstaller(repo_root=install_root)' in installer
-    assert 'collect_local_answers(installation_root=install_root' in installer
-    assert 'installer._write_env_file(answers, secrets_map)' in installer
+    assert "ensure_compose_env_file(local_profile=False, root=install_root)" in installer
+    assert "FrontierInstaller(repo_root=install_root)" in installer
+    assert "collect_local_answers(installation_root=install_root" in installer
+    assert "installer._write_env_file(answers, secrets_map)" in installer
     assert '"compose_env": str(compose_env.resolve())' in installer
-    assert 'def _print_install_result' in installer
-    assert 'def _render_install_summary' in installer
+    assert "def _print_install_result" in installer
+    assert "def _render_install_summary" in installer
     assert ".installer/local-secure.env" in installer_docs
     assert ".installer/local-lightweight.env" not in installer_docs
 
@@ -147,9 +158,18 @@ def test_makefile_prefers_repo_venv_python_and_quotes_env_bootstrap_commands() -
     assert "VENV_PYTHON := .venv/Scripts/python.exe" in makefile
     assert "VENV_PYTHON := .venv/bin/python" in makefile
     assert "CLI_RUNNER ?= $(PYTHON) -m frontier_tooling.cli" in makefile
-    assert 'SECURE_ENV_FILE := $(strip $(shell "$(PYTHON)" -c "from frontier_tooling.common import ensure_compose_env_file; print(ensure_compose_env_file(local_profile=False))"))' in makefile
-    assert 'LIGHTWEIGHT_ENV_FILE := $(strip $(shell "$(PYTHON)" -c "from frontier_tooling.common import ensure_compose_env_file; print(ensure_compose_env_file(local_profile=True))"))' in makefile
-    assert "helm template lattix ./helm/lattix-frontier -f helm/lattix-frontier/values-prod.yaml > $(DEV_NULL)" in makefile
+    assert (
+        'SECURE_ENV_FILE := $(strip $(shell "$(PYTHON)" -c "from frontier_tooling.common import ensure_compose_env_file; print(ensure_compose_env_file(local_profile=False))"))'
+        in makefile
+    )
+    assert (
+        'LIGHTWEIGHT_ENV_FILE := $(strip $(shell "$(PYTHON)" -c "from frontier_tooling.common import ensure_compose_env_file; print(ensure_compose_env_file(local_profile=True))"))'
+        in makefile
+    )
+    assert (
+        "helm template lattix ./helm/lattix-frontier -f helm/lattix-frontier/values-prod.yaml > $(DEV_NULL)"
+        in makefile
+    )
 
 
 def test_makefile_routes_runtime_commands_through_shared_cli() -> None:
@@ -177,9 +197,18 @@ def test_public_docs_expose_bootstrap_and_remove_flow() -> None:
     deployment = _read("docs/DEPLOYMENT.md")
     docs = (readme, installer_docs, deployment)
 
-    assert "curl -fsSL https://raw.githubusercontent.com/LATTIX-IO/lattix-xfrontier/main/install/bootstrap.sh | sh" in readme
-    assert "curl -fsSL https://raw.githubusercontent.com/LATTIX-IO/lattix-xfrontier/main/install/bootstrap.sh | sh" in installer_docs
-    assert "curl -fsSL https://raw.githubusercontent.com/LATTIX-IO/lattix-xfrontier/main/install/bootstrap.sh | sh" in deployment
+    assert (
+        "curl -fsSL https://raw.githubusercontent.com/LATTIX-IO/lattix-xfrontier/main/install/bootstrap.sh | sh"
+        in readme
+    )
+    assert (
+        "curl -fsSL https://raw.githubusercontent.com/LATTIX-IO/lattix-xfrontier/main/install/bootstrap.sh | sh"
+        in installer_docs
+    )
+    assert (
+        "curl -fsSL https://raw.githubusercontent.com/LATTIX-IO/lattix-xfrontier/main/install/bootstrap.sh | sh"
+        in deployment
+    )
     assert "-UseBasicParsing" in readme
     assert "-UseBasicParsing" in installer_docs
     assert "-UseBasicParsing" in deployment
@@ -215,13 +244,16 @@ def test_bootstrap_powershell_script_validates_python_runtime() -> None:
     assert "function Stop-Bootstrap" in bootstrap_ps1
     assert "$commandExitCode = $LASTEXITCODE" in bootstrap_ps1
     assert "$installerExitCode = $LASTEXITCODE" in bootstrap_ps1
-    assert "Stop-Bootstrap -Message \"Installer failed with exit code $installerExitCode." in bootstrap_ps1
+    assert (
+        'Stop-Bootstrap -Message "Installer failed with exit code $installerExitCode.'
+        in bootstrap_ps1
+    )
     assert "exit $installerExitCode" not in bootstrap_ps1
     assert "working 'py' or 'python' command" in bootstrap_ps1
     assert "App execution aliases" in bootstrap_ps1
     assert "$LocalInstallerPath = if ($PSScriptRoot)" in bootstrap_ps1
     assert "Using local checkout installer" in bootstrap_ps1
-    assert '$InstallerPath = $LocalInstallerPath' in bootstrap_ps1
+    assert "$InstallerPath = $LocalInstallerPath" in bootstrap_ps1
     assert "FRONTIER_INSTALLER_OUTPUT" in bootstrap_ps1
     assert "[Console]::IsInputRedirected" in bootstrap_ps1
     assert "$env:FRONTIER_INSTALLER_OUTPUT = 'tui'" in bootstrap_ps1
@@ -233,14 +265,20 @@ def test_bootstrap_shell_script_does_not_replace_caller_shell() -> None:
     bootstrap_sh = _read("install/bootstrap.sh")
 
     assert 'exec "$PYTHON_BIN" "$BOOTSTRAP_DIR/frontier-installer.py"' not in bootstrap_sh
-    assert 'Installer failed with exit code $installer_exit_code. The current shell was left intact' in bootstrap_sh
-    assert 'LOCAL_INSTALLER="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)/frontier-installer.py"' in bootstrap_sh
+    assert (
+        "Installer failed with exit code $installer_exit_code. The current shell was left intact"
+        in bootstrap_sh
+    )
+    assert (
+        'LOCAL_INSTALLER="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)/frontier-installer.py"'
+        in bootstrap_sh
+    )
     assert 'echo "==> Using local checkout installer"' in bootstrap_sh
     assert 'INSTALLER_PATH="$LOCAL_INSTALLER"' in bootstrap_sh
     assert 'if "$PYTHON_BIN" "$INSTALLER_PATH"; then' in bootstrap_sh
-    assert 'FRONTIER_INSTALLER_OUTPUT' in bootstrap_sh
-    assert '[ -t 0 ] && [ -t 1 ]' in bootstrap_sh
-    assert 'export FRONTIER_INSTALLER_OUTPUT=tui' in bootstrap_sh
+    assert "FRONTIER_INSTALLER_OUTPUT" in bootstrap_sh
+    assert "[ -t 0 ] && [ -t 1 ]" in bootstrap_sh
+    assert "export FRONTIER_INSTALLER_OUTPUT=tui" in bootstrap_sh
 
 
 def test_public_frontier_installer_imports_packaged_module() -> None:
@@ -251,30 +289,30 @@ def test_public_frontier_installer_imports_packaged_module() -> None:
     packaged_installer = _read("frontier_tooling/installer.py")
     manifest = _read("install/manifest.json")
 
-    assert 'import importlib' in public_installer
-    assert 'import sys' in public_installer
-    assert 'def _bundled_repo_root(script_path: Path) -> Path | None:' in public_installer
-    assert 'bundled_repo_root = _bundled_repo_root(Path(__file__))' in public_installer
-    assert 'os.chdir(bundled_repo_root)' in public_installer
+    assert "import importlib" in public_installer
+    assert "import sys" in public_installer
+    assert "def _bundled_repo_root(script_path: Path) -> Path | None:" in public_installer
+    assert "bundled_repo_root = _bundled_repo_root(Path(__file__))" in public_installer
+    assert "os.chdir(bundled_repo_root)" in public_installer
     assert 'importlib.import_module("frontier_tooling.installer")' in public_installer
-    assert 'module.main()' in public_installer
-    assert 'runpy.run_path' not in public_installer
-    assert 'urlopen(' not in public_installer
-    assert '_validated_archive_url' in public_installer
-    assert 'http.client.HTTPSConnection' in public_installer
-    assert 'FRONTIER_ARCHIVE_URL' not in public_installer
-    assert 'cwd = Path.cwd()' not in public_installer
-    assert 'if packaged.exists():' not in public_installer
-    assert '$env:INSTALLER_URL' not in bootstrap_ps1
-    assert '${INSTALLER_URL:-' not in bootstrap_sh
-    assert 'import httpx' not in tooling_common.split('def request_json', 1)[0]
-    assert 'import sysconfig' in tooling_common
+    assert "module.main()" in public_installer
+    assert "runpy.run_path" not in public_installer
+    assert "urlopen(" not in public_installer
+    assert "_validated_archive_url" in public_installer
+    assert "http.client.HTTPSConnection" in public_installer
+    assert "FRONTIER_ARCHIVE_URL" not in public_installer
+    assert "cwd = Path.cwd()" not in public_installer
+    assert "if packaged.exists():" not in public_installer
+    assert "$env:INSTALLER_URL" not in bootstrap_ps1
+    assert "${INSTALLER_URL:-" not in bootstrap_sh
+    assert "import httpx" not in tooling_common.split("def request_json", 1)[0]
+    assert "import sysconfig" in tooling_common
     assert 'sysconfig.get_preferred_scheme("user")' in tooling_common
     assert 'sysconfig.get_path("scripts", scheme=scheme)' in tooling_common
-    assert 'def request_json' in tooling_common
-    assert '    import httpx' in tooling_common
-    assert 'httpx.request(' in tooling_common
-    assert '_validated_http_url' in tooling_common
+    assert "def request_json" in tooling_common
+    assert "    import httpx" in tooling_common
+    assert "httpx.request(" in tooling_common
+    assert "_validated_http_url" in tooling_common
     assert 'return "editable" if (root / ".git").exists() else "wheel"' in packaged_installer
     assert 'if _install_mode(root) == "editable":' in packaged_installer
     assert 'args.append("--user")' in packaged_installer
@@ -283,16 +321,22 @@ def test_public_frontier_installer_imports_packaged_module() -> None:
     assert '"install_mode": mode' in packaged_installer
     assert '"auto_started": True' in packaged_installer
     assert '"urls": urls' in packaged_installer
-    assert 'FRONTIER_INSTALLER_OUTPUT' in packaged_installer
-    assert 'return "tui" if sys.stdout.isatty() or sys.stdin.isatty() else "json"' in packaged_installer
-    assert 'print_json(payload)' in packaged_installer
-    assert 'Lattix xFrontier install complete' in packaged_installer
-    assert 'Secure local profile (single-host compose, authenticated A2A)' in packaged_installer
-    assert 'Use the hosted or enterprise deployment path when you need per-agent workload isolation' in packaged_installer
-    assert 'Install src :' in packaged_installer
-    assert 'def update() -> None:' in packaged_installer
+    assert "FRONTIER_INSTALLER_OUTPUT" in packaged_installer
+    assert (
+        'return "tui" if sys.stdout.isatty() or sys.stdin.isatty() else "json"'
+        in packaged_installer
+    )
+    assert "print_json(payload)" in packaged_installer
+    assert "Lattix xFrontier install complete" in packaged_installer
+    assert "Secure local profile (single-host compose, authenticated A2A)" in packaged_installer
+    assert (
+        "Use the hosted or enterprise deployment path when you need per-agent workload isolation"
+        in packaged_installer
+    )
+    assert "Install src :" in packaged_installer
+    assert "def update() -> None:" in packaged_installer
     assert 'os.environ["FRONTIER_INSTALLER_OUTPUT"] = "tui"' in packaged_installer
-    assert 'lattix update' in manifest
+    assert "lattix update" in manifest
     assert '"version": "0.1.0"' in manifest
     assert 'DEFAULT_LOCAL_STACK_HOST = "xfrontier.local"' in tooling_common
 
@@ -333,8 +377,12 @@ def test_remove_installer_artifacts_deletes_legacy_and_generated_files(tmp_path:
     assert not installer_root.exists()
 
 
-def test_write_installer_state_manifest_records_versioned_installer_metadata(tmp_path: Path) -> None:
-    (tmp_path / "pyproject.toml").write_text("[project]\nname='lattix-frontier'\nversion='9.8.7'\n", encoding="utf-8")
+def test_write_installer_state_manifest_records_versioned_installer_metadata(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "pyproject.toml").write_text(
+        "[project]\nname='lattix-frontier'\nversion='9.8.7'\n", encoding="utf-8"
+    )
     (tmp_path / ".installer").mkdir(parents=True, exist_ok=True)
     (tmp_path / ".installer" / "local-secure.env").write_text(
         "\n".join(
@@ -369,7 +417,9 @@ def test_write_installer_state_manifest_records_versioned_installer_metadata(tmp
 
 
 def test_ensure_installer_state_manifest_migrates_legacy_installer_state(tmp_path: Path) -> None:
-    (tmp_path / "pyproject.toml").write_text("[project]\nname='lattix-frontier'\nversion='1.2.3'\n", encoding="utf-8")
+    (tmp_path / "pyproject.toml").write_text(
+        "[project]\nname='lattix-frontier'\nversion='1.2.3'\n", encoding="utf-8"
+    )
     (tmp_path / ".installer").mkdir(parents=True, exist_ok=True)
     (tmp_path / ".installer" / "local-secure.env").write_text(
         "\n".join(
@@ -396,10 +446,14 @@ def test_ensure_installer_state_manifest_migrates_legacy_installer_state(tmp_pat
 
 
 def test_ensure_installer_state_manifest_rewrites_invalid_schema_payload(tmp_path: Path) -> None:
-    (tmp_path / "pyproject.toml").write_text("[project]\nname='lattix-frontier'\nversion='1.2.3'\n", encoding="utf-8")
+    (tmp_path / "pyproject.toml").write_text(
+        "[project]\nname='lattix-frontier'\nversion='1.2.3'\n", encoding="utf-8"
+    )
     installer_root = tmp_path / ".installer"
     installer_root.mkdir(parents=True, exist_ok=True)
-    (installer_root / "state-manifest.json").write_text('{"schema_version":"banana"}\n', encoding="utf-8")
+    (installer_root / "state-manifest.json").write_text(
+        '{"schema_version":"banana"}\n', encoding="utf-8"
+    )
 
     ensure_installer_state_manifest(root=tmp_path, install_mode="wheel")
     manifest = read_installer_state_manifest(root=tmp_path)
@@ -409,7 +463,11 @@ def test_ensure_installer_state_manifest_rewrites_invalid_schema_payload(tmp_pat
 
 
 def test_installer_vault_bootstrap_path_tracks_managed_artifact_location(tmp_path: Path) -> None:
-    assert installer_vault_bootstrap_path(root=tmp_path) == tmp_path / ".installer" / "vault-bootstrap.json"
+    assert (
+        installer_vault_bootstrap_path(root=tmp_path)
+        == tmp_path / ".installer" / "vault-bootstrap.json"
+    )
+
 
 def test_remove_command_tracks_failed_teardowns_and_radius_secret_is_not_hardcoded() -> None:
     cli = _read("frontier_tooling/cli.py")
@@ -422,15 +480,18 @@ def test_remove_command_tracks_failed_teardowns_and_radius_secret_is_not_hardcod
     assert '"failed_teardowns": failed_teardowns' in cli
     assert '"deleted_artifacts": [str(path) for path in removed_artifacts]' in cli
     assert '"removed": removed' in cli
-    assert 'def _request_local_api' in cli
-    assert 'configured_local_api_url(path)' in cli
-    assert 'def configured_local_api_base_url' in tooling
-    assert 'def configured_local_api_headers' in tooling
-    assert 'extra_headers=configured_local_api_headers()' in cli
-    assert 'FRONTIER_LOCAL_API_BASE_URL=http://127.0.0.1/api' in _read(".env.example")
-    assert 'function Get-ConfiguredApiBaseUrl' in powershell
-    assert 'function Get-ConfiguredApiHostHeader' in powershell
-    assert 'http://localhost:8000' not in powershell.split('function Show-Help', 1)[1].split('"local-up"', 1)[0]
+    assert "def _request_local_api" in cli
+    assert "configured_local_api_url(path)" in cli
+    assert "def configured_local_api_base_url" in tooling
+    assert "def configured_local_api_headers" in tooling
+    assert "extra_headers=configured_local_api_headers()" in cli
+    assert "FRONTIER_LOCAL_API_BASE_URL=http://127.0.0.1/api" in _read(".env.example")
+    assert "function Get-ConfiguredApiBaseUrl" in powershell
+    assert "function Get-ConfiguredApiHostHeader" in powershell
+    assert (
+        "http://localhost:8000"
+        not in powershell.split("function Show-Help", 1)[1].split('"local-up"', 1)[0]
+    )
     assert 'CASDOOR_RADIUS_SECRET="${CASDOOR_RADIUS_SECRET:-${POSTGRES_PASSWORD}}"' in casdoor
     assert 'radiusSecret = "${CASDOOR_RADIUS_SECRET}"' in casdoor
     assert 'radiusSecret = "secret"' not in casdoor
@@ -438,12 +499,13 @@ def test_remove_command_tracks_failed_teardowns_and_radius_secret_is_not_hardcod
     assert "docker/casdoor/start-casdoor.sh text eol=lf" in gitattributes
     assert "*.sh text eol=lf" in gitattributes
 
+
 def test_precommit_script_runs_repo_native_checks() -> None:
     precommit = _read("precommit.ps1")
 
     assert 'Write-Host "Lattix xFrontier pre-commit checks"' in precommit
-    assert 'function Invoke-Python' in precommit
-    assert 'function Write-StepSummary' in precommit
+    assert "function Invoke-Python" in precommit
+    assert "function Write-StepSummary" in precommit
     assert 'Invoke-Step -Name "Install Python dependencies"' in precommit
     assert 'Invoke-Step -Name "Install frontend dependencies"' in precommit
     assert 'Invoke-Step -Name "Python lint"' in precommit
@@ -456,9 +518,9 @@ def test_precommit_script_runs_repo_native_checks() -> None:
     assert 'Invoke-IfAvailable -CommandName "semgrep"' in precommit
     assert 'Invoke-IfAvailable -CommandName "gitleaks"' in precommit
     assert 'Invoke-IfAvailable -CommandName "trivy"' in precommit
-    assert 'function Get-HelmCommand' in precommit
-    assert '.tools\\helm\\windows-amd64\\helm.exe' in precommit
-    assert 'Get-Command helm.exe' in precommit
+    assert "function Get-HelmCommand" in precommit
+    assert ".tools\\helm\\windows-amd64\\helm.exe" in precommit
+    assert "Get-Command helm.exe" in precommit
     assert 'Invoke-Step -Name "Helm chart validation"' in precommit
-    assert 'missing helm.exe' in precommit
-    assert 'Write-StepSummary -Final' in precommit
+    assert "missing helm.exe" in precommit
+    assert "Write-StepSummary -Final" in precommit

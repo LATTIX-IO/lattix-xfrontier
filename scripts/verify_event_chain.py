@@ -37,12 +37,26 @@ def main() -> None:
     for index, event in enumerate(events):
         expected_previous = str(event.get("previous_hash", ""))
         if expected_previous != previous_hash:
-            print({"valid": False, "broken_index": index, "reason": "previous_hash mismatch", "path": str(path)})  # noqa: T201
+            print(
+                {
+                    "valid": False,
+                    "broken_index": index,
+                    "reason": "previous_hash mismatch",
+                    "path": str(path),
+                }
+            )  # noqa: T201
             return
         current_hash = _hash_event(event)
         recorded_hash = str(event.get("hash", ""))
         if recorded_hash and recorded_hash != current_hash:
-            print({"valid": False, "broken_index": index, "reason": "hash mismatch", "path": str(path)})  # noqa: T201
+            print(
+                {
+                    "valid": False,
+                    "broken_index": index,
+                    "reason": "hash mismatch",
+                    "path": str(path),
+                }
+            )  # noqa: T201
             return
         previous_hash = current_hash
     print({"valid": True, "broken_index": None, "count": len(events), "path": str(path)})  # noqa: T201

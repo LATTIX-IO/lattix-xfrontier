@@ -9,7 +9,13 @@ from typing import Any
 import pytest
 
 from frontier_tooling import installer as packaged_installer
-from frontier_runtime.install import DiagnosticResult, FrontierInstaller, InstallerAnswers, MissingPrerequisite, PrerequisiteDefinition
+from frontier_runtime.install import (
+    DiagnosticResult,
+    FrontierInstaller,
+    InstallerAnswers,
+    MissingPrerequisite,
+    PrerequisiteDefinition,
+)
 
 
 def test_installer_writes_env_file(tmp_path: Path) -> None:
@@ -72,10 +78,20 @@ def test_installer_writes_env_file(tmp_path: Path) -> None:
     assert "FRONTIER_AUTH_OIDC_AUDIENCE=frontier-ui" in text
     assert "FRONTIER_AUTH_OIDC_JWKS_URL=http://casdoor.demo.localhost/.well-known/jwks.json" in text
     assert "FRONTIER_AUTH_OIDC_CLIENT_ID=frontier-web" in text
-    assert "FRONTIER_AUTH_OIDC_AUTHORIZATION_URL=http://casdoor.demo.localhost/login/oauth/authorize" in text
-    assert "FRONTIER_AUTH_OIDC_TOKEN_URL=http://casdoor.demo.localhost/api/login/oauth/access_token" in text
-    assert "FRONTIER_AUTH_OIDC_SIGNIN_URL=http://casdoor.demo.localhost/login/oauth/authorize" in text
-    assert "FRONTIER_AUTH_OIDC_SIGNUP_URL=http://casdoor.demo.localhost/login/oauth/authorize" in text
+    assert (
+        "FRONTIER_AUTH_OIDC_AUTHORIZATION_URL=http://casdoor.demo.localhost/login/oauth/authorize"
+        in text
+    )
+    assert (
+        "FRONTIER_AUTH_OIDC_TOKEN_URL=http://casdoor.demo.localhost/api/login/oauth/access_token"
+        in text
+    )
+    assert (
+        "FRONTIER_AUTH_OIDC_SIGNIN_URL=http://casdoor.demo.localhost/login/oauth/authorize" in text
+    )
+    assert (
+        "FRONTIER_AUTH_OIDC_SIGNUP_URL=http://casdoor.demo.localhost/login/oauth/authorize" in text
+    )
     assert "FRONTIER_AUTH_OIDC_SCOPES=openid profile email" in text
     assert "A2A_JWT_AUD=frontier-runtime" in text
     assert "FEDERATION_ENABLED=true" in text
@@ -151,7 +167,9 @@ def test_installer_reuses_existing_shared_token_when_blank(monkeypatch, tmp_path
     assert secrets_map["FRONTIER_API_BEARER_TOKEN"] == "existing-bearer"
 
 
-def test_secure_local_answers_generate_randomized_bootstrap_identity(monkeypatch, tmp_path: Path) -> None:
+def test_secure_local_answers_generate_randomized_bootstrap_identity(
+    monkeypatch, tmp_path: Path
+) -> None:
     installer = FrontierInstaller(repo_root=tmp_path)
     monkeypatch.setattr("secrets.token_hex", lambda _: "abc123")
 
@@ -233,7 +251,9 @@ def test_secure_local_answers_reuse_existing_install_settings(tmp_path: Path) ->
     assert answers.federation_peers == ["https://peer-a.example.com", "https://peer-b.example.com"]
 
 
-def test_collect_local_answers_interactively_prompts_for_external_oidc(monkeypatch, tmp_path: Path) -> None:
+def test_collect_local_answers_interactively_prompts_for_external_oidc(
+    monkeypatch, tmp_path: Path
+) -> None:
     installer = FrontierInstaller(repo_root=tmp_path)
     prompts = iter(
         [
@@ -290,9 +310,13 @@ def test_render_panel_produces_boxed_tui_output(tmp_path: Path) -> None:
     assert len({len(line) for line in lines}) == 1
 
 
-def test_collect_local_answers_prints_review_tui(monkeypatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+def test_collect_local_answers_prints_review_tui(
+    monkeypatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
     installer = FrontierInstaller(repo_root=tmp_path)
-    prompts = iter(["", "", "", "", "", "", "review-user", "review@example.com", "Review User", "y"])
+    prompts = iter(
+        ["", "", "", "", "", "", "review-user", "review@example.com", "Review User", "y"]
+    )
     monkeypatch.setattr("secrets.token_hex", lambda _: "abc123")
     monkeypatch.setattr("getpass.getpass", lambda prompt: "ReviewPass123!")
     monkeypatch.setattr("builtins.input", lambda prompt: next(prompts))
@@ -312,24 +336,31 @@ def test_collect_local_answers_prints_review_tui(monkeypatch, tmp_path: Path, ca
 def test_collect_local_answers_requires_interactive_casdoor_login_input(tmp_path: Path) -> None:
     installer = FrontierInstaller(repo_root=tmp_path)
 
-    with pytest.raises(SystemExit, match="Interactive installer input is required to create the Casdoor bootstrap login user"):
+    with pytest.raises(
+        SystemExit,
+        match="Interactive installer input is required to create the Casdoor bootstrap login user",
+    ):
         installer.collect_local_answers(installation_root=tmp_path, interactive=False)
 
 
-def test_collect_local_answers_prompts_for_casdoor_login_bootstrap(monkeypatch, tmp_path: Path) -> None:
+def test_collect_local_answers_prompts_for_casdoor_login_bootstrap(
+    monkeypatch, tmp_path: Path
+) -> None:
     installer = FrontierInstaller(repo_root=tmp_path)
-    prompts = iter([
-        "demo",
-        "oidc",
-        "casdoor",
-        "frontier-admin-demo",
-        "admin@demo.localhost",
-        "frontier-admin-demo",
-        "frontier-login-demo",
-        "login@demo.localhost",
-        "Demo Operator",
-        "y",
-    ])
+    prompts = iter(
+        [
+            "demo",
+            "oidc",
+            "casdoor",
+            "frontier-admin-demo",
+            "admin@demo.localhost",
+            "frontier-admin-demo",
+            "frontier-login-demo",
+            "login@demo.localhost",
+            "Demo Operator",
+            "y",
+        ]
+    )
     monkeypatch.setattr("secrets.token_hex", lambda _: "abc123")
     monkeypatch.setattr("builtins.input", lambda prompt: next(prompts))
     monkeypatch.setattr("getpass.getpass", lambda prompt: "LoginPass123!")
@@ -343,7 +374,9 @@ def test_collect_local_answers_prompts_for_casdoor_login_bootstrap(monkeypatch, 
     assert answers.bootstrap_login_password_generated is False
 
 
-def test_collect_local_answers_reuses_existing_bootstrap_login_password_when_blank(monkeypatch, tmp_path: Path) -> None:
+def test_collect_local_answers_reuses_existing_bootstrap_login_password_when_blank(
+    monkeypatch, tmp_path: Path
+) -> None:
     installer = FrontierInstaller(repo_root=tmp_path)
     installer_dir = tmp_path / ".installer"
     installer_dir.mkdir(parents=True, exist_ok=True)
@@ -366,7 +399,20 @@ def test_collect_local_answers_reuses_existing_bootstrap_login_password_when_bla
         encoding="utf-8",
     )
 
-    prompts = iter(["", "", "", "", "", "", "replacement-login", "replacement@example.localhost", "Replacement Login", "y"])
+    prompts = iter(
+        [
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "replacement-login",
+            "replacement@example.localhost",
+            "Replacement Login",
+            "y",
+        ]
+    )
     monkeypatch.setattr("builtins.input", lambda prompt: next(prompts))
     monkeypatch.setattr("getpass.getpass", lambda prompt: "")
 
@@ -380,23 +426,27 @@ def test_collect_local_answers_reuses_existing_bootstrap_login_password_when_bla
     assert answers.bootstrap_login_password == "ExistingPass123!"
 
 
-def test_collect_local_answers_reprompts_for_required_casdoor_login_fields(monkeypatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+def test_collect_local_answers_reprompts_for_required_casdoor_login_fields(
+    monkeypatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
     installer = FrontierInstaller(repo_root=tmp_path)
-    prompts = iter([
-        "demo",
-        "oidc",
-        "casdoor",
-        "frontier-admin-demo",
-        "admin@demo.localhost",
-        "frontier-admin-demo",
-        "",
-        "required-user",
-        "",
-        "required@example.com",
-        "",
-        "Required User",
-        "y",
-    ])
+    prompts = iter(
+        [
+            "demo",
+            "oidc",
+            "casdoor",
+            "frontier-admin-demo",
+            "admin@demo.localhost",
+            "frontier-admin-demo",
+            "",
+            "required-user",
+            "",
+            "required@example.com",
+            "",
+            "Required User",
+            "y",
+        ]
+    )
     secrets_iter = iter(["", "RequiredPass123!"])
     monkeypatch.setattr("secrets.token_hex", lambda _: "abc123")
     monkeypatch.setattr("builtins.input", lambda prompt: next(prompts))
@@ -459,7 +509,9 @@ def test_packaged_installer_bootstraps_casdoor_login_user(monkeypatch, tmp_path:
                 return DummyResponse('{"status":"ok","data":"Affected"}')
             return DummyResponse('{"status":"error","msg":"ignored"}')
 
-    monkeypatch.setattr(packaged_installer.urllib_request, "build_opener", lambda *args: DummyOpener())
+    monkeypatch.setattr(
+        packaged_installer.urllib_request, "build_opener", lambda *args: DummyOpener()
+    )
 
     bootstrap_login = packaged_installer._bootstrap_casdoor_login_user(answers)
 
@@ -476,7 +528,9 @@ def test_packaged_installer_bootstraps_casdoor_login_user(monkeypatch, tmp_path:
     assert add_user_request[3]["Host"] == "casdoor.localhost"
 
 
-def test_packaged_installer_retries_transient_casdoor_gateway_failures(monkeypatch, tmp_path: Path) -> None:
+def test_packaged_installer_retries_transient_casdoor_gateway_failures(
+    monkeypatch, tmp_path: Path
+) -> None:
     answers = InstallerAnswers(
         installation_root=str(tmp_path),
         local_auth_provider="oidc",
@@ -509,7 +563,9 @@ def test_packaged_installer_retries_transient_casdoor_gateway_failures(monkeypat
                     return False
 
             if attempts["count"] <= 2:
-                raise packaged_installer.urllib_error.HTTPError(request.full_url, 502, "Bad Gateway", hdrs=None, fp=None)
+                raise packaged_installer.urllib_error.HTTPError(
+                    request.full_url, 502, "Bad Gateway", hdrs=None, fp=None
+                )
             if request.full_url.endswith("/api/get-account"):
                 return DummyResponse('{"status":"ok","data":{"owner":"built-in","name":"admin"}}')
             if "/api/get-user" in request.full_url:
@@ -518,7 +574,9 @@ def test_packaged_installer_retries_transient_casdoor_gateway_failures(monkeypat
                 return DummyResponse('{"status":"ok","data":"Affected"}')
             return DummyResponse('{"status":"error","msg":"ignored"}')
 
-    monkeypatch.setattr(packaged_installer.urllib_request, "build_opener", lambda *args: DummyOpener())
+    monkeypatch.setattr(
+        packaged_installer.urllib_request, "build_opener", lambda *args: DummyOpener()
+    )
     monkeypatch.setattr(packaged_installer.time, "sleep", lambda *_: None)
 
     bootstrap_login = packaged_installer._bootstrap_casdoor_login_user(answers)
@@ -529,7 +587,9 @@ def test_packaged_installer_retries_transient_casdoor_gateway_failures(monkeypat
     assert "password" not in bootstrap_login
 
 
-def test_packaged_installer_updates_existing_casdoor_login_without_immutable_identity_fields(monkeypatch, tmp_path: Path) -> None:
+def test_packaged_installer_updates_existing_casdoor_login_without_immutable_identity_fields(
+    monkeypatch, tmp_path: Path
+) -> None:
     answers = InstallerAnswers(
         installation_root=str(tmp_path),
         local_auth_provider="oidc",
@@ -571,12 +631,16 @@ def test_packaged_installer_updates_existing_casdoor_login_without_immutable_ide
             if request.full_url.endswith("/api/get-account"):
                 return DummyResponse('{"status":"ok","data":{"owner":"built-in","name":"admin"}}')
             if "/api/get-user" in request.full_url:
-                return DummyResponse('{"status":"ok","data":{"owner":"built-in","name":"demo-login","id":"built-in/demo-login"}}')
+                return DummyResponse(
+                    '{"status":"ok","data":{"owner":"built-in","name":"demo-login","id":"built-in/demo-login"}}'
+                )
             if "/api/update-user?id=" in request.full_url:
                 return DummyResponse('{"status":"ok","data":"Affected"}')
             return DummyResponse('{"status":"error","msg":"ignored"}')
 
-    monkeypatch.setattr(packaged_installer.urllib_request, "build_opener", lambda *args: DummyOpener())
+    monkeypatch.setattr(
+        packaged_installer.urllib_request, "build_opener", lambda *args: DummyOpener()
+    )
 
     bootstrap_login = packaged_installer._bootstrap_casdoor_login_user(answers)
 
@@ -591,7 +655,9 @@ def test_packaged_installer_updates_existing_casdoor_login_without_immutable_ide
     assert '"id":' not in str(update_request[2])
 
 
-def test_packaged_installer_reuses_matching_existing_casdoor_login_without_update(monkeypatch, tmp_path: Path) -> None:
+def test_packaged_installer_reuses_matching_existing_casdoor_login_without_update(
+    monkeypatch, tmp_path: Path
+) -> None:
     answers = InstallerAnswers(
         installation_root=str(tmp_path),
         local_auth_provider="oidc",
@@ -633,10 +699,14 @@ def test_packaged_installer_reuses_matching_existing_casdoor_login_without_updat
             if request.full_url.endswith("/api/get-account"):
                 return DummyResponse('{"status":"ok","data":{"owner":"built-in","name":"admin"}}')
             if "/api/get-user" in request.full_url:
-                return DummyResponse('{"status":"ok","data":{"owner":"built-in","name":"demo-login","email":"demo-login@demo.localhost","displayName":"Demo Login","type":"normal-user","isAdmin":true,"isForbidden":false,"isDeleted":false,"signupApplication":"app-built-in"}}')
+                return DummyResponse(
+                    '{"status":"ok","data":{"owner":"built-in","name":"demo-login","email":"demo-login@demo.localhost","displayName":"Demo Login","type":"normal-user","isAdmin":true,"isForbidden":false,"isDeleted":false,"signupApplication":"app-built-in"}}'
+                )
             return DummyResponse('{"status":"error","msg":"unexpected request"}')
 
-    monkeypatch.setattr(packaged_installer.urllib_request, "build_opener", lambda *args: DummyOpener())
+    monkeypatch.setattr(
+        packaged_installer.urllib_request, "build_opener", lambda *args: DummyOpener()
+    )
 
     bootstrap_login = packaged_installer._bootstrap_casdoor_login_user(answers)
 
@@ -647,7 +717,9 @@ def test_packaged_installer_reuses_matching_existing_casdoor_login_without_updat
     assert not any("/api/add-user" in item[0] for item in captured_requests)
 
 
-def test_print_install_result_json_redacts_bootstrap_password(monkeypatch, capsys: pytest.CaptureFixture[str]) -> None:
+def test_print_install_result_json_redacts_bootstrap_password(
+    monkeypatch, capsys: pytest.CaptureFixture[str]
+) -> None:
     monkeypatch.setenv("FRONTIER_INSTALLER_OUTPUT", "json")
 
     packaged_installer._print_install_result(
@@ -659,7 +731,12 @@ def test_print_install_result_json_redacts_bootstrap_password(monkeypatch, capsy
             "auth_mode": "oidc",
             "security_posture": "Secure local profile (single-host compose, authenticated A2A)",
             "urls": ["http://xfrontier.localhost:8080"],
-            "path": {"cli_path": "C:/Python/Scripts/lattix.exe", "scripts_dir": "C:/Python/Scripts", "updated": False, "locations": []},
+            "path": {
+                "cli_path": "C:/Python/Scripts/lattix.exe",
+                "scripts_dir": "C:/Python/Scripts",
+                "updated": False,
+                "locations": [],
+            },
             "bootstrap_login": {
                 "username": "demo-login",
                 "email": "demo-login@demo.localhost",
@@ -721,7 +798,23 @@ def test_collect_local_answers_requires_explicit_casdoor_identity_even_when_exis
         encoding="utf-8",
     )
 
-    prompts = iter(["", "", "", "", "", "", "", "typed-login", "", "typed@example.localhost", "", "Typed Login", "y"])
+    prompts = iter(
+        [
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "typed-login",
+            "",
+            "typed@example.localhost",
+            "",
+            "Typed Login",
+            "y",
+        ]
+    )
     monkeypatch.setattr("builtins.input", lambda prompt: next(prompts))
     monkeypatch.setattr("getpass.getpass", lambda prompt: "")
 
@@ -739,8 +832,14 @@ def test_collect_local_answers_requires_explicit_casdoor_identity_even_when_exis
     assert "Existing Login" not in captured.out
 
 
-def test_render_install_summary_never_echoes_bootstrap_password(monkeypatch, tmp_path: Path) -> None:
-    monkeypatch.setattr(packaged_installer.shutil, "get_terminal_size", lambda fallback=(100, 24): os.terminal_size((160, 24)))
+def test_render_install_summary_never_echoes_bootstrap_password(
+    monkeypatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(
+        packaged_installer.shutil,
+        "get_terminal_size",
+        lambda fallback=(100, 24): os.terminal_size((160, 24)),
+    )
 
     summary = packaged_installer._render_install_summary(
         {
@@ -751,7 +850,12 @@ def test_render_install_summary_never_echoes_bootstrap_password(monkeypatch, tmp
             "auth_mode": "oidc",
             "security_posture": "Secure local profile (single-host compose, authenticated A2A)",
             "urls": ["http://xfrontier.localhost:8080"],
-            "path": {"cli_path": "C:/Python/Scripts/lattix.exe", "scripts_dir": "C:/Python/Scripts", "updated": False, "locations": []},
+            "path": {
+                "cli_path": "C:/Python/Scripts/lattix.exe",
+                "scripts_dir": "C:/Python/Scripts",
+                "updated": False,
+                "locations": [],
+            },
             "bootstrap_login": {
                 "username": "demo-login",
                 "email": "demo-login@demo.localhost",
@@ -771,7 +875,9 @@ def test_render_install_summary_never_echoes_bootstrap_password(monkeypatch, tmp
     assert "  [1] http://xfrontier.localhost:8080" in body_lines
 
 
-def test_packaged_installer_targets_active_scripts_dir_for_editable_install(monkeypatch, tmp_path: Path) -> None:
+def test_packaged_installer_targets_active_scripts_dir_for_editable_install(
+    monkeypatch, tmp_path: Path
+) -> None:
     editable_scripts = tmp_path / ".venv" / "Scripts"
     user_scripts = tmp_path / "AppData" / "Roaming" / "Python" / "Scripts"
     monkeypatch.setattr(packaged_installer, "python_scripts_dir", lambda: editable_scripts)
@@ -781,9 +887,13 @@ def test_packaged_installer_targets_active_scripts_dir_for_editable_install(monk
     assert packaged_installer._scripts_dir_for_install_mode("wheel") == user_scripts
 
 
-def test_packaged_installer_runtime_env_prepends_editable_scripts_dir(monkeypatch, tmp_path: Path) -> None:
+def test_packaged_installer_runtime_env_prepends_editable_scripts_dir(
+    monkeypatch, tmp_path: Path
+) -> None:
     editable_scripts = tmp_path / ".venv" / "Scripts"
-    monkeypatch.setattr(packaged_installer, "_scripts_dir_for_install_mode", lambda mode: editable_scripts)
+    monkeypatch.setattr(
+        packaged_installer, "_scripts_dir_for_install_mode", lambda mode: editable_scripts
+    )
     monkeypatch.setenv("PATH", str(tmp_path / "Windows" / "System32"))
 
     env = packaged_installer._runtime_env(tmp_path, "editable")
@@ -796,31 +906,43 @@ def test_packaged_installer_update_preserves_installer_state(tmp_path: Path) -> 
     source_root = tmp_path / "source"
     install_root = tmp_path / "installed"
     (source_root / "frontier_tooling").mkdir(parents=True, exist_ok=True)
-    (source_root / "pyproject.toml").write_text("[project]\nname='lattix-frontier'\nversion='0.2.0'\n", encoding="utf-8")
+    (source_root / "pyproject.toml").write_text(
+        "[project]\nname='lattix-frontier'\nversion='0.2.0'\n", encoding="utf-8"
+    )
     (source_root / "docker-compose.yml").write_text("services: {}\n", encoding="utf-8")
     (source_root / "README.md").write_text("new build\n", encoding="utf-8")
 
     (install_root / ".installer").mkdir(parents=True, exist_ok=True)
-    (install_root / ".installer" / "local-secure.env").write_text("A2A_JWT_SECRET=existing-secret\n", encoding="utf-8")
+    (install_root / ".installer" / "local-secure.env").write_text(
+        "A2A_JWT_SECRET=existing-secret\n", encoding="utf-8"
+    )
     (install_root / ".env").write_text("LOCAL_STACK_HOST=xfrontier.local\n", encoding="utf-8")
     (install_root / "README.md").write_text("old build\n", encoding="utf-8")
 
     refreshed_root = packaged_installer._prepare_install_root_for_update(source_root, install_root)
 
     assert refreshed_root == install_root
-    assert (install_root / ".installer" / "local-secure.env").read_text(encoding="utf-8") == "A2A_JWT_SECRET=existing-secret\n"
+    assert (install_root / ".installer" / "local-secure.env").read_text(
+        encoding="utf-8"
+    ) == "A2A_JWT_SECRET=existing-secret\n"
 
 
-def test_packaged_installer_prepare_install_root_preserves_existing_installer_state(monkeypatch, tmp_path: Path) -> None:
+def test_packaged_installer_prepare_install_root_preserves_existing_installer_state(
+    monkeypatch, tmp_path: Path
+) -> None:
     source_root = tmp_path / "source"
     install_root = tmp_path / "installed"
     (source_root / "frontier_tooling").mkdir(parents=True, exist_ok=True)
-    (source_root / "pyproject.toml").write_text("[project]\nname='lattix-frontier'\nversion='0.2.0'\n", encoding="utf-8")
+    (source_root / "pyproject.toml").write_text(
+        "[project]\nname='lattix-frontier'\nversion='0.2.0'\n", encoding="utf-8"
+    )
     (source_root / "docker-compose.yml").write_text("services: {}\n", encoding="utf-8")
     (source_root / "README.md").write_text("new build\n", encoding="utf-8")
 
     (install_root / ".installer").mkdir(parents=True, exist_ok=True)
-    (install_root / ".installer" / "local-secure.env").write_text("POSTGRES_PASSWORD=existing-secret\n", encoding="utf-8")
+    (install_root / ".installer" / "local-secure.env").write_text(
+        "POSTGRES_PASSWORD=existing-secret\n", encoding="utf-8"
+    )
     (install_root / ".env").write_text("LOCAL_STACK_HOST=existing.localhost\n", encoding="utf-8")
     (install_root / "README.md").write_text("old build\n", encoding="utf-8")
     monkeypatch.setattr(packaged_installer, "default_app_home", lambda: install_root)
@@ -828,58 +950,92 @@ def test_packaged_installer_prepare_install_root_preserves_existing_installer_st
     refreshed_root = packaged_installer._prepare_install_root(source_root)
 
     assert refreshed_root == install_root
-    assert (install_root / ".installer" / "local-secure.env").read_text(encoding="utf-8") == "POSTGRES_PASSWORD=existing-secret\n"
-    assert (install_root / ".env").read_text(encoding="utf-8") == "LOCAL_STACK_HOST=existing.localhost\n"
+    assert (install_root / ".installer" / "local-secure.env").read_text(
+        encoding="utf-8"
+    ) == "POSTGRES_PASSWORD=existing-secret\n"
+    assert (install_root / ".env").read_text(
+        encoding="utf-8"
+    ) == "LOCAL_STACK_HOST=existing.localhost\n"
     assert (install_root / "README.md").read_text(encoding="utf-8") == "new build\n"
 
 
-def test_packaged_installer_prepare_install_root_preserves_custom_in_app_agent_assets(monkeypatch, tmp_path: Path) -> None:
+def test_packaged_installer_prepare_install_root_preserves_custom_in_app_agent_assets(
+    monkeypatch, tmp_path: Path
+) -> None:
     source_root = tmp_path / "source"
     install_root = tmp_path / "installed"
     (source_root / "frontier_tooling").mkdir(parents=True, exist_ok=True)
-    (source_root / "pyproject.toml").write_text("[project]\nname='lattix-frontier'\nversion='0.2.0'\n", encoding="utf-8")
+    (source_root / "pyproject.toml").write_text(
+        "[project]\nname='lattix-frontier'\nversion='0.2.0'\n", encoding="utf-8"
+    )
     (source_root / "docker-compose.yml").write_text("services: {}\n", encoding="utf-8")
-    (source_root / ".env.example").write_text("FRONTIER_AGENT_ASSETS_ROOT=private-agents\n", encoding="utf-8")
+    (source_root / ".env.example").write_text(
+        "FRONTIER_AGENT_ASSETS_ROOT=private-agents\n", encoding="utf-8"
+    )
 
     install_root.mkdir(parents=True, exist_ok=True)
-    (install_root / ".env").write_text("FRONTIER_AGENT_ASSETS_ROOT=private-agents\n", encoding="utf-8")
+    (install_root / ".env").write_text(
+        "FRONTIER_AGENT_ASSETS_ROOT=private-agents\n", encoding="utf-8"
+    )
     (install_root / "private-agents" / "custom-agent").mkdir(parents=True, exist_ok=True)
-    (install_root / "private-agents" / "custom-agent" / "system-prompt.md").write_text("keep me\n", encoding="utf-8")
+    (install_root / "private-agents" / "custom-agent" / "system-prompt.md").write_text(
+        "keep me\n", encoding="utf-8"
+    )
     monkeypatch.setattr(packaged_installer, "default_app_home", lambda: install_root)
 
     refreshed_root = packaged_installer._prepare_install_root(source_root)
 
     assert refreshed_root == install_root
-    assert (install_root / "private-agents" / "custom-agent" / "system-prompt.md").read_text(encoding="utf-8") == "keep me\n"
+    assert (install_root / "private-agents" / "custom-agent" / "system-prompt.md").read_text(
+        encoding="utf-8"
+    ) == "keep me\n"
 
 
-def test_packaged_installer_prepare_install_root_preserves_user_added_sample_agent_dirs(monkeypatch, tmp_path: Path) -> None:
+def test_packaged_installer_prepare_install_root_preserves_user_added_sample_agent_dirs(
+    monkeypatch, tmp_path: Path
+) -> None:
     source_root = tmp_path / "source"
     install_root = tmp_path / "installed"
     (source_root / "frontier_tooling").mkdir(parents=True, exist_ok=True)
-    (source_root / "pyproject.toml").write_text("[project]\nname='lattix-frontier'\nversion='0.2.0'\n", encoding="utf-8")
+    (source_root / "pyproject.toml").write_text(
+        "[project]\nname='lattix-frontier'\nversion='0.2.0'\n", encoding="utf-8"
+    )
     (source_root / "docker-compose.yml").write_text("services: {}\n", encoding="utf-8")
     (source_root / "examples" / "agents" / "built-in-agent").mkdir(parents=True, exist_ok=True)
-    (source_root / "examples" / "agents" / "built-in-agent" / "system-prompt.md").write_text("new built-in\n", encoding="utf-8")
+    (source_root / "examples" / "agents" / "built-in-agent" / "system-prompt.md").write_text(
+        "new built-in\n", encoding="utf-8"
+    )
 
     (install_root / "examples" / "agents" / "user-agent").mkdir(parents=True, exist_ok=True)
-    (install_root / "examples" / "agents" / "user-agent" / "system-prompt.md").write_text("keep custom agent\n", encoding="utf-8")
+    (install_root / "examples" / "agents" / "user-agent" / "system-prompt.md").write_text(
+        "keep custom agent\n", encoding="utf-8"
+    )
     (install_root / "examples" / "agents" / "built-in-agent").mkdir(parents=True, exist_ok=True)
-    (install_root / "examples" / "agents" / "built-in-agent" / "system-prompt.md").write_text("old built-in\n", encoding="utf-8")
+    (install_root / "examples" / "agents" / "built-in-agent" / "system-prompt.md").write_text(
+        "old built-in\n", encoding="utf-8"
+    )
     monkeypatch.setattr(packaged_installer, "default_app_home", lambda: install_root)
 
     refreshed_root = packaged_installer._prepare_install_root(source_root)
 
     assert refreshed_root == install_root
-    assert (install_root / "examples" / "agents" / "user-agent" / "system-prompt.md").read_text(encoding="utf-8") == "keep custom agent\n"
-    assert (install_root / "examples" / "agents" / "built-in-agent" / "system-prompt.md").read_text(encoding="utf-8") == "new built-in\n"
+    assert (install_root / "examples" / "agents" / "user-agent" / "system-prompt.md").read_text(
+        encoding="utf-8"
+    ) == "keep custom agent\n"
+    assert (install_root / "examples" / "agents" / "built-in-agent" / "system-prompt.md").read_text(
+        encoding="utf-8"
+    ) == "new built-in\n"
 
 
-def test_packaged_installer_prepare_install_root_preserves_manifest_declared_in_app_asset_roots(monkeypatch, tmp_path: Path) -> None:
+def test_packaged_installer_prepare_install_root_preserves_manifest_declared_in_app_asset_roots(
+    monkeypatch, tmp_path: Path
+) -> None:
     source_root = tmp_path / "source"
     install_root = tmp_path / "installed"
     (source_root / "frontier_tooling").mkdir(parents=True, exist_ok=True)
-    (source_root / "pyproject.toml").write_text("[project]\nname='lattix-frontier'\nversion='0.2.0'\n", encoding="utf-8")
+    (source_root / "pyproject.toml").write_text(
+        "[project]\nname='lattix-frontier'\nversion='0.2.0'\n", encoding="utf-8"
+    )
     (source_root / "docker-compose.yml").write_text("services: {}\n", encoding="utf-8")
     (install_root / ".installer").mkdir(parents=True, exist_ok=True)
     (install_root / ".installer" / "state-manifest.json").write_text(
@@ -887,16 +1043,22 @@ def test_packaged_installer_prepare_install_root_preserves_manifest_declared_in_
         encoding="utf-8",
     )
     (install_root / "private-agents" / "manifest-agent").mkdir(parents=True, exist_ok=True)
-    (install_root / "private-agents" / "manifest-agent" / "system-prompt.md").write_text("keep via manifest\n", encoding="utf-8")
+    (install_root / "private-agents" / "manifest-agent" / "system-prompt.md").write_text(
+        "keep via manifest\n", encoding="utf-8"
+    )
     monkeypatch.setattr(packaged_installer, "default_app_home", lambda: install_root)
 
     refreshed_root = packaged_installer._prepare_install_root(source_root)
 
     assert refreshed_root == install_root
-    assert (install_root / "private-agents" / "manifest-agent" / "system-prompt.md").read_text(encoding="utf-8") == "keep via manifest\n"
+    assert (install_root / "private-agents" / "manifest-agent" / "system-prompt.md").read_text(
+        encoding="utf-8"
+    ) == "keep via manifest\n"
 
 
-def test_packaged_installer_retries_secure_gateway_on_fallback_port(monkeypatch, tmp_path: Path) -> None:
+def test_packaged_installer_retries_secure_gateway_on_fallback_port(
+    monkeypatch, tmp_path: Path
+) -> None:
     installer_dir = tmp_path / ".installer"
     installer_dir.mkdir(parents=True, exist_ok=True)
     compose_env = installer_dir / "local-secure.env"
@@ -916,7 +1078,9 @@ def test_packaged_installer_retries_secure_gateway_on_fallback_port(monkeypatch,
 
     calls: list[list[str]] = []
 
-    def _fake_compose_run(command: list[str], *, cwd: Path, env: dict[str, str]) -> subprocess.CompletedProcess[str]:
+    def _fake_compose_run(
+        command: list[str], *, cwd: Path, env: dict[str, str]
+    ) -> subprocess.CompletedProcess[str]:
         calls.append(command)
         current_env_lines = compose_env.read_text(encoding="utf-8").splitlines()
         if "LOCAL_GATEWAY_HTTP_PORT=80" in current_env_lines:
@@ -929,8 +1093,14 @@ def test_packaged_installer_retries_secure_gateway_on_fallback_port(monkeypatch,
         return subprocess.CompletedProcess(command, 0, stdout="started\n", stderr="")
 
     monkeypatch.setattr(packaged_installer, "_compose_up_with_output", _fake_compose_run)
-    monkeypatch.setattr(packaged_installer, "_select_fallback_gateway_port", lambda bind_host, occupied_port: 8080)
-    monkeypatch.setattr(packaged_installer, "portal_urls", lambda root=None: ["http://xfrontier.local:8080", "http://127.0.0.1:8080"])
+    monkeypatch.setattr(
+        packaged_installer, "_select_fallback_gateway_port", lambda bind_host, occupied_port: 8080
+    )
+    monkeypatch.setattr(
+        packaged_installer,
+        "portal_urls",
+        lambda root=None: ["http://xfrontier.local:8080", "http://127.0.0.1:8080"],
+    )
 
     urls = packaged_installer._auto_start_stack(tmp_path, {})
     updated_env = compose_env.read_text(encoding="utf-8")
@@ -942,7 +1112,9 @@ def test_packaged_installer_retries_secure_gateway_on_fallback_port(monkeypatch,
     assert "FRONTIER_LOCAL_API_BASE_URL=http://127.0.0.1:8080/api" in updated_env
 
 
-def test_casdoor_bootstrap_endpoint_uses_effective_secure_gateway_port(monkeypatch, tmp_path: Path) -> None:
+def test_casdoor_bootstrap_endpoint_uses_effective_secure_gateway_port(
+    monkeypatch, tmp_path: Path
+) -> None:
     installer_dir = tmp_path / ".installer"
     installer_dir.mkdir(parents=True, exist_ok=True)
     (installer_dir / "local-secure.env").write_text(
@@ -973,7 +1145,9 @@ def test_casdoor_bootstrap_endpoint_uses_effective_secure_gateway_port(monkeypat
     assert host_headers == {"Host": "casdoor.localhost"}
 
 
-def test_casdoor_bootstrap_endpoint_uses_direct_loopback_issuer_without_gateway_rewrite(tmp_path: Path) -> None:
+def test_casdoor_bootstrap_endpoint_uses_direct_loopback_issuer_without_gateway_rewrite(
+    tmp_path: Path,
+) -> None:
     answers = InstallerAnswers(
         installation_root=str(tmp_path),
         local_auth_provider="oidc",
@@ -992,12 +1166,18 @@ def test_casdoor_bootstrap_endpoint_uses_direct_loopback_issuer_without_gateway_
 def test_bootstrap_failure_reports_postgres_volume_guidance(monkeypatch, tmp_path: Path) -> None:
     installer_dir = tmp_path / ".installer"
     installer_dir.mkdir(parents=True, exist_ok=True)
-    (installer_dir / "local-secure.env").write_text("LOCAL_GATEWAY_HTTP_PORT=80\n", encoding="utf-8")
+    (installer_dir / "local-secure.env").write_text(
+        "LOCAL_GATEWAY_HTTP_PORT=80\n", encoding="utf-8"
+    )
     monkeypatch.setenv(packaged_installer.FRONTIER_APP_HOME_ENV, str(tmp_path))
     monkeypatch.setattr(
         packaged_installer,
         "_compose_service_logs_text",
-        lambda install_root, service, tail=80: "panic: pq: password authentication failed for user \"frontier\"" if service == "casdoor" else "",
+        lambda install_root, service, tail=80: (
+            'panic: pq: password authentication failed for user "frontier"'
+            if service == "casdoor"
+            else ""
+        ),
     )
 
     message = packaged_installer._diagnose_casdoor_bootstrap_failure()
@@ -1007,7 +1187,9 @@ def test_bootstrap_failure_reports_postgres_volume_guidance(monkeypatch, tmp_pat
     assert "lattix remove" in message
 
 
-def test_packaged_installer_ensure_local_vault_bootstrap_initializes_and_unseals(monkeypatch, tmp_path: Path) -> None:
+def test_packaged_installer_ensure_local_vault_bootstrap_initializes_and_unseals(
+    monkeypatch, tmp_path: Path
+) -> None:
     installer_dir = tmp_path / ".installer"
     installer_dir.mkdir(parents=True, exist_ok=True)
     calls: list[tuple[list[str], str | None, bool]] = []
@@ -1048,11 +1230,17 @@ def test_packaged_installer_ensure_local_vault_bootstrap_initializes_and_unseals
     assert all("-format=json" not in args for args, *_ in raw_calls)
 
 
-def test_packaged_installer_syncs_sensitive_install_state_to_vault(monkeypatch, tmp_path: Path) -> None:
+def test_packaged_installer_syncs_sensitive_install_state_to_vault(
+    monkeypatch, tmp_path: Path
+) -> None:
     installer_dir = tmp_path / ".installer"
     installer_dir.mkdir(parents=True, exist_ok=True)
-    (tmp_path / "pyproject.toml").write_text("[project]\nname='lattix-frontier'\nversion='1.2.3'\n", encoding="utf-8")
-    (tmp_path / ".env").write_text("FRONTIER_AGENT_ASSETS_ROOT=private-agents\nOPENAI_API_KEY=root-openai\n", encoding="utf-8")
+    (tmp_path / "pyproject.toml").write_text(
+        "[project]\nname='lattix-frontier'\nversion='1.2.3'\n", encoding="utf-8"
+    )
+    (tmp_path / ".env").write_text(
+        "FRONTIER_AGENT_ASSETS_ROOT=private-agents\nOPENAI_API_KEY=root-openai\n", encoding="utf-8"
+    )
     (installer_dir / "local-secure.env").write_text(
         "\n".join(
             [
@@ -1071,11 +1259,17 @@ def test_packaged_installer_syncs_sensitive_install_state_to_vault(monkeypatch, 
 
     captured_writes: list[tuple[str, dict[str, Any], str]] = []
 
-    monkeypatch.setattr(packaged_installer, "_ensure_local_vault_bootstrap", lambda install_root: {"root_token": "root-token"})
+    monkeypatch.setattr(
+        packaged_installer,
+        "_ensure_local_vault_bootstrap",
+        lambda install_root: {"root_token": "root-token"},
+    )
     monkeypatch.setattr(
         packaged_installer,
         "_vault_kv_put",
-        lambda install_root, api_path, payload, *, token: captured_writes.append((api_path, payload, token)) or {"written": True},
+        lambda install_root, api_path, payload, *, token: (
+            captured_writes.append((api_path, payload, token)) or {"written": True}
+        ),
     )
 
     synced = packaged_installer._sync_installer_state_to_vault(tmp_path, install_mode="wheel")
@@ -1098,9 +1292,14 @@ def test_packaged_installer_syncs_sensitive_install_state_to_vault(monkeypatch, 
     decoded_state = json.loads(base64.b64decode(state_write[1]["payload_b64"]).decode("utf-8"))
     assert decoded_state["install_mode"] == "wheel"
     assert decoded_state["env_snapshots"]["secure_env"]["LOCAL_STACK_HOST"] == "xfrontier.local"
-    assert decoded_state["env_snapshots"]["root_env"]["FRONTIER_AGENT_ASSETS_ROOT"] == "private-agents"
+    assert (
+        decoded_state["env_snapshots"]["root_env"]["FRONTIER_AGENT_ASSETS_ROOT"] == "private-agents"
+    )
     assert "POSTGRES_PASSWORD" not in decoded_state["env_snapshots"]["secure_env"]
-    assert base64.b64decode(decoded_state["generated_helm_values_b64"]).decode("utf-8") == "clusterName: demo\n"
+    assert (
+        base64.b64decode(decoded_state["generated_helm_values_b64"]).decode("utf-8")
+        == "clusterName: demo\n"
+    )
 
 
 def test_installer_defaults_to_casdoor_oidc_preset(tmp_path: Path) -> None:
@@ -1123,7 +1322,9 @@ def test_installer_defaults_to_casdoor_oidc_preset(tmp_path: Path) -> None:
     assert "FRONTIER_AUTH_OIDC_AUDIENCE=frontier-ui" in text
     assert "FRONTIER_AUTH_OIDC_JWKS_URL=http://127.0.0.1:8081/.well-known/jwks.json" in text
     assert "FRONTIER_AUTH_OIDC_CLIENT_ID=frontier-web" in text
-    assert "FRONTIER_AUTH_OIDC_AUTHORIZATION_URL=http://127.0.0.1:8081/login/oauth/authorize" in text
+    assert (
+        "FRONTIER_AUTH_OIDC_AUTHORIZATION_URL=http://127.0.0.1:8081/login/oauth/authorize" in text
+    )
     assert "FRONTIER_AUTH_OIDC_TOKEN_URL=http://127.0.0.1:8081/api/login/oauth/access_token" in text
 
 
@@ -1154,7 +1355,9 @@ def test_installer_writes_casdoor_preset_when_selected(monkeypatch, tmp_path: Pa
     assert "FRONTIER_AUTH_OIDC_AUDIENCE=frontier-ui" in text
     assert "FRONTIER_AUTH_OIDC_JWKS_URL=http://127.0.0.1:8081/.well-known/jwks.json" in text
     assert "FRONTIER_AUTH_OIDC_CLIENT_ID=frontier-web" in text
-    assert "FRONTIER_AUTH_OIDC_AUTHORIZATION_URL=http://127.0.0.1:8081/login/oauth/authorize" in text
+    assert (
+        "FRONTIER_AUTH_OIDC_AUTHORIZATION_URL=http://127.0.0.1:8081/login/oauth/authorize" in text
+    )
     assert "FRONTIER_AUTH_OIDC_TOKEN_URL=http://127.0.0.1:8081/api/login/oauth/access_token" in text
     assert "FRONTIER_AUTH_OIDC_SIGNIN_URL=http://127.0.0.1:8081/login/oauth/authorize" in text
     assert "FRONTIER_AUTH_OIDC_SIGNUP_URL=http://127.0.0.1:8081/login/oauth/authorize" in text
@@ -1210,8 +1413,14 @@ def test_installer_supports_external_oidc_provider(monkeypatch, tmp_path: Path) 
     assert "FRONTIER_AUTH_OIDC_ISSUER=https://login.example.com/realms/frontier" in text
     assert "FRONTIER_AUTH_OIDC_AUDIENCE=frontier-api" in text
     assert "FRONTIER_AUTH_OIDC_CLIENT_ID=frontier-ui" in text
-    assert "FRONTIER_AUTH_OIDC_SIGNIN_URL=https://login.example.com/realms/frontier/protocol/openid-connect/auth?prompt=login" in text
-    assert "FRONTIER_AUTH_OIDC_SIGNUP_URL=https://login.example.com/realms/frontier/registrations/start" in text
+    assert (
+        "FRONTIER_AUTH_OIDC_SIGNIN_URL=https://login.example.com/realms/frontier/protocol/openid-connect/auth?prompt=login"
+        in text
+    )
+    assert (
+        "FRONTIER_AUTH_OIDC_SIGNUP_URL=https://login.example.com/realms/frontier/registrations/start"
+        in text
+    )
     assert "FRONTIER_AUTH_OIDC_SCOPES=openid profile email groups" in text
     assert "FRONTIER_API_BEARER_TOKEN" not in secrets_map
 
@@ -1242,7 +1451,9 @@ def test_installer_rejects_oidc_urls_with_embedded_credentials(tmp_path: Path) -
         )
 
 
-def test_installer_shared_token_mode_still_generates_bearer_secret(monkeypatch, tmp_path: Path) -> None:
+def test_installer_shared_token_mode_still_generates_bearer_secret(
+    monkeypatch, tmp_path: Path
+) -> None:
     installer = FrontierInstaller(repo_root=tmp_path)
     answers = InstallerAnswers(
         installation_root=str(tmp_path),
@@ -1286,7 +1497,9 @@ def test_installer_writes_helm_values(tmp_path: Path) -> None:
     assert "https://peer-a.example.com" in text
 
 
-def test_resolve_missing_prerequisites_attempts_install_and_continues(monkeypatch, tmp_path: Path) -> None:
+def test_resolve_missing_prerequisites_attempts_install_and_continues(
+    monkeypatch, tmp_path: Path
+) -> None:
     installer = FrontierInstaller(repo_root=tmp_path)
     definition = PrerequisiteDefinition(
         key="helm",
@@ -1317,7 +1530,9 @@ def test_resolve_missing_prerequisites_attempts_install_and_continues(monkeypatc
     installer._resolve_missing_prerequisites(missing, intro="Need Helm")
 
 
-def test_resolve_missing_prerequisites_decline_exits_with_actionable_message(monkeypatch, tmp_path: Path) -> None:
+def test_resolve_missing_prerequisites_decline_exits_with_actionable_message(
+    monkeypatch, tmp_path: Path
+) -> None:
     installer = FrontierInstaller(repo_root=tmp_path)
     definition = PrerequisiteDefinition(
         key="kubectl",
@@ -1363,7 +1578,9 @@ def test_attempt_missing_prerequisites_reports_failed_install(monkeypatch, tmp_p
     monkeypatch.setattr(
         installer,
         "_run_install_command",
-        lambda command: subprocess.CompletedProcess(command, 1, stdout="", stderr="installer failed"),
+        lambda command: subprocess.CompletedProcess(
+            command, 1, stdout="", stderr="installer failed"
+        ),
     )
 
     unresolved = installer._attempt_missing_prerequisite_installs(missing)
@@ -1382,7 +1599,9 @@ def test_installer_yes_no_accepts_default_and_explicit_answers(monkeypatch, tmp_
     assert installer._ask_yes_no("Proceed?", False) is True
 
 
-def test_installer_yes_no_reprompts_on_invalid_input(monkeypatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+def test_installer_yes_no_reprompts_on_invalid_input(
+    monkeypatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
     installer = FrontierInstaller(repo_root=tmp_path)
     answers = iter(["maybe", "Y"])
     monkeypatch.setattr("builtins.input", lambda prompt: next(answers))
@@ -1399,7 +1618,9 @@ def test_run_prerequisite_check_validates_named_commands(monkeypatch, tmp_path: 
         display_name="Helm",
         check_name="command:helm",
     )
-    monkeypatch.setattr("shutil.which", lambda command: "C:/Tools/helm.exe" if command == "helm" else None)
+    monkeypatch.setattr(
+        "shutil.which", lambda command: "C:/Tools/helm.exe" if command == "helm" else None
+    )
 
     result = installer._run_prerequisite_check(definition)
 
@@ -1444,7 +1665,9 @@ def test_attempt_missing_prerequisites_rechecks_after_install(monkeypatch, tmp_p
     monkeypatch.setattr(
         installer,
         "_run_prerequisite_check",
-        lambda definition: DiagnosticResult(name=definition.check_name, ok=False, message="still missing after install"),
+        lambda definition: DiagnosticResult(
+            name=definition.check_name, ok=False, message="still missing after install"
+        ),
     )
 
     unresolved = installer._attempt_missing_prerequisite_installs(missing)

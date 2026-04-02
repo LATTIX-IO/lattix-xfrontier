@@ -45,7 +45,10 @@ def _http_authority(host: str, port: str) -> str:
 
 
 def _default_secure_frontend_origin(env_map: OrderedDict[str, str]) -> str:
-    host = str(env_map.get("LOCAL_STACK_HOST") or DEFAULT_LOCAL_STACK_HOST).strip() or DEFAULT_LOCAL_STACK_HOST
+    host = (
+        str(env_map.get("LOCAL_STACK_HOST") or DEFAULT_LOCAL_STACK_HOST).strip()
+        or DEFAULT_LOCAL_STACK_HOST
+    )
     port = _normalized_gateway_http_port(env_map.get("LOCAL_GATEWAY_HTTP_PORT"))
     return f"http://{_http_authority(host, port)}"
 
@@ -175,7 +178,11 @@ def _normalize_a2a_audience(value: str | None) -> str:
 
 
 def _installer_env_path(*, local_profile: bool, root: Path | None = None) -> Path:
-    return lightweight_installer_env_path(root=root) if local_profile else secure_installer_env_path(root=root)
+    return (
+        lightweight_installer_env_path(root=root)
+        if local_profile
+        else secure_installer_env_path(root=root)
+    )
 
 
 def installer_artifact_paths(*, root: Path | None = None) -> list[Path]:
@@ -281,7 +288,9 @@ def _in_app_asset_roots(*, root: Path | None = None) -> list[str]:
     return preserved
 
 
-def _installer_state_payload(*, root: Path | None = None, install_mode: str | None = None) -> OrderedDict[str, Any]:
+def _installer_state_payload(
+    *, root: Path | None = None, install_mode: str | None = None
+) -> OrderedDict[str, Any]:
     resolved_root = (root or repo_root()).resolve(strict=False)
     secure_env = _read_env_map(secure_installer_env_path(root=resolved_root))
     return OrderedDict(
@@ -289,29 +298,46 @@ def _installer_state_payload(*, root: Path | None = None, install_mode: str | No
             ("schema_version", INSTALLER_STATE_SCHEMA_VERSION),
             ("installation_id", _installer_installation_id(root=resolved_root)),
             ("package_version", _project_version(root=resolved_root)),
-            ("install_mode", str(install_mode or ("editable" if (resolved_root / ".git").exists() else "wheel"))),
+            (
+                "install_mode",
+                str(install_mode or ("editable" if (resolved_root / ".git").exists() else "wheel")),
+            ),
             ("install_root", str(resolved_root)),
             ("updated_at", datetime.now(timezone.utc).isoformat()),
             ("profiles", _installer_profiles(root=resolved_root)),
             ("auth_mode", str(secure_env.get("FRONTIER_AUTH_MODE") or "").strip()),
             ("local_stack_host", str(secure_env.get("LOCAL_STACK_HOST") or "").strip()),
             ("in_app_asset_roots", _in_app_asset_roots(root=resolved_root)),
-            ("vault_bootstrap_file", str(installer_vault_bootstrap_path(root=resolved_root).relative_to(resolved_root)).replace("\\", "/")),
+            (
+                "vault_bootstrap_file",
+                str(
+                    installer_vault_bootstrap_path(root=resolved_root).relative_to(resolved_root)
+                ).replace("\\", "/"),
+            ),
             ("vault_secret_path", installer_vault_secret_path(root=resolved_root)),
             ("vault_state_path", installer_vault_state_path(root=resolved_root)),
             (
                 "managed_artifacts",
-                [str(path.relative_to(resolved_root)).replace("\\", "/") for path in installer_artifact_paths(root=resolved_root)],
+                [
+                    str(path.relative_to(resolved_root)).replace("\\", "/")
+                    for path in installer_artifact_paths(root=resolved_root)
+                ],
             ),
         ]
     )
 
 
-def _merged_in_app_asset_roots(current_manifest: dict[str, Any], discovered_roots: list[str]) -> list[str]:
+def _merged_in_app_asset_roots(
+    current_manifest: dict[str, Any], discovered_roots: list[str]
+) -> list[str]:
     merged: list[str] = []
     seen: set[str] = set()
-    raw_current_roots = current_manifest.get("in_app_asset_roots") if isinstance(current_manifest, dict) else None
-    current_roots: list[str] = [str(item) for item in raw_current_roots] if isinstance(raw_current_roots, list) else []
+    raw_current_roots = (
+        current_manifest.get("in_app_asset_roots") if isinstance(current_manifest, dict) else None
+    )
+    current_roots: list[str] = (
+        [str(item) for item in raw_current_roots] if isinstance(raw_current_roots, list) else []
+    )
     for item in [*current_roots, *discovered_roots]:
         normalized = str(item or "").strip().replace("\\", "/")
         if not normalized:
@@ -324,12 +350,16 @@ def _merged_in_app_asset_roots(current_manifest: dict[str, Any], discovered_root
     return merged
 
 
-def ensure_installer_state_manifest(*, root: Path | None = None, install_mode: str | None = None) -> Path:
+def ensure_installer_state_manifest(
+    *, root: Path | None = None, install_mode: str | None = None
+) -> Path:
     resolved_root = (root or repo_root()).resolve(strict=False)
     current_manifest = read_installer_state_manifest(root=resolved_root)
     current_version = _normalized_installer_state_schema_version(current_manifest)
     payload = _installer_state_payload(root=resolved_root, install_mode=install_mode)
-    discovered_roots = payload["in_app_asset_roots"] if isinstance(payload.get("in_app_asset_roots"), list) else []
+    discovered_roots = (
+        payload["in_app_asset_roots"] if isinstance(payload.get("in_app_asset_roots"), list) else []
+    )
     payload["in_app_asset_roots"] = _merged_in_app_asset_roots(
         current_manifest,
         [str(item) for item in discovered_roots],
@@ -344,7 +374,9 @@ def ensure_installer_state_manifest(*, root: Path | None = None, install_mode: s
     return path
 
 
-def write_installer_state_manifest(*, root: Path | None = None, install_mode: str | None = None) -> Path:
+def write_installer_state_manifest(
+    *, root: Path | None = None, install_mode: str | None = None
+) -> Path:
     return ensure_installer_state_manifest(root=root, install_mode=install_mode)
 
 
@@ -361,7 +393,7 @@ def ensure_compose_env_file(*, local_profile: bool = False, root: Path | None = 
     env_map.setdefault("A2A_JWT_ALG", "HS256")
     env_map.setdefault("A2A_JWT_ISS", "lattix-frontier")
     env_map["A2A_JWT_AUD"] = _normalize_a2a_audience(env_map.get("A2A_JWT_AUD"))
-    env_map["A2A_TRUSTED_SUBJECTS"] = "backend,research,code,review,coordinator"
+    env_map["A2A_TRUSTED_SUBJECTS"] = "backend,orchestrator,research,code,review,coordinator"
     env_map.setdefault("LOCAL_STACK_HOST", DEFAULT_LOCAL_STACK_HOST)
     if local_profile:
         env_map["FRONTIER_RUNTIME_PROFILE"] = "local-lightweight"
@@ -459,7 +491,11 @@ def remove_installer_artifacts(*, root: Path | None = None) -> list[Path]:
 
 
 def run_command(
-    args: list[str], *, cwd: Path | None = None, check: bool = True, env: dict[str, str] | None = None
+    args: list[str],
+    *,
+    cwd: Path | None = None,
+    check: bool = True,
+    env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[Any]:
     return subprocess.run(args, cwd=str(cwd or repo_root()), check=check, env=env)
 
@@ -489,7 +525,9 @@ def request_json(
 
     headers = {"Accept": "application/json"}
     if extra_headers:
-        headers.update({key: value for key, value in extra_headers.items() if str(value or "").strip()})
+        headers.update(
+            {key: value for key, value in extra_headers.items() if str(value or "").strip()}
+        )
     bearer = str(os.getenv("FRONTIER_API_BEARER_TOKEN", "") or "").strip()
     if bearer:
         headers["Authorization"] = f"Bearer {bearer}"
@@ -532,7 +570,10 @@ def _detect_primary_ipv4() -> str | None:
 
 def portal_urls(*, root: Path | None = None) -> list[str]:
     env_map = _read_env_map(ensure_compose_env_file(local_profile=False, root=root))
-    host = str(env_map.get("LOCAL_STACK_HOST") or DEFAULT_LOCAL_STACK_HOST).strip() or DEFAULT_LOCAL_STACK_HOST
+    host = (
+        str(env_map.get("LOCAL_STACK_HOST") or DEFAULT_LOCAL_STACK_HOST).strip()
+        or DEFAULT_LOCAL_STACK_HOST
+    )
     port = _normalized_gateway_http_port(env_map.get("LOCAL_GATEWAY_HTTP_PORT"))
     bind_host = _normalized_gateway_bind_host(env_map.get("LOCAL_GATEWAY_BIND_HOST"))
     urls = [f"http://{_http_authority(bind_host, port)}", f"http://{_http_authority(host, port)}"]
@@ -588,12 +629,14 @@ def discover_agent_records() -> list[dict[str, str]]:
             agent_id = child.name
             if agent_id in seen:
                 continue
-            records.append({
-                "id": agent_id,
-                "name": agent_id.replace("-", " ").title(),
-                "path": str(child),
-                "source": str(root),
-            })
+            records.append(
+                {
+                    "id": agent_id,
+                    "name": agent_id.replace("-", " ").title(),
+                    "path": str(child),
+                    "source": str(root),
+                }
+            )
             seen.add(agent_id)
     return records
 

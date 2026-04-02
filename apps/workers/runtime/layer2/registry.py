@@ -34,4 +34,3 @@ class AgentsRegistry:
 
     def by_tag(self, tag: str) -> List[Dict[str, Any]]:
         return [a for a in self._index.values() if tag in (a.get("tags") or [])]
-

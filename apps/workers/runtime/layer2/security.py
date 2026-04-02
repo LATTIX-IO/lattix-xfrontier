@@ -31,16 +31,19 @@ def _runtime_profile() -> str:
 
 
 def strict_runtime_profile() -> bool:
-    return _runtime_profile() in {"local-secure", "hosted"} or _env_flag("FRONTIER_REQUIRE_A2A_RUNTIME_HEADERS", False)
+    return _runtime_profile() in {"local-secure", "hosted"} or _env_flag(
+        "FRONTIER_REQUIRE_A2A_RUNTIME_HEADERS", False
+    )
 
 
 def trusted_runtime_subjects() -> set[str]:
+    baseline = {"backend", "orchestrator", "research", "code", "review", "coordinator"}
     configured = {
         str(item).strip()
         for item in str(os.getenv("A2A_TRUSTED_SUBJECTS") or "").split(",")
         if str(item).strip()
     }
-    return configured or {"backend", "orchestrator", "research", "code", "review", "coordinator"}
+    return baseline | configured
 
 
 def _claim_as_bool(value: Any) -> bool:
@@ -64,7 +67,9 @@ class RuntimeAuthContext:
 
 def _security_events_count(env: Envelope) -> int:
     payload = env.payload if isinstance(env.payload, dict) else {}
-    events = payload.get("security_events") if isinstance(payload.get("security_events"), list) else []
+    events = (
+        payload.get("security_events") if isinstance(payload.get("security_events"), list) else []
+    )
     return len(events)
 
 
@@ -78,7 +83,9 @@ def _mark_security_block(env: Envelope, *, reason: str, classification: str) -> 
 
 def resolve_runtime_auth_context(env: Envelope) -> RuntimeAuthContext:
     payload = env.payload if isinstance(env.payload, dict) else {}
-    auth_context = payload.get("auth_context") if isinstance(payload.get("auth_context"), dict) else {}
+    auth_context = (
+        payload.get("auth_context") if isinstance(payload.get("auth_context"), dict) else {}
+    )
 
     actor = str(
         auth_context.get("actor")
@@ -96,7 +103,12 @@ def resolve_runtime_auth_context(env: Envelope) -> RuntimeAuthContext:
         or ""
     ).strip()
     subject = str(auth_context.get("subject") or env.sender or "").strip()
-    session_id = str(auth_context.get("session_id") or payload.get("sessionId") or payload.get("session_id") or "").strip()
+    session_id = str(
+        auth_context.get("session_id")
+        or payload.get("sessionId")
+        or payload.get("session_id")
+        or ""
+    ).strip()
     internal_service = _claim_as_bool(auth_context.get("internal_service"))
 
     resolved = RuntimeAuthContext(
@@ -159,7 +171,9 @@ def _extract_payload_tenant_context(payload: dict[str, Any]) -> set[str]:
     return {item for item in candidates if item}
 
 
-def _bucket_from_memory_request(memory_request: dict[str, Any], auth: RuntimeAuthContext) -> tuple[str, str]:
+def _bucket_from_memory_request(
+    memory_request: dict[str, Any], auth: RuntimeAuthContext
+) -> tuple[str, str]:
     scope = _normalize_memory_scope_name(memory_request.get("scope"))
     bucket_id = memory_request.get("bucket_id") or memory_request.get("memory_bucket")
     if not bucket_id:
@@ -174,13 +188,17 @@ def _bucket_from_memory_request(memory_request: dict[str, Any], auth: RuntimeAut
         elif scope == "workflow":
             bucket_id = memory_request.get("workflow_id")
         elif scope == "run":
-            bucket_id = memory_request.get("run_id") or memory_request.get("session_id") or auth.session_id
+            bucket_id = (
+                memory_request.get("run_id") or memory_request.get("session_id") or auth.session_id
+            )
         elif scope == "global":
             bucket_id = "global"
     return _normalize_memory_bucket(scope, bucket_id), scope
 
 
-def authorize_memory_request(auth: RuntimeAuthContext, payload: dict[str, Any], *, env: Envelope | None = None) -> None:
+def authorize_memory_request(
+    auth: RuntimeAuthContext, payload: dict[str, Any], *, env: Envelope | None = None
+) -> None:
     memory_request = _extract_memory_request(payload)
     if not memory_request:
         return
@@ -207,7 +225,10 @@ def authorize_memory_request(auth: RuntimeAuthContext, payload: dict[str, Any], 
         expected = auth.session_id or auth.actor
         if not expected:
             _deny("session-scoped memory requires session or actor identity")
-        allowed_buckets = {f"session:{expected}", expected if str(expected).startswith("session:") else ""}
+        allowed_buckets = {
+            f"session:{expected}",
+            expected if str(expected).startswith("session:") else "",
+        }
         if bucket_id not in {item for item in allowed_buckets if item}:
             _deny("session-scoped memory access denied")
     elif scope == "user":
@@ -221,7 +242,9 @@ def authorize_memory_request(auth: RuntimeAuthContext, payload: dict[str, Any], 
             _deny(f"{scope}-scoped memory requires internal service identity")
     elif scope in {"agent", "workflow"}:
         if not auth.internal_service and not auth.actor:
-            _deny(f"{scope}-scoped memory requires authenticated actor or internal service identity")
+            _deny(
+                f"{scope}-scoped memory requires authenticated actor or internal service identity"
+            )
 
     memory_request["bucket_id"] = bucket_id
     payload.setdefault("memory_authorization", {})["bucket_id"] = bucket_id
@@ -240,7 +263,9 @@ def authorize_memory_request(auth: RuntimeAuthContext, payload: dict[str, Any], 
         )
 
 
-def enforce_payload_tenant_isolation(auth: RuntimeAuthContext, payload: dict[str, Any], *, env: Envelope | None = None) -> None:
+def enforce_payload_tenant_isolation(
+    auth: RuntimeAuthContext, payload: dict[str, Any], *, env: Envelope | None = None
+) -> None:
     asserted_tenants = _extract_payload_tenant_context(payload)
     if not asserted_tenants:
         return
@@ -280,7 +305,10 @@ def enforce_payload_tenant_isolation(auth: RuntimeAuthContext, payload: dict[str
                 "tenant_isolation",
                 reason=reason,
                 auth_context=asdict(auth),
-                metadata={"asserted_tenant": asserted_tenant, "authenticated_tenant": auth.tenant_id},
+                metadata={
+                    "asserted_tenant": asserted_tenant,
+                    "authenticated_tenant": auth.tenant_id,
+                },
             )
         raise ValueError(reason)
     if env is not None:

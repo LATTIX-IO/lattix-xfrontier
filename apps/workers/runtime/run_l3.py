@@ -20,7 +20,7 @@ def main() -> None:
     args = ap.parse_args()
 
     orch = Orchestrator(Path(registry_path_default()))
-    include = [a.strip() for a in (args.agents or '').split(',') if a.strip()]
+    include = [a.strip() for a in (args.agents or "").split(",") if a.strip()]
     count = register_agents(
         bus=orch.bus,
         registry=orch.registry,
@@ -40,4 +40,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

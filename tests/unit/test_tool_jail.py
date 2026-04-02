@@ -48,7 +48,11 @@ def test_tool_jail_plans_linux_hardened_execution(tmp_path: Path) -> None:
 def test_tool_jail_denies_unallowlisted_host() -> None:
     manager = SandboxManager(force_strategy=IsolationStrategy.HARDENED_DOCKER)
     service = ToolJailService(manager=manager)
-    spec = ExecutionSpec(tool_id="python", command=["python", "-c", "print('hi')"], requested_hosts=["evil.example.com"])
+    spec = ExecutionSpec(
+        tool_id="python",
+        command=["python", "-c", "print('hi')"],
+        requested_hosts=["evil.example.com"],
+    )
     policy = SandboxPolicy(
         platform=HostPlatform.LINUX,
         allow_network=True,

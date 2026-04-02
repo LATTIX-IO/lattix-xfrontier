@@ -3,18 +3,25 @@
 from __future__ import annotations
 
 import os
-from unittest.mock import MagicMock, patch
-
-import pytest
+from unittest.mock import patch
 
 import sys
-sys.path.insert(0, str(__import__("pathlib").Path(__file__).resolve().parents[2] / "apps" / "backend"))
+
+sys.path.insert(
+    0, str(__import__("pathlib").Path(__file__).resolve().parents[2] / "apps" / "backend")
+)
 
 from app.main import _find_duplicate_memory_consolidation
 
 
 class TestVectorDedup:
-    @patch.dict(os.environ, {"FRONTIER_MEMORY_VECTOR_DEDUP_ENABLED": "true", "FRONTIER_MEMORY_VECTOR_DEDUP_THRESHOLD": "0.92"})
+    @patch.dict(
+        os.environ,
+        {
+            "FRONTIER_MEMORY_VECTOR_DEDUP_ENABLED": "true",
+            "FRONTIER_MEMORY_VECTOR_DEDUP_THRESHOLD": "0.92",
+        },
+    )
     def test_vector_dedup_finds_similar(self):
         similar_entry = {
             "id": "existing-1",
@@ -49,7 +56,7 @@ class TestVectorDedup:
                 }
             ]
             mock_pg.healthcheck.return_value = True
-            result = _find_duplicate_memory_consolidation(
+            _find_duplicate_memory_consolidation(
                 bucket_id="test-bucket",
                 memory_scope="session",
                 consolidated_content="Exact same content for overlap",

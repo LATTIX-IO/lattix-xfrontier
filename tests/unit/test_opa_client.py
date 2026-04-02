@@ -8,7 +8,11 @@ def test_opa_client_local_fallback_denies_budget_overrun() -> None:
     decision = asyncio.run(
         client.evaluate(
             "agent_policy",
-            {"budget": {"tokens_used": 2, "max_tokens": 1}, "classification": "internal", "provider": "local"},
+            {
+                "budget": {"tokens_used": 2, "max_tokens": 1},
+                "classification": "internal",
+                "provider": "local",
+            },
         )
     )
     assert decision.allowed is False
@@ -174,7 +178,11 @@ def test_opa_client_local_fallback_denies_unallowlisted_egress() -> None:
     decision = asyncio.run(
         client.evaluate(
             "network_egress",
-            {"action": "network_egress", "target": "evil.example.com", "allowed_targets": ["api.example.com"]},
+            {
+                "action": "network_egress",
+                "target": "evil.example.com",
+                "allowed_targets": ["api.example.com"],
+            },
         )
     )
     assert decision.allowed is False
@@ -255,7 +263,11 @@ def test_opa_client_filesystem_path_policy_uses_canonical_containment(tmp_path) 
     decision = asyncio.run(
         client.evaluate(
             "filesystem_path",
-            {"action": "read", "target_path": str(target), "allowed_read_paths": [str(allowed_root)]},
+            {
+                "action": "read",
+                "target_path": str(target),
+                "allowed_read_paths": [str(allowed_root)],
+            },
         )
     )
 
@@ -273,7 +285,11 @@ def test_opa_client_filesystem_path_policy_denies_prefix_bypass(tmp_path) -> Non
     decision = asyncio.run(
         client.evaluate(
             "filesystem_path",
-            {"action": "read", "target_path": str(target), "allowed_read_paths": [str(allowed_root)]},
+            {
+                "action": "read",
+                "target_path": str(target),
+                "allowed_read_paths": [str(allowed_root)],
+            },
         )
     )
 
@@ -309,4 +325,3 @@ def test_parse_run_as_user_uid_rejects_invalid_values() -> None:
     assert _parse_run_as_user_uid("0:0") == 0
     assert _parse_run_as_user_uid("nobody") is None
     assert _parse_run_as_user_uid("-1:0") is None
-

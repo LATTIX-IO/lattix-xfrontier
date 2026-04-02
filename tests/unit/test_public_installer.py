@@ -9,7 +9,9 @@ PUBLIC_INSTALLER_PATH = REPO_ROOT / "install" / "frontier-installer.py"
 
 
 def _load_public_installer_module():
-    spec = importlib.util.spec_from_file_location("frontier_public_installer", PUBLIC_INSTALLER_PATH)
+    spec = importlib.util.spec_from_file_location(
+        "frontier_public_installer", PUBLIC_INSTALLER_PATH
+    )
     assert spec is not None
     assert spec.loader is not None
     module = importlib.util.module_from_spec(spec)
@@ -31,15 +33,25 @@ def test_public_installer_detects_bundled_repo_root(tmp_path: Path) -> None:
     assert module._bundled_repo_root(script_path) == tmp_path
 
 
-def test_public_installer_prefers_bundled_repo_over_remote_archive(monkeypatch, tmp_path: Path) -> None:
+def test_public_installer_prefers_bundled_repo_over_remote_archive(
+    monkeypatch, tmp_path: Path
+) -> None:
     module = _load_public_installer_module()
     bundled_root = tmp_path / "bundled"
     bundled_root.mkdir(parents=True, exist_ok=True)
     captured: list[Path] = []
 
     monkeypatch.setattr(module, "_bundled_repo_root", lambda script_path: bundled_root)
-    monkeypatch.setattr(module, "_download_repo_archive", lambda target_dir: (_ for _ in ()).throw(AssertionError("remote archive should not be downloaded")))
-    monkeypatch.setattr(module, "_run_packaged_installer", lambda repo_root: captured.append(repo_root))
+    monkeypatch.setattr(
+        module,
+        "_download_repo_archive",
+        lambda target_dir: (_ for _ in ()).throw(
+            AssertionError("remote archive should not be downloaded")
+        ),
+    )
+    monkeypatch.setattr(
+        module, "_run_packaged_installer", lambda repo_root: captured.append(repo_root)
+    )
 
     module.main()
 

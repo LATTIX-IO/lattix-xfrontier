@@ -54,7 +54,9 @@ def scaffold(agent_id: str) -> Path:
 
 def main() -> None:
     ap = argparse.ArgumentParser(description="Scaffold a containerized service for an agent")
-    ap.add_argument("agent_id", help="Agent folder name under examples/agents or private agent assets")
+    ap.add_argument(
+        "agent_id", help="Agent folder name under examples/agents or private agent assets"
+    )
     args = ap.parse_args()
     agent_dir = _resolve_agent_dir(args.agent_id)
     if agent_dir is None:
@@ -65,4 +67,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

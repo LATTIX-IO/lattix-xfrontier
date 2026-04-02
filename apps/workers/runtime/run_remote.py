@@ -14,10 +14,17 @@ from runtime.paths import topic_endpoints_map_path
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser(description="Dispatch an Envelope to remote agent services by topic")
+    ap = argparse.ArgumentParser(
+        description="Dispatch an Envelope to remote agent services by topic"
+    )
     ap.add_argument("topic", help="Topic (e.g., gtm.content)")
     ap.add_argument("--payload", help="JSON payload string (default: {})", default="{}")
-    ap.add_argument("--map", dest="map_path", help="Path to topic_endpoints JSON", default=str(topic_endpoints_map_path()))
+    ap.add_argument(
+        "--map",
+        dest="map_path",
+        help="Path to topic_endpoints JSON",
+        default=str(topic_endpoints_map_path()),
+    )
     args = ap.parse_args()
 
     orch = Orchestrator(Path(registry_path_default()))
@@ -28,11 +35,12 @@ def main() -> None:
         dispatch_mode="remote",
         remote_map_path=Path(args.map_path).resolve(),
     )
-    remote_responses = env.payload.get("remote_responses") if isinstance(env.payload, dict) else None
+    remote_responses = (
+        env.payload.get("remote_responses") if isinstance(env.payload, dict) else None
+    )
     resp = remote_responses[-1] if isinstance(remote_responses, list) and remote_responses else None
     print(json.dumps({"request": json.loads(env.to_json()), "response": resp}, indent=2))
 
 
 if __name__ == "__main__":
     main()
-

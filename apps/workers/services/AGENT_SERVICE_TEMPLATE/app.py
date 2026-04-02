@@ -38,7 +38,9 @@ def _runtime_profile() -> str:
 
 
 def _strict_service_auth_required() -> bool:
-    return _runtime_profile() in {"local-secure", "hosted"} or _env_flag("FRONTIER_REQUIRE_A2A_RUNTIME_HEADERS", False)
+    return _runtime_profile() in {"local-secure", "hosted"} or _env_flag(
+        "FRONTIER_REQUIRE_A2A_RUNTIME_HEADERS", False
+    )
 
 
 def _placeholder_execution_allowed() -> bool:
@@ -46,12 +48,13 @@ def _placeholder_execution_allowed() -> bool:
 
 
 def _trusted_subjects() -> set[str]:
+    baseline = {"backend", "orchestrator", "research", "code", "review", "coordinator"}
     configured = {
         str(item).strip()
         for item in str(os.getenv("A2A_TRUSTED_SUBJECTS") or "").split(",")
         if str(item).strip()
     }
-    return configured or {"backend", "orchestrator", "research", "code", "review", "coordinator"}
+    return baseline | configured
 
 
 def _signing_secret() -> bytes:
@@ -62,7 +65,9 @@ def _signing_secret() -> bytes:
 
 
 def _nonce_ttl_seconds() -> int:
-    raw = str(os.getenv("FRONTIER_A2A_NONCE_TTL_SECONDS") or os.getenv("A2A_REPLAY_TTL_SECONDS") or "600").strip()
+    raw = str(
+        os.getenv("FRONTIER_A2A_NONCE_TTL_SECONDS") or os.getenv("A2A_REPLAY_TTL_SECONDS") or "600"
+    ).strip()
     try:
         ttl = int(raw)
     except ValueError:
@@ -96,10 +101,20 @@ def _verify_runtime_headers(request: Request, body: bytes) -> str:
     if not _strict_service_auth_required():
         return ""
 
-    subject = str(request.headers.get("X-Frontier-Subject") or request.headers.get("x-frontier-subject") or "").strip()
-    nonce = str(request.headers.get("X-Frontier-Nonce") or request.headers.get("x-frontier-nonce") or "").strip()
-    signature = str(request.headers.get("X-Frontier-Signature") or request.headers.get("x-frontier-signature") or "").strip()
-    correlation_id = str(request.headers.get("X-Correlation-ID") or request.headers.get("x-correlation-id") or "").strip()
+    subject = str(
+        request.headers.get("X-Frontier-Subject") or request.headers.get("x-frontier-subject") or ""
+    ).strip()
+    nonce = str(
+        request.headers.get("X-Frontier-Nonce") or request.headers.get("x-frontier-nonce") or ""
+    ).strip()
+    signature = str(
+        request.headers.get("X-Frontier-Signature")
+        or request.headers.get("x-frontier-signature")
+        or ""
+    ).strip()
+    correlation_id = str(
+        request.headers.get("X-Correlation-ID") or request.headers.get("x-correlation-id") or ""
+    ).strip()
 
     if not subject or subject not in _trusted_subjects():
         raise HTTPException(status_code=401, detail="untrusted or missing frontier subject")
@@ -108,7 +123,9 @@ def _verify_runtime_headers(request: Request, body: bytes) -> str:
     if not signature:
         raise HTTPException(status_code=401, detail="missing frontier signature")
     if not correlation_id:
-        raise HTTPException(status_code=401, detail="missing correlation id header for signed A2A request")
+        raise HTTPException(
+            status_code=401, detail="missing correlation id header for signed A2A request"
+        )
 
     digest = hashlib.sha256(body).hexdigest()
     message = f"{subject}:{nonce}:{correlation_id}:{digest}".encode("utf-8")
@@ -137,13 +154,16 @@ def _authz(request: Request) -> Dict[str, Any]:
     claims = verify_token(token, JWTConfig())
     identity = token_identity_from_claims(claims)
     if _strict_service_auth_required() and not identity.internal_service:
-        raise HTTPException(status_code=403, detail="strict runtime profiles require internal service identity")
+        raise HTTPException(
+            status_code=403, detail="strict runtime profiles require internal service identity"
+        )
     request.state.auth_claims = claims
     request.state.auth_identity = identity
     return claims
 
 
 if app:
+
     @app.get("/healthz")
     def healthz() -> Dict[str, str]:
         payload = _health_payload()
@@ -178,7 +198,10 @@ if app:
         identity = getattr(req.state, "auth_identity", None)
         authenticated_subject = getattr(identity, "subject", str(claims.get("sub") or ""))
         if verified_subject and authenticated_subject and verified_subject != authenticated_subject:
-            raise HTTPException(status_code=401, detail="frontier subject header does not match bearer token subject")
+            raise HTTPException(
+                status_code=401,
+                detail="frontier subject header does not match bearer token subject",
+            )
         data = json.loads(raw_body.decode("utf-8"))
         # Basic validation
         errs = validate_envelope_dict(data)
@@ -199,5 +222,7 @@ if app:
             "correlation_id": corr,
             "frontier_subject": verified_subject,
             "authenticated_subject": getattr(identity, "subject", str(claims.get("sub") or "")),
-            "authenticated_actor": getattr(identity, "actor", str(claims.get("actor") or claims.get("sub") or "")),
+            "authenticated_actor": getattr(
+                identity, "actor", str(claims.get("actor") or claims.get("sub") or "")
+            ),
         }

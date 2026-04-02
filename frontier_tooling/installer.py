@@ -52,7 +52,14 @@ CASDOOR_BOOTSTRAP_MAX_ATTEMPTS = 90
 CASDOOR_BOOTSTRAP_RETRY_DELAY_SECONDS = 2
 _LOCAL_GATEWAY_PORT_FALLBACKS = (8080, 8081, 8088, 8888)
 _INSTALLER_VAULT_BOOTSTRAP_SCHEMA_VERSION = 1
-_INSTALLER_VAULT_SECRET_KEY_FRAGMENTS = ("SECRET", "PASSWORD", "TOKEN", "API_KEY", "PRIVATE_KEY", "CLIENT_SECRET")
+_INSTALLER_VAULT_SECRET_KEY_FRAGMENTS = (
+    "SECRET",
+    "PASSWORD",
+    "TOKEN",
+    "API_KEY",
+    "PRIVATE_KEY",
+    "CLIENT_SECRET",
+)
 _INSTALLER_VAULT_IGNORED_SECRET_KEYS = {"VAULT_TOKEN"}
 
 
@@ -78,7 +85,10 @@ def _render_box(title: str, lines: list[str]) -> str:
         if not line:
             wrapped_lines.append("")
             continue
-        wrapped_lines.extend(textwrap.wrap(line, width=width, replace_whitespace=False, drop_whitespace=False) or [""])
+        wrapped_lines.extend(
+            textwrap.wrap(line, width=width, replace_whitespace=False, drop_whitespace=False)
+            or [""]
+        )
     content = [title, *wrapped_lines]
     top = f"╔{'═' * (width + 2)}╗"
     body = [f"║ {line.ljust(width)} ║" for line in content]
@@ -94,13 +104,19 @@ def _render_install_summary(payload: dict[str, Any]) -> str:
     urls: list[str] = [str(item) for item in raw_urls] if isinstance(raw_urls, list) else []
 
     raw_next_steps = payload.get("next_steps")
-    next_steps: list[str] = [str(item) for item in raw_next_steps] if isinstance(raw_next_steps, list) else []
+    next_steps: list[str] = (
+        [str(item) for item in raw_next_steps] if isinstance(raw_next_steps, list) else []
+    )
 
     raw_bootstrap_login = payload.get("bootstrap_login")
-    bootstrap_login: dict[str, Any] = raw_bootstrap_login if isinstance(raw_bootstrap_login, dict) else {}
+    bootstrap_login: dict[str, Any] = (
+        raw_bootstrap_login if isinstance(raw_bootstrap_login, dict) else {}
+    )
 
     raw_path_locations = path_info.get("locations")
-    path_locations: list[str] = [str(item) for item in raw_path_locations] if isinstance(raw_path_locations, list) else []
+    path_locations: list[str] = (
+        [str(item) for item in raw_path_locations] if isinstance(raw_path_locations, list) else []
+    )
 
     password_status = "Password not recorded in installer output"
     if bootstrap_login:
@@ -248,7 +264,9 @@ def _vault_exec_command(
     if token:
         command.extend(["-e", f"VAULT_TOKEN={token}"])
     command.extend(["-e", "VAULT_ADDR=http://127.0.0.1:8200", "vault", "vault", *vault_args])
-    return subprocess.run(command, cwd=str(install_root), check=check, capture_output=True, text=True)
+    return subprocess.run(
+        command, cwd=str(install_root), check=check, capture_output=True, text=True
+    )
 
 
 def _run_vault_cli_json(
@@ -306,11 +324,17 @@ def _ensure_local_vault_bootstrap(install_root: Path) -> dict[str, Any]:
             install_root,
             ["operator", "init", "-format=json", "-key-shares=1", "-key-threshold=1"],
         )
-        unseal_keys = init_payload.get("unseal_keys_b64") if isinstance(init_payload.get("unseal_keys_b64"), list) else []
+        unseal_keys = (
+            init_payload.get("unseal_keys_b64")
+            if isinstance(init_payload.get("unseal_keys_b64"), list)
+            else []
+        )
         root_token = str(init_payload.get("root_token") or "").strip()
         unseal_key = str(unseal_keys[0] if unseal_keys else "").strip()
         if not root_token or not unseal_key:
-            raise RuntimeError("Vault initialization did not return the expected root token and unseal key")
+            raise RuntimeError(
+                "Vault initialization did not return the expected root token and unseal key"
+            )
         bootstrap = {
             "schema_version": _INSTALLER_VAULT_BOOTSTRAP_SCHEMA_VERSION,
             "vault_addr": "http://127.0.0.1:8200",
@@ -330,7 +354,9 @@ def _ensure_local_vault_bootstrap(install_root: Path) -> dict[str, Any]:
     if bool(status.get("sealed")):
         unseal_key = str(bootstrap.get("unseal_key") or "").strip()
         if not unseal_key:
-            raise RuntimeError("Vault is sealed and no durable unseal key is available in installer metadata")
+            raise RuntimeError(
+                "Vault is sealed and no durable unseal key is available in installer metadata"
+            )
         _run_vault_cli(install_root, ["operator", "unseal", unseal_key])
         status = _run_vault_cli_json(install_root, ["status", "-format=json"], allow_nonzero=True)
         if bool(status.get("sealed")):
@@ -338,9 +364,13 @@ def _ensure_local_vault_bootstrap(install_root: Path) -> dict[str, Any]:
 
     root_token = str(bootstrap.get("root_token") or "").strip()
     if not root_token:
-        raise RuntimeError("Vault bootstrap metadata is missing the root token required for installer state writes")
+        raise RuntimeError(
+            "Vault bootstrap metadata is missing the root token required for installer state writes"
+        )
 
-    mounts = _run_vault_cli_json(install_root, ["secrets", "list", "-format=json"], token=root_token)
+    mounts = _run_vault_cli_json(
+        install_root, ["secrets", "list", "-format=json"], token=root_token
+    )
     secret_mount = mounts.get("secret/") if isinstance(mounts, dict) else None
     mount_options: dict[str, Any] = {}
     if isinstance(secret_mount, dict):
@@ -348,14 +378,25 @@ def _ensure_local_vault_bootstrap(install_root: Path) -> dict[str, Any]:
         if isinstance(raw_mount_options, dict):
             mount_options = raw_mount_options
     if not isinstance(secret_mount, dict):
-        _run_vault_cli(install_root, ["secrets", "enable", "-path=secret", "-version=2", "kv"], token=root_token)
-    elif str(secret_mount.get("type") or "") != "kv" or str(mount_options.get("version") or "") != "2":
-        raise RuntimeError("The local Vault secret/ mount is present but is not configured as KV v2")
+        _run_vault_cli(
+            install_root,
+            ["secrets", "enable", "-path=secret", "-version=2", "kv"],
+            token=root_token,
+        )
+    elif (
+        str(secret_mount.get("type") or "") != "kv"
+        or str(mount_options.get("version") or "") != "2"
+    ):
+        raise RuntimeError(
+            "The local Vault secret/ mount is present but is not configured as KV v2"
+        )
 
     return bootstrap
 
 
-def _vault_kv_put(install_root: Path, api_path: str, payload: dict[str, Any], *, token: str) -> dict[str, Any]:
+def _vault_kv_put(
+    install_root: Path, api_path: str, payload: dict[str, Any], *, token: str
+) -> dict[str, Any]:
     mount, logical_path = _vault_kv_components(api_path)
     kv_args = ["kv", "put", "-format=json", f"-mount={mount}", logical_path]
     for key, value in payload.items():
@@ -370,7 +411,9 @@ def _is_sensitive_env_key(key: str) -> bool:
     return any(fragment in normalized for fragment in _INSTALLER_VAULT_SECRET_KEY_FRAGMENTS)
 
 
-def _classified_installer_env_values(install_root: Path) -> tuple[dict[str, str], dict[str, dict[str, str]]]:
+def _classified_installer_env_values(
+    install_root: Path,
+) -> tuple[dict[str, str], dict[str, dict[str, str]]]:
     aggregated_secrets: dict[str, str] = {}
     classified_maps: dict[str, dict[str, str]] = {}
     sources = {
@@ -395,7 +438,9 @@ def _installer_state_snapshot(install_root: Path, *, install_mode: str) -> dict[
     manifest = read_installer_state_manifest(root=install_root)
     _secrets, classified_maps = _classified_installer_env_values(install_root)
     generated_values_path = install_root / ".installer" / "generated-values.yaml"
-    generated_values_text = generated_values_path.read_text(encoding="utf-8") if generated_values_path.exists() else ""
+    generated_values_text = (
+        generated_values_path.read_text(encoding="utf-8") if generated_values_path.exists() else ""
+    )
     return {
         "schema_version": 1,
         "updated_at": datetime.now(timezone.utc).isoformat(),
@@ -403,7 +448,11 @@ def _installer_state_snapshot(install_root: Path, *, install_mode: str) -> dict[
         "install_root": str(install_root.resolve(strict=False)),
         "manifest": manifest,
         "env_snapshots": classified_maps,
-        "generated_helm_values_b64": base64.b64encode(generated_values_text.encode("utf-8")).decode("ascii") if generated_values_text else "",
+        "generated_helm_values_b64": base64.b64encode(generated_values_text.encode("utf-8")).decode(
+            "ascii"
+        )
+        if generated_values_text
+        else "",
     }
 
 
@@ -412,7 +461,9 @@ def _sync_installer_state_to_vault(install_root: Path, *, install_mode: str) -> 
     bootstrap = _ensure_local_vault_bootstrap(install_root)
     root_token = str(bootstrap.get("root_token") or "").strip()
     if not root_token:
-        raise RuntimeError("Vault bootstrap metadata is missing the root token required for durable installer writes")
+        raise RuntimeError(
+            "Vault bootstrap metadata is missing the root token required for durable installer writes"
+        )
 
     secret_path = installer_vault_secret_path(root=install_root)
     state_path = installer_vault_state_path(root=install_root)
@@ -424,7 +475,9 @@ def _sync_installer_state_to_vault(install_root: Path, *, install_mode: str) -> 
     state_record = {
         "schema_version": str(state_snapshot.get("schema_version") or 1),
         "updated_at": str(state_snapshot.get("updated_at") or ""),
-        "payload_b64": base64.b64encode(json.dumps(state_snapshot, sort_keys=True).encode("utf-8")).decode("ascii"),
+        "payload_b64": base64.b64encode(
+            json.dumps(state_snapshot, sort_keys=True).encode("utf-8")
+        ).decode("ascii"),
     }
     _vault_kv_put(install_root, state_path, state_record, token=root_token)
     return {"vault_secret_path": secret_path, "vault_state_path": state_path}
@@ -432,7 +485,8 @@ def _sync_installer_state_to_vault(install_root: Path, *, install_mode: str) -> 
 
 def _collect_installer_answers(install_root: Path) -> InstallerAnswers:
     installer = FrontierInstaller(repo_root=install_root)
-    return installer.collect_local_answers(installation_root=install_root, interactive=_interactive_install())
+    collect_local_answers = installer.collect_local_answers
+    return collect_local_answers(installation_root=install_root, interactive=_interactive_install())
 
 
 def _write_secure_installer_env(install_root: Path, answers: InstallerAnswers) -> Path:
@@ -452,7 +506,9 @@ def _source_copy_ignore(directory: str, names: list[str]) -> set[str]:
 def _prepare_install_root(source_root: Path) -> Path:
     install_root = default_app_home().resolve(strict=False)
     install_root.parent.mkdir(parents=True, exist_ok=True)
-    staging_parent = Path(tempfile.mkdtemp(prefix="frontier-app-home-", dir=str(install_root.parent)))
+    staging_parent = Path(
+        tempfile.mkdtemp(prefix="frontier-app-home-", dir=str(install_root.parent))
+    )
     staged_root = staging_parent / install_root.name
     try:
         shutil.copytree(source_root, staged_root, ignore=_source_copy_ignore)
@@ -477,11 +533,15 @@ def _preserve_existing_install_state(existing_root: Path, staged_root: Path) -> 
             target_path.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(source_path, target_path)
 
-    for source_path, target_path, preserve_existing_only in _preserved_install_data_paths(existing_root, staged_root):
+    for source_path, target_path, preserve_existing_only in _preserved_install_data_paths(
+        existing_root, staged_root
+    ):
         if not source_path.exists():
             continue
         if source_path.is_dir():
-            _merge_preserved_directory(source_path, target_path, preserve_existing_only=preserve_existing_only)
+            _merge_preserved_directory(
+                source_path, target_path, preserve_existing_only=preserve_existing_only
+            )
             continue
         target_path.parent.mkdir(parents=True, exist_ok=True)
         if preserve_existing_only and target_path.exists():
@@ -517,7 +577,9 @@ def _installer_env_value_maps(existing_root: Path) -> list[dict[str, str]]:
     return env_maps
 
 
-def _preserved_install_data_paths(existing_root: Path, staged_root: Path) -> list[tuple[Path, Path, bool]]:
+def _preserved_install_data_paths(
+    existing_root: Path, staged_root: Path
+) -> list[tuple[Path, Path, bool]]:
     preserved: list[tuple[Path, Path, bool]] = []
     seen: set[str] = set()
 
@@ -530,7 +592,9 @@ def _preserved_install_data_paths(existing_root: Path, staged_root: Path) -> lis
     ensure_installer_state_manifest(root=existing_root)
     manifest = read_installer_state_manifest(root=existing_root)
     raw_manifest_asset_roots = manifest.get("in_app_asset_roots")
-    manifest_asset_roots: list[Any] = raw_manifest_asset_roots if isinstance(raw_manifest_asset_roots, list) else []
+    manifest_asset_roots: list[Any] = (
+        raw_manifest_asset_roots if isinstance(raw_manifest_asset_roots, list) else []
+    )
     for relative_path in manifest_asset_roots:
         configured_root = _resolve_path_within_root(existing_root, str(relative_path))
         if configured_root is None or not configured_root.exists():
@@ -538,25 +602,33 @@ def _preserved_install_data_paths(existing_root: Path, staged_root: Path) -> lis
         key = str(configured_root.resolve(strict=False)).casefold()
         if key in seen:
             continue
-        relative = configured_root.resolve(strict=False).relative_to(existing_root.resolve(strict=False))
+        relative = configured_root.resolve(strict=False).relative_to(
+            existing_root.resolve(strict=False)
+        )
         preserved.append((configured_root, staged_root / relative, False))
         seen.add(key)
 
     for env_map in _installer_env_value_maps(existing_root):
-        configured_root = _resolve_path_within_root(existing_root, env_map.get("FRONTIER_AGENT_ASSETS_ROOT", ""))
+        configured_root = _resolve_path_within_root(
+            existing_root, env_map.get("FRONTIER_AGENT_ASSETS_ROOT", "")
+        )
         if configured_root is None or not configured_root.exists():
             continue
         key = str(configured_root.resolve(strict=False)).casefold()
         if key in seen:
             continue
-        relative_path = configured_root.resolve(strict=False).relative_to(existing_root.resolve(strict=False))
+        relative_path = configured_root.resolve(strict=False).relative_to(
+            existing_root.resolve(strict=False)
+        )
         preserved.append((configured_root, staged_root / relative_path, False))
         seen.add(key)
 
     return preserved
 
 
-def _merge_preserved_directory(source_dir: Path, target_dir: Path, *, preserve_existing_only: bool) -> None:
+def _merge_preserved_directory(
+    source_dir: Path, target_dir: Path, *, preserve_existing_only: bool
+) -> None:
     target_dir.mkdir(parents=True, exist_ok=True)
     for source_path in source_dir.iterdir():
         target_path = target_dir / source_path.name
@@ -576,7 +648,9 @@ def _merge_preserved_directory(source_dir: Path, target_dir: Path, *, preserve_e
 def _prepare_install_root_for_update(source_root: Path, existing_root: Path) -> Path:
     install_root = existing_root.resolve(strict=False)
     install_root.parent.mkdir(parents=True, exist_ok=True)
-    staging_parent = Path(tempfile.mkdtemp(prefix="frontier-app-update-", dir=str(install_root.parent)))
+    staging_parent = Path(
+        tempfile.mkdtemp(prefix="frontier-app-update-", dir=str(install_root.parent))
+    )
     staged_root = staging_parent / install_root.name
     try:
         shutil.copytree(source_root, staged_root, ignore=_source_copy_ignore)
@@ -619,7 +693,9 @@ def _update_windows_user_path(scripts_dir: Path) -> tuple[bool, list[str]]:
             winreg_api.SetValueEx(key, "Path", 0, winreg_api.REG_EXPAND_SZ, updated_value)
             modified = True
     if modified:
-        ctypes_api.windll.user32.SendMessageTimeoutW(0xFFFF, 0x001A, 0, "Environment", 0x0002, 5000, 0)
+        ctypes_api.windll.user32.SendMessageTimeoutW(
+            0xFFFF, 0x001A, 0, "Environment", 0x0002, 5000, 0
+        )
     return modified, ["HKCU\\Environment\\Path"]
 
 
@@ -673,19 +749,31 @@ def _ensure_scripts_path(mode: str) -> dict[str, object]:
     }
 
 
-def _refresh_existing_local_stacks(install_root: Path, env: dict[str, str]) -> tuple[list[str], list[str]]:
+def _refresh_existing_local_stacks(
+    install_root: Path, env: dict[str, str]
+) -> tuple[list[str], list[str]]:
     refreshed_profiles: list[str] = []
     urls: list[str] = []
     secure_env_path = install_root / ".installer" / "local-secure.env"
     lightweight_env_path = install_root / ".installer" / "local-lightweight.env"
 
     if secure_env_path.exists() or not lightweight_env_path.exists():
-        run_command(compose_prefix(local=False, root=install_root) + ["up", "-d", "--build", "--remove-orphans"], cwd=install_root, env=env)
+        run_command(
+            compose_prefix(local=False, root=install_root)
+            + ["up", "-d", "--build", "--remove-orphans"],
+            cwd=install_root,
+            env=env,
+        )
         refreshed_profiles.append("secure")
         urls = portal_urls(root=install_root)
 
     if lightweight_env_path.exists():
-        run_command(compose_prefix(local=True, root=install_root) + ["up", "-d", "--build", "--remove-orphans"], cwd=install_root, env=env)
+        run_command(
+            compose_prefix(local=True, root=install_root)
+            + ["up", "-d", "--build", "--remove-orphans"],
+            cwd=install_root,
+            env=env,
+        )
         refreshed_profiles.append("lightweight")
 
     return refreshed_profiles, urls
@@ -713,7 +801,10 @@ def _update_editable_checkout(install_root: Path, env: dict[str, str]) -> tuple[
             "The editable xFrontier checkout has local changes. Commit or stash them before running `lattix update` so the updater does not overwrite work in progress."
         )
 
-    branch = _git_stdout(["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=install_root, env=env) or "main"
+    branch = (
+        _git_stdout(["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=install_root, env=env)
+        or "main"
+    )
     before_ref = _git_stdout(["git", "rev-parse", "HEAD"], cwd=install_root, env=env)
     run_command(["git", "pull", "--ff-only"], cwd=install_root, env=env)
     after_ref = _git_stdout(["git", "rev-parse", "HEAD"], cwd=install_root, env=env)
@@ -762,7 +853,10 @@ def _download_url_bytes(url: str, *, redirects_remaining: int = 3) -> bytes:
             location = response.getheader("Location")
             if not location or redirects_remaining <= 0:
                 raise SystemExit("Installer archive download redirected too many times.")
-            return _download_url_bytes(urllib_parse.urljoin(validated_url, location), redirects_remaining=redirects_remaining - 1)
+            return _download_url_bytes(
+                urllib_parse.urljoin(validated_url, location),
+                redirects_remaining=redirects_remaining - 1,
+            )
         if response.status >= 400:
             raise SystemExit(f"Installer archive download failed with HTTP {response.status}.")
         return response.read()
@@ -811,7 +905,11 @@ def _print_update_result(payload: dict[str, Any]) -> None:
     if payload.get("vault_state_path"):
         lines.append(f"Vault state : {payload.get('vault_state_path')}")
 
-    refreshed_profiles = payload.get("refreshed_profiles") if isinstance(payload.get("refreshed_profiles"), list) else []
+    refreshed_profiles = (
+        payload.get("refreshed_profiles")
+        if isinstance(payload.get("refreshed_profiles"), list)
+        else []
+    )
     if refreshed_profiles:
         lines.append(f"Profiles    : {', '.join(str(item) for item in refreshed_profiles)}")
 
@@ -885,19 +983,33 @@ def update() -> None:
 def _casdoor_bootstrap_identity_enabled(answers: InstallerAnswers) -> bool:
     if FrontierInstaller._normalize_auth_provider(answers.local_auth_provider) != "oidc":
         return False
-    if FrontierInstaller._normalize_oidc_provider_template(answers.oidc_provider_template) != "casdoor":
+    if (
+        FrontierInstaller._normalize_oidc_provider_template(answers.oidc_provider_template)
+        != "casdoor"
+    ):
         return False
-    return bool(str(answers.bootstrap_login_username or "").strip() and str(answers.bootstrap_login_password or ""))
+    return bool(
+        str(answers.bootstrap_login_username or "").strip()
+        and str(answers.bootstrap_login_password or "")
+    )
 
 
 def _effective_secure_gateway_settings() -> dict[str, str]:
-    install_root = Path(str(os.getenv(FRONTIER_APP_HOME_ENV) or source_repo_root())).expanduser().resolve(strict=False)
+    install_root = (
+        Path(str(os.getenv(FRONTIER_APP_HOME_ENV) or source_repo_root()))
+        .expanduser()
+        .resolve(strict=False)
+    )
     compose_env = ensure_compose_env_file(local_profile=False, root=install_root)
     return _read_installer_env_map(compose_env)
 
 
 def _current_install_root() -> Path:
-    return Path(str(os.getenv(FRONTIER_APP_HOME_ENV) or source_repo_root())).expanduser().resolve(strict=False)
+    return (
+        Path(str(os.getenv(FRONTIER_APP_HOME_ENV) or source_repo_root()))
+        .expanduser()
+        .resolve(strict=False)
+    )
 
 
 def _casdoor_bootstrap_endpoint(answers: InstallerAnswers) -> tuple[str, dict[str, str]]:
@@ -906,16 +1018,37 @@ def _casdoor_bootstrap_endpoint(answers: InstallerAnswers) -> tuple[str, dict[st
     host = str(parsed.hostname or "").strip().lower()
     if host.endswith(".localhost"):
         gateway_settings = _effective_secure_gateway_settings()
-        bind_host = str(gateway_settings.get("LOCAL_GATEWAY_BIND_HOST") or os.getenv("LOCAL_GATEWAY_BIND_HOST") or "127.0.0.1").strip() or "127.0.0.1"
-        port = str(gateway_settings.get("LOCAL_GATEWAY_HTTP_PORT") or os.getenv("LOCAL_GATEWAY_HTTP_PORT") or "80").strip() or "80"
+        bind_host = (
+            str(
+                gateway_settings.get("LOCAL_GATEWAY_BIND_HOST")
+                or os.getenv("LOCAL_GATEWAY_BIND_HOST")
+                or "127.0.0.1"
+            ).strip()
+            or "127.0.0.1"
+        )
+        port = (
+            str(
+                gateway_settings.get("LOCAL_GATEWAY_HTTP_PORT")
+                or os.getenv("LOCAL_GATEWAY_HTTP_PORT")
+                or "80"
+            ).strip()
+            or "80"
+        )
         netloc = bind_host if port == "80" else f"{bind_host}:{port}"
         return urlunsplit(("http", netloc, "", "", "")), {"Host": parsed.netloc}
     return issuer.rstrip("/"), {}
 
 
 def _compose_service_logs_text(install_root: Path, service: str, *, tail: int = 80) -> str:
-    command = compose_prefix(local=False, root=install_root) + ["logs", "--tail", str(tail), service]
-    completed = subprocess.run(command, cwd=str(install_root), check=False, capture_output=True, text=True)
+    command = compose_prefix(local=False, root=install_root) + [
+        "logs",
+        "--tail",
+        str(tail),
+        service,
+    ]
+    completed = subprocess.run(
+        command, cwd=str(install_root), check=False, capture_output=True, text=True
+    )
     return "\n".join(part for part in (completed.stdout, completed.stderr) if part).strip()
 
 
@@ -955,11 +1088,22 @@ def _urlopen_json(
     try:
         parsed = json.loads(payload)
     except json.JSONDecodeError:
-        return {"status": "error", "msg": payload.strip() or "non-json response", "data": None, "data2": None}
-    return parsed if isinstance(parsed, dict) else {"status": "error", "msg": "unexpected response shape", "data": parsed, "data2": None}
+        return {
+            "status": "error",
+            "msg": payload.strip() or "non-json response",
+            "data": None,
+            "data2": None,
+        }
+    return (
+        parsed
+        if isinstance(parsed, dict)
+        else {"status": "error", "msg": "unexpected response shape", "data": parsed, "data2": None}
+    )
 
 
-def _casdoor_login_admin(opener: urllib_request.OpenerDirector, base_url: str, headers: dict[str, str]) -> None:
+def _casdoor_login_admin(
+    opener: urllib_request.OpenerDirector, base_url: str, headers: dict[str, str]
+) -> None:
     login_url = (
         f"{base_url.rstrip('/')}"
         "/api/login?clientId=app-built-in&responseType=code&redirectUri=http://localhost"
@@ -991,16 +1135,27 @@ def _casdoor_login_admin(opener: urllib_request.OpenerDirector, base_url: str, h
     )
     raw_account_data = account.get("data")
     account_data: dict[str, Any] = raw_account_data if isinstance(raw_account_data, dict) else {}
-    if account.get("status") != "ok" or account_data.get("owner") != "built-in" or account_data.get("name") != "admin":
-        raise RuntimeError("Unable to authenticate the seeded Casdoor admin account for bootstrap user creation.")
+    if (
+        account.get("status") != "ok"
+        or account_data.get("owner") != "built-in"
+        or account_data.get("name") != "admin"
+    ):
+        raise RuntimeError(
+            "Unable to authenticate the seeded Casdoor admin account for bootstrap user creation."
+        )
 
 
-def _casdoor_existing_user_matches_login_contract(existing_user: dict[str, Any], answers: InstallerAnswers) -> bool:
+def _casdoor_existing_user_matches_login_contract(
+    existing_user: dict[str, Any], answers: InstallerAnswers
+) -> bool:
     return (
         str(existing_user.get("owner") or "").strip() == "built-in"
-        and str(existing_user.get("name") or "").strip() == str(answers.bootstrap_login_username or "").strip()
-        and str(existing_user.get("email") or "").strip() == str(answers.bootstrap_login_email or "").strip()
-        and str(existing_user.get("displayName") or "").strip() == str(answers.bootstrap_login_display_name or "").strip()
+        and str(existing_user.get("name") or "").strip()
+        == str(answers.bootstrap_login_username or "").strip()
+        and str(existing_user.get("email") or "").strip()
+        == str(answers.bootstrap_login_email or "").strip()
+        and str(existing_user.get("displayName") or "").strip()
+        == str(answers.bootstrap_login_display_name or "").strip()
         and str(existing_user.get("type") or "").strip() == "normal-user"
         and bool(existing_user.get("isAdmin")) is True
         and bool(existing_user.get("isForbidden")) is False
@@ -1042,8 +1197,16 @@ def _bootstrap_casdoor_login_user(answers: InstallerAnswers) -> dict[str, Any] |
                 headers={**host_headers, "Accept": "application/json"},
             )
             existing_data = existing.get("data") if isinstance(existing.get("data"), dict) else None
-            exists = existing.get("status") == "ok" and isinstance(existing_data, dict) and existing_data.get("name") == login_username
-            if exists and isinstance(existing_data, dict) and _casdoor_existing_user_matches_login_contract(existing_data, answers):
+            exists = (
+                existing.get("status") == "ok"
+                and isinstance(existing_data, dict)
+                and existing_data.get("name") == login_username
+            )
+            if (
+                exists
+                and isinstance(existing_data, dict)
+                and _casdoor_existing_user_matches_login_contract(existing_data, answers)
+            ):
                 return {
                     "username": login_username,
                     "email": str(answers.bootstrap_login_email or "").strip(),
@@ -1079,7 +1242,9 @@ def _bootstrap_casdoor_login_user(answers: InstallerAnswers) -> dict[str, Any] |
                 },
             )
             if response.get("status") != "ok":
-                raise RuntimeError(str(response.get("msg") or "Casdoor bootstrap user operation failed"))
+                raise RuntimeError(
+                    str(response.get("msg") or "Casdoor bootstrap user operation failed")
+                )
             return {
                 "username": login_username,
                 "email": str(answers.bootstrap_login_email or "").strip(),
@@ -1098,10 +1263,14 @@ def _bootstrap_casdoor_login_user(answers: InstallerAnswers) -> dict[str, Any] |
 def _require_docker_stack_prerequisites(env: dict[str, str]) -> None:
     docker_check = run_command(["docker", "compose", "version"], check=False, env=env)
     if docker_check.returncode != 0:
-        raise SystemExit("Docker Compose v2 is required on PATH before the installer can auto-start the stack.")
+        raise SystemExit(
+            "Docker Compose v2 is required on PATH before the installer can auto-start the stack."
+        )
     daemon_check = run_command(["docker", "info"], check=False, env=env)
     if daemon_check.returncode != 0:
-        raise SystemExit("Docker is installed but the daemon is not ready. Start Docker Desktop or the docker service and rerun the installer.")
+        raise SystemExit(
+            "Docker is installed but the daemon is not ready. Start Docker Desktop or the docker service and rerun the installer."
+        )
 
 
 def _read_installer_env_map(path: Path) -> dict[str, str]:
@@ -1138,12 +1307,18 @@ def _secure_local_api_base(env_map: dict[str, str]) -> str:
     return f"http://{authority}/api"
 
 
-def _compose_up_with_output(command: list[str], *, cwd: Path, env: dict[str, str]) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(command, cwd=str(cwd), env=env, check=False, capture_output=True, text=True)
+def _compose_up_with_output(
+    command: list[str], *, cwd: Path, env: dict[str, str]
+) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        command, cwd=str(cwd), env=env, check=False, capture_output=True, text=True
+    )
 
 
 def _port_conflict_from_compose_output(output: str) -> tuple[str, int] | None:
-    match = re.search(r"Bind for (?P<host>[^:]+):(?P<port>\d+) failed: port is already allocated", output)
+    match = re.search(
+        r"Bind for (?P<host>[^:]+):(?P<port>\d+) failed: port is already allocated", output
+    )
     if not match:
         return None
     return match.group("host"), int(match.group("port"))
@@ -1183,7 +1358,9 @@ def _raise_compose_failure(command: list[str], completed: subprocess.CompletedPr
         print(completed.stdout, end="", file=sys.stdout)
     if completed.stderr:
         print(completed.stderr, end="", file=sys.stderr)
-    raise subprocess.CalledProcessError(completed.returncode, command, output=completed.stdout, stderr=completed.stderr)
+    raise subprocess.CalledProcessError(
+        completed.returncode, command, output=completed.stdout, stderr=completed.stderr
+    )
 
 
 def _auto_start_stack(install_root: Path, env: dict[str, str]) -> list[str]:
@@ -1235,7 +1412,9 @@ def main() -> None:
     if bootstrap_login is not None:
         bootstrap_username = str(bootstrap_login.get("username") or "").strip()
         if bootstrap_username:
-            next_steps.insert(1, f"Sign in via /auth using {bootstrap_username} once the stack is ready.")
+            next_steps.insert(
+                1, f"Sign in via /auth using {bootstrap_username} once the stack is ready."
+            )
     _print_install_result(
         {
             "installed": True,

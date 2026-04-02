@@ -24,7 +24,9 @@ def _runtime_profile() -> str:
 
 
 def _strict_remote_dispatch_required() -> bool:
-    return _runtime_profile() in {"local-secure", "hosted"} or _env_flag("FRONTIER_REQUIRE_A2A_RUNTIME_HEADERS", False)
+    return _runtime_profile() in {"local-secure", "hosted"} or _env_flag(
+        "FRONTIER_REQUIRE_A2A_RUNTIME_HEADERS", False
+    )
 
 
 class TopicDispatcher:
@@ -43,15 +45,29 @@ class TopicDispatcher:
         if not urls:
             if _strict_remote_dispatch_required():
                 increment_metric(env, "remote_dispatch_failures", 1)
-                env.errors.append(f"remote dispatch blocked: no registered endpoint for topic '{topic}'")
-                add_trace(env, "network.dispatch", "error", {"reason": "no_registered_url", "topic": topic})
+                env.errors.append(
+                    f"remote dispatch blocked: no registered endpoint for topic '{topic}'"
+                )
+                add_trace(
+                    env,
+                    "network.dispatch",
+                    "error",
+                    {"reason": "no_registered_url", "topic": topic},
+                )
                 raise ValueError(f"No registered endpoint for remote topic '{topic}'")
-            add_trace(env, "network.dispatch", "skipped", {"reason": "no_registered_url", "topic": topic})
+            add_trace(
+                env, "network.dispatch", "skipped", {"reason": "no_registered_url", "topic": topic}
+            )
             return None
         url = next(self._iters[topic]) if topic in self._iters else urls[0]
         auth = enforce_runtime_envelope_security(env)
         increment_metric(env, "remote_dispatch_attempts", 1)
-        add_trace(env, "network.dispatch", "attempt", {"topic": topic, "url": url, "subject": auth.subject or sub})
+        add_trace(
+            env,
+            "network.dispatch",
+            "attempt",
+            {"topic": topic, "url": url, "subject": auth.subject or sub},
+        )
         # Add correlation id header via A2A default; token is injected in a2a.post_envelope
         try:
             response = post_envelope(
@@ -64,9 +80,10 @@ class TopicDispatcher:
             )
         except Exception as exc:
             increment_metric(env, "remote_dispatch_failures", 1)
-            add_trace(env, "network.dispatch", "error", {"topic": topic, "url": url, "reason": str(exc)})
+            add_trace(
+                env, "network.dispatch", "error", {"topic": topic, "url": url, "reason": str(exc)}
+            )
             raise
         increment_metric(env, "remote_dispatch_successes", 1)
         add_trace(env, "network.dispatch", "delivered", {"topic": topic, "url": url})
         return response
-

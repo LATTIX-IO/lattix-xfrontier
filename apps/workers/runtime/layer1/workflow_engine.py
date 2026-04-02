@@ -30,4 +30,3 @@ def run_workflow_spec(spec: Dict[str, Any]) -> Dict[str, Any]:
 def run_workflow_file(path: Path) -> Dict[str, Any]:
     spec = json.loads(path.read_text(encoding="utf-8"))
     return run_workflow_spec(spec)
-

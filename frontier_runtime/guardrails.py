@@ -6,7 +6,11 @@ from dataclasses import dataclass
 from typing import Any
 
 from frontier_runtime.envelope import Envelope
-from frontier_runtime.security import CapabilityEvaluationRequest, CapabilityVerifier, build_default_keypair
+from frontier_runtime.security import (
+    CapabilityEvaluationRequest,
+    CapabilityVerifier,
+    build_default_keypair,
+)
 
 
 @dataclass(frozen=True)
@@ -32,7 +36,9 @@ class DLPFilter:
                     mutated.payload[key] = redacted
                 findings.extend(value_findings)
         if findings:
-            mutated.metadata["classification"] = "restricted" if "credit_card" in findings else "confidential"
+            mutated.metadata["classification"] = (
+                "restricted" if "credit_card" in findings else "confidential"
+            )
             mutated.metadata["dlp_findings"] = findings
             return FilterResult(action="modify", envelope=mutated)
         mutated.metadata.setdefault("classification", context.classification)
@@ -50,20 +56,31 @@ class _DefaultFilterChain:
     async def run(self, envelope: Envelope, context: FilterContext) -> FilterResult:
         if _requires_capability_enforcement(envelope):
             if not envelope.target_agent:
-                return FilterResult(action="block", envelope=envelope, reason="target agent required for capability-scoped action")
+                return FilterResult(
+                    action="block",
+                    envelope=envelope,
+                    reason="target agent required for capability-scoped action",
+                )
             token = envelope.capability_token
             if not token:
-                return FilterResult(action="block", envelope=envelope, reason="capability token required")
+                return FilterResult(
+                    action="block", envelope=envelope, reason="capability token required"
+                )
             verifier = CapabilityVerifier(build_default_keypair())
             metadata = envelope.metadata if isinstance(envelope.metadata, dict) else {}
             capability_request = CapabilityEvaluationRequest(
                 action=envelope.action,
                 agent_id=envelope.target_agent,
                 tool_call_count=_safe_int(metadata.get("tool_call_count")),
-                resource_path=str(metadata.get("resource_path") or metadata.get("path") or "").strip() or None,
+                resource_path=str(
+                    metadata.get("resource_path") or metadata.get("path") or ""
+                ).strip()
+                or None,
             )
             if not verifier.verify_request(token, capability_request):
-                return FilterResult(action="block", envelope=envelope, reason="invalid capability token")
+                return FilterResult(
+                    action="block", envelope=envelope, reason="invalid capability token"
+                )
         return FilterResult(action="pass", envelope=envelope)
 
 

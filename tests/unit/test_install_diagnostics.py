@@ -1,7 +1,13 @@
 from pathlib import Path
 import subprocess
 
-from frontier_runtime.install import docker_compose_available, docker_daemon_available, hostname_prefix_valid, port_available, writable_directory
+from frontier_runtime.install import (
+    docker_compose_available,
+    docker_daemon_available,
+    hostname_prefix_valid,
+    port_available,
+    writable_directory,
+)
 
 
 def test_hostname_prefix_valid_accepts_dns_safe_name() -> None:
@@ -28,7 +34,9 @@ def test_docker_daemon_available_reports_actionable_message(monkeypatch) -> None
     monkeypatch.setattr("shutil.which", lambda name: "docker" if name == "docker" else None)
     monkeypatch.setattr(
         "subprocess.run",
-        lambda *args, **kwargs: subprocess.CompletedProcess(args[0], 1, stdout="", stderr="daemon not running"),
+        lambda *args, **kwargs: subprocess.CompletedProcess(
+            args[0], 1, stdout="", stderr="daemon not running"
+        ),
     )
 
     result = docker_daemon_available()
@@ -41,7 +49,9 @@ def test_docker_compose_available_reports_missing_plugin(monkeypatch) -> None:
     monkeypatch.setattr("shutil.which", lambda name: "docker" if name == "docker" else None)
     monkeypatch.setattr(
         "subprocess.run",
-        lambda *args, **kwargs: subprocess.CompletedProcess(args[0], 1, stdout="", stderr="compose not installed"),
+        lambda *args, **kwargs: subprocess.CompletedProcess(
+            args[0], 1, stdout="", stderr="compose not installed"
+        ),
     )
 
     result = docker_compose_available()

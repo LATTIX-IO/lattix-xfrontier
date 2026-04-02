@@ -76,7 +76,9 @@ def test_vault_client_writes_kv_v2_secret(monkeypatch) -> None:
     monkeypatch.setattr("frontier_runtime.security.httpx.request", _fake_request)
 
     client = VaultClient(addr="http://vault:8200", token="vault-token", timeout_seconds=9)
-    response = client.write_secret("secret/data/demo/path", {"value": "super-secret", "enabled": True})
+    response = client.write_secret(
+        "secret/data/demo/path", {"value": "super-secret", "enabled": True}
+    )
 
     assert response == {"data": {"written": True}}
     assert captured["method"] == "POST"

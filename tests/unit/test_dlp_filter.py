@@ -5,7 +5,9 @@ from frontier_runtime.guardrails import DLPFilter, FilterContext
 
 
 def test_dlp_filter_marks_pii() -> None:
-    envelope = Envelope(source_agent="tester", action="execute", payload={"task": "email me at test@example.com"})
+    envelope = Envelope(
+        source_agent="tester", action="execute", payload={"task": "email me at test@example.com"}
+    )
     result = asyncio.run(DLPFilter().evaluate(envelope, FilterContext()))
     assert result.envelope.metadata["classification"] in {"internal", "confidential", "restricted"}
     assert result.envelope.payload["task"] == "email me at [REDACTED_EMAIL]"

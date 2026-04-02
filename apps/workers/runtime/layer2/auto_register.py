@@ -55,10 +55,15 @@ def auto_register_by_tags(
     def make_handler(agent_id: str, agent_name: str) -> callable:
         def _handler(env: Envelope) -> None:
             # Placeholder: record participation only
-            participants = env.payload.setdefault("participants", []) if isinstance(env.payload, dict) else None
+            participants = (
+                env.payload.setdefault("participants", [])
+                if isinstance(env.payload, dict)
+                else None
+            )
             if isinstance(participants, list):
                 participants.append({"agent": agent_id, "name": agent_name})
             add_log(env, "auto", f"{agent_id} observed {env.topic}")
+
         return _handler
 
     for agent in registry.all():
@@ -74,4 +79,3 @@ def auto_register_by_tags(
             bus.subscribe(topic, make_handler(agent_id, agent_name))
             count += 1
     return count
-

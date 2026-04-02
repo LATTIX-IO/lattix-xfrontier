@@ -28,90 +28,450 @@ _ROUTE_ACCESS_RULES: tuple[RouteAccessRule, ...] = (
     RouteAccessRule(("GET",), "/health", RouteAccessCategory.PUBLIC_MINIMAL),
     RouteAccessRule(("GET",), "/healthz", RouteAccessCategory.PUBLIC_MINIMAL),
     RouteAccessRule(("POST",), "/auth/login", RouteAccessCategory.PUBLIC_MINIMAL, "auth.login"),
-    RouteAccessRule(("POST",), "/auth/register", RouteAccessCategory.PUBLIC_MINIMAL, "auth.register"),
+    RouteAccessRule(
+        ("POST",), "/auth/register", RouteAccessCategory.PUBLIC_MINIMAL, "auth.register"
+    ),
     RouteAccessRule(("POST",), "/auth/logout", RouteAccessCategory.PUBLIC_MINIMAL, "auth.logout"),
-    RouteAccessRule(("GET",), "/auth/session", RouteAccessCategory.AUTHENTICATED_READ, "auth.session.read"),
+    RouteAccessRule(
+        ("GET",), "/auth/session", RouteAccessCategory.AUTHENTICATED_READ, "auth.session.read"
+    ),
     RouteAccessRule(("GET",), "/platform/version", RouteAccessCategory.PUBLIC_MINIMAL),
-    RouteAccessRule(("GET",), "/healthz/details", RouteAccessCategory.AUTHENTICATED_READ, "health.details.read"),
-    RouteAccessRule(("GET",), "/federation/status", RouteAccessCategory.AUTHENTICATED_READ, "federation.status.read"),
-    RouteAccessRule(("GET",), "/runtime/providers", RouteAccessCategory.AUTHENTICATED_READ, "runtime.providers.read"),
-    RouteAccessRule(("GET",), "/runtime/l3-parity-report", RouteAccessCategory.AUTHENTICATED_READ, "runtime.l3_parity.read"),
-    RouteAccessRule(("GET",), "/runtime/local-integration-readiness", RouteAccessCategory.AUTHENTICATED_READ, "runtime.local_integration_readiness.read"),
-    RouteAccessRule(("GET",), "/platform/settings", RouteAccessCategory.AUTHENTICATED_READ, "platform.settings.read"),
-    RouteAccessRule(("GET",), "/platform/security-policy", RouteAccessCategory.AUTHENTICATED_READ, "platform.security_policy.read"),
-    RouteAccessRule(("POST",), "/platform/settings", RouteAccessCategory.AUTHENTICATED_MUTATE, "platform.settings.save"),
-    RouteAccessRule(("GET",), "/memory/{session_id}", RouteAccessCategory.AUTHENTICATED_READ, "memory.read"),
-    RouteAccessRule(("DELETE",), "/memory/{session_id}", RouteAccessCategory.AUTHENTICATED_MUTATE, "memory.clear"),
-    RouteAccessRule(("POST",), "/internal/memory/consolidation/run", RouteAccessCategory.INTERNAL_ONLY, "memory.consolidation.run"),
-    RouteAccessRule(("POST",), "/internal/memory/world-graph/project", RouteAccessCategory.INTERNAL_ONLY, "memory.world_graph.project"),
-    RouteAccessRule(("GET",), "/workflows/published", RouteAccessCategory.AUTHENTICATED_READ, "workflow.definition.published.read"),
-    RouteAccessRule(("GET",), "/workflows/active", RouteAccessCategory.AUTHENTICATED_READ, "workflow.definition.active.read"),
-    RouteAccessRule(("POST",), "/workflow-runs", RouteAccessCategory.AUTHENTICATED_MUTATE, "workflow.run.create"),
-    RouteAccessRule(("GET",), "/workflow-runs", RouteAccessCategory.AUTHENTICATED_READ, "workflow.run.list"),
-    RouteAccessRule(("GET",), "/workflow-runs/{run_id}", RouteAccessCategory.AUTHENTICATED_READ, "workflow.run.read"),
-    RouteAccessRule(("GET",), "/workflow-runs/{run_id}/events", RouteAccessCategory.AUTHENTICATED_READ, "workflow.run.events.read"),
-    RouteAccessRule(("POST",), "/workflow-runs/{run_id}/archive", RouteAccessCategory.AUTHENTICATED_MUTATE, "workflow.run.archive"),
-    RouteAccessRule(("POST",), "/artifacts/{artifact_id}/versions", RouteAccessCategory.AUTHENTICATED_MUTATE, "artifact.version.create"),
-    RouteAccessRule(("POST",), "/approvals", RouteAccessCategory.AUTHENTICATED_MUTATE, "approval.submit"),
+    RouteAccessRule(
+        ("GET",), "/healthz/details", RouteAccessCategory.AUTHENTICATED_READ, "health.details.read"
+    ),
+    RouteAccessRule(
+        ("GET",),
+        "/federation/status",
+        RouteAccessCategory.AUTHENTICATED_READ,
+        "federation.status.read",
+    ),
+    RouteAccessRule(
+        ("GET",),
+        "/runtime/providers",
+        RouteAccessCategory.AUTHENTICATED_READ,
+        "runtime.providers.read",
+    ),
+    RouteAccessRule(
+        ("GET",),
+        "/runtime/l3-parity-report",
+        RouteAccessCategory.AUTHENTICATED_READ,
+        "runtime.l3_parity.read",
+    ),
+    RouteAccessRule(
+        ("GET",),
+        "/runtime/local-integration-readiness",
+        RouteAccessCategory.AUTHENTICATED_READ,
+        "runtime.local_integration_readiness.read",
+    ),
+    RouteAccessRule(
+        ("GET",),
+        "/platform/settings",
+        RouteAccessCategory.AUTHENTICATED_READ,
+        "platform.settings.read",
+    ),
+    RouteAccessRule(
+        ("GET",),
+        "/platform/security-policy",
+        RouteAccessCategory.AUTHENTICATED_READ,
+        "platform.security_policy.read",
+    ),
+    RouteAccessRule(
+        ("POST",),
+        "/platform/settings",
+        RouteAccessCategory.AUTHENTICATED_MUTATE,
+        "platform.settings.save",
+    ),
+    RouteAccessRule(
+        ("GET",), "/memory/{session_id}", RouteAccessCategory.AUTHENTICATED_READ, "memory.read"
+    ),
+    RouteAccessRule(
+        ("DELETE",),
+        "/memory/{session_id}",
+        RouteAccessCategory.AUTHENTICATED_MUTATE,
+        "memory.clear",
+    ),
+    RouteAccessRule(
+        ("POST",),
+        "/internal/memory/consolidation/run",
+        RouteAccessCategory.INTERNAL_ONLY,
+        "memory.consolidation.run",
+    ),
+    RouteAccessRule(
+        ("POST",),
+        "/internal/memory/world-graph/project",
+        RouteAccessCategory.INTERNAL_ONLY,
+        "memory.world_graph.project",
+    ),
+    RouteAccessRule(
+        ("GET",),
+        "/workflows/published",
+        RouteAccessCategory.AUTHENTICATED_READ,
+        "workflow.definition.published.read",
+    ),
+    RouteAccessRule(
+        ("GET",),
+        "/workflows/active",
+        RouteAccessCategory.AUTHENTICATED_READ,
+        "workflow.definition.active.read",
+    ),
+    RouteAccessRule(
+        ("POST",), "/workflow-runs", RouteAccessCategory.AUTHENTICATED_MUTATE, "workflow.run.create"
+    ),
+    RouteAccessRule(
+        ("GET",), "/workflow-runs", RouteAccessCategory.AUTHENTICATED_READ, "workflow.run.list"
+    ),
+    RouteAccessRule(
+        ("GET",),
+        "/workflow-runs/{run_id}",
+        RouteAccessCategory.AUTHENTICATED_READ,
+        "workflow.run.read",
+    ),
+    RouteAccessRule(
+        ("GET",),
+        "/workflow-runs/{run_id}/events",
+        RouteAccessCategory.AUTHENTICATED_READ,
+        "workflow.run.events.read",
+    ),
+    RouteAccessRule(
+        ("POST",),
+        "/workflow-runs/{run_id}/archive",
+        RouteAccessCategory.AUTHENTICATED_MUTATE,
+        "workflow.run.archive",
+    ),
+    RouteAccessRule(
+        ("POST",),
+        "/artifacts/{artifact_id}/versions",
+        RouteAccessCategory.AUTHENTICATED_MUTATE,
+        "artifact.version.create",
+    ),
+    RouteAccessRule(
+        ("POST",), "/approvals", RouteAccessCategory.AUTHENTICATED_MUTATE, "approval.submit"
+    ),
     RouteAccessRule(("GET",), "/inbox", RouteAccessCategory.AUTHENTICATED_READ, "inbox.read"),
-    RouteAccessRule(("GET",), "/integrations", RouteAccessCategory.AUTHENTICATED_READ, "integration.list"),
-    RouteAccessRule(("POST",), "/integrations", RouteAccessCategory.AUTHENTICATED_MUTATE, "integration.save"),
-    RouteAccessRule(("POST",), "/integrations/{integration_id}/test", RouteAccessCategory.AUTHENTICATED_MUTATE, "integration.test"),
-    RouteAccessRule(("GET",), "/integrations/{integration_id}/policy", RouteAccessCategory.AUTHENTICATED_READ, "integration.policy.read"),
-    RouteAccessRule(("DELETE",), "/integrations/{integration_id}", RouteAccessCategory.AUTHENTICATED_MUTATE, "integration.delete"),
-    RouteAccessRule(("GET",), "/templates/agents", RouteAccessCategory.AUTHENTICATED_READ, "template.agent.list"),
-    RouteAccessRule(("GET",), "/templates/catalog", RouteAccessCategory.AUTHENTICATED_READ, "template.catalog.read"),
-    RouteAccessRule(("POST",), "/templates/agents/{template_id}/instantiate", RouteAccessCategory.AUTHENTICATED_MUTATE, "template.agent.instantiate"),
-    RouteAccessRule(("POST",), "/templates/workflows/{workflow_id}/instantiate", RouteAccessCategory.AUTHENTICATED_MUTATE, "template.workflow.instantiate"),
-    RouteAccessRule(("GET",), "/playbooks", RouteAccessCategory.AUTHENTICATED_READ, "playbook.list"),
-    RouteAccessRule(("GET",), "/playbooks/{playbook_id}", RouteAccessCategory.AUTHENTICATED_READ, "playbook.read"),
-    RouteAccessRule(("POST",), "/playbooks/{playbook_id}/instantiate", RouteAccessCategory.AUTHENTICATED_MUTATE, "playbook.instantiate"),
-    RouteAccessRule(("GET",), "/observability/runs/{run_id}/trace", RouteAccessCategory.AUTHENTICATED_READ, "observability.trace.read"),
-    RouteAccessRule(("GET",), "/observability/dashboard", RouteAccessCategory.AUTHENTICATED_READ, "observability.dashboard.read"),
-    RouteAccessRule(("GET",), "/audit/events", RouteAccessCategory.AUTHENTICATED_READ, "audit.events.read"),
-    RouteAccessRule(("GET",), "/audit/atf-alignment-report", RouteAccessCategory.AUTHENTICATED_READ, "audit.atf_alignment.read"),
-    RouteAccessRule(("POST",), "/collab/sessions/join", RouteAccessCategory.AUTHENTICATED_MUTATE, "collab.session.join"),
-    RouteAccessRule(("GET",), "/collab/sessions/{session_id}", RouteAccessCategory.AUTHENTICATED_READ, "collab.session.read"),
-    RouteAccessRule(("POST",), "/collab/sessions/{session_id}/sync", RouteAccessCategory.AUTHENTICATED_MUTATE, "collab.session.sync"),
-    RouteAccessRule(("POST",), "/collab/sessions/{session_id}/permissions", RouteAccessCategory.AUTHENTICATED_MUTATE, "collab.session.permissions.update"),
-    RouteAccessRule(("GET",), "/artifacts", RouteAccessCategory.AUTHENTICATED_READ, "artifact.list"),
-    RouteAccessRule(("GET",), "/artifacts/{artifact_id}", RouteAccessCategory.AUTHENTICATED_READ, "artifact.read"),
-    RouteAccessRule(("GET",), "/workflow-definitions", RouteAccessCategory.AUTHENTICATED_READ, "workflow.definition.list"),
-    RouteAccessRule(("GET",), "/workflow-definitions/{item_id}", RouteAccessCategory.AUTHENTICATED_READ, "workflow.definition.read"),
-    RouteAccessRule(("GET",), "/workflow-definitions/{item_id}/versions", RouteAccessCategory.AUTHENTICATED_READ, "workflow.definition.versions.read"),
-    RouteAccessRule(("GET",), "/workflow-definitions/{item_id}/versions/{revision_id}", RouteAccessCategory.AUTHENTICATED_READ, "workflow.definition.version.read"),
-    RouteAccessRule(("GET",), "/workflow-definitions/{item_id}/security-policy", RouteAccessCategory.AUTHENTICATED_READ, "workflow.definition.security_policy.read"),
-    RouteAccessRule(("GET",), "/workflows/{item_id}/security-policy", RouteAccessCategory.AUTHENTICATED_READ, "workflow.definition.security_policy.read"),
-    RouteAccessRule(("POST",), "/workflow-definitions", RouteAccessCategory.AUTHENTICATED_MUTATE, "workflow.definition.save"),
-    RouteAccessRule(("POST",), "/workflow-definitions/{item_id}/publish", RouteAccessCategory.AUTHENTICATED_MUTATE, "workflow.definition.publish"),
-    RouteAccessRule(("POST",), "/workflow-definitions/{item_id}/archive", RouteAccessCategory.AUTHENTICATED_MUTATE, "workflow.definition.archive"),
-    RouteAccessRule(("DELETE",), "/workflow-definitions/{item_id}", RouteAccessCategory.AUTHENTICATED_MUTATE, "workflow.definition.delete"),
-    RouteAccessRule(("POST",), "/workflow-definitions/{item_id}/rollback", RouteAccessCategory.AUTHENTICATED_MUTATE, "workflow.definition.rollback"),
-    RouteAccessRule(("POST",), "/workflow-definitions/{item_id}/activate", RouteAccessCategory.AUTHENTICATED_MUTATE, "workflow.definition.activate"),
-    RouteAccessRule(("GET",), "/agent-definitions", RouteAccessCategory.AUTHENTICATED_READ, "agent.definition.list"),
-    RouteAccessRule(("GET",), "/agent-definitions/{item_id}", RouteAccessCategory.AUTHENTICATED_READ, "agent.definition.read"),
-    RouteAccessRule(("GET",), "/agent-definitions/{item_id}/versions", RouteAccessCategory.AUTHENTICATED_READ, "agent.definition.versions.read"),
-    RouteAccessRule(("GET",), "/agent-definitions/{item_id}/versions/{revision_id}", RouteAccessCategory.AUTHENTICATED_READ, "agent.definition.version.read"),
-    RouteAccessRule(("GET",), "/agent-definitions/{item_id}/security-policy", RouteAccessCategory.AUTHENTICATED_READ, "agent.definition.security_policy.read"),
-    RouteAccessRule(("GET",), "/agents/{item_id}/security-policy", RouteAccessCategory.AUTHENTICATED_READ, "agent.definition.security_policy.read"),
-    RouteAccessRule(("POST",), "/agent-definitions", RouteAccessCategory.AUTHENTICATED_MUTATE, "agent.definition.save"),
-    RouteAccessRule(("POST",), "/agent-definitions/{item_id}/publish", RouteAccessCategory.AUTHENTICATED_MUTATE, "agent.definition.publish"),
-    RouteAccessRule(("DELETE",), "/agent-definitions/{item_id}", RouteAccessCategory.AUTHENTICATED_MUTATE, "agent.definition.delete"),
-    RouteAccessRule(("POST",), "/agent-definitions/{item_id}/rollback", RouteAccessCategory.AUTHENTICATED_MUTATE, "agent.definition.rollback"),
-    RouteAccessRule(("POST",), "/agent-definitions/{item_id}/activate", RouteAccessCategory.AUTHENTICATED_MUTATE, "agent.definition.activate"),
-    RouteAccessRule(("GET",), "/node-definitions", RouteAccessCategory.AUTHENTICATED_READ, "node.definition.list"),
-    RouteAccessRule(("GET",), "/guardrail-rulesets", RouteAccessCategory.AUTHENTICATED_READ, "guardrail.ruleset.list"),
-    RouteAccessRule(("POST",), "/guardrail-rulesets", RouteAccessCategory.AUTHENTICATED_MUTATE, "guardrail.ruleset.save"),
-    RouteAccessRule(("POST",), "/guardrail-rulesets/{item_id}/publish", RouteAccessCategory.AUTHENTICATED_MUTATE, "guardrail.ruleset.publish"),
-    RouteAccessRule(("DELETE",), "/guardrail-rulesets/{item_id}", RouteAccessCategory.AUTHENTICATED_MUTATE, "guardrail.ruleset.delete"),
-    RouteAccessRule(("POST",), "/guardrail-rulesets/{item_id}/archive", RouteAccessCategory.AUTHENTICATED_MUTATE, "guardrail.ruleset.archive"),
-    RouteAccessRule(("POST",), "/guardrail-rulesets/{item_id}/activate", RouteAccessCategory.AUTHENTICATED_MUTATE, "guardrail.ruleset.activate"),
-    RouteAccessRule(("GET",), "/guardrail-rulesets/{item_id}/versions", RouteAccessCategory.AUTHENTICATED_READ, "guardrail.ruleset.versions.read"),
-    RouteAccessRule(("GET",), "/guardrail-rulesets/{item_id}/versions/{revision_id}", RouteAccessCategory.AUTHENTICATED_READ, "guardrail.ruleset.version.read"),
-    RouteAccessRule(("POST",), "/guardrail-rulesets/{item_id}/rollback", RouteAccessCategory.AUTHENTICATED_MUTATE, "guardrail.ruleset.rollback"),
-    RouteAccessRule(("DELETE",), "/node-definitions/{_item_id}", RouteAccessCategory.AUTHENTICATED_MUTATE, "node.definition.delete"),
-    RouteAccessRule(("POST",), "/graph/validate", RouteAccessCategory.AUTHENTICATED_MUTATE, "graph.validate"),
-    RouteAccessRule(("POST",), "/graph/runs", RouteAccessCategory.AUTHENTICATED_MUTATE, "graph.run"),
+    RouteAccessRule(
+        ("GET",), "/integrations", RouteAccessCategory.AUTHENTICATED_READ, "integration.list"
+    ),
+    RouteAccessRule(
+        ("POST",), "/integrations", RouteAccessCategory.AUTHENTICATED_MUTATE, "integration.save"
+    ),
+    RouteAccessRule(
+        ("POST",),
+        "/integrations/{integration_id}/test",
+        RouteAccessCategory.AUTHENTICATED_MUTATE,
+        "integration.test",
+    ),
+    RouteAccessRule(
+        ("GET",),
+        "/integrations/{integration_id}/policy",
+        RouteAccessCategory.AUTHENTICATED_READ,
+        "integration.policy.read",
+    ),
+    RouteAccessRule(
+        ("DELETE",),
+        "/integrations/{integration_id}",
+        RouteAccessCategory.AUTHENTICATED_MUTATE,
+        "integration.delete",
+    ),
+    RouteAccessRule(
+        ("GET",), "/templates/agents", RouteAccessCategory.AUTHENTICATED_READ, "template.agent.list"
+    ),
+    RouteAccessRule(
+        ("GET",),
+        "/templates/catalog",
+        RouteAccessCategory.AUTHENTICATED_READ,
+        "template.catalog.read",
+    ),
+    RouteAccessRule(
+        ("POST",),
+        "/templates/agents/{template_id}/instantiate",
+        RouteAccessCategory.AUTHENTICATED_MUTATE,
+        "template.agent.instantiate",
+    ),
+    RouteAccessRule(
+        ("POST",),
+        "/templates/workflows/{workflow_id}/instantiate",
+        RouteAccessCategory.AUTHENTICATED_MUTATE,
+        "template.workflow.instantiate",
+    ),
+    RouteAccessRule(
+        ("GET",), "/playbooks", RouteAccessCategory.AUTHENTICATED_READ, "playbook.list"
+    ),
+    RouteAccessRule(
+        ("GET",),
+        "/playbooks/{playbook_id}",
+        RouteAccessCategory.AUTHENTICATED_READ,
+        "playbook.read",
+    ),
+    RouteAccessRule(
+        ("POST",),
+        "/playbooks/{playbook_id}/instantiate",
+        RouteAccessCategory.AUTHENTICATED_MUTATE,
+        "playbook.instantiate",
+    ),
+    RouteAccessRule(
+        ("GET",),
+        "/observability/runs/{run_id}/trace",
+        RouteAccessCategory.AUTHENTICATED_READ,
+        "observability.trace.read",
+    ),
+    RouteAccessRule(
+        ("GET",),
+        "/observability/dashboard",
+        RouteAccessCategory.AUTHENTICATED_READ,
+        "observability.dashboard.read",
+    ),
+    RouteAccessRule(
+        ("GET",), "/audit/events", RouteAccessCategory.AUTHENTICATED_READ, "audit.events.read"
+    ),
+    RouteAccessRule(
+        ("GET",),
+        "/audit/atf-alignment-report",
+        RouteAccessCategory.AUTHENTICATED_READ,
+        "audit.atf_alignment.read",
+    ),
+    RouteAccessRule(
+        ("POST",),
+        "/collab/sessions/join",
+        RouteAccessCategory.AUTHENTICATED_MUTATE,
+        "collab.session.join",
+    ),
+    RouteAccessRule(
+        ("GET",),
+        "/collab/sessions/{session_id}",
+        RouteAccessCategory.AUTHENTICATED_READ,
+        "collab.session.read",
+    ),
+    RouteAccessRule(
+        ("POST",),
+        "/collab/sessions/{session_id}/sync",
+        RouteAccessCategory.AUTHENTICATED_MUTATE,
+        "collab.session.sync",
+    ),
+    RouteAccessRule(
+        ("POST",),
+        "/collab/sessions/{session_id}/permissions",
+        RouteAccessCategory.AUTHENTICATED_MUTATE,
+        "collab.session.permissions.update",
+    ),
+    RouteAccessRule(
+        ("GET",), "/artifacts", RouteAccessCategory.AUTHENTICATED_READ, "artifact.list"
+    ),
+    RouteAccessRule(
+        ("GET",),
+        "/artifacts/{artifact_id}",
+        RouteAccessCategory.AUTHENTICATED_READ,
+        "artifact.read",
+    ),
+    RouteAccessRule(
+        ("GET",),
+        "/workflow-definitions",
+        RouteAccessCategory.AUTHENTICATED_READ,
+        "workflow.definition.list",
+    ),
+    RouteAccessRule(
+        ("GET",),
+        "/workflow-definitions/{item_id}",
+        RouteAccessCategory.AUTHENTICATED_READ,
+        "workflow.definition.read",
+    ),
+    RouteAccessRule(
+        ("GET",),
+        "/workflow-definitions/{item_id}/versions",
+        RouteAccessCategory.AUTHENTICATED_READ,
+        "workflow.definition.versions.read",
+    ),
+    RouteAccessRule(
+        ("GET",),
+        "/workflow-definitions/{item_id}/versions/{revision_id}",
+        RouteAccessCategory.AUTHENTICATED_READ,
+        "workflow.definition.version.read",
+    ),
+    RouteAccessRule(
+        ("GET",),
+        "/workflow-definitions/{item_id}/security-policy",
+        RouteAccessCategory.AUTHENTICATED_READ,
+        "workflow.definition.security_policy.read",
+    ),
+    RouteAccessRule(
+        ("GET",),
+        "/workflows/{item_id}/security-policy",
+        RouteAccessCategory.AUTHENTICATED_READ,
+        "workflow.definition.security_policy.read",
+    ),
+    RouteAccessRule(
+        ("POST",),
+        "/workflow-definitions",
+        RouteAccessCategory.AUTHENTICATED_MUTATE,
+        "workflow.definition.save",
+    ),
+    RouteAccessRule(
+        ("POST",),
+        "/workflow-definitions/{item_id}/publish",
+        RouteAccessCategory.AUTHENTICATED_MUTATE,
+        "workflow.definition.publish",
+    ),
+    RouteAccessRule(
+        ("POST",),
+        "/workflow-definitions/{item_id}/archive",
+        RouteAccessCategory.AUTHENTICATED_MUTATE,
+        "workflow.definition.archive",
+    ),
+    RouteAccessRule(
+        ("DELETE",),
+        "/workflow-definitions/{item_id}",
+        RouteAccessCategory.AUTHENTICATED_MUTATE,
+        "workflow.definition.delete",
+    ),
+    RouteAccessRule(
+        ("POST",),
+        "/workflow-definitions/{item_id}/rollback",
+        RouteAccessCategory.AUTHENTICATED_MUTATE,
+        "workflow.definition.rollback",
+    ),
+    RouteAccessRule(
+        ("POST",),
+        "/workflow-definitions/{item_id}/activate",
+        RouteAccessCategory.AUTHENTICATED_MUTATE,
+        "workflow.definition.activate",
+    ),
+    RouteAccessRule(
+        ("GET",),
+        "/agent-definitions",
+        RouteAccessCategory.AUTHENTICATED_READ,
+        "agent.definition.list",
+    ),
+    RouteAccessRule(
+        ("GET",),
+        "/agent-definitions/{item_id}",
+        RouteAccessCategory.AUTHENTICATED_READ,
+        "agent.definition.read",
+    ),
+    RouteAccessRule(
+        ("GET",),
+        "/agent-definitions/{item_id}/versions",
+        RouteAccessCategory.AUTHENTICATED_READ,
+        "agent.definition.versions.read",
+    ),
+    RouteAccessRule(
+        ("GET",),
+        "/agent-definitions/{item_id}/versions/{revision_id}",
+        RouteAccessCategory.AUTHENTICATED_READ,
+        "agent.definition.version.read",
+    ),
+    RouteAccessRule(
+        ("GET",),
+        "/agent-definitions/{item_id}/security-policy",
+        RouteAccessCategory.AUTHENTICATED_READ,
+        "agent.definition.security_policy.read",
+    ),
+    RouteAccessRule(
+        ("GET",),
+        "/agents/{item_id}/security-policy",
+        RouteAccessCategory.AUTHENTICATED_READ,
+        "agent.definition.security_policy.read",
+    ),
+    RouteAccessRule(
+        ("POST",),
+        "/agent-definitions",
+        RouteAccessCategory.AUTHENTICATED_MUTATE,
+        "agent.definition.save",
+    ),
+    RouteAccessRule(
+        ("POST",),
+        "/agent-definitions/{item_id}/publish",
+        RouteAccessCategory.AUTHENTICATED_MUTATE,
+        "agent.definition.publish",
+    ),
+    RouteAccessRule(
+        ("DELETE",),
+        "/agent-definitions/{item_id}",
+        RouteAccessCategory.AUTHENTICATED_MUTATE,
+        "agent.definition.delete",
+    ),
+    RouteAccessRule(
+        ("POST",),
+        "/agent-definitions/{item_id}/rollback",
+        RouteAccessCategory.AUTHENTICATED_MUTATE,
+        "agent.definition.rollback",
+    ),
+    RouteAccessRule(
+        ("POST",),
+        "/agent-definitions/{item_id}/activate",
+        RouteAccessCategory.AUTHENTICATED_MUTATE,
+        "agent.definition.activate",
+    ),
+    RouteAccessRule(
+        ("GET",),
+        "/node-definitions",
+        RouteAccessCategory.AUTHENTICATED_READ,
+        "node.definition.list",
+    ),
+    RouteAccessRule(
+        ("GET",),
+        "/guardrail-rulesets",
+        RouteAccessCategory.AUTHENTICATED_READ,
+        "guardrail.ruleset.list",
+    ),
+    RouteAccessRule(
+        ("POST",),
+        "/guardrail-rulesets",
+        RouteAccessCategory.AUTHENTICATED_MUTATE,
+        "guardrail.ruleset.save",
+    ),
+    RouteAccessRule(
+        ("POST",),
+        "/guardrail-rulesets/{item_id}/publish",
+        RouteAccessCategory.AUTHENTICATED_MUTATE,
+        "guardrail.ruleset.publish",
+    ),
+    RouteAccessRule(
+        ("DELETE",),
+        "/guardrail-rulesets/{item_id}",
+        RouteAccessCategory.AUTHENTICATED_MUTATE,
+        "guardrail.ruleset.delete",
+    ),
+    RouteAccessRule(
+        ("POST",),
+        "/guardrail-rulesets/{item_id}/archive",
+        RouteAccessCategory.AUTHENTICATED_MUTATE,
+        "guardrail.ruleset.archive",
+    ),
+    RouteAccessRule(
+        ("POST",),
+        "/guardrail-rulesets/{item_id}/activate",
+        RouteAccessCategory.AUTHENTICATED_MUTATE,
+        "guardrail.ruleset.activate",
+    ),
+    RouteAccessRule(
+        ("GET",),
+        "/guardrail-rulesets/{item_id}/versions",
+        RouteAccessCategory.AUTHENTICATED_READ,
+        "guardrail.ruleset.versions.read",
+    ),
+    RouteAccessRule(
+        ("GET",),
+        "/guardrail-rulesets/{item_id}/versions/{revision_id}",
+        RouteAccessCategory.AUTHENTICATED_READ,
+        "guardrail.ruleset.version.read",
+    ),
+    RouteAccessRule(
+        ("POST",),
+        "/guardrail-rulesets/{item_id}/rollback",
+        RouteAccessCategory.AUTHENTICATED_MUTATE,
+        "guardrail.ruleset.rollback",
+    ),
+    RouteAccessRule(
+        ("DELETE",),
+        "/node-definitions/{_item_id}",
+        RouteAccessCategory.AUTHENTICATED_MUTATE,
+        "node.definition.delete",
+    ),
+    RouteAccessRule(
+        ("POST",), "/graph/validate", RouteAccessCategory.AUTHENTICATED_MUTATE, "graph.validate"
+    ),
+    RouteAccessRule(
+        ("POST",), "/graph/runs", RouteAccessCategory.AUTHENTICATED_MUTATE, "graph.run"
+    ),
 )
 
 _FRAMEWORK_MANAGED_PATHS = {
@@ -134,7 +494,9 @@ def route_access_rules() -> tuple[RouteAccessRule, ...]:
 
 
 def describe_route_inventory() -> dict[str, list[dict[str, str]]]:
-    inventory: dict[str, list[dict[str, str]]] = {category.value: [] for category in RouteAccessCategory}
+    inventory: dict[str, list[dict[str, str]]] = {
+        category.value: [] for category in RouteAccessCategory
+    }
     for rule in _ROUTE_ACCESS_RULES:
         inventory[rule.category.value].append(
             {

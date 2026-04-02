@@ -14,7 +14,9 @@ def _write_registry(path: Path, agents: list[dict[str, object]]) -> AgentsRegist
     return AgentsRegistry(path)
 
 
-def test_auto_register_by_tags_skips_placeholder_subscribers_in_strict_profile(monkeypatch, tmp_path: Path) -> None:
+def test_auto_register_by_tags_skips_placeholder_subscribers_in_strict_profile(
+    monkeypatch, tmp_path: Path
+) -> None:
     monkeypatch.setenv("FRONTIER_RUNTIME_PROFILE", "hosted")
     monkeypatch.setenv("FRONTIER_REQUIRE_A2A_RUNTIME_HEADERS", "true")
 
@@ -41,7 +43,9 @@ def test_auto_register_by_tags_skips_placeholder_subscribers_in_strict_profile(m
     assert env.payload.get("logs") is None
 
 
-def test_auto_register_by_tags_preserves_lightweight_placeholder_registration(monkeypatch, tmp_path: Path) -> None:
+def test_auto_register_by_tags_preserves_lightweight_placeholder_registration(
+    monkeypatch, tmp_path: Path
+) -> None:
     monkeypatch.setenv("FRONTIER_RUNTIME_PROFILE", "local-lightweight")
     monkeypatch.delenv("FRONTIER_REQUIRE_A2A_RUNTIME_HEADERS", raising=False)
 

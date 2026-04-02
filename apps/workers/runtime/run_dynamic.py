@@ -15,19 +15,22 @@ from runtime.paths import topic_map_path
 
 def main() -> None:
     ap = argparse.ArgumentParser(description="Run hybrid workflow with dynamic L3 registration")
-    ap.add_argument("topic", choices=[
-        "gtm.content",
-        "security.compliance",
-        "people.personnel",
-        "legal.contract",
-        "ops.project",
-        "sales.pipeline"
-    ])
+    ap.add_argument(
+        "topic",
+        choices=[
+            "gtm.content",
+            "security.compliance",
+            "people.personnel",
+            "legal.contract",
+            "ops.project",
+            "sales.pipeline",
+        ],
+    )
     ap.add_argument("--include-tags", help="Comma-separated tags to include (optional)")
     args = ap.parse_args()
 
     orch = Orchestrator(Path(registry_path_default()))
-    include = [t.strip() for t in (args.include_tags or '').split(',') if t.strip()]
+    include = [t.strip() for t in (args.include_tags or "").split(",") if t.strip()]
     count = auto_register_by_tags(
         bus=orch.bus,
         registry=orch.registry,
@@ -48,4 +51,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

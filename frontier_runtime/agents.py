@@ -37,7 +37,9 @@ def build_default_registry() -> AgentRegistry:
     known_ids = {record.agent_id for record in discovered}
     for agent_id in _DEFAULT_AGENT_IDS:
         if agent_id not in known_ids:
-            discovered.append(AgentRecord(agent_id=agent_id, name=agent_id.title(), path="", source="fallback"))
+            discovered.append(
+                AgentRecord(agent_id=agent_id, name=agent_id.title(), path="", source="fallback")
+            )
     return AgentRegistry(discovered)
 
 

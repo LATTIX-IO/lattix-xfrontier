@@ -21,7 +21,8 @@ _FILE_PATH_PATTERN = re.compile(
 
 def _extract_file_path(entry: dict[str, Any]) -> str | None:
     """Extract a file path from an entry's content or metadata."""
-    metadata = entry.get("metadata") if isinstance(entry.get("metadata"), dict) else {}
+    raw_metadata = entry.get("metadata")
+    metadata = raw_metadata if isinstance(raw_metadata, dict) else {}
     file_path = str(metadata.get("file_path") or metadata.get("path") or "").strip()
     if file_path:
         return file_path
