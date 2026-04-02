@@ -51,12 +51,33 @@ DEFAULT_MEMORY_LIMIT = "512m"
 DEFAULT_CPU_LIMIT = "1.0"
 DEFAULT_PID_LIMIT = 256
 DEFAULT_TOOL_TIMEOUT_SECONDS = 60
+SANDBOX_SECURITY_ROOT = Path(__file__).resolve().parent.parent / "docker" / "sandbox"
+DEFAULT_SECCOMP_PROFILE_PATH = SANDBOX_SECURITY_ROOT / "seccomp-strict.json"
 
-#: Seccomp profile path inside the container / host.
-SECCOMP_PROFILE_PATH = os.getenv(
-    "FRONTIER_SECCOMP_PROFILE",
-    str(Path(__file__).resolve().parent.parent / "docker" / "sandbox" / "seccomp-strict.json"),
-)
+
+def _env_flag(name: str, default: bool = False) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return str(raw).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _restricted_process_allowed() -> bool:
+    return _env_flag("FRONTIER_ALLOW_RESTRICTED_PROCESS_SANDBOX", False)
+
+
+def _validated_seccomp_profile_path() -> Path:
+    configured = str(os.getenv("FRONTIER_SECCOMP_PROFILE") or "").strip()
+    candidate = Path(configured) if configured else DEFAULT_SECCOMP_PROFILE_PATH
+    resolved = candidate.expanduser().resolve(strict=False)
+    allowed_root = SANDBOX_SECURITY_ROOT.resolve(strict=True)
+    if resolved.suffix.lower() != ".json":
+        raise RuntimeError("FRONTIER_SECCOMP_PROFILE must point to a JSON seccomp profile")
+    if resolved != allowed_root and not resolved.is_relative_to(allowed_root):
+        raise RuntimeError("FRONTIER_SECCOMP_PROFILE must stay within docker/sandbox")
+    if not resolved.is_file():
+        raise RuntimeError(f"Seccomp profile does not exist: {resolved}")
+    return resolved
 
 
 def sandbox_runner_image() -> str:
@@ -223,7 +244,13 @@ class _KernelSeatbeltStrategy:
         args = [self._SEATBELT_BIN, "-p", profile]
 
         # Parameter injection for readable/writable roots
-        for idx, path in enumerate(policy.allowed_read_paths):
+        readable_roots = list(policy.allowed_read_paths) or [
+            "/System",
+            "/usr/lib",
+            "/private/tmp",
+            "/tmp",
+        ]
+        for idx, path in enumerate(readable_roots):
             args += [f"-DREADABLE_ROOT_{idx}={path}"]
         for idx, path in enumerate(policy.allowed_write_paths):
             args += [f"-DWRITABLE_ROOT_{idx}={path}"]
@@ -240,11 +267,14 @@ class _KernelSeatbeltStrategy:
         rules.append("(allow process-fork)")
 
         # File read
-        if policy.allowed_read_paths:
-            for idx, _ in enumerate(policy.allowed_read_paths):
-                rules.append(f'(allow file-read* (subpath (param "READABLE_ROOT_{idx}")))')
-        else:
-            rules.append("(allow file-read*)")
+        readable_roots = list(policy.allowed_read_paths) or [
+            "/System",
+            "/usr/lib",
+            "/private/tmp",
+            "/tmp",
+        ]
+        for idx, _ in enumerate(readable_roots):
+            rules.append(f'(allow file-read* (subpath (param "READABLE_ROOT_{idx}")))')
 
         # File write (only to allowed paths)
         for idx, _ in enumerate(policy.allowed_write_paths):
@@ -290,8 +320,7 @@ class _HardenedDockerStrategy:
         ]
 
         # Seccomp profile
-        if Path(SECCOMP_PROFILE_PATH).is_file():
-            args.append(f"--security-opt=seccomp={SECCOMP_PROFILE_PATH}")
+        args.append(f"--security-opt=seccomp={_validated_seccomp_profile_path()}")
 
         # --- Network ---
         if not policy.allow_network:
@@ -337,6 +366,10 @@ class _RestrictedProcessStrategy:
     """Fallback: run command with minimal env sanitization (no sandbox)."""
 
     def build_command(self, spec: ExecutionSpec, policy: SandboxPolicy) -> list[str]:
+        if not _restricted_process_allowed():
+            raise PermissionError(
+                "No supported sandbox backend is available; restricted-process fallback is disabled"
+            )
         return spec.command
 
 
@@ -460,7 +493,7 @@ class SandboxManager:
                 },
                 "resources": {
                     "limits": {"memory": policy.memory_limit, "cpu": policy.cpu_limit},
-                    "requests": {"memory": "128Mi", "cpu": "250m"},
+                    "requests": {"memory": policy.memory_limit, "cpu": policy.cpu_limit},
                 },
             },
         }

@@ -178,19 +178,17 @@ def _bucket_from_memory_request(
     bucket_id = memory_request.get("bucket_id") or memory_request.get("memory_bucket")
     if not bucket_id:
         if scope == "session":
-            bucket_id = memory_request.get("session_id") or auth.session_id or auth.actor
+            bucket_id = auth.session_id or auth.actor
         elif scope == "user":
-            bucket_id = memory_request.get("user_id") or auth.actor
+            bucket_id = auth.actor
         elif scope == "tenant":
-            bucket_id = memory_request.get("tenant_id") or auth.tenant_id
+            bucket_id = auth.tenant_id
         elif scope == "agent":
             bucket_id = memory_request.get("agent_id")
         elif scope == "workflow":
             bucket_id = memory_request.get("workflow_id")
         elif scope == "run":
-            bucket_id = (
-                memory_request.get("run_id") or memory_request.get("session_id") or auth.session_id
-            )
+            bucket_id = auth.session_id
         elif scope == "global":
             bucket_id = "global"
     return _normalize_memory_bucket(scope, bucket_id), scope

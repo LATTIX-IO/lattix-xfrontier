@@ -170,14 +170,13 @@ describe("identity headers", () => {
     expect(callHeaders["x-frontier-actor"]).toBe("frontend-user");
   });
 
-  it("includes Authorization when token is set", async () => {
-    vi.stubEnv("NEXT_PUBLIC_FRONTIER_API_TOKEN", "test-token-123");
+  it("never includes Authorization from browser env", async () => {
     fetchMock.mockResolvedValueOnce({ ok: true, json: async () => [] });
 
     const { getPublishedWorkflows } = await import("@/lib/api");
     await getPublishedWorkflows();
 
     const callHeaders = fetchMock.mock.calls[0]?.[1]?.headers as Record<string, string>;
-    expect(callHeaders["Authorization"]).toBe("Bearer test-token-123");
+    expect(callHeaders["Authorization"]).toBeUndefined();
   });
 });

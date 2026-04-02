@@ -75,6 +75,15 @@ def _nonce_ttl_seconds() -> int:
     return max(1, min(ttl, 86_400))
 
 
+def _clock_skew_seconds() -> int:
+    raw = str(os.getenv("A2A_CLOCK_SKEW_SECONDS") or "30").strip()
+    try:
+        skew = int(raw)
+    except ValueError:
+        skew = 30
+    return max(1, min(skew, 300))
+
+
 def _prune_seen_nonces_locked(now: float | None = None) -> None:
     current = time.time() if now is None else now
     expired = [nonce for nonce, expires_at in _SEEN_NONCES.items() if expires_at <= current]
@@ -112,6 +121,11 @@ def _verify_runtime_headers(request: Request, body: bytes) -> str:
         or request.headers.get("x-frontier-signature")
         or ""
     ).strip()
+    timestamp = str(
+        request.headers.get("X-Frontier-Timestamp")
+        or request.headers.get("x-frontier-timestamp")
+        or ""
+    ).strip()
     correlation_id = str(
         request.headers.get("X-Correlation-ID") or request.headers.get("x-correlation-id") or ""
     ).strip()
@@ -122,13 +136,21 @@ def _verify_runtime_headers(request: Request, body: bytes) -> str:
         raise HTTPException(status_code=401, detail="missing frontier nonce")
     if not signature:
         raise HTTPException(status_code=401, detail="missing frontier signature")
+    if not timestamp:
+        raise HTTPException(status_code=401, detail="missing frontier timestamp")
     if not correlation_id:
         raise HTTPException(
             status_code=401, detail="missing correlation id header for signed A2A request"
         )
+    try:
+        timestamp_value = int(timestamp)
+    except ValueError as exc:
+        raise HTTPException(status_code=401, detail="invalid frontier timestamp") from exc
+    if abs(int(time.time()) - timestamp_value) > _clock_skew_seconds():
+        raise HTTPException(status_code=401, detail="stale frontier timestamp")
 
     digest = hashlib.sha256(body).hexdigest()
-    message = f"{subject}:{nonce}:{correlation_id}:{digest}".encode("utf-8")
+    message = f"{subject}:{nonce}:{correlation_id}:{timestamp}:{digest}".encode("utf-8")
     expected = hmac.new(_signing_secret(), message, hashlib.sha256).hexdigest()
     if not hmac.compare_digest(expected, signature):
         raise HTTPException(status_code=401, detail="invalid frontier signature")

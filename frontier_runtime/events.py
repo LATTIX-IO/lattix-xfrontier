@@ -30,6 +30,7 @@ class HashChain:
 
     def append(self, event: AgentEvent) -> AgentEvent:
         event.previous_hash = self._previous_hash
+        event.signer = event.signer or event.source
         event.event_hash = _hash_event(event)
         self._previous_hash = event.event_hash
         return event
@@ -59,8 +60,8 @@ class EventBus:
         await asyncio.sleep(0)
         existing = self.fallback.list_events()
         event.previous_hash = existing[-1].event_hash if existing else None
+        event.signer = event.signer or event.source
         event.event_hash = _hash_event(event)
-        event.signer = event.source
         event.signature = sign_event(event)
 
         def _mutate(snapshot: dict[str, Any]) -> None:
@@ -77,6 +78,7 @@ def _hash_event(event: AgentEvent) -> str:
     hasher.update(str(event.previous_hash or "").encode("utf-8"))
     hasher.update(str(event.event_type).encode("utf-8"))
     hasher.update(str(event.source).encode("utf-8"))
+    hasher.update(str(event.signer or event.source).encode("utf-8"))
     hasher.update(str(event.payload).encode("utf-8"))
     hasher.update(str(event.created_at).encode("utf-8"))
     return hasher.hexdigest()

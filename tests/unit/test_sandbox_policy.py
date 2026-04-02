@@ -59,3 +59,17 @@ def test_k8s_plan_returns_pod_spec_metadata() -> None:
     assert "runtimeClassName" in plan.metadata
     assert plan.metadata["runtimeClassName"] == "frontier-sandbox"
     assert plan.metadata["securityContext"]["runAsNonRoot"] is True
+
+
+def test_restricted_process_fallback_is_disabled_by_default() -> None:
+    from frontier_runtime.sandbox import ExecutionSpec
+
+    manager = SandboxManager(force_strategy=IsolationStrategy.RESTRICTED_PROCESS)
+    spec = ExecutionSpec(tool_id="test", command=["echo", "hello"])
+    policy = SandboxPolicy(platform=HostPlatform.LINUX)
+
+    try:
+        manager.plan(spec, policy)
+        assert False, "expected restricted-process fallback to fail closed"
+    except PermissionError as exc:
+        assert "restricted-process fallback is disabled" in str(exc)

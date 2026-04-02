@@ -223,6 +223,7 @@ def test_worker_service_template_hosted_profile_requires_internal_service_identi
             "internal_service": True,
         },
     )
+    timestamp = str(int(time.time()))
     allowed = client.post(
         "/v1/envelope",
         content=env.to_json(),
@@ -232,8 +233,13 @@ def test_worker_service_template_hosted_profile_requires_internal_service_identi
             "X-Correlation-ID": env.correlation_id,
             "X-Frontier-Subject": "backend",
             "X-Frontier-Nonce": "nonce-1",
+            "X-Frontier-Timestamp": timestamp,
             "X-Frontier-Signature": a2a._build_runtime_signature(
-                "backend", "nonce-1", env.correlation_id, env.to_json().encode("utf-8")
+                "backend",
+                "nonce-1",
+                env.correlation_id,
+                env.to_json().encode("utf-8"),
+                timestamp=timestamp,
             ),
         },
     )
@@ -302,8 +308,9 @@ def test_worker_service_template_rejects_runtime_header_replay(monkeypatch) -> N
         },
     )
     nonce = "nonce-replay"
+    timestamp = str(int(time.time()))
     signature = a2a._build_runtime_signature(
-        "backend", nonce, env.correlation_id, env.to_json().encode("utf-8")
+        "backend", nonce, env.correlation_id, env.to_json().encode("utf-8"), timestamp=timestamp
     )
     headers = {
         "Authorization": f"Bearer {token}",
@@ -311,6 +318,7 @@ def test_worker_service_template_rejects_runtime_header_replay(monkeypatch) -> N
         "X-Correlation-ID": env.correlation_id,
         "X-Frontier-Subject": "backend",
         "X-Frontier-Nonce": nonce,
+        "X-Frontier-Timestamp": timestamp,
         "X-Frontier-Signature": signature,
     }
 
@@ -342,12 +350,16 @@ def test_worker_service_template_requires_correlation_id_for_signed_runtime_head
         },
     )
     nonce = "nonce-missing-correlation"
-    signature = a2a._build_runtime_signature("backend", nonce, "", env.to_json().encode("utf-8"))
+    timestamp = str(int(time.time()))
+    signature = a2a._build_runtime_signature(
+        "backend", nonce, "", env.to_json().encode("utf-8"), timestamp=timestamp
+    )
     headers = {
         "Authorization": f"Bearer {token}",
         "Content-Type": "application/json",
         "X-Frontier-Subject": "backend",
         "X-Frontier-Nonce": nonce,
+        "X-Frontier-Timestamp": timestamp,
         "X-Frontier-Signature": signature,
     }
 
@@ -377,14 +389,16 @@ def test_worker_service_template_rejects_header_subject_mismatch_with_bearer_ide
         },
     )
     nonce = "nonce-subject-mismatch"
+    timestamp = str(int(time.time()))
     headers = {
         "Authorization": f"Bearer {token}",
         "Content-Type": "application/json",
         "X-Correlation-ID": env.correlation_id,
         "X-Frontier-Subject": "backend",
         "X-Frontier-Nonce": nonce,
+        "X-Frontier-Timestamp": timestamp,
         "X-Frontier-Signature": a2a._build_runtime_signature(
-            "backend", nonce, env.correlation_id, env.to_json().encode("utf-8")
+            "backend", nonce, env.correlation_id, env.to_json().encode("utf-8"), timestamp=timestamp
         ),
     }
 
@@ -408,6 +422,46 @@ def test_worker_service_template_prunes_expired_seen_nonces_before_accepting_reu
     module._register_seen_nonce_or_raise("expired-nonce", now=10.0)
 
     assert module._SEEN_NONCES["expired-nonce"] == 15.0
+
+
+def test_worker_service_template_requires_fresh_runtime_timestamp(monkeypatch) -> None:
+    monkeypatch.setenv("A2A_JWT_SECRET", "unit-test-super-secret-value-32bytes")
+    monkeypatch.setenv("FRONTIER_RUNTIME_PROFILE", "hosted")
+    monkeypatch.setenv("FRONTIER_REQUIRE_A2A_RUNTIME_HEADERS", "true")
+    monkeypatch.setenv("A2A_CLOCK_SKEW_SECONDS", "30")
+
+    module = _load_agent_service_template_module()
+    client = TestClient(module.app)
+    env = Envelope(topic="security.compliance", sender="orchestrator", payload={"task": "review"})
+    token = issue_token(
+        "backend",
+        ttl_seconds=60,
+        additional_claims={
+            "actor": "service-backend",
+            "tenant_id": "acme",
+            "subject": "backend",
+            "internal_service": True,
+        },
+    )
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json",
+        "X-Correlation-ID": env.correlation_id,
+        "X-Frontier-Subject": "backend",
+        "X-Frontier-Nonce": "nonce-stale-ts",
+        "X-Frontier-Timestamp": "1",
+        "X-Frontier-Signature": a2a._build_runtime_signature(
+            "backend",
+            "nonce-stale-ts",
+            env.correlation_id,
+            env.to_json().encode("utf-8"),
+            timestamp="1",
+        ),
+    }
+
+    denied = client.post("/v1/envelope", content=env.to_json(), headers=headers)
+    assert denied.status_code == 401
+    assert denied.json()["detail"] == "stale frontier timestamp"
 
 
 def test_worker_service_template_nonce_registration_is_race_safe(monkeypatch) -> None:
@@ -822,6 +876,40 @@ def test_multi_tenant_runtime_messages_do_not_cross_contaminate(monkeypatch, tmp
     assert len(observed) == len(tenants)
     assert observed.count(("acme", "tenant:acme")) == 10
     assert observed.count(("globex", "tenant:globex")) == 10
+
+
+def test_session_memory_scope_ignores_payload_session_override(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("FRONTIER_RUNTIME_PROFILE", "local-secure")
+    orchestrator = Orchestrator(tmp_path / "registry.json")
+    called = {"value": False}
+
+    def _subscriber(env: Envelope) -> None:
+        called["value"] = True
+
+    orchestrator.bus.subscribe("security.compliance", _subscriber)
+
+    env = orchestrator.run_stage(
+        name="session-memory-override",
+        topic="security.compliance",
+        payload={
+            "auth_context": {
+                "actor": "tenant-user",
+                "tenant_id": "acme",
+                "subject": "orchestrator",
+                "internal_service": True,
+                "session_id": "session-authenticated",
+            },
+            "memory": {
+                "action": "read",
+                "scope": "session",
+                "session_id": "session-attacker",
+            },
+        },
+    )
+
+    assert called["value"] is True
+    memory_auth = env.payload.get("memory_authorization") if isinstance(env.payload, dict) else {}
+    assert memory_auth.get("bucket_id") == "session:session-authenticated"
 
 
 def test_event_bus_records_time_budget_failure_metrics() -> None:

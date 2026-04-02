@@ -312,6 +312,20 @@ def _parse_run_as_user_uid(value: Any) -> int | None:
     return uid
 
 
+def _canonicalize_candidate_path(value: str) -> Path | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    candidate = Path(text).expanduser()
+    try:
+        if candidate.exists():
+            return candidate.resolve(strict=True)
+        parent = candidate.parent.resolve(strict=True)
+        return parent / candidate.name
+    except Exception:
+        return None
+
+
 def decode_token(token: str) -> dict[str, Any]:
     return jwt.decode(
         token,
@@ -376,12 +390,8 @@ class OPAClient:
 
     @staticmethod
     def _path_allowed(candidate: str, allowed_paths: list[str]) -> bool:
-        value = str(candidate or "").strip()
-        if not value:
-            return False
-        try:
-            resolved_candidate = Path(value).expanduser().resolve(strict=False)
-        except Exception:
+        resolved_candidate = _canonicalize_candidate_path(candidate)
+        if resolved_candidate is None:
             return False
 
         for item in allowed_paths:
@@ -389,7 +399,7 @@ class OPAClient:
             if not root:
                 continue
             try:
-                resolved_root = Path(root).expanduser().resolve(strict=False)
+                resolved_root = Path(root).expanduser().resolve(strict=True)
             except Exception:
                 continue
             if resolved_candidate == resolved_root or resolved_candidate.is_relative_to(
@@ -673,9 +683,8 @@ class VaultClient:
             response.raise_for_status()
             parsed_payload = response.json()
         except httpx.HTTPStatusError as exc:
-            detail = exc.response.text.strip()
             raise RuntimeError(
-                f"Vault {method.upper()} failed for '{path}': {exc.response.status_code} {detail}".strip()
+                f"Vault {method.upper()} failed for '{path}': {exc.response.status_code}"
             ) from exc
         except httpx.RequestError as exc:
             raise RuntimeError(f"Vault {method.upper()} failed for '{path}': {exc}") from exc
@@ -707,10 +716,7 @@ class VaultClient:
             response.raise_for_status()
             payload = response.json()
         except httpx.HTTPStatusError as exc:
-            detail = exc.response.text.strip()
-            raise RuntimeError(
-                f"Vault health query failed: {exc.response.status_code} {detail}".strip()
-            ) from exc
+            raise RuntimeError(f"Vault health query failed: {exc.response.status_code}") from exc
         except httpx.RequestError as exc:
             raise RuntimeError(f"Vault health query failed: {exc}") from exc
         except json.JSONDecodeError as exc:
@@ -761,7 +767,6 @@ class VaultClient:
 def _runtime_replay_ttl_seconds() -> int:
     raw = (
         os.getenv("FRONTIER_RUNTIME_REPLAY_TTL_SECONDS")
-        or os.getenv("FRONTIER_A2A_NONCE_TTL_SECONDS")
         or os.getenv("A2A_REPLAY_TTL_SECONDS")
         or "900"
     )
@@ -865,7 +870,8 @@ def reset_token_caches() -> None:
 
 
 def sign_event(event: Any) -> str:
-    message = f"{getattr(event, 'event_hash', '')}:{getattr(event, 'source', '')}"
+    signer = str(getattr(event, "signer", "") or getattr(event, "source", ""))
+    message = f"{getattr(event, 'event_hash', '')}:{signer}"
     return hmac.new(_secret_bytes(), message.encode("utf-8"), hashlib.sha256).hexdigest()
 
 
