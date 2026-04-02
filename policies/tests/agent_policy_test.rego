@@ -81,6 +81,19 @@ test_deny_secret_json_filename if {
   }
 }
 
+test_deny_bearer_token_like_filename if {
+  agent_policy.deny with input as {
+    "agent_id": "research",
+    "tool": "read_file",
+    "allowed_tools": ["read_file"],
+    "resource": "tmp/bearer_token_backup.txt",
+    "budget": {"tokens_used": 0, "max_tokens": 10},
+    "action": "read_file",
+    "classification": "internal",
+    "provider": "local"
+  }
+}
+
 test_deny_restricted_external_llm if {
   agent_policy.deny with input as {
     "agent_id": "orchestrator",

@@ -14,4 +14,4 @@ spec:
     spec:
       containers:
         - name: postgres
-          image: postgres:16-alpine
+          image: {{ include "lattix-frontier.imageRef" .Values.postgres.image }}

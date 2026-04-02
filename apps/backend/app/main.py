@@ -2551,10 +2551,26 @@ def _public_configuration_error(message: str) -> str:
 
 
 def _truncate_event_summary(text: str, max_chars: int = 700) -> str:
+    summary, _metadata = _truncate_text_with_metadata(text, max_chars=max_chars)
+    return summary
+
+
+def _truncate_text_with_metadata(
+    text: str, max_chars: int = 700
+) -> tuple[str, dict[str, int | bool]]:
     value = str(text or "").strip()
+    max_chars = max(1, int(max_chars))
+    metadata: dict[str, int | bool] = {
+        "truncated": False,
+        "original_length": len(value),
+        "max_chars": max_chars,
+        "truncated_chars": 0,
+    }
     if len(value) <= max_chars:
-        return value
-    return f"{value[:max_chars].rstrip()}…"
+        return value, metadata
+    metadata["truncated"] = True
+    metadata["truncated_chars"] = len(value) - max_chars
+    return f"{value[:max_chars].rstrip()}…", metadata
 
 
 def _should_enforce_architecture_contract(
@@ -8559,6 +8575,7 @@ def _append_audit_event(
     outcome: Literal["allowed", "blocked", "error"],
     metadata: dict[str, Any] | None = None,
 ) -> None:
+    audit_metadata = dict(metadata) if isinstance(metadata, dict) else {}
     store.audit_events.insert(
         0,
         AuditEvent(
@@ -8567,10 +8584,19 @@ def _append_audit_event(
             actor=str(actor or "anonymous"),
             outcome=outcome,
             created_at=_now_iso(),
-            metadata=metadata if isinstance(metadata, dict) else {},
+            metadata=audit_metadata,
         ),
     )
     if len(store.audit_events) > 2000:
+        dropped = len(store.audit_events) - 2000
+        newest = store.audit_events[0]
+        newest_metadata = dict(newest.metadata) if isinstance(newest.metadata, dict) else {}
+        newest_metadata["audit_store_truncated"] = True
+        newest_metadata["audit_store_dropped_events"] = (
+            int(newest_metadata.get("audit_store_dropped_events", 0)) + dropped
+        )
+        newest_metadata["audit_store_limit"] = 2000
+        newest.metadata = newest_metadata
         store.audit_events = store.audit_events[:2000]
 
 
@@ -12749,7 +12775,7 @@ def create_workflow_run(
     event_response_text = response_text
     if store.platform_settings.mask_secrets_in_events:
         event_response_text = _redact_sensitive_text(event_response_text)
-    event_response_summary = _truncate_event_summary(event_response_text)
+    event_response_summary, event_response_meta = _truncate_text_with_metadata(event_response_text)
 
     reasoning_meta = (
         model_meta.get("reasoning") if isinstance(model_meta.get("reasoning"), dict) else {}
@@ -12794,7 +12820,10 @@ def create_workflow_run(
                 "selected_agent_id": selected_agent_id,
                 "selected_agent_name": selected_agent,
                 "system_prompt_source": system_prompt_source,
-                "summary_truncated": event_response_summary != event_response_text,
+                "summary_truncated": bool(event_response_meta["truncated"]),
+                "summary_original_length": int(event_response_meta["original_length"]),
+                "summary_max_chars": int(event_response_meta["max_chars"]),
+                "summary_truncated_chars": int(event_response_meta["truncated_chars"]),
             },
         ),
         WorkflowRunEvent(

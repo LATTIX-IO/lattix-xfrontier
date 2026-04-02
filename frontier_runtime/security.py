@@ -63,7 +63,7 @@ class CapabilityMinter:
         allowed_read_paths: list[str],
         allowed_write_paths: list[str],
         max_tool_calls: int,
-        ttl_seconds: int = 600,
+        ttl_seconds: int = 300,
     ) -> bytes:
         now = int(time.time())
         payload = {
@@ -177,6 +177,10 @@ class PolicyEvaluationRequest:
     run_as_user: str = ""
     require_egress_mediation: bool = False
     allow_network: bool = False
+    command: tuple[str, ...] = ()
+    allowed_executables: tuple[str, ...] = ()
+    allowed_hosts: tuple[str, ...] = ()
+    requested_hosts: tuple[str, ...] = ()
 
     @classmethod
     def from_payload(
@@ -230,6 +234,10 @@ class PolicyEvaluationRequest:
             run_as_user=str(data.get("run_as_user") or "").strip(),
             require_egress_mediation=bool(data.get("require_egress_mediation")),
             allow_network=bool(data.get("allow_network")),
+            command=_tuple("command"),
+            allowed_executables=_tuple("allowed_executables"),
+            allowed_hosts=_tuple("allowed_hosts"),
+            requested_hosts=_tuple("requested_hosts"),
         )
 
     def to_payload(self) -> dict[str, Any]:
@@ -256,6 +264,10 @@ class PolicyEvaluationRequest:
             "run_as_user": self.run_as_user,
             "require_egress_mediation": self.require_egress_mediation,
             "allow_network": self.allow_network,
+            "command": list(self.command),
+            "allowed_executables": list(self.allowed_executables),
+            "allowed_hosts": list(self.allowed_hosts),
+            "requested_hosts": list(self.requested_hosts),
         }
 
 
@@ -439,6 +451,8 @@ class OPAClient:
             ".env",
             "credentials",
             "config.json",
+            ".keystore",
+            ".jks",
             "id_rsa",
             "id_dsa",
             "id_ed25519",
@@ -462,11 +476,29 @@ class OPAClient:
             ".pfx",
             ".kdbx",
             ".asc",
+            ".p8",
+            ".csr",
+            ".keystore",
+            ".jks",
         )
         sensitive_fragments = (
+            "apikey",
+            "api-key",
+            "access_token",
+            "access-token",
+            "auth_token",
+            "auth-token",
+            "bearer",
+            "client_secret",
+            "client-secret",
+            "oauth",
+            "refresh_token",
+            "refresh-token",
             "secret",
             "credential",
             "private",
+            "private_key",
+            "private-key",
             "passwd",
             "password",
             "token",
@@ -572,6 +604,11 @@ class OPAClient:
             network_safe = (
                 request.allow_network is not True
             ) or request.require_egress_mediation is True
+            executable = (
+                request.command[0]
+                if request.command
+                else _normalize_policy_operation(request.tool, request.action)
+            )
             if not request.readonly_rootfs:
                 return self._decision(
                     False, "readonly rootfs required", request=request, control="readonly_rootfs"
@@ -591,6 +628,61 @@ class OPAClient:
                     "network egress mediation required",
                     request=request,
                     control="egress_mediation",
+                )
+            allowed_executables = set(request.allowed_executables)
+            if not allowed_executables:
+                return self._decision(
+                    False,
+                    "sandbox execution requires explicit allowed_executables",
+                    request=request,
+                    control="allowed_executables",
+                )
+            if executable not in allowed_executables:
+                return self._decision(
+                    False,
+                    "sandbox executable denied",
+                    request=request,
+                    control="allowed_executables",
+                    extra={
+                        "executable": executable,
+                        "allowed_executables": sorted(allowed_executables),
+                    },
+                )
+            if request.allow_network:
+                allowed_hosts = set(request.allowed_hosts)
+                requested_hosts = set(request.requested_hosts)
+                if not allowed_hosts:
+                    return self._decision(
+                        False,
+                        "network access requires explicit allowed_hosts",
+                        request=request,
+                        control="allowed_hosts",
+                    )
+                if not requested_hosts:
+                    return self._decision(
+                        False,
+                        "network access requires explicit requested_hosts",
+                        request=request,
+                        control="requested_hosts",
+                    )
+                if not requested_hosts.issubset(allowed_hosts):
+                    return self._decision(
+                        False,
+                        "requested hosts not allowlisted",
+                        request=request,
+                        control="requested_hosts",
+                        extra={
+                            "requested_hosts": sorted(requested_hosts),
+                            "allowed_hosts": sorted(allowed_hosts),
+                        },
+                    )
+            elif request.requested_hosts:
+                return self._decision(
+                    False,
+                    "requested_hosts require allow_network=true",
+                    request=request,
+                    control="requested_hosts",
+                    extra={"requested_hosts": list(request.requested_hosts)},
                 )
             return self._decision(
                 True, "tool jail policy passed", request=request, control="tool_jail"

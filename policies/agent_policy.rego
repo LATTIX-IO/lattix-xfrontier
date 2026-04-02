@@ -57,7 +57,12 @@ deny if {
 
 deny if {
   operation == "read_file"
-  regex.match("\\.(pem|key|p12|pfx|kdbx|asc)$", lower(input.resource))
+  regex.match("\\.(pem|key|p12|pfx|kdbx|asc|p8|csr|keystore|jks)$", lower(input.resource))
+}
+
+deny if {
+  operation == "read_file"
+  regex.match("(apikey|api-key|access_token|access-token|auth_token|auth-token|bearer|client_secret|client-secret|private(_|-)?key|refresh_token|refresh-token|service[-_]account|oauth)", lower(input.resource))
 }
 
 deny if {

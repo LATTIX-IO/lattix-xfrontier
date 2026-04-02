@@ -46,3 +46,23 @@ def test_helm_seccomp_and_runtimeclass_templates_share_labels_helper() -> None:
     assert '{{- define "lattix-frontier.labels" -}}' in helpers
     assert 'include "lattix-frontier.labels" .' in seccomp_template
     assert 'include "lattix-frontier.labels" .' in runtimeclass_template
+
+
+def test_helm_image_templates_support_digest_pinning() -> None:
+    helpers = _read("helm/lattix-frontier/templates/_helpers.tpl")
+    values = _read("helm/lattix-frontier/values.yaml")
+
+    assert '{{- define "lattix-frontier.imageRef" -}}' in helpers
+    assert "digest:" in values
+
+    for relative_path in [
+        "helm/lattix-frontier/templates/deployment-api.yaml",
+        "helm/lattix-frontier/templates/deployment-orchestrator.yaml",
+        "helm/lattix-frontier/templates/deployment-opa.yaml",
+        "helm/lattix-frontier/templates/deployment-envoy.yaml",
+        "helm/lattix-frontier/templates/deployment-jaeger.yaml",
+        "helm/lattix-frontier/templates/deployment-vault.yaml",
+        "helm/lattix-frontier/templates/statefulset-postgres.yaml",
+        "helm/lattix-frontier/templates/statefulset-nats.yaml",
+    ]:
+        assert 'include "lattix-frontier.imageRef"' in _read(relative_path)

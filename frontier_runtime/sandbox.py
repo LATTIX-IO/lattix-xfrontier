@@ -69,8 +69,11 @@ def _restricted_process_allowed() -> bool:
 def _validated_seccomp_profile_path() -> Path:
     configured = str(os.getenv("FRONTIER_SECCOMP_PROFILE") or "").strip()
     candidate = Path(configured) if configured else DEFAULT_SECCOMP_PROFILE_PATH
-    resolved = candidate.expanduser().resolve(strict=False)
     allowed_root = SANDBOX_SECURITY_ROOT.resolve(strict=True)
+    try:
+        resolved = candidate.expanduser().resolve(strict=True)
+    except FileNotFoundError as exc:
+        raise RuntimeError(f"Seccomp profile does not exist: {candidate}") from exc
     if resolved.suffix.lower() != ".json":
         raise RuntimeError("FRONTIER_SECCOMP_PROFILE must point to a JSON seccomp profile")
     if resolved != allowed_root and not resolved.is_relative_to(allowed_root):
@@ -423,13 +426,21 @@ class SandboxManager:
 
         # --- Pre-execution validation (shared across all strategies) ---
         executable = spec.command[0] if spec.command else spec.tool_id
-        if policy.allowed_executables and executable not in policy.allowed_executables:
+        if not policy.allowed_executables:
+            raise PermissionError("No executables are allowlisted for sandbox execution")
+        if executable not in policy.allowed_executables:
             raise PermissionError(f"Executable '{executable}' is not allowlisted")
-        if spec.requested_hosts:
+        if policy.allow_network:
+            if not policy.allowed_hosts:
+                raise PermissionError("Network access requires an explicit host allowlist")
+            if not spec.requested_hosts:
+                raise PermissionError("Network access requires explicit requested hosts")
             requested = set(spec.requested_hosts)
             allowed = set(policy.allowed_hosts)
             if not requested.issubset(allowed):
                 raise PermissionError(f"Requested hosts not allowlisted: {requested - allowed}")
+        elif spec.requested_hosts:
+            raise PermissionError("Requested hosts require allow_network=true")
 
         # --- Strategy dispatch ---
         if strategy == IsolationStrategy.KERNEL_BWRAP:

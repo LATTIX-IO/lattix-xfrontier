@@ -35,7 +35,7 @@ def test_hardened_docker_has_seccomp_and_readonly() -> None:
 
     manager = SandboxManager(force_strategy=IsolationStrategy.HARDENED_DOCKER)
     spec = ExecutionSpec(tool_id="test", command=["echo", "hello"])
-    policy = SandboxPolicy(platform=HostPlatform.LINUX)
+    policy = SandboxPolicy(platform=HostPlatform.LINUX, allowed_executables=["echo"])
     plan = manager.plan(spec, policy)
     cmd = " ".join(plan.command)
     assert "--read-only" in cmd
@@ -53,7 +53,7 @@ def test_k8s_plan_returns_pod_spec_metadata() -> None:
 
     manager = SandboxManager(force_strategy=IsolationStrategy.K8S_GVISOR)
     spec = ExecutionSpec(tool_id="test", command=["python", "-c", "1+1"])
-    policy = SandboxPolicy(platform=HostPlatform.LINUX)
+    policy = SandboxPolicy(platform=HostPlatform.LINUX, allowed_executables=["python"])
     plan = manager.plan(spec, policy)
     assert plan.backend == "k8s-gvisor"
     assert "runtimeClassName" in plan.metadata
@@ -66,7 +66,7 @@ def test_restricted_process_fallback_is_disabled_by_default() -> None:
 
     manager = SandboxManager(force_strategy=IsolationStrategy.RESTRICTED_PROCESS)
     spec = ExecutionSpec(tool_id="test", command=["echo", "hello"])
-    policy = SandboxPolicy(platform=HostPlatform.LINUX)
+    policy = SandboxPolicy(platform=HostPlatform.LINUX, allowed_executables=["echo"])
 
     try:
         manager.plan(spec, policy)
