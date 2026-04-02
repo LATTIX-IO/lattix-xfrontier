@@ -600,6 +600,17 @@ def test_truncate_event_summary_reports_observability_metadata() -> None:
     assert metadata["truncated_chars"] == 5
 
 
+def test_truncate_text_with_metadata_normalizes_nonpositive_max_chars() -> None:
+    # max_chars=0 and negative values must be clamped to 1 so that metadata
+    # and slicing behaviour stay consistent with each other.
+    for bad_value in (0, -1, -100):
+        summary, metadata = main_module._truncate_text_with_metadata(
+            "hello world", max_chars=bad_value
+        )
+        assert metadata["max_chars"] == 1, f"expected max_chars=1 for input {bad_value}"
+        assert len(summary.rstrip("…")) <= 1
+
+
 def test_append_audit_event_marks_store_truncation() -> None:
     original_audit_events = list(store.audit_events)
     store.audit_events = [

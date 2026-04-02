@@ -2559,10 +2559,11 @@ def _truncate_text_with_metadata(
     text: str, max_chars: int = 700
 ) -> tuple[str, dict[str, int | bool]]:
     value = str(text or "").strip()
+    max_chars = max(1, int(max_chars))
     metadata: dict[str, int | bool] = {
         "truncated": False,
         "original_length": len(value),
-        "max_chars": max(1, int(max_chars)),
+        "max_chars": max_chars,
         "truncated_chars": 0,
     }
     if len(value) <= max_chars:
