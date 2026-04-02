@@ -32,8 +32,18 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from app.generated_artifacts import GeneratedArtifactService
-from app.platform_services import Neo4jRunGraph, PostgresLongTermMemoryStore, PostgresStateStore, RedisMemoryStore
-from app.request_security import RouteAccessCategory, RouteAccessRule, classify_route_access, validate_route_inventory
+from app.platform_services import (
+    Neo4jRunGraph,
+    PostgresLongTermMemoryStore,
+    PostgresStateStore,
+    RedisMemoryStore,
+)
+from app.request_security import (
+    RouteAccessCategory,
+    RouteAccessRule,
+    classify_route_access,
+    validate_route_inventory,
+)
 from app.security_headers import apply_security_headers
 from frontier_runtime.security import decode_token as decode_runtime_token
 from frontier_runtime.security import mint_token as mint_runtime_token
@@ -112,7 +122,9 @@ class InboxItem(BaseModel):
     runName: str
     artifactType: str
     reason: str
-    queue: Literal["Needs Review", "Needs Approval", "Clarifications Requested", "Blocked by Guardrails"]
+    queue: Literal[
+        "Needs Review", "Needs Approval", "Clarifications Requested", "Blocked by Guardrails"
+    ]
 
 
 class WorkflowDefinition(BaseModel):
@@ -204,18 +216,26 @@ class PlatformSettings(BaseModel):
     global_blocked_keywords: list[str] = Field(default_factory=list)
     collaboration_max_agents: int = 8
     enforce_egress_allowlist: bool = True
-    allowed_egress_hosts: list[str] = Field(default_factory=lambda: ["localhost", "127.0.0.1", "::1"])
-    allowed_mcp_server_urls: list[str] = Field(default_factory=lambda: ["http://localhost:7071/mcp"])
+    allowed_egress_hosts: list[str] = Field(
+        default_factory=lambda: ["localhost", "127.0.0.1", "::1"]
+    )
+    allowed_mcp_server_urls: list[str] = Field(
+        default_factory=lambda: ["http://localhost:7071/mcp"]
+    )
     allowed_retrieval_sources: list[str] = Field(default_factory=lambda: ["kb://default"])
     enforce_local_network_only: bool = True
-    allow_local_network_hostnames: list[str] = Field(default_factory=lambda: ["localhost", ".local"])
+    allow_local_network_hostnames: list[str] = Field(
+        default_factory=lambda: ["localhost", ".local"]
+    )
     mcp_require_local_server: bool = True
     retrieval_require_local_source_url: bool = True
     a2a_require_signed_messages: bool = True
     a2a_trusted_subjects: list[str] = Field(default_factory=lambda: ["backend"])
     a2a_replay_protection: bool = True
     require_human_approval_for_high_risk_tools: bool = True
-    high_risk_tool_patterns: list[str] = Field(default_factory=lambda: ["delete", "send", "execute", "write", "admin"])
+    high_risk_tool_patterns: list[str] = Field(
+        default_factory=lambda: ["delete", "send", "execute", "write", "admin"]
+    )
     max_tool_calls_per_run: int = 20
     max_retrieval_items: int = 8
     enforce_integration_policies: bool = False
@@ -460,7 +480,9 @@ def _env_flag(name: str, default: bool) -> bool:
     return default
 
 
-def _env_int(name: str, default: int, *, minimum: int | None = None, maximum: int | None = None) -> int:
+def _env_int(
+    name: str, default: int, *, minimum: int | None = None, maximum: int | None = None
+) -> int:
     raw = os.getenv(name)
     try:
         value = int(str(raw).strip()) if raw is not None else int(default)
@@ -561,7 +583,10 @@ def _effective_require_authenticated_requests() -> bool:
     if os.getenv("FRONTIER_RUNTIME_PROFILE") is not None:
         return _active_runtime_profile().require_authenticated_requests
     if os.getenv("FRONTIER_REQUIRE_AUTHENTICATED_REQUESTS") is not None:
-        return _env_flag("FRONTIER_REQUIRE_AUTHENTICATED_REQUESTS", store.platform_settings.require_authenticated_requests)
+        return _env_flag(
+            "FRONTIER_REQUIRE_AUTHENTICATED_REQUESTS",
+            store.platform_settings.require_authenticated_requests,
+        )
     if _legacy_secure_local_mode_enabled():
         return True
     return store.platform_settings.require_authenticated_requests
@@ -571,7 +596,10 @@ def _effective_require_a2a_runtime_headers() -> bool:
     if os.getenv("FRONTIER_RUNTIME_PROFILE") is not None:
         return _active_runtime_profile().require_a2a_runtime_headers
     if os.getenv("FRONTIER_REQUIRE_A2A_RUNTIME_HEADERS") is not None:
-        return _env_flag("FRONTIER_REQUIRE_A2A_RUNTIME_HEADERS", store.platform_settings.require_a2a_runtime_headers)
+        return _env_flag(
+            "FRONTIER_REQUIRE_A2A_RUNTIME_HEADERS",
+            store.platform_settings.require_a2a_runtime_headers,
+        )
     return store.platform_settings.require_a2a_runtime_headers
 
 
@@ -645,7 +673,9 @@ _CANONICAL_GRAPH_SCHEMA_VERSION = "frontier-graph/1.0"
 _SUPPORTED_GRAPH_SCHEMA_VERSIONS = {_CANONICAL_GRAPH_SCHEMA_VERSION}
 
 
-def _default_agent_graph(*, source_agent_id: str, agent_name: str, system_prompt: str, model: str) -> dict[str, Any]:
+def _default_agent_graph(
+    *, source_agent_id: str, agent_name: str, system_prompt: str, model: str
+) -> dict[str, Any]:
     safe_prompt = system_prompt.strip() or (
         f"You are the {agent_name} in the Frontier platform. "
         "Provide safe, policy-aligned, actionable outputs with concise reasoning summaries."
@@ -709,7 +739,9 @@ def _normalize_graph_json_payload(candidate: Any) -> dict[str, Any]:
             "nodes": [],
             "links": [],
         }
-    schema_version = str(candidate.get("schema_version") or "").strip() or _CANONICAL_GRAPH_SCHEMA_VERSION
+    schema_version = (
+        str(candidate.get("schema_version") or "").strip() or _CANONICAL_GRAPH_SCHEMA_VERSION
+    )
     nodes = candidate.get("nodes") if isinstance(candidate.get("nodes"), list) else []
     links = candidate.get("links") if isinstance(candidate.get("links"), list) else []
     return {
@@ -723,7 +755,9 @@ def _graph_schema_version_supported(schema_version: str) -> bool:
     return str(schema_version or "").strip() in _SUPPORTED_GRAPH_SCHEMA_VERSIONS
 
 
-def _graph_schema_validation_issue(schema_version: str, *, path: str = "schema_version") -> GraphValidationIssue:
+def _graph_schema_validation_issue(
+    schema_version: str, *, path: str = "schema_version"
+) -> GraphValidationIssue:
     return GraphValidationIssue(
         code="GRAPH_SCHEMA_VERSION_UNSUPPORTED",
         message=(
@@ -785,7 +819,9 @@ def _artifact_slug(name: str, fallback: str) -> str:
     return _slugify(name) or _slugify(fallback) or fallback
 
 
-def _hydrate_graph_for_codegen(graph_json: dict[str, Any]) -> tuple[list[GraphNode], list[GraphEdge], list[str], dict[str, list[str]]]:
+def _hydrate_graph_for_codegen(
+    graph_json: dict[str, Any],
+) -> tuple[list[GraphNode], list[GraphEdge], list[str], dict[str, list[str]]]:
     payload = _graph_payload_from_json(graph_json)
     node_ids = [node.id for node in payload.nodes]
     order = _topological_order(node_ids, payload.links) or node_ids
@@ -795,7 +831,9 @@ def _hydrate_graph_for_codegen(graph_json: dict[str, Any]) -> tuple[list[GraphNo
     return payload.nodes, payload.links, order, dict(upstream_node_ids)
 
 
-def _node_blueprints_for_codegen(nodes: list[GraphNode], order: list[str], upstream_node_ids: dict[str, list[str]]) -> dict[str, dict[str, Any]]:
+def _node_blueprints_for_codegen(
+    nodes: list[GraphNode], order: list[str], upstream_node_ids: dict[str, list[str]]
+) -> dict[str, dict[str, Any]]:
     ordered_nodes = {node.id: node for node in nodes}
     blueprints: dict[str, dict[str, Any]] = {}
     for node_id in order:
@@ -828,23 +866,34 @@ def _workflow_runtime_policy_snapshot(platform: PlatformSettings) -> dict[str, A
 def _agent_runtime_policy_snapshot(agent: AgentDefinition) -> dict[str, Any]:
     config_json = agent.config_json if isinstance(agent.config_json, dict) else {}
     runtime = config_json.get("runtime") if isinstance(config_json.get("runtime"), dict) else {}
-    engine_policy = runtime.get("engine_policy") if isinstance(runtime.get("engine_policy"), dict) else {}
+    engine_policy = (
+        runtime.get("engine_policy") if isinstance(runtime.get("engine_policy"), dict) else {}
+    )
     default_runtime_engine = _normalize_runtime_engine(
-        engine_policy.get("default_runtime_engine") or store.platform_settings.default_runtime_engine
+        engine_policy.get("default_runtime_engine")
+        or store.platform_settings.default_runtime_engine
     )
     return {
         "default_runtime_engine": default_runtime_engine,
-        "default_runtime_strategy": _normalize_runtime_strategy(store.platform_settings.default_runtime_strategy),
+        "default_runtime_strategy": _normalize_runtime_strategy(
+            store.platform_settings.default_runtime_strategy
+        ),
         "allowed_runtime_engines": _normalize_runtime_engine_list(
             engine_policy.get("allowed_runtime_engines")
             if isinstance(engine_policy.get("allowed_runtime_engines"), list)
             else store.platform_settings.allowed_runtime_engines
         ),
         "allow_runtime_engine_override": bool(
-            engine_policy.get("allow_runtime_engine_override", store.platform_settings.allow_runtime_engine_override)
+            engine_policy.get(
+                "allow_runtime_engine_override",
+                store.platform_settings.allow_runtime_engine_override,
+            )
         ),
         "enforce_runtime_engine_allowlist": bool(
-            engine_policy.get("enforce_runtime_engine_allowlist", store.platform_settings.enforce_runtime_engine_allowlist)
+            engine_policy.get(
+                "enforce_runtime_engine_allowlist",
+                store.platform_settings.enforce_runtime_engine_allowlist,
+            )
         ),
         "default_hybrid_runtime_routing": _normalize_hybrid_runtime_routing(
             store.platform_settings.default_hybrid_runtime_routing,
@@ -887,12 +936,16 @@ def _bootstrap_configured_iam_provider() -> tuple[str, str]:
 
 
 def _operator_session_cookie_name() -> str:
-    value = str(os.getenv("FRONTIER_OPERATOR_SESSION_COOKIE") or "frontier_operator_session").strip()
+    value = str(
+        os.getenv("FRONTIER_OPERATOR_SESSION_COOKIE") or "frontier_operator_session"
+    ).strip()
     return value or "frontier_operator_session"
 
 
 def _operator_session_ttl_seconds() -> int:
-    return _env_int("FRONTIER_OPERATOR_SESSION_TTL_SECONDS", 60 * 60 * 8, minimum=300, maximum=60 * 60 * 24)
+    return _env_int(
+        "FRONTIER_OPERATOR_SESSION_TTL_SECONDS", 60 * 60 * 8, minimum=300, maximum=60 * 60 * 24
+    )
 
 
 def _operator_session_cookie_secure(request: Request) -> bool:
@@ -995,7 +1048,9 @@ def _casdoor_http_base_candidates() -> list[tuple[str, dict[str, str]]]:
     issuer = str(configured.get("issuer") or "").strip()
     public_origin = _configured_casdoor_public_origin()
     issuer_host = str(urlsplit(issuer).hostname or "").strip().lower()
-    casdoor_virtual_host = str(os.getenv("CASDOOR_LOCAL_HOST") or "casdoor.localhost").strip() or "casdoor.localhost"
+    casdoor_virtual_host = (
+        str(os.getenv("CASDOOR_LOCAL_HOST") or "casdoor.localhost").strip() or "casdoor.localhost"
+    )
     if _hostname_is_local(issuer_host):
         _append("http://casdoor:8000")
         _append("http://local-gateway", {"Host": casdoor_virtual_host})
@@ -1024,7 +1079,11 @@ def _casdoor_urlopen_json(
         parsed = json.loads(payload)
     except json.JSONDecodeError:
         return {"status": "error", "msg": payload.strip() or "non-json response", "data": None}
-    return parsed if isinstance(parsed, dict) else {"status": "error", "msg": "unexpected response shape", "data": parsed}
+    return (
+        parsed
+        if isinstance(parsed, dict)
+        else {"status": "error", "msg": "unexpected response shape", "data": parsed}
+    )
 
 
 def _normalize_local_casdoor_username(username: str) -> str:
@@ -1036,7 +1095,9 @@ def _normalize_local_casdoor_username(username: str) -> str:
     return f"built-in/{candidate}"
 
 
-def _casdoor_get_account(opener: urllib_request.OpenerDirector, base_url: str, headers: dict[str, str]) -> dict[str, Any] | None:
+def _casdoor_get_account(
+    opener: urllib_request.OpenerDirector, base_url: str, headers: dict[str, str]
+) -> dict[str, Any] | None:
     account = _casdoor_urlopen_json(
         opener,
         f"{base_url.rstrip('/')}/api/get-account",
@@ -1048,7 +1109,9 @@ def _casdoor_get_account(opener: urllib_request.OpenerDirector, base_url: str, h
     return None
 
 
-def _casdoor_login_admin(opener: urllib_request.OpenerDirector, base_url: str, headers: dict[str, str]) -> None:
+def _casdoor_login_admin(
+    opener: urllib_request.OpenerDirector, base_url: str, headers: dict[str, str]
+) -> None:
     login_url = (
         f"{base_url.rstrip('/')}"
         "/api/login?clientId=app-built-in&responseType=code&redirectUri=http://localhost"
@@ -1125,7 +1188,9 @@ def _authenticate_local_casdoor_user(username: str, password: str) -> dict[str, 
     raise HTTPException(status_code=401, detail=last_error or "Invalid username or password")
 
 
-def _provision_local_casdoor_user(username: str, email: str, display_name: str, password: str) -> dict[str, Any]:
+def _provision_local_casdoor_user(
+    username: str, email: str, display_name: str, password: str
+) -> dict[str, Any]:
     _require_local_casdoor_password_auth()
     normalized_username = _normalize_local_casdoor_username(username)
     owner, _, name = normalized_username.partition("/")
@@ -1154,8 +1219,14 @@ def _provision_local_casdoor_user(username: str, email: str, display_name: str, 
                 headers={**headers, "Accept": "application/json"},
             )
             existing_data = existing.get("data") if isinstance(existing.get("data"), dict) else None
-            if existing.get("status") == "ok" and isinstance(existing_data, dict) and str(existing_data.get("name") or "").strip() == name:
-                raise HTTPException(status_code=409, detail="An account with that username already exists")
+            if (
+                existing.get("status") == "ok"
+                and isinstance(existing_data, dict)
+                and str(existing_data.get("name") or "").strip() == name
+            ):
+                raise HTTPException(
+                    status_code=409, detail="An account with that username already exists"
+                )
 
             response = _casdoor_urlopen_json(
                 opener,
@@ -1192,7 +1263,9 @@ def _provision_local_casdoor_user(username: str, email: str, display_name: str, 
             last_error = f"HTTP {exc.code}"
         except (urllib_error.URLError, TimeoutError, OSError, RuntimeError) as exc:
             last_error = str(exc)
-    raise HTTPException(status_code=502, detail=last_error or "Unable to reach the local Casdoor identity service")
+    raise HTTPException(
+        status_code=502, detail=last_error or "Unable to reach the local Casdoor identity service"
+    )
 
 
 def _claims_from_casdoor_account(account: dict[str, Any]) -> dict[str, Any]:
@@ -1200,7 +1273,9 @@ def _claims_from_casdoor_account(account: dict[str, Any]) -> dict[str, Any]:
     name = str(account.get("name") or "").strip()
     preferred_username = name or str(account.get("preferredUsername") or "").strip()
     email = str(account.get("email") or "").strip()
-    display_name = str(account.get("displayName") or account.get("name") or email or preferred_username).strip()
+    display_name = str(
+        account.get("displayName") or account.get("name") or email or preferred_username
+    ).strip()
     roles = ["member"]
     if _claim_as_bool(account.get("isAdmin")):
         roles.extend(["admin", "builder"])
@@ -1214,7 +1289,9 @@ def _claims_from_casdoor_account(account: dict[str, Any]) -> dict[str, Any]:
         "preferred_username": preferred_username,
         "email": email,
         "name": display_name,
-        "principal_id": f"user:{owner}/{name}" if name else (preferred_username or email or "user:anonymous"),
+        "principal_id": f"user:{owner}/{name}"
+        if name
+        else (preferred_username or email or "user:anonymous"),
         "principal_type": "user",
         "subject": f"{owner}/{name}" if name else (preferred_username or email or "anonymous"),
         "roles": unique_roles,
@@ -1223,11 +1300,17 @@ def _claims_from_casdoor_account(account: dict[str, Any]) -> dict[str, Any]:
 
 def _mint_operator_session_token_from_casdoor_account(account: dict[str, Any]) -> str:
     claims = _claims_from_casdoor_account(account)
-    subject = str(claims.get("subject") or claims.get("actor") or "anonymous").strip() or "anonymous"
-    return mint_runtime_token(subject, ttl_seconds=_operator_session_ttl_seconds(), additional_claims=claims)
+    subject = (
+        str(claims.get("subject") or claims.get("actor") or "anonymous").strip() or "anonymous"
+    )
+    return mint_runtime_token(
+        subject, ttl_seconds=_operator_session_ttl_seconds(), additional_claims=claims
+    )
 
 
-def _bootstrap_default_agent_service_account_id(agent_id: str, agent_name: str, current_value: str = "") -> str:
+def _bootstrap_default_agent_service_account_id(
+    agent_id: str, agent_name: str, current_value: str = ""
+) -> str:
     candidate = _slugify(current_value or agent_name or agent_id)
     if not candidate:
         candidate = _slugify(agent_id) or "agent"
@@ -1236,7 +1319,9 @@ def _bootstrap_default_agent_service_account_id(agent_id: str, agent_name: str, 
     return candidate[:96]
 
 
-def _bootstrap_build_agent_identity_subject(*, agent_id: str, service_account_id: str, issuer: str) -> str:
+def _bootstrap_build_agent_identity_subject(
+    *, agent_id: str, service_account_id: str, issuer: str
+) -> str:
     normalized_issuer = str(issuer or "").strip().rstrip("/")
     if normalized_issuer:
         return f"{normalized_issuer}/npe/agents/{service_account_id}"
@@ -1252,7 +1337,9 @@ def _canonicalize_agent_iam_identity(
 ) -> dict[str, Any]:
     source = raw_identity if isinstance(raw_identity, dict) else {}
     provider, issuer = _bootstrap_configured_iam_provider()
-    principal_id = str(source.get("principal_id") or f"agent:{agent_id}").strip() or f"agent:{agent_id}"
+    principal_id = (
+        str(source.get("principal_id") or f"agent:{agent_id}").strip() or f"agent:{agent_id}"
+    )
     service_account_id = _bootstrap_default_agent_service_account_id(
         agent_id,
         agent_name,
@@ -1263,29 +1350,50 @@ def _canonicalize_agent_iam_identity(
         service_account_id=service_account_id,
         issuer=issuer,
     )
-    display_name = str(source.get("display_name") or agent_name or principal_id).strip() or principal_id
-    provisioning = source.get("provisioning") if isinstance(source.get("provisioning"), dict) else {}
-    roles_source = source.get("roles") if isinstance(source.get("roles"), list) else ["agent", "npe"]
-    groups_source = source.get("groups") if isinstance(source.get("groups"), list) else ["frontier-agents"]
-    roles = [str(item).strip() for item in roles_source if str(item or "").strip()] or ["agent", "npe"]
-    groups = [str(item).strip() for item in groups_source if str(item or "").strip()] or ["frontier-agents"]
+    display_name = (
+        str(source.get("display_name") or agent_name or principal_id).strip() or principal_id
+    )
+    provisioning = (
+        source.get("provisioning") if isinstance(source.get("provisioning"), dict) else {}
+    )
+    roles_source = (
+        source.get("roles") if isinstance(source.get("roles"), list) else ["agent", "npe"]
+    )
+    groups_source = (
+        source.get("groups") if isinstance(source.get("groups"), list) else ["frontier-agents"]
+    )
+    roles = [str(item).strip() for item in roles_source if str(item or "").strip()] or [
+        "agent",
+        "npe",
+    ]
+    groups = [str(item).strip() for item in groups_source if str(item or "").strip()] or [
+        "frontier-agents"
+    ]
 
     return {
         "principal_id": principal_id,
         "principal_type": "agent",
         "provider": provider,
-        "auth_mode": str(source.get("auth_mode") or ("oidc-npe" if issuer else "runtime-jwt")).strip() or "runtime-jwt",
+        "auth_mode": str(
+            source.get("auth_mode") or ("oidc-npe" if issuer else "runtime-jwt")
+        ).strip()
+        or "runtime-jwt",
         "display_name": display_name,
         "subject": subject,
         "agent_id": agent_id,
         "service_account_id": service_account_id,
-        "client_id": str(source.get("client_id") or service_account_id).strip() or service_account_id,
+        "client_id": str(source.get("client_id") or service_account_id).strip()
+        or service_account_id,
         "roles": roles,
         "groups": groups,
         "provisioning": {
             **provisioning,
-            "state": str(lifecycle_state or provisioning.get("state") or "active").strip().lower() or "active",
-            "mode": str(provisioning.get("mode") or ("external-oidc" if issuer else "runtime-jwt")).strip() or "runtime-jwt",
+            "state": str(lifecycle_state or provisioning.get("state") or "active").strip().lower()
+            or "active",
+            "mode": str(
+                provisioning.get("mode") or ("external-oidc" if issuer else "runtime-jwt")
+            ).strip()
+            or "runtime-jwt",
             "external_registration_required": bool(issuer),
         },
         "recommended_claims": {
@@ -1318,7 +1426,9 @@ def _canonicalize_agent_config(
     url_manifest: str | None = None,
 ) -> dict[str, Any]:
     current = dict(config_json) if isinstance(config_json, dict) else {}
-    resolved_source_agent_id = str(source_agent_id or current.get("source_agent_id") or agent_id).strip()
+    resolved_source_agent_id = str(
+        source_agent_id or current.get("source_agent_id") or agent_id
+    ).strip()
 
     resolved_model_defaults = dict(model_defaults) if isinstance(model_defaults, dict) else {}
     if not resolved_model_defaults:
@@ -1347,26 +1457,46 @@ def _canonicalize_agent_config(
         )
 
     resolved_tags = _normalize_text_list(tags if tags is not None else current.get("tags"))
-    resolved_capabilities = _normalize_text_list(capabilities if capabilities is not None else current.get("capabilities"))
+    resolved_capabilities = _normalize_text_list(
+        capabilities if capabilities is not None else current.get("capabilities")
+    )
     resolved_owners = _normalize_text_list(owners if owners is not None else current.get("owners"))
     raw_tools = tools if isinstance(tools, list) else current.get("tools")
     if isinstance(raw_tools, list):
         resolved_tools = [dict(item) for item in raw_tools if isinstance(item, dict)]
     elif isinstance(raw_tools, dict) and isinstance(raw_tools.get("definitions"), list):
-        resolved_tools = [dict(item) for item in raw_tools.get("definitions", []) if isinstance(item, dict)]
+        resolved_tools = [
+            dict(item) for item in raw_tools.get("definitions", []) if isinstance(item, dict)
+        ]
     else:
         resolved_tools = []
 
     runtime_config = current.get("runtime") if isinstance(current.get("runtime"), dict) else {}
-    runtime_engine_policy = runtime_config.get("engine_policy") if isinstance(runtime_config.get("engine_policy"), dict) else {}
+    runtime_engine_policy = (
+        runtime_config.get("engine_policy")
+        if isinstance(runtime_config.get("engine_policy"), dict)
+        else {}
+    )
     runtime_engine_policy = {
-        "default_runtime_engine": _normalize_runtime_engine(runtime_engine_policy.get("default_runtime_engine") or "native"),
-        "allowed_runtime_engines": _normalize_runtime_engine_list(runtime_engine_policy.get("allowed_runtime_engines") if isinstance(runtime_engine_policy.get("allowed_runtime_engines"), list) else ["native", "langgraph", "langchain", "semantic-kernel", "autogen"]),
-        "allow_runtime_engine_override": bool(runtime_engine_policy.get("allow_runtime_engine_override", False)),
-        "enforce_runtime_engine_allowlist": bool(runtime_engine_policy.get("enforce_runtime_engine_allowlist", True)),
+        "default_runtime_engine": _normalize_runtime_engine(
+            runtime_engine_policy.get("default_runtime_engine") or "native"
+        ),
+        "allowed_runtime_engines": _normalize_runtime_engine_list(
+            runtime_engine_policy.get("allowed_runtime_engines")
+            if isinstance(runtime_engine_policy.get("allowed_runtime_engines"), list)
+            else ["native", "langgraph", "langchain", "semantic-kernel", "autogen"]
+        ),
+        "allow_runtime_engine_override": bool(
+            runtime_engine_policy.get("allow_runtime_engine_override", False)
+        ),
+        "enforce_runtime_engine_allowlist": bool(
+            runtime_engine_policy.get("enforce_runtime_engine_allowlist", True)
+        ),
     }
 
-    guardrails_existing = current.get("guardrails") if isinstance(current.get("guardrails"), dict) else {}
+    guardrails_existing = (
+        current.get("guardrails") if isinstance(current.get("guardrails"), dict) else {}
+    )
     legacy_enable_signals = guardrails_existing.get("enable_foss_guardrail_signals")
     legacy_signal_enforcement = guardrails_existing.get("foss_guardrail_signal_enforcement")
     iam_identity = _canonicalize_agent_iam_identity(
@@ -1401,24 +1531,68 @@ def _canonicalize_agent_config(
                 **runtime_config,
                 "model_defaults": resolved_model_defaults,
                 "engine_policy": runtime_engine_policy,
-                "framework_mappings": {engine: _framework_adapter_mapping(engine) for engine in sorted(_SUPPORTED_RUNTIME_ENGINES)},
+                "framework_mappings": {
+                    engine: _framework_adapter_mapping(engine)
+                    for engine in sorted(_SUPPORTED_RUNTIME_ENGINES)
+                },
                 "framework_profiles": _default_framework_profiles(),
             },
             "reasoning": {
                 **(current.get("reasoning") if isinstance(current.get("reasoning"), dict) else {}),
-                "strategy": str((current.get("reasoning") or {}).get("strategy") if isinstance(current.get("reasoning"), dict) else "plan-execute-review"),
-                "self_review": bool((current.get("reasoning") or {}).get("self_review", True)) if isinstance(current.get("reasoning"), dict) else True,
-                "expose_internal_reasoning": bool((current.get("reasoning") or {}).get("expose_internal_reasoning", False)) if isinstance(current.get("reasoning"), dict) else False,
+                "strategy": str(
+                    (current.get("reasoning") or {}).get("strategy")
+                    if isinstance(current.get("reasoning"), dict)
+                    else "plan-execute-review"
+                ),
+                "self_review": bool((current.get("reasoning") or {}).get("self_review", True))
+                if isinstance(current.get("reasoning"), dict)
+                else True,
+                "expose_internal_reasoning": bool(
+                    (current.get("reasoning") or {}).get("expose_internal_reasoning", False)
+                )
+                if isinstance(current.get("reasoning"), dict)
+                else False,
             },
             "knowledge": {
                 **(current.get("knowledge") if isinstance(current.get("knowledge"), dict) else {}),
-                "retrieval_mode": str(((current.get("knowledge") or {}).get("retrieval_mode") if isinstance(current.get("knowledge"), dict) else "hybrid") or "hybrid"),
-                "sources": _normalize_text_list(((current.get("knowledge") or {}).get("sources") if isinstance(current.get("knowledge"), dict) else ["kb://default"]) or ["kb://default"]),
-                "top_k": int(((current.get("knowledge") or {}).get("top_k") if isinstance(current.get("knowledge"), dict) else 6) or 6),
-                "citation_required": bool(((current.get("knowledge") or {}).get("citation_required") if isinstance(current.get("knowledge"), dict) else True)),
+                "retrieval_mode": str(
+                    (
+                        (current.get("knowledge") or {}).get("retrieval_mode")
+                        if isinstance(current.get("knowledge"), dict)
+                        else "hybrid"
+                    )
+                    or "hybrid"
+                ),
+                "sources": _normalize_text_list(
+                    (
+                        (current.get("knowledge") or {}).get("sources")
+                        if isinstance(current.get("knowledge"), dict)
+                        else ["kb://default"]
+                    )
+                    or ["kb://default"]
+                ),
+                "top_k": int(
+                    (
+                        (current.get("knowledge") or {}).get("top_k")
+                        if isinstance(current.get("knowledge"), dict)
+                        else 6
+                    )
+                    or 6
+                ),
+                "citation_required": bool(
+                    (
+                        (current.get("knowledge") or {}).get("citation_required")
+                        if isinstance(current.get("knowledge"), dict)
+                        else True
+                    )
+                ),
             },
             "integrations": {
-                **(current.get("integrations") if isinstance(current.get("integrations"), dict) else {}),
+                **(
+                    current.get("integrations")
+                    if isinstance(current.get("integrations"), dict)
+                    else {}
+                ),
                 "framework_runtime_adapters": {
                     "langgraph": "orchestration",
                     "langchain": "retrieval-and-tools",
@@ -1428,13 +1602,38 @@ def _canonicalize_agent_config(
             },
             "mcp": {
                 **(current.get("mcp") if isinstance(current.get("mcp"), dict) else {}),
-                "enabled": bool(((current.get("mcp") or {}).get("enabled") if isinstance(current.get("mcp"), dict) else True)),
-                "allowed_servers": _normalize_text_list(((current.get("mcp") or {}).get("allowed_servers") if isinstance(current.get("mcp"), dict) else ["https://mcp.notion.com/mcp"]) or ["https://mcp.notion.com/mcp"]),
+                "enabled": bool(
+                    (
+                        (current.get("mcp") or {}).get("enabled")
+                        if isinstance(current.get("mcp"), dict)
+                        else True
+                    )
+                ),
+                "allowed_servers": _normalize_text_list(
+                    (
+                        (current.get("mcp") or {}).get("allowed_servers")
+                        if isinstance(current.get("mcp"), dict)
+                        else ["https://mcp.notion.com/mcp"]
+                    )
+                    or ["https://mcp.notion.com/mcp"]
+                ),
             },
             "a2a": {
                 **(current.get("a2a") if isinstance(current.get("a2a"), dict) else {}),
-                "enabled": bool(((current.get("a2a") or {}).get("enabled") if isinstance(current.get("a2a"), dict) else True)),
-                "require_signed_messages": bool(((current.get("a2a") or {}).get("require_signed_messages") if isinstance(current.get("a2a"), dict) else True)),
+                "enabled": bool(
+                    (
+                        (current.get("a2a") or {}).get("enabled")
+                        if isinstance(current.get("a2a"), dict)
+                        else True
+                    )
+                ),
+                "require_signed_messages": bool(
+                    (
+                        (current.get("a2a") or {}).get("require_signed_messages")
+                        if isinstance(current.get("a2a"), dict)
+                        else True
+                    )
+                ),
             },
             "tools": {
                 **(current.get("tools") if isinstance(current.get("tools"), dict) else {}),
@@ -1443,25 +1642,49 @@ def _canonicalize_agent_config(
             },
             "memory": {
                 **(current.get("memory") if isinstance(current.get("memory"), dict) else {}),
-                "default_scope": str(((current.get("memory") or {}).get("default_scope") if isinstance(current.get("memory"), dict) else "session") or "session"),
-                "allow_scopes": _normalize_text_list(((current.get("memory") or {}).get("allow_scopes") if isinstance(current.get("memory"), dict) else ["run", "session", "user", "tenant", "agent", "workflow", "global"]) or ["run", "session", "user", "tenant", "agent", "workflow", "global"]),
+                "default_scope": str(
+                    (
+                        (current.get("memory") or {}).get("default_scope")
+                        if isinstance(current.get("memory"), dict)
+                        else "session"
+                    )
+                    or "session"
+                ),
+                "allow_scopes": _normalize_text_list(
+                    (
+                        (current.get("memory") or {}).get("allow_scopes")
+                        if isinstance(current.get("memory"), dict)
+                        else ["run", "session", "user", "tenant", "agent", "workflow", "global"]
+                    )
+                    or ["run", "session", "user", "tenant", "agent", "workflow", "global"]
+                ),
             },
             "guardrails": {
                 **guardrails_existing,
                 "enable_platform_signals": bool(
                     guardrails_existing.get("enable_platform_signals")
                     if "enable_platform_signals" in guardrails_existing
-                    else (legacy_enable_signals if isinstance(legacy_enable_signals, bool) else True)
+                    else (
+                        legacy_enable_signals if isinstance(legacy_enable_signals, bool) else True
+                    )
                 ),
                 "platform_signal_enforcement": str(
                     guardrails_existing.get("platform_signal_enforcement")
                     or legacy_signal_enforcement
                     or "block_high"
                 ),
-                "platform_signal_detect_prompt_injection": bool(guardrails_existing.get("platform_signal_detect_prompt_injection", True)),
-                "platform_signal_detect_pii": bool(guardrails_existing.get("platform_signal_detect_pii", True)),
-                "platform_signal_detect_command_injection": bool(guardrails_existing.get("platform_signal_detect_command_injection", True)),
-                "platform_signal_detect_exfiltration": bool(guardrails_existing.get("platform_signal_detect_exfiltration", True)),
+                "platform_signal_detect_prompt_injection": bool(
+                    guardrails_existing.get("platform_signal_detect_prompt_injection", True)
+                ),
+                "platform_signal_detect_pii": bool(
+                    guardrails_existing.get("platform_signal_detect_pii", True)
+                ),
+                "platform_signal_detect_command_injection": bool(
+                    guardrails_existing.get("platform_signal_detect_command_injection", True)
+                ),
+                "platform_signal_detect_exfiltration": bool(
+                    guardrails_existing.get("platform_signal_detect_exfiltration", True)
+                ),
             },
         }
     )
@@ -1476,16 +1699,38 @@ def _canonicalize_all_agent_definitions() -> None:
             agent.config_json if isinstance(agent.config_json, dict) else {},
             agent_id=agent.id,
             agent_name=agent.name,
-            source_agent_id=str((agent.config_json or {}).get("source_agent_id") or agent.id) if isinstance(agent.config_json, dict) else agent.id,
-            system_prompt=str((agent.config_json or {}).get("system_prompt") or "") if isinstance(agent.config_json, dict) else "",
-            model_defaults=(agent.config_json or {}).get("model_defaults") if isinstance(agent.config_json, dict) and isinstance((agent.config_json or {}).get("model_defaults"), dict) else None,
-            tags=_normalize_text_list((agent.config_json or {}).get("tags")) if isinstance(agent.config_json, dict) else None,
-            capabilities=_normalize_text_list((agent.config_json or {}).get("capabilities")) if isinstance(agent.config_json, dict) else None,
-            owners=_normalize_text_list((agent.config_json or {}).get("owners")) if isinstance(agent.config_json, dict) else None,
-            tools=(agent.config_json or {}).get("tools") if isinstance(agent.config_json, dict) and isinstance((agent.config_json or {}).get("tools"), list) else None,
-            seed_source=str((agent.config_json or {}).get("seed_source") or "") if isinstance(agent.config_json, dict) else None,
-            prompt_file=str((agent.config_json or {}).get("prompt_file") or "") if isinstance(agent.config_json, dict) else None,
-            url_manifest=str((agent.config_json or {}).get("url_manifest") or "") if isinstance(agent.config_json, dict) else None,
+            source_agent_id=str((agent.config_json or {}).get("source_agent_id") or agent.id)
+            if isinstance(agent.config_json, dict)
+            else agent.id,
+            system_prompt=str((agent.config_json or {}).get("system_prompt") or "")
+            if isinstance(agent.config_json, dict)
+            else "",
+            model_defaults=(agent.config_json or {}).get("model_defaults")
+            if isinstance(agent.config_json, dict)
+            and isinstance((agent.config_json or {}).get("model_defaults"), dict)
+            else None,
+            tags=_normalize_text_list((agent.config_json or {}).get("tags"))
+            if isinstance(agent.config_json, dict)
+            else None,
+            capabilities=_normalize_text_list((agent.config_json or {}).get("capabilities"))
+            if isinstance(agent.config_json, dict)
+            else None,
+            owners=_normalize_text_list((agent.config_json or {}).get("owners"))
+            if isinstance(agent.config_json, dict)
+            else None,
+            tools=(agent.config_json or {}).get("tools")
+            if isinstance(agent.config_json, dict)
+            and isinstance((agent.config_json or {}).get("tools"), list)
+            else None,
+            seed_source=str((agent.config_json or {}).get("seed_source") or "")
+            if isinstance(agent.config_json, dict)
+            else None,
+            prompt_file=str((agent.config_json or {}).get("prompt_file") or "")
+            if isinstance(agent.config_json, dict)
+            else None,
+            url_manifest=str((agent.config_json or {}).get("url_manifest") or "")
+            if isinstance(agent.config_json, dict)
+            else None,
         )
         migrated[agent_id] = agent.model_copy(
             update={
@@ -1592,21 +1837,35 @@ def _normalize_security_scope_config(raw: Any) -> dict[str, Any]:
     }
 
     if "guardrail_ruleset_id" in source:
-        normalized["guardrail_ruleset_id"] = str(source.get("guardrail_ruleset_id") or "").strip() or None
+        normalized["guardrail_ruleset_id"] = (
+            str(source.get("guardrail_ruleset_id") or "").strip() or None
+        )
     if "blocked_keywords" in source:
         normalized["blocked_keywords"] = _normalize_text_list(source.get("blocked_keywords"))
     if "allowed_egress_hosts" in source:
-        normalized["allowed_egress_hosts"] = _normalize_text_list(source.get("allowed_egress_hosts"))
+        normalized["allowed_egress_hosts"] = _normalize_text_list(
+            source.get("allowed_egress_hosts")
+        )
     if "allowed_retrieval_sources" in source:
-        normalized["allowed_retrieval_sources"] = _normalize_text_list(source.get("allowed_retrieval_sources"))
+        normalized["allowed_retrieval_sources"] = _normalize_text_list(
+            source.get("allowed_retrieval_sources")
+        )
     if "allowed_mcp_server_urls" in source:
-        normalized["allowed_mcp_server_urls"] = _normalize_text_list(source.get("allowed_mcp_server_urls"))
+        normalized["allowed_mcp_server_urls"] = _normalize_text_list(
+            source.get("allowed_mcp_server_urls")
+        )
     if "allowed_runtime_engines" in source:
-        allowed_runtime_engines = _normalize_runtime_engine_list(source.get("allowed_runtime_engines") if isinstance(source.get("allowed_runtime_engines"), list) else [])
+        allowed_runtime_engines = _normalize_runtime_engine_list(
+            source.get("allowed_runtime_engines")
+            if isinstance(source.get("allowed_runtime_engines"), list)
+            else []
+        )
         if allowed_runtime_engines:
             normalized["allowed_runtime_engines"] = allowed_runtime_engines
     if "allowed_memory_scopes" in source:
-        normalized["allowed_memory_scopes"] = _normalize_text_list(source.get("allowed_memory_scopes"))
+        normalized["allowed_memory_scopes"] = _normalize_text_list(
+            source.get("allowed_memory_scopes")
+        )
 
     for key in ["max_tool_calls_per_run", "max_retrieval_items", "max_collaboration_agents"]:
         if key in source:
@@ -1623,8 +1882,13 @@ def _normalize_security_scope_config(raw: Any) -> dict[str, Any]:
         if key in source:
             normalized[key] = bool(source.get(key))
 
-    if "platform_signal_enforcement" in source and str(source.get("platform_signal_enforcement") or "").strip():
-        normalized["platform_signal_enforcement"] = _normalize_signal_enforcement(source.get("platform_signal_enforcement"))
+    if (
+        "platform_signal_enforcement" in source
+        and str(source.get("platform_signal_enforcement") or "").strip()
+    ):
+        normalized["platform_signal_enforcement"] = _normalize_signal_enforcement(
+            source.get("platform_signal_enforcement")
+        )
 
     return normalized
 
@@ -1635,19 +1899,33 @@ def _platform_security_defaults(platform: "PlatformSettings") -> dict[str, Any]:
         "classification": "internal",
         "guardrail_ruleset_id": platform.default_guardrail_ruleset_id,
         "blocked_keywords": list(platform.global_blocked_keywords),
-        "allowed_egress_hosts": list(platform.allowed_egress_hosts if platform.enforce_egress_allowlist else []),
+        "allowed_egress_hosts": list(
+            platform.allowed_egress_hosts if platform.enforce_egress_allowlist else []
+        ),
         "allowed_retrieval_sources": list(platform.allowed_retrieval_sources),
         "allowed_mcp_server_urls": list(platform.allowed_mcp_server_urls),
         "allowed_runtime_engines": allowed_runtime_engines or ["native"],
-        "allowed_memory_scopes": ["run", "session", "user", "tenant", "agent", "workflow", "global"],
+        "allowed_memory_scopes": [
+            "run",
+            "session",
+            "user",
+            "tenant",
+            "agent",
+            "workflow",
+            "global",
+        ],
         "max_tool_calls_per_run": int(platform.max_tool_calls_per_run),
         "max_retrieval_items": int(platform.max_retrieval_items),
         "max_collaboration_agents": int(platform.collaboration_max_agents),
         "require_human_approval": bool(platform.require_human_approval),
-        "require_human_approval_for_high_risk_tools": bool(platform.require_human_approval_for_high_risk_tools),
+        "require_human_approval_for_high_risk_tools": bool(
+            platform.require_human_approval_for_high_risk_tools
+        ),
         "allow_runtime_override": bool(platform.allow_runtime_engine_override),
         "enable_platform_signals": bool(platform.enable_foss_guardrail_signals),
-        "platform_signal_enforcement": _normalize_signal_enforcement(platform.foss_guardrail_signal_enforcement),
+        "platform_signal_enforcement": _normalize_signal_enforcement(
+            platform.foss_guardrail_signal_enforcement
+        ),
     }
 
 
@@ -1694,7 +1972,11 @@ def _resolve_effective_security_policy(
             values = _intersect_text_lists(values, list(agent_security.get(list_key, [])))
         effective[list_key] = values
 
-    for numeric_key in ["max_tool_calls_per_run", "max_retrieval_items", "max_collaboration_agents"]:
+    for numeric_key in [
+        "max_tool_calls_per_run",
+        "max_retrieval_items",
+        "max_collaboration_agents",
+    ]:
         limit = platform_defaults.get(numeric_key)
         for override in [workflow_security.get(numeric_key), agent_security.get(numeric_key)]:
             if isinstance(override, int) and override > 0:
@@ -1714,9 +1996,13 @@ def _resolve_effective_security_policy(
 
     allow_runtime_override = bool(platform_defaults.get("allow_runtime_override"))
     if "allow_runtime_override" in workflow_security:
-        allow_runtime_override = allow_runtime_override and bool(workflow_security.get("allow_runtime_override"))
+        allow_runtime_override = allow_runtime_override and bool(
+            workflow_security.get("allow_runtime_override")
+        )
     if "allow_runtime_override" in agent_security:
-        allow_runtime_override = allow_runtime_override and bool(agent_security.get("allow_runtime_override"))
+        allow_runtime_override = allow_runtime_override and bool(
+            agent_security.get("allow_runtime_override")
+        )
     effective["allow_runtime_override"] = allow_runtime_override
 
     effective["enable_platform_signals"] = bool(
@@ -1761,7 +2047,9 @@ def _resolve_execution_security_policy(run_input: dict[str, Any] | None) -> dict
             return _resolve_effective_security_policy(
                 platform=store.platform_settings,
                 workflow_config=workflow.security_config if workflow else None,
-                agent_config=config_json.get("security") if isinstance(config_json.get("security"), dict) else None,
+                agent_config=config_json.get("security")
+                if isinstance(config_json.get("security"), dict)
+                else None,
             )
 
     return _resolve_effective_security_policy(platform=store.platform_settings)
@@ -1774,9 +2062,15 @@ def _allowed_memory_scopes_from_policy(policy_payload: dict[str, Any] | None) ->
     return allowed or ["run", "session", "user", "tenant", "agent", "workflow", "global"]
 
 
-def _enforce_memory_scope_policy(scope: str, execution_state: dict[str, Any], *, node_id: str) -> None:
+def _enforce_memory_scope_policy(
+    scope: str, execution_state: dict[str, Any], *, node_id: str
+) -> None:
     normalized_scope = str(scope or "session").strip().lower() or "session"
-    effective_policy = execution_state.get("effective_security_policy") if isinstance(execution_state.get("effective_security_policy"), dict) else {}
+    effective_policy = (
+        execution_state.get("effective_security_policy")
+        if isinstance(execution_state.get("effective_security_policy"), dict)
+        else {}
+    )
     allowed_scopes = _allowed_memory_scopes_from_policy(effective_policy)
     if normalized_scope not in allowed_scopes:
         raise RuntimeError(
@@ -1790,7 +2084,9 @@ def _validate_security_guardrail_reference(config: dict[str, Any], *, label: str
         return
     ruleset = _resolve_published_guardrail_ruleset(ruleset_id)
     if not ruleset:
-        raise HTTPException(status_code=400, detail=f"{label} requires a published guardrail ruleset")
+        raise HTTPException(
+            status_code=400, detail=f"{label} requires a published guardrail ruleset"
+        )
 
 
 def _normalize_hybrid_runtime_routing(raw: Any, *, default_engine: str) -> dict[str, str]:
@@ -1935,7 +2231,9 @@ def _framework_adapter_mapping(engine: str) -> dict[str, str]:
     }
 
 
-def _resolve_runtime_engine(run_input: dict[str, Any], platform: PlatformSettings) -> dict[str, Any]:
+def _resolve_runtime_engine(
+    run_input: dict[str, Any], platform: PlatformSettings
+) -> dict[str, Any]:
     runtime = run_input.get("runtime") if isinstance(run_input.get("runtime"), dict) else {}
     requested_raw = ""
     strategy_raw = ""
@@ -1979,7 +2277,9 @@ def _resolve_runtime_engine(run_input: dict[str, Any], platform: PlatformSetting
             default_engine=selected,
         )
         requested_routing = dict(policy_default_routing)
-        if platform.allow_runtime_engine_override and isinstance(runtime.get("hybrid_routing"), dict):
+        if platform.allow_runtime_engine_override and isinstance(
+            runtime.get("hybrid_routing"), dict
+        ):
             requested_routing = _normalize_hybrid_runtime_routing(
                 {**policy_default_routing, **runtime.get("hybrid_routing")},
                 default_engine=selected,
@@ -2006,13 +2306,19 @@ def _resolve_runtime_engine(run_input: dict[str, Any], platform: PlatformSetting
         notes: list[str] = []
         for role, role_engine in requested_routing.items():
             role_resolution = _resolve_engine_execution(role_engine)
-            effective_routing[role] = _normalize_runtime_engine(role_resolution.get("executed_engine") or "native")
+            effective_routing[role] = _normalize_runtime_engine(
+                role_resolution.get("executed_engine") or "native"
+            )
             role_modes[role] = str(role_resolution.get("mode") or "native")
-            role_probes[role] = role_resolution.get("probe") if isinstance(role_resolution.get("probe"), dict) else {
-                "engine": role_engine,
-                "available": False,
-                "missing_modules": [],
-            }
+            role_probes[role] = (
+                role_resolution.get("probe")
+                if isinstance(role_resolution.get("probe"), dict)
+                else {
+                    "engine": role_engine,
+                    "available": False,
+                    "missing_modules": [],
+                }
+            )
             note = str(role_resolution.get("note") or "").strip()
             if note:
                 notes.append(f"{role}: {note}")
@@ -2026,7 +2332,9 @@ def _resolve_runtime_engine(run_input: dict[str, Any], platform: PlatformSetting
             "allow_override": platform.allow_runtime_engine_override,
             "allowed_engines": allowed,
             "node_mapping": _framework_adapter_mapping(selected),
-            "adapter_probe": role_probes.get("default", {"engine": selected, "available": True, "missing_modules": []}),
+            "adapter_probe": role_probes.get(
+                "default", {"engine": selected, "available": True, "missing_modules": []}
+            ),
             "hybrid_routing": requested_routing,
             "hybrid_effective_routing": effective_routing,
             "hybrid_role_modes": role_modes,
@@ -2037,12 +2345,18 @@ def _resolve_runtime_engine(run_input: dict[str, Any], platform: PlatformSetting
 
     single_resolution = _resolve_engine_execution(selected)
     runtime_mode = str(single_resolution.get("mode") or "native")
-    executed_engine = _normalize_runtime_engine(single_resolution.get("executed_engine") or "native")
-    runtime_probe = single_resolution.get("probe") if isinstance(single_resolution.get("probe"), dict) else {
-        "engine": selected,
-        "available": True,
-        "missing_modules": [],
-    }
+    executed_engine = _normalize_runtime_engine(
+        single_resolution.get("executed_engine") or "native"
+    )
+    runtime_probe = (
+        single_resolution.get("probe")
+        if isinstance(single_resolution.get("probe"), dict)
+        else {
+            "engine": selected,
+            "available": True,
+            "missing_modules": [],
+        }
+    )
 
     return {
         "requested_engine": requested or default_engine,
@@ -2063,7 +2377,11 @@ def _infer_agent_runtime_role(
     by_port: dict[str, list[dict[str, Any]]],
     prior_agent_outputs: list[str],
 ) -> str:
-    role_hint = str(node.config.get("runtime_role") or node.config.get("framework_role") or "").strip().lower()
+    role_hint = (
+        str(node.config.get("runtime_role") or node.config.get("framework_role") or "")
+        .strip()
+        .lower()
+    )
     if role_hint in _HYBRID_RUNTIME_ROLES:
         return role_hint
 
@@ -2092,12 +2410,20 @@ def _infer_graph_node_runtime_role(
     incoming_by_port: dict[str, list[dict[str, Any]]],
     execution_state: dict[str, Any],
 ) -> str:
-    role_hint = str(node.config.get("runtime_role") or node.config.get("framework_role") or "").strip().lower()
+    role_hint = (
+        str(node.config.get("runtime_role") or node.config.get("framework_role") or "")
+        .strip()
+        .lower()
+    )
     if role_hint in _HYBRID_RUNTIME_ROLES:
         return role_hint
 
     if node_type.startswith("frontier/agent"):
-        prior_agent_outputs = execution_state.get("agent_outputs") if isinstance(execution_state.get("agent_outputs"), list) else []
+        prior_agent_outputs = (
+            execution_state.get("agent_outputs")
+            if isinstance(execution_state.get("agent_outputs"), list)
+            else []
+        )
         return _infer_agent_runtime_role(
             node,
             by_port=incoming_by_port,
@@ -2111,7 +2437,14 @@ def _infer_graph_node_runtime_role(
     if node_type == "frontier/memory":
         return "collaboration"
 
-    if node_type in {"frontier/trigger", "frontier/prompt", "frontier/manifold", "frontier/guardrail", "frontier/human-review", "frontier/output"}:
+    if node_type in {
+        "frontier/trigger",
+        "frontier/prompt",
+        "frontier/manifold",
+        "frontier/guardrail",
+        "frontier/human-review",
+        "frontier/output",
+    }:
         return "orchestration"
 
     return "default"
@@ -2122,9 +2455,21 @@ def _resolve_node_runtime_engine(runtime_info: dict[str, Any], role: str) -> dic
     normalized_role = role if role in _HYBRID_RUNTIME_ROLES else "default"
 
     if strategy == "hybrid":
-        requested_routing = runtime_info.get("hybrid_routing") if isinstance(runtime_info.get("hybrid_routing"), dict) else {}
-        effective_routing = runtime_info.get("hybrid_effective_routing") if isinstance(runtime_info.get("hybrid_effective_routing"), dict) else {}
-        role_modes = runtime_info.get("hybrid_role_modes") if isinstance(runtime_info.get("hybrid_role_modes"), dict) else {}
+        requested_routing = (
+            runtime_info.get("hybrid_routing")
+            if isinstance(runtime_info.get("hybrid_routing"), dict)
+            else {}
+        )
+        effective_routing = (
+            runtime_info.get("hybrid_effective_routing")
+            if isinstance(runtime_info.get("hybrid_effective_routing"), dict)
+            else {}
+        )
+        role_modes = (
+            runtime_info.get("hybrid_role_modes")
+            if isinstance(runtime_info.get("hybrid_role_modes"), dict)
+            else {}
+        )
 
         selected_engine = _normalize_runtime_engine(
             requested_routing.get(normalized_role)
@@ -2137,7 +2482,11 @@ def _resolve_node_runtime_engine(runtime_info: dict[str, Any], role: str) -> dic
             or effective_routing.get("default")
             or selected_engine
         )
-        node_mode = str(role_modes.get(normalized_role) or role_modes.get("default") or ("native" if executed_engine == "native" else "delegated"))
+        node_mode = str(
+            role_modes.get(normalized_role)
+            or role_modes.get("default")
+            or ("native" if executed_engine == "native" else "delegated")
+        )
         return {
             "selected_engine": selected_engine,
             "executed_engine": executed_engine,
@@ -2207,9 +2556,20 @@ def _truncate_event_summary(text: str, max_chars: int = 700) -> str:
     return f"{value[:max_chars].rstrip()}…"
 
 
-def _should_enforce_architecture_contract(*, selected_agent: AgentDefinition | None, prompt_text: str) -> bool:
+def _should_enforce_architecture_contract(
+    *, selected_agent: AgentDefinition | None, prompt_text: str
+) -> bool:
     candidate = str(prompt_text or "").lower()
-    if any(token in candidate for token in ["architecture", "uml", "sequence diagram", "component diagram", "deployment topology"]):
+    if any(
+        token in candidate
+        for token in [
+            "architecture",
+            "uml",
+            "sequence diagram",
+            "component diagram",
+            "deployment topology",
+        ]
+    ):
         return True
 
     if not selected_agent:
@@ -2218,7 +2578,10 @@ def _should_enforce_architecture_contract(*, selected_agent: AgentDefinition | N
     config_json = selected_agent.config_json if isinstance(selected_agent.config_json, dict) else {}
     source_agent_id = str(config_json.get("source_agent_id") or "").strip().lower()
     agent_name = str(selected_agent.name or "").strip().lower()
-    return any(marker in source_agent_id or marker in agent_name for marker in ["uml-architect", "architect", "architecture"])
+    return any(
+        marker in source_agent_id or marker in agent_name
+        for marker in ["uml-architect", "architect", "architecture"]
+    )
 
 
 def _with_architecture_contract(user_prompt: str, *, enabled: bool) -> str:
@@ -2256,7 +2619,11 @@ def _extract_openai_responses_payload(response: Any) -> tuple[str, list[str]]:
 
     output_items = getattr(response, "output", None)
     if not isinstance(output_items, list):
-        output_items = response.get("output") if isinstance(response, dict) and isinstance(response.get("output"), list) else []
+        output_items = (
+            response.get("output")
+            if isinstance(response, dict) and isinstance(response.get("output"), list)
+            else []
+        )
 
     for item in output_items:
         item_type = ""
@@ -2275,9 +2642,15 @@ def _extract_openai_responses_payload(response: Any) -> tuple[str, list[str]]:
                     summaries.append(summary_item.strip())
                     continue
                 if isinstance(summary_item, dict):
-                    candidate = str(summary_item.get("text") or summary_item.get("summary") or "").strip()
+                    candidate = str(
+                        summary_item.get("text") or summary_item.get("summary") or ""
+                    ).strip()
                 else:
-                    candidate = str(getattr(summary_item, "text", "") or getattr(summary_item, "summary", "") or "").strip()
+                    candidate = str(
+                        getattr(summary_item, "text", "")
+                        or getattr(summary_item, "summary", "")
+                        or ""
+                    ).strip()
                 if candidate:
                     summaries.append(candidate)
 
@@ -2289,9 +2662,15 @@ def _extract_openai_responses_payload(response: Any) -> tuple[str, list[str]]:
                         chunks.append(content_item.strip())
                     continue
                 if isinstance(content_item, dict):
-                    piece = str(content_item.get("text") or content_item.get("content") or "").strip()
+                    piece = str(
+                        content_item.get("text") or content_item.get("content") or ""
+                    ).strip()
                 else:
-                    piece = str(getattr(content_item, "text", "") or getattr(content_item, "content", "") or "").strip()
+                    piece = str(
+                        getattr(content_item, "text", "")
+                        or getattr(content_item, "content", "")
+                        or ""
+                    ).strip()
                 if piece:
                     chunks.append(piece)
             if chunks:
@@ -2304,7 +2683,11 @@ def _resolve_agent_chat_model(agent: AgentDefinition | None) -> str:
     if agent is None:
         return _default_openai_model()
     config_json = agent.config_json if isinstance(agent.config_json, dict) else {}
-    model_defaults = config_json.get("model_defaults") if isinstance(config_json.get("model_defaults"), dict) else {}
+    model_defaults = (
+        config_json.get("model_defaults")
+        if isinstance(config_json.get("model_defaults"), dict)
+        else {}
+    )
     configured_model = str(model_defaults.get("model") or "").strip()
     return configured_model or _default_openai_model()
 
@@ -2312,7 +2695,11 @@ def _resolve_agent_chat_model(agent: AgentDefinition | None) -> str:
 def _openai_status() -> RuntimeProviderStatus:
     key = os.getenv("OPENAI_API_KEY", "").strip()
     has_client = OpenAI is not None
-    is_placeholder_key = key.lower().startswith("replace-") or "your-api-key" in key.lower() or key.lower() in {"changeme", "todo"}
+    is_placeholder_key = (
+        key.lower().startswith("replace-")
+        or "your-api-key" in key.lower()
+        or key.lower() in {"changeme", "todo"}
+    )
     configured = bool(key) and has_client and not is_placeholder_key
     return RuntimeProviderStatus(
         provider="openai",
@@ -2364,7 +2751,9 @@ _OPTIONAL_MODULE_LOADERS: dict[str, Callable[[], Any]] = {
     "langgraph": lambda: importlib.import_module("langgraph"),
     "langgraph.graph": lambda: importlib.import_module("langgraph.graph"),
     "semantic_kernel": lambda: importlib.import_module("semantic_kernel"),
-    "semantic_kernel.connectors.ai.open_ai": lambda: importlib.import_module("semantic_kernel.connectors.ai.open_ai"),
+    "semantic_kernel.connectors.ai.open_ai": lambda: importlib.import_module(
+        "semantic_kernel.connectors.ai.open_ai"
+    ),
 }
 
 
@@ -2573,13 +2962,11 @@ def _run_semantic_kernel_chat(
 
         kernel = Kernel()
         service_id = "frontier-chat"
-        kernel.add_service(OpenAIChatCompletion(service_id=service_id, ai_model_id=model, api_key=key))
-
-        prompt = (
-            "{{$system}}\n\n"
-            "User message:\n"
-            "{{$input}}"
+        kernel.add_service(
+            OpenAIChatCompletion(service_id=service_id, ai_model_id=model, api_key=key)
         )
+
+        prompt = "{{$system}}\n\nUser message:\n{{$input}}"
         result = kernel.invoke_prompt(
             prompt=prompt,
             service_id=service_id,
@@ -2826,16 +3213,24 @@ def _run_framework_retrieval(
                 }
                 for idx, doc in enumerate(docs, start=1)
             ]
-            return normalized, f"LangChain retriever produced {len(normalized)} documents.", {
-                "framework": "langchain",
-                "mode": "live",
-            }
+            return (
+                normalized,
+                f"LangChain retriever produced {len(normalized)} documents.",
+                {
+                    "framework": "langchain",
+                    "mode": "live",
+                },
+            )
         except Exception as exc:  # noqa: BLE001
-            return [], "LangChain retrieval fallback (framework unavailable).", {
-                "framework": "langchain",
-                "mode": "simulated",
-                "reason": f"LangChain retrieval failed: {str(exc)[:180]}",
-            }
+            return (
+                [],
+                "LangChain retrieval fallback (framework unavailable).",
+                {
+                    "framework": "langchain",
+                    "mode": "simulated",
+                    "reason": f"LangChain retrieval failed: {str(exc)[:180]}",
+                },
+            )
 
     if resolved_engine == "langgraph":
         try:
@@ -2865,16 +3260,24 @@ def _run_framework_retrieval(
             result_state = app_graph.invoke({"query": query_text, "filters": filters_payload})
             docs = result_state.get("docs", []) if isinstance(result_state, dict) else []
             normalized = [dict(item) for item in docs if isinstance(item, dict)]
-            return normalized, f"LangGraph retrieval produced {len(normalized)} documents.", {
-                "framework": "langgraph",
-                "mode": "live",
-            }
+            return (
+                normalized,
+                f"LangGraph retrieval produced {len(normalized)} documents.",
+                {
+                    "framework": "langgraph",
+                    "mode": "live",
+                },
+            )
         except Exception as exc:  # noqa: BLE001
-            return [], "LangGraph retrieval fallback (framework unavailable).", {
-                "framework": "langgraph",
-                "mode": "simulated",
-                "reason": f"LangGraph retrieval failed: {str(exc)[:180]}",
-            }
+            return (
+                [],
+                "LangGraph retrieval fallback (framework unavailable).",
+                {
+                    "framework": "langgraph",
+                    "mode": "simulated",
+                    "reason": f"LangGraph retrieval failed: {str(exc)[:180]}",
+                },
+            )
 
     if resolved_engine == "semantic-kernel":
         try:
@@ -2892,16 +3295,24 @@ def _run_framework_retrieval(
                 for idx in range(1, top_k + 1)
             ]
             _ = kernel  # intentional: ensure semantic-kernel runtime path is exercised
-            return docs, f"Semantic Kernel retrieval produced {len(docs)} documents.", {
-                "framework": "semantic-kernel",
-                "mode": "live",
-            }
+            return (
+                docs,
+                f"Semantic Kernel retrieval produced {len(docs)} documents.",
+                {
+                    "framework": "semantic-kernel",
+                    "mode": "live",
+                },
+            )
         except Exception as exc:  # noqa: BLE001
-            return [], "Semantic Kernel retrieval fallback (framework unavailable).", {
-                "framework": "semantic-kernel",
-                "mode": "simulated",
-                "reason": f"Semantic Kernel retrieval failed: {str(exc)[:180]}",
-            }
+            return (
+                [],
+                "Semantic Kernel retrieval fallback (framework unavailable).",
+                {
+                    "framework": "semantic-kernel",
+                    "mode": "simulated",
+                    "reason": f"Semantic Kernel retrieval failed: {str(exc)[:180]}",
+                },
+            )
 
     if resolved_engine == "autogen":
         try:
@@ -2918,16 +3329,24 @@ def _run_framework_retrieval(
                 }
                 for idx in range(1, top_k + 1)
             ]
-            return docs, f"AutoGen retrieval produced {len(docs)} documents.", {
-                "framework": "autogen",
-                "mode": "live",
-            }
+            return (
+                docs,
+                f"AutoGen retrieval produced {len(docs)} documents.",
+                {
+                    "framework": "autogen",
+                    "mode": "live",
+                },
+            )
         except Exception as exc:  # noqa: BLE001
-            return [], "AutoGen retrieval fallback (framework unavailable).", {
-                "framework": "autogen",
-                "mode": "simulated",
-                "reason": f"AutoGen retrieval failed: {str(exc)[:180]}",
-            }
+            return (
+                [],
+                "AutoGen retrieval fallback (framework unavailable).",
+                {
+                    "framework": "autogen",
+                    "mode": "simulated",
+                    "reason": f"AutoGen retrieval failed: {str(exc)[:180]}",
+                },
+            )
 
     docs = [
         {
@@ -2938,10 +3357,14 @@ def _run_framework_retrieval(
         }
         for idx in range(1, top_k + 1)
     ]
-    return docs, f"Native retrieval produced {len(docs)} documents.", {
-        "framework": "native",
-        "mode": "live",
-    }
+    return (
+        docs,
+        f"Native retrieval produced {len(docs)} documents.",
+        {
+            "framework": "native",
+            "mode": "live",
+        },
+    )
 
 
 def _run_framework_tool_call(
@@ -3001,7 +3424,9 @@ def _run_framework_tool_call(
             graph.add_edge(START, "tool")
             graph.add_edge("tool", END)
             app_graph = graph.compile()
-            result_state = app_graph.invoke({"payload": request_payload, "context": context_payload})
+            result_state = app_graph.invoke(
+                {"payload": request_payload, "context": context_payload}
+            )
             output = result_state.get("tool_output") if isinstance(result_state, dict) else None
             if not isinstance(output, dict):
                 output = _simulate()
@@ -3057,7 +3482,11 @@ def _run_framework_memory(
     resolved_engine = _normalize_runtime_engine(engine)
 
     def _native_memory_flow() -> dict[str, Any]:
-        runtime_role = str(source_payload.get("runtime_role") or "") if isinstance(source_payload, dict) else ""
+        runtime_role = (
+            str(source_payload.get("runtime_role") or "")
+            if isinstance(source_payload, dict)
+            else ""
+        )
         if action == "clear":
             _memory_clear_entries(bucket_id, memory_scope=scope)
             return {
@@ -3078,7 +3507,11 @@ def _run_framework_memory(
                 query_text=message,
                 runtime_role=runtime_role,
             )
-            bucket_snapshot = hybrid_context.get("entries") if isinstance(hybrid_context.get("entries"), list) else []
+            bucket_snapshot = (
+                hybrid_context.get("entries")
+                if isinstance(hybrid_context.get("entries"), list)
+                else []
+            )
             return {
                 "memory_state": {
                     "scope": scope,
@@ -3090,9 +3523,21 @@ def _run_framework_memory(
                 "memory_items": bucket_snapshot[-10:],
                 "context": bucket_snapshot[-10:],
                 "world_graph": {
-                    "entries": (hybrid_context.get("world_graph_entries") if isinstance(hybrid_context.get("world_graph_entries"), list) else [])[-10:],
-                    "topics": (hybrid_context.get("world_graph_topics") if isinstance(hybrid_context.get("world_graph_topics"), list) else [])[:10],
-                    "relations": (hybrid_context.get("world_graph_relations") if isinstance(hybrid_context.get("world_graph_relations"), list) else [])[:20],
+                    "entries": (
+                        hybrid_context.get("world_graph_entries")
+                        if isinstance(hybrid_context.get("world_graph_entries"), list)
+                        else []
+                    )[-10:],
+                    "topics": (
+                        hybrid_context.get("world_graph_topics")
+                        if isinstance(hybrid_context.get("world_graph_topics"), list)
+                        else []
+                    )[:10],
+                    "relations": (
+                        hybrid_context.get("world_graph_relations")
+                        if isinstance(hybrid_context.get("world_graph_relations"), list)
+                        else []
+                    )[:20],
                 },
                 "memory": {
                     "scope": scope,
@@ -3123,7 +3568,9 @@ def _run_framework_memory(
             query_text=str(candidate),
             runtime_role=runtime_role,
         )
-        bucket_snapshot = hybrid_context.get("entries") if isinstance(hybrid_context.get("entries"), list) else []
+        bucket_snapshot = (
+            hybrid_context.get("entries") if isinstance(hybrid_context.get("entries"), list) else []
+        )
         return {
             "memory_state": {
                 "scope": scope,
@@ -3134,9 +3581,21 @@ def _run_framework_memory(
             },
             "context": bucket_snapshot[-10:],
             "world_graph": {
-                "entries": (hybrid_context.get("world_graph_entries") if isinstance(hybrid_context.get("world_graph_entries"), list) else [])[-10:],
-                "topics": (hybrid_context.get("world_graph_topics") if isinstance(hybrid_context.get("world_graph_topics"), list) else [])[:10],
-                "relations": (hybrid_context.get("world_graph_relations") if isinstance(hybrid_context.get("world_graph_relations"), list) else [])[:20],
+                "entries": (
+                    hybrid_context.get("world_graph_entries")
+                    if isinstance(hybrid_context.get("world_graph_entries"), list)
+                    else []
+                )[-10:],
+                "topics": (
+                    hybrid_context.get("world_graph_topics")
+                    if isinstance(hybrid_context.get("world_graph_topics"), list)
+                    else []
+                )[:10],
+                "relations": (
+                    hybrid_context.get("world_graph_relations")
+                    if isinstance(hybrid_context.get("world_graph_relations"), list)
+                    else []
+                )[:20],
             },
             "memory": {
                 "scope": scope,
@@ -3154,7 +3613,11 @@ def _run_framework_memory(
             return _native_memory_flow(), {"framework": "langchain", "mode": "live"}
         except Exception as exc:  # noqa: BLE001
             result = _native_memory_flow()
-            return result, {"framework": "langchain", "mode": "simulated", "reason": f"LangChain memory failed: {str(exc)[:180]}"}
+            return result, {
+                "framework": "langchain",
+                "mode": "simulated",
+                "reason": f"LangChain memory failed: {str(exc)[:180]}",
+            }
 
     if resolved_engine == "langgraph":
         try:
@@ -3162,7 +3625,11 @@ def _run_framework_memory(
             return _native_memory_flow(), {"framework": "langgraph", "mode": "live"}
         except Exception as exc:  # noqa: BLE001
             result = _native_memory_flow()
-            return result, {"framework": "langgraph", "mode": "simulated", "reason": f"LangGraph memory failed: {str(exc)[:180]}"}
+            return result, {
+                "framework": "langgraph",
+                "mode": "simulated",
+                "reason": f"LangGraph memory failed: {str(exc)[:180]}",
+            }
 
     if resolved_engine == "semantic-kernel":
         try:
@@ -3170,7 +3637,11 @@ def _run_framework_memory(
             return _native_memory_flow(), {"framework": "semantic-kernel", "mode": "live"}
         except Exception as exc:  # noqa: BLE001
             result = _native_memory_flow()
-            return result, {"framework": "semantic-kernel", "mode": "simulated", "reason": f"Semantic Kernel memory failed: {str(exc)[:180]}"}
+            return result, {
+                "framework": "semantic-kernel",
+                "mode": "simulated",
+                "reason": f"Semantic Kernel memory failed: {str(exc)[:180]}",
+            }
 
     if resolved_engine == "autogen":
         try:
@@ -3181,7 +3652,11 @@ def _run_framework_memory(
             return _native_memory_flow(), {"framework": "autogen", "mode": "live"}
         except Exception as exc:  # noqa: BLE001
             result = _native_memory_flow()
-            return result, {"framework": "autogen", "mode": "simulated", "reason": f"AutoGen memory failed: {str(exc)[:180]}"}
+            return result, {
+                "framework": "autogen",
+                "mode": "simulated",
+                "reason": f"AutoGen memory failed: {str(exc)[:180]}",
+            }
 
     return _native_memory_flow(), {"framework": "native", "mode": "live"}
 
@@ -3203,21 +3678,36 @@ def _run_framework_guardrail(
             _import_module("langchain_core.messages")
             return _evaluate(), {"framework": "langchain", "mode": "live", "stage": stage}
         except Exception as exc:  # noqa: BLE001
-            return _evaluate(), {"framework": "langchain", "mode": "simulated", "stage": stage, "reason": f"LangChain guardrail failed: {str(exc)[:180]}"}
+            return _evaluate(), {
+                "framework": "langchain",
+                "mode": "simulated",
+                "stage": stage,
+                "reason": f"LangChain guardrail failed: {str(exc)[:180]}",
+            }
 
     if resolved_engine == "langgraph":
         try:
             _import_module("langgraph")
             return _evaluate(), {"framework": "langgraph", "mode": "live", "stage": stage}
         except Exception as exc:  # noqa: BLE001
-            return _evaluate(), {"framework": "langgraph", "mode": "simulated", "stage": stage, "reason": f"LangGraph guardrail failed: {str(exc)[:180]}"}
+            return _evaluate(), {
+                "framework": "langgraph",
+                "mode": "simulated",
+                "stage": stage,
+                "reason": f"LangGraph guardrail failed: {str(exc)[:180]}",
+            }
 
     if resolved_engine == "semantic-kernel":
         try:
             _import_module("semantic_kernel")
             return _evaluate(), {"framework": "semantic-kernel", "mode": "live", "stage": stage}
         except Exception as exc:  # noqa: BLE001
-            return _evaluate(), {"framework": "semantic-kernel", "mode": "simulated", "stage": stage, "reason": f"Semantic Kernel guardrail failed: {str(exc)[:180]}"}
+            return _evaluate(), {
+                "framework": "semantic-kernel",
+                "mode": "simulated",
+                "stage": stage,
+                "reason": f"Semantic Kernel guardrail failed: {str(exc)[:180]}",
+            }
 
     if resolved_engine == "autogen":
         try:
@@ -3227,7 +3717,12 @@ def _run_framework_guardrail(
                 _import_module("autogen")
             return _evaluate(), {"framework": "autogen", "mode": "live", "stage": stage}
         except Exception as exc:  # noqa: BLE001
-            return _evaluate(), {"framework": "autogen", "mode": "simulated", "stage": stage, "reason": f"AutoGen guardrail failed: {str(exc)[:180]}"}
+            return _evaluate(), {
+                "framework": "autogen",
+                "mode": "simulated",
+                "stage": stage,
+                "reason": f"AutoGen guardrail failed: {str(exc)[:180]}",
+            }
 
     return _evaluate(), {"framework": "native", "mode": "live", "stage": stage}
 
@@ -3261,21 +3756,33 @@ def _run_framework_manifold(
             _import_module("langchain_core")
             return _evaluate(), {"framework": "langchain", "mode": "live"}
         except Exception as exc:  # noqa: BLE001
-            return _evaluate(), {"framework": "langchain", "mode": "simulated", "reason": f"LangChain manifold failed: {str(exc)[:180]}"}
+            return _evaluate(), {
+                "framework": "langchain",
+                "mode": "simulated",
+                "reason": f"LangChain manifold failed: {str(exc)[:180]}",
+            }
 
     if resolved_engine == "langgraph":
         try:
             _import_module("langgraph")
             return _evaluate(), {"framework": "langgraph", "mode": "live"}
         except Exception as exc:  # noqa: BLE001
-            return _evaluate(), {"framework": "langgraph", "mode": "simulated", "reason": f"LangGraph manifold failed: {str(exc)[:180]}"}
+            return _evaluate(), {
+                "framework": "langgraph",
+                "mode": "simulated",
+                "reason": f"LangGraph manifold failed: {str(exc)[:180]}",
+            }
 
     if resolved_engine == "semantic-kernel":
         try:
             _import_module("semantic_kernel")
             return _evaluate(), {"framework": "semantic-kernel", "mode": "live"}
         except Exception as exc:  # noqa: BLE001
-            return _evaluate(), {"framework": "semantic-kernel", "mode": "simulated", "reason": f"Semantic Kernel manifold failed: {str(exc)[:180]}"}
+            return _evaluate(), {
+                "framework": "semantic-kernel",
+                "mode": "simulated",
+                "reason": f"Semantic Kernel manifold failed: {str(exc)[:180]}",
+            }
 
     if resolved_engine == "autogen":
         try:
@@ -3285,7 +3792,11 @@ def _run_framework_manifold(
                 _import_module("autogen")
             return _evaluate(), {"framework": "autogen", "mode": "live"}
         except Exception as exc:  # noqa: BLE001
-            return _evaluate(), {"framework": "autogen", "mode": "simulated", "reason": f"AutoGen manifold failed: {str(exc)[:180]}"}
+            return _evaluate(), {
+                "framework": "autogen",
+                "mode": "simulated",
+                "reason": f"AutoGen manifold failed: {str(exc)[:180]}",
+            }
 
     return _evaluate(), {"framework": "native", "mode": "live"}
 
@@ -3323,21 +3834,33 @@ def _run_framework_human_review(
             _import_module("langchain_core")
             return _evaluate(), {"framework": "langchain", "mode": "live"}
         except Exception as exc:  # noqa: BLE001
-            return _evaluate(), {"framework": "langchain", "mode": "simulated", "reason": f"LangChain human-review failed: {str(exc)[:180]}"}
+            return _evaluate(), {
+                "framework": "langchain",
+                "mode": "simulated",
+                "reason": f"LangChain human-review failed: {str(exc)[:180]}",
+            }
 
     if resolved_engine == "langgraph":
         try:
             _import_module("langgraph")
             return _evaluate(), {"framework": "langgraph", "mode": "live"}
         except Exception as exc:  # noqa: BLE001
-            return _evaluate(), {"framework": "langgraph", "mode": "simulated", "reason": f"LangGraph human-review failed: {str(exc)[:180]}"}
+            return _evaluate(), {
+                "framework": "langgraph",
+                "mode": "simulated",
+                "reason": f"LangGraph human-review failed: {str(exc)[:180]}",
+            }
 
     if resolved_engine == "semantic-kernel":
         try:
             _import_module("semantic_kernel")
             return _evaluate(), {"framework": "semantic-kernel", "mode": "live"}
         except Exception as exc:  # noqa: BLE001
-            return _evaluate(), {"framework": "semantic-kernel", "mode": "simulated", "reason": f"Semantic Kernel human-review failed: {str(exc)[:180]}"}
+            return _evaluate(), {
+                "framework": "semantic-kernel",
+                "mode": "simulated",
+                "reason": f"Semantic Kernel human-review failed: {str(exc)[:180]}",
+            }
 
     if resolved_engine == "autogen":
         try:
@@ -3347,7 +3870,11 @@ def _run_framework_human_review(
                 _import_module("autogen")
             return _evaluate(), {"framework": "autogen", "mode": "live"}
         except Exception as exc:  # noqa: BLE001
-            return _evaluate(), {"framework": "autogen", "mode": "simulated", "reason": f"AutoGen human-review failed: {str(exc)[:180]}"}
+            return _evaluate(), {
+                "framework": "autogen",
+                "mode": "simulated",
+                "reason": f"AutoGen human-review failed: {str(exc)[:180]}",
+            }
 
     return _evaluate(), {"framework": "native", "mode": "live"}
 
@@ -3592,7 +4119,11 @@ def _load_seeded_agents_from_repo() -> dict[str, AgentDefinition]:
             continue
 
         source_agent_id = str(config.get("id") or agent_dir.name)
-        agent_id = source_agent_id if _is_uuid(source_agent_id) else str(uuid5(NAMESPACE_URL, f"frontier-agent:{source_agent_id}"))
+        agent_id = (
+            source_agent_id
+            if _is_uuid(source_agent_id)
+            else str(uuid5(NAMESPACE_URL, f"frontier-agent:{source_agent_id}"))
+        )
         agent_name = str(config.get("name") or _slug_to_name(agent_dir.name))
         prompt_path = agent_dir / "system-prompt.md"
         system_prompt = ""
@@ -3619,7 +4150,9 @@ def _load_seeded_agents_from_repo() -> dict[str, AgentDefinition]:
             agent_name=agent_name,
             source_agent_id=source_agent_id,
             system_prompt=system_prompt,
-            model_defaults=config.get("model_defaults") if isinstance(config.get("model_defaults"), dict) else None,
+            model_defaults=config.get("model_defaults")
+            if isinstance(config.get("model_defaults"), dict)
+            else None,
             tags=_normalize_text_list(config.get("tags")),
             capabilities=_normalize_text_list(config.get("capabilities")),
             owners=_normalize_text_list(config.get("owners")),
@@ -3720,7 +4253,9 @@ def _resolve_default_chat_agent_definition() -> AgentDefinition | None:
     return None
 
 
-def _ensure_default_chat_agent_present(*, actor: str = "system/default-chat-agent") -> AgentDefinition:
+def _ensure_default_chat_agent_present(
+    *, actor: str = "system/default-chat-agent"
+) -> AgentDefinition:
     existing = _resolve_default_chat_agent_definition()
     if existing is not None:
         return existing
@@ -3816,7 +4351,9 @@ def _resolve_published_agent_definition(token: str) -> AgentDefinition | None:
     return None
 
 
-def _resolve_agent_system_prompt(agent: AgentDefinition, requested_token: str | None = None) -> tuple[str, str]:
+def _resolve_agent_system_prompt(
+    agent: AgentDefinition, requested_token: str | None = None
+) -> tuple[str, str]:
     config_json = agent.config_json if isinstance(agent.config_json, dict) else {}
 
     config_prompt = str(config_json.get("system_prompt") or "").strip()
@@ -3868,7 +4405,9 @@ def _build_agent_chat_guardrail_config(agent: AgentDefinition | None) -> dict[st
         return merged
 
     config_json = agent.config_json if isinstance(agent.config_json, dict) else {}
-    guardrails = config_json.get("guardrails") if isinstance(config_json.get("guardrails"), dict) else {}
+    guardrails = (
+        config_json.get("guardrails") if isinstance(config_json.get("guardrails"), dict) else {}
+    )
     if not guardrails:
         return merged
 
@@ -3894,11 +4433,15 @@ def _build_agent_chat_guardrail_config(agent: AgentDefinition | None) -> dict[st
     if "platform_signal_enforcement" in guardrails:
         translated["signal_enforcement"] = guardrails.get("platform_signal_enforcement")
     if "platform_signal_detect_prompt_injection" in guardrails:
-        translated["detect_prompt_injection"] = guardrails.get("platform_signal_detect_prompt_injection")
+        translated["detect_prompt_injection"] = guardrails.get(
+            "platform_signal_detect_prompt_injection"
+        )
     if "platform_signal_detect_pii" in guardrails:
         translated["detect_pii"] = guardrails.get("platform_signal_detect_pii")
     if "platform_signal_detect_command_injection" in guardrails:
-        translated["detect_command_injection"] = guardrails.get("platform_signal_detect_command_injection")
+        translated["detect_command_injection"] = guardrails.get(
+            "platform_signal_detect_command_injection"
+        )
     if "platform_signal_detect_exfiltration" in guardrails:
         translated["detect_exfiltration"] = guardrails.get("platform_signal_detect_exfiltration")
 
@@ -3941,7 +4484,9 @@ def _validate_graph(payload: GraphPayload) -> GraphValidationResult:
         return GraphValidationResult(valid=False, issues=issues)
 
     if not payload.nodes:
-        issues.append(GraphValidationIssue(code="GRAPH_EMPTY", message="Graph has no nodes.", path="nodes"))
+        issues.append(
+            GraphValidationIssue(code="GRAPH_EMPTY", message="Graph has no nodes.", path="nodes")
+        )
         return GraphValidationResult(valid=False, issues=issues)
 
     node_ids: list[str] = []
@@ -4306,7 +4851,9 @@ def _validate_graph(payload: GraphPayload) -> GraphValidationResult:
     return GraphValidationResult(valid=len(issues) == 0, issues=issues)
 
 
-def _incoming_values(node_id: str, links: list[GraphEdge], node_results: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
+def _incoming_values(
+    node_id: str, links: list[GraphEdge], node_results: dict[str, dict[str, Any]]
+) -> list[dict[str, Any]]:
     incoming = [edge.from_node for edge in links if edge.to_node == node_id]
     return [node_results[source] for source in incoming if source in node_results]
 
@@ -4326,7 +4873,9 @@ def _incoming_values_by_port(
     return grouped
 
 
-def _port_values(by_port: dict[str, list[dict[str, Any]]], *port_names: str) -> list[dict[str, Any]]:
+def _port_values(
+    by_port: dict[str, list[dict[str, Any]]], *port_names: str
+) -> list[dict[str, Any]]:
     merged: list[dict[str, Any]] = []
     for name in port_names:
         merged.extend(by_port.get(name, []))
@@ -4343,7 +4892,9 @@ def _safe_json(value: Any) -> str:
 
 
 _VAR_EXACT_PATTERN = re.compile(r"^var\.([A-Za-z0-9_.-]+)$")
-_VAR_TEMPLATE_PATTERN = re.compile(r"\{\{\s*var\.([A-Za-z0-9_.-]+)\s*\}\}|\$\{\s*var\.([A-Za-z0-9_.-]+)\s*\}")
+_VAR_TEMPLATE_PATTERN = re.compile(
+    r"\{\{\s*var\.([A-Za-z0-9_.-]+)\s*\}\}|\$\{\s*var\.([A-Za-z0-9_.-]+)\s*\}"
+)
 
 
 def _deep_get(value: Any, path: str) -> Any:
@@ -4467,13 +5018,30 @@ def _resolve_trigger_cron(config: dict[str, Any]) -> str:
     return cron or f"{minute} {hour} * * *"
 
 
-def _resolve_memory_bucket_id(config: dict[str, Any], run_input: dict[str, Any], execution_state: dict[str, Any]) -> str:
+def _resolve_memory_bucket_id(
+    config: dict[str, Any], run_input: dict[str, Any], execution_state: dict[str, Any]
+) -> str:
     scope = str(config.get("scope") or "session").strip().lower()
-    session_id = str(config.get("session_id") or execution_state.get("session_id") or f"session:{execution_state.get('run_id')}").strip()
-    current_user = str(config.get("user_id") or run_input.get("currentUser") or run_input.get("current_user") or "").strip()
-    auth_context = execution_state.get("auth_context") if isinstance(execution_state.get("auth_context"), dict) else {}
+    session_id = str(
+        config.get("session_id")
+        or execution_state.get("session_id")
+        or f"session:{execution_state.get('run_id')}"
+    ).strip()
+    current_user = str(
+        config.get("user_id") or run_input.get("currentUser") or run_input.get("current_user") or ""
+    ).strip()
+    auth_context = (
+        execution_state.get("auth_context")
+        if isinstance(execution_state.get("auth_context"), dict)
+        else {}
+    )
     current_tenant = str(auth_context.get("tenant") or "").strip()
-    requested_tenant = str(config.get("tenant_id") or run_input.get("currentTenant") or run_input.get("current_tenant") or "").strip()
+    requested_tenant = str(
+        config.get("tenant_id")
+        or run_input.get("currentTenant")
+        or run_input.get("current_tenant")
+        or ""
+    ).strip()
     agent_id = str(config.get("agent_id") or "").strip()
     workflow_id = str(config.get("workflow_id") or run_input.get("workflow_id") or "").strip()
     dimension_key = str(config.get("dimension_key") or "").strip()
@@ -4487,9 +5055,14 @@ def _resolve_memory_bucket_id(config: dict[str, Any], run_input: dict[str, Any],
         return f"user:{current_user}"
     if scope == "tenant":
         if not current_tenant:
-            raise HTTPException(status_code=403, detail="Verified tenant claim required for tenant-scoped memory access")
+            raise HTTPException(
+                status_code=403,
+                detail="Verified tenant claim required for tenant-scoped memory access",
+            )
         if requested_tenant and requested_tenant != current_tenant:
-            raise HTTPException(status_code=403, detail="Requested tenant does not match authenticated tenant")
+            raise HTTPException(
+                status_code=403, detail="Requested tenant does not match authenticated tenant"
+            )
         return f"tenant:{current_tenant}"
     if scope == "agent" and agent_id:
         return f"agent:{agent_id}"
@@ -4646,12 +5219,18 @@ def _source_allowed(candidate: str, allowlist: list[str]) -> bool:
         return False
     if "://" in value or any("://" in item for item in normalized):
         return any(value == item or value.startswith(f"{item}/") for item in normalized)
-    if Path(value).is_absolute() or any(Path(item).is_absolute() for item in normalized) or any(sep in value for sep in ("/", "\\")):
+    if (
+        Path(value).is_absolute()
+        or any(Path(item).is_absolute() for item in normalized)
+        or any(sep in value for sep in ("/", "\\"))
+    ):
         try:
             resolved_value = Path(value).expanduser().resolve(strict=False)
         except Exception:  # noqa: BLE001
             return False
-        return _path_is_within_allowed_roots(resolved_value, [Path(item).expanduser() for item in normalized])
+        return _path_is_within_allowed_roots(
+            resolved_value, [Path(item).expanduser() for item in normalized]
+        )
     return any(value == item or value.startswith(f"{item}/") for item in normalized)
 
 
@@ -4664,10 +5243,15 @@ def _normalize_secret_ref(secret_ref: str, auth_type: str) -> str:
         return ""
 
     if any(char.isspace() for char in clean):
-        raise HTTPException(status_code=400, detail="secret_ref must be a reference key, not raw credential text")
+        raise HTTPException(
+            status_code=400, detail="secret_ref must be a reference key, not raw credential text"
+        )
 
     if clean.lower().startswith(("sk-", "bearer", "apikey", "api_key")):
-        raise HTTPException(status_code=400, detail="secret_ref appears to contain a raw secret; provide a secret reference path")
+        raise HTTPException(
+            status_code=400,
+            detail="secret_ref appears to contain a raw secret; provide a secret reference path",
+        )
 
     return clean
 
@@ -4683,7 +5267,9 @@ def _normalize_string_list(value: Any) -> list[str]:
     return normalized
 
 
-def _evaluate_integration_policy(integration: IntegrationDefinition, platform: PlatformSettings) -> dict[str, Any]:
+def _evaluate_integration_policy(
+    integration: IntegrationDefinition, platform: PlatformSettings
+) -> dict[str, Any]:
     warnings: list[str] = []
     violations: list[str] = []
 
@@ -4693,7 +5279,10 @@ def _evaluate_integration_policy(integration: IntegrationDefinition, platform: P
     if integration.auth_type == "none" and integration.secret_ref.strip():
         warnings.append("secret_ref provided with auth_type=none; secret may be unused")
 
-    if integration.type in {"http", "custom", "queue", "vector"} and not integration.egress_allowlist:
+    if (
+        integration.type in {"http", "custom", "queue", "vector"}
+        and not integration.egress_allowlist
+    ):
         message = "Integration should define egress_allowlist for outbound destinations"
         if platform.enforce_integration_policies and not platform.local_only_mode:
             violations.append(message)
@@ -4709,11 +5298,19 @@ def _evaluate_integration_policy(integration: IntegrationDefinition, platform: P
 
     if platform.require_signed_integrations and not integration.signature_verified:
         if platform.local_only_mode and platform.allow_local_unsigned_integrations:
-            warnings.append("Unsigned integration allowed because local_only_mode + allow_local_unsigned_integrations are enabled")
+            warnings.append(
+                "Unsigned integration allowed because local_only_mode + allow_local_unsigned_integrations are enabled"
+            )
         else:
-            violations.append("Integration must be signature_verified when require_signed_integrations is enabled")
+            violations.append(
+                "Integration must be signature_verified when require_signed_integrations is enabled"
+            )
 
-    if platform.require_sandbox_for_third_party and integration.publisher == "third_party" and integration.execution_mode != "sandboxed":
+    if (
+        platform.require_sandbox_for_third_party
+        and integration.publisher == "third_party"
+        and integration.execution_mode != "sandboxed"
+    ):
         if platform.local_only_mode:
             warnings.append("third_party integration not sandboxed; allowed in local_only_mode")
         else:
@@ -4736,8 +5333,12 @@ def _build_integration_diagnostics(integration: IntegrationDefinition) -> dict[s
     has_secret_ref = bool(integration.secret_ref.strip())
     has_secret_path = integration.secret_ref.startswith("secret/") if has_secret_ref else False
     has_embedded_credentials = bool(re.search(r"://[^/@\s:]+:[^@\s]+@", integration.base_url))
-    uses_secure_transport = integration.base_url.startswith("https://") or integration.base_url.startswith("postgresql://")
-    local_only_ok = integration.base_url.startswith("http://localhost") or integration.base_url.startswith("http://127.0.0.1")
+    uses_secure_transport = integration.base_url.startswith(
+        "https://"
+    ) or integration.base_url.startswith("postgresql://")
+    local_only_ok = integration.base_url.startswith(
+        "http://localhost"
+    ) or integration.base_url.startswith("http://127.0.0.1")
 
     warnings: list[str] = []
     if not has_base_url:
@@ -4745,7 +5346,9 @@ def _build_integration_diagnostics(integration: IntegrationDefinition) -> dict[s
     if secret_required and not has_secret_ref:
         warnings.append("Selected auth_type requires secret_ref")
     if secret_required and has_secret_ref and not has_secret_path:
-        warnings.append("secret_ref should use namespaced path format such as secret/<scope>/<name>")
+        warnings.append(
+            "secret_ref should use namespaced path format such as secret/<scope>/<name>"
+        )
     if has_embedded_credentials:
         warnings.append("Embedded credentials detected in base_url; use secret_ref instead")
     if integration.type == "http" and not (uses_secure_transport or local_only_ok):
@@ -4819,11 +5422,15 @@ def _build_template_catalog() -> list[TemplateCatalogItem]:
                 description=playbook.description,
                 category=str(playbook.category),
                 status=playbook.status,
-                version=int(playbook.metadata_json.get("template_version", 1)) if isinstance(playbook.metadata_json, dict) else 1,
+                version=int(playbook.metadata_json.get("template_version", 1))
+                if isinstance(playbook.metadata_json, dict)
+                else 1,
             )
         )
 
-    return sorted(items, key=lambda item: (item.template_type, item.name.lower(), item.source_id.lower()))
+    return sorted(
+        items, key=lambda item: (item.template_type, item.name.lower(), item.source_id.lower())
+    )
 
 
 def _text_contains_blocked_keywords(text: str, blocked_keywords: list[str]) -> list[str]:
@@ -4845,7 +5452,9 @@ def _input_contains_platform_blocked_keywords(payload_input: Any) -> list[str]:
     serialized_input = _safe_json(payload_input).strip()
     if not serialized_input:
         return []
-    return _text_contains_blocked_keywords(serialized_input, store.platform_settings.global_blocked_keywords)
+    return _text_contains_blocked_keywords(
+        serialized_input, store.platform_settings.global_blocked_keywords
+    )
 
 
 def _build_graph_policy_block_result(
@@ -4875,9 +5484,13 @@ def _build_graph_policy_block_result(
     )
 
 
-def _resolve_guardrail_config(node_config: dict[str, Any]) -> tuple[dict[str, Any], str | None, str | None]:
+def _resolve_guardrail_config(
+    node_config: dict[str, Any],
+) -> tuple[dict[str, Any], str | None, str | None]:
     config = dict(node_config)
-    ruleset_id = str(config.get("ruleset_id") or store.platform_settings.default_guardrail_ruleset_id or "").strip()
+    ruleset_id = str(
+        config.get("ruleset_id") or store.platform_settings.default_guardrail_ruleset_id or ""
+    ).strip()
     if not ruleset_id:
         return config, None, None
 
@@ -4895,7 +5508,9 @@ def _evaluate_guardrail(candidate: Any, config: dict[str, Any], stage: str) -> d
     issues: list[dict[str, Any]] = []
     platform = store.platform_settings
 
-    def _append_issue(code: str, message: str, *, severity: str = "medium", source: str = "rule") -> None:
+    def _append_issue(
+        code: str, message: str, *, severity: str = "medium", source: str = "rule"
+    ) -> None:
         issues.append(
             {
                 "code": code,
@@ -4906,7 +5521,15 @@ def _evaluate_guardrail(candidate: Any, config: dict[str, Any], stage: str) -> d
         )
 
     def _foss_signal_enforcement() -> str:
-        configured = str(config.get("signal_enforcement") or platform.foss_guardrail_signal_enforcement or "block_high").strip().lower()
+        configured = (
+            str(
+                config.get("signal_enforcement")
+                or platform.foss_guardrail_signal_enforcement
+                or "block_high"
+            )
+            .strip()
+            .lower()
+        )
         if configured in {"off", "audit", "block_high", "raise_high"}:
             return configured
         return "block_high"
@@ -4918,9 +5541,15 @@ def _evaluate_guardrail(candidate: Any, config: dict[str, Any], stage: str) -> d
         findings: list[dict[str, Any]] = []
         lowered_text = text.lower()
 
-        detect_prompt_injection = bool(config.get("detect_prompt_injection", platform.foss_guardrail_detect_prompt_injection))
-        detect_exfiltration = bool(config.get("detect_exfiltration", platform.foss_guardrail_detect_exfiltration))
-        detect_command_injection = bool(config.get("detect_command_injection", platform.foss_guardrail_detect_command_injection))
+        detect_prompt_injection = bool(
+            config.get("detect_prompt_injection", platform.foss_guardrail_detect_prompt_injection)
+        )
+        detect_exfiltration = bool(
+            config.get("detect_exfiltration", platform.foss_guardrail_detect_exfiltration)
+        )
+        detect_command_injection = bool(
+            config.get("detect_command_injection", platform.foss_guardrail_detect_command_injection)
+        )
         detect_pii = bool(config.get("detect_pii", platform.foss_guardrail_detect_pii))
 
         if detect_prompt_injection:
@@ -4987,7 +5616,9 @@ def _evaluate_guardrail(candidate: Any, config: dict[str, Any], stage: str) -> d
                         {
                             "code": code,
                             "message": "Possible sensitive PII detected.",
-                            "severity": "high" if code in {"PII_SSN_SIGNAL", "PII_CREDIT_CARD_SIGNAL"} else "medium",
+                            "severity": "high"
+                            if code in {"PII_SSN_SIGNAL", "PII_CREDIT_CARD_SIGNAL"}
+                            else "medium",
                             "source": "foss-heuristic",
                         }
                     )
@@ -5025,26 +5656,48 @@ def _evaluate_guardrail(candidate: Any, config: dict[str, Any], stage: str) -> d
         lowered_text = text.lower()
         for keyword in blocked_keywords:
             if isinstance(keyword, str) and keyword.strip() and keyword.lower() in lowered_text:
-                _append_issue("BLOCKED_KEYWORD", f"Blocked keyword detected: {keyword}", severity="high", source="rule")
+                _append_issue(
+                    "BLOCKED_KEYWORD",
+                    f"Blocked keyword detected: {keyword}",
+                    severity="high",
+                    source="rule",
+                )
 
     required_keywords = config.get("required_keywords", [])
     if isinstance(required_keywords, list):
         lowered_text = text.lower()
         for keyword in required_keywords:
             if isinstance(keyword, str) and keyword.strip() and keyword.lower() not in lowered_text:
-                _append_issue("REQUIRED_KEYWORD_MISSING", f"Required keyword missing: {keyword}", severity="medium", source="rule")
+                _append_issue(
+                    "REQUIRED_KEYWORD_MISSING",
+                    f"Required keyword missing: {keyword}",
+                    severity="medium",
+                    source="rule",
+                )
 
     min_length = config.get("min_length")
     if isinstance(min_length, int) and len(text) < min_length:
-        _append_issue("MIN_LENGTH", f"Content shorter than min_length={min_length}", severity="low", source="rule")
+        _append_issue(
+            "MIN_LENGTH",
+            f"Content shorter than min_length={min_length}",
+            severity="low",
+            source="rule",
+        )
 
     max_length = config.get("max_length")
     if isinstance(max_length, int) and len(text) > max_length:
-        _append_issue("MAX_LENGTH", f"Content exceeds max_length={max_length}", severity="low", source="rule")
+        _append_issue(
+            "MAX_LENGTH", f"Content exceeds max_length={max_length}", severity="low", source="rule"
+        )
 
     if config.get("detect_secrets", False):
         if re.search(r"\bsk-[A-Za-z0-9_-]{10,}\b", text):
-            _append_issue("SECRET_PATTERN", "Possible API key detected in payload.", severity="high", source="rule")
+            _append_issue(
+                "SECRET_PATTERN",
+                "Possible API key detected in payload.",
+                severity="high",
+                source="rule",
+            )
 
     issues.extend(_collect_foss_signal_issues())
 
@@ -5095,7 +5748,11 @@ def _execute_node(
 
     if node_type == "frontier/trigger":
         trigger_mode = str(node.config.get("trigger_mode") or "manual")
-        effective_schedule_cron = _resolve_trigger_cron(node.config if isinstance(node.config, dict) else {}) if trigger_mode == "schedule" else ""
+        effective_schedule_cron = (
+            _resolve_trigger_cron(node.config if isinstance(node.config, dict) else {})
+            if trigger_mode == "schedule"
+            else ""
+        )
         return {
             "run_context": {
                 "run_id": str(uuid4()),
@@ -5134,7 +5791,9 @@ def _execute_node(
             "Prefer deterministic, actionable outputs with explicit assumptions.",
         ]
         if include_citations:
-            system_prompt_lines.append("Include citations or source notes when factual claims are made.")
+            system_prompt_lines.append(
+                "Include citations or source notes when factual claims are made."
+            )
         if custom_prompt:
             system_prompt_lines.append("Custom instructions:\n" + custom_prompt)
 
@@ -5151,7 +5810,11 @@ def _execute_node(
         }
 
     if node_type == "frontier/manifold":
-        runtime_info = execution_state.get("runtime_info") if isinstance(execution_state.get("runtime_info"), dict) else {}
+        runtime_info = (
+            execution_state.get("runtime_info")
+            if isinstance(execution_state.get("runtime_info"), dict)
+            else {}
+        )
         by_port = incoming_by_port or {}
         node_role = _infer_graph_node_runtime_role(
             node,
@@ -5160,8 +5823,12 @@ def _execute_node(
             execution_state=execution_state,
         )
         node_runtime = _resolve_node_runtime_engine(runtime_info, node_role)
-        manifold_selected_engine = _normalize_runtime_engine(node_runtime.get("selected_engine") or "native")
-        manifold_executed_engine = _normalize_runtime_engine(node_runtime.get("executed_engine") or "native")
+        manifold_selected_engine = _normalize_runtime_engine(
+            node_runtime.get("selected_engine") or "native"
+        )
+        manifold_executed_engine = _normalize_runtime_engine(
+            node_runtime.get("executed_engine") or "native"
+        )
 
         sources = incoming
         mode = str(node.config.get("logic_mode") or "OR").upper()
@@ -5211,35 +5878,61 @@ def _execute_node(
             upstream_message = _safe_json(tool_result_inputs[-1])
         prior_agent_outputs = execution_state.setdefault("agent_outputs", [])
         collaboration_context = "\n".join(f"- {item}" for item in prior_agent_outputs[-4:])
-        runtime_info = execution_state.get("runtime_info") if isinstance(execution_state.get("runtime_info"), dict) else {}
+        runtime_info = (
+            execution_state.get("runtime_info")
+            if isinstance(execution_state.get("runtime_info"), dict)
+            else {}
+        )
         role = _infer_agent_runtime_role(
             node,
             by_port=by_port,
             prior_agent_outputs=prior_agent_outputs,
         )
-        hybrid_memory_context = _memory_get_hybrid_context(
-            session_id,
-            limit=100,
-            memory_scope="session",
-            query_text=str(upstream_message),
-            runtime_role=role,
-        ) if runtime.get("use_memory", True) else {
-            "entries": [],
-            "world_graph_entries": [],
-            "world_graph_topics": [],
-        }
-        memory_items = hybrid_memory_context.get("entries") if isinstance(hybrid_memory_context.get("entries"), list) else []
+        hybrid_memory_context = (
+            _memory_get_hybrid_context(
+                session_id,
+                limit=100,
+                memory_scope="session",
+                query_text=str(upstream_message),
+                runtime_role=role,
+            )
+            if runtime.get("use_memory", True)
+            else {
+                "entries": [],
+                "world_graph_entries": [],
+                "world_graph_topics": [],
+            }
+        )
+        memory_items = (
+            hybrid_memory_context.get("entries")
+            if isinstance(hybrid_memory_context.get("entries"), list)
+            else []
+        )
         memory_context = "\n".join(f"- {item.get('content', '')}" for item in memory_items[-6:])
-        world_graph_entries = hybrid_memory_context.get("world_graph_entries") if isinstance(hybrid_memory_context.get("world_graph_entries"), list) else []
-        world_graph_topics = hybrid_memory_context.get("world_graph_topics") if isinstance(hybrid_memory_context.get("world_graph_topics"), list) else []
-        world_graph_context = "\n".join(f"- {item.get('content', '')}" for item in world_graph_entries[-4:])
+        world_graph_entries = (
+            hybrid_memory_context.get("world_graph_entries")
+            if isinstance(hybrid_memory_context.get("world_graph_entries"), list)
+            else []
+        )
+        world_graph_topics = (
+            hybrid_memory_context.get("world_graph_topics")
+            if isinstance(hybrid_memory_context.get("world_graph_topics"), list)
+            else []
+        )
+        world_graph_context = "\n".join(
+            f"- {item.get('content', '')}" for item in world_graph_entries[-4:]
+        )
         world_graph_topic_context = ", ".join(
             str(item.get("name") or "")
             for item in world_graph_topics[:6]
             if str(item.get("name") or "")
         )
-        memory_port_context = "\n".join(f"- {_safe_json(item)[:300]}" for item in memory_inputs[-6:])
-        retrieval_context = "\n".join(f"- {_safe_json(item)[:300]}" for item in retrieval_inputs[-6:])
+        memory_port_context = "\n".join(
+            f"- {_safe_json(item)[:300]}" for item in memory_inputs[-6:]
+        )
+        retrieval_context = "\n".join(
+            f"- {_safe_json(item)[:300]}" for item in retrieval_inputs[-6:]
+        )
 
         model = str(node.config.get("model") or runtime.get("model") or _default_openai_model())
         temperature_raw = node.config.get("temperature", runtime.get("temperature", 0.2))
@@ -5252,9 +5945,17 @@ def _execute_node(
         if prompt_inputs:
             prompt_candidate = prompt_inputs[-1]
             if isinstance(prompt_candidate, dict):
-                upstream_system_prompt = str(prompt_candidate.get("system_prompt") or prompt_candidate.get("prompt_text") or "")
+                upstream_system_prompt = str(
+                    prompt_candidate.get("system_prompt")
+                    or prompt_candidate.get("prompt_text")
+                    or ""
+                )
         for item in reversed(incoming):
-            if isinstance(item, dict) and isinstance(item.get("system_prompt"), str) and item.get("system_prompt", "").strip():
+            if (
+                isinstance(item, dict)
+                and isinstance(item.get("system_prompt"), str)
+                and item.get("system_prompt", "").strip()
+            ):
                 upstream_system_prompt = str(item.get("system_prompt"))
                 break
 
@@ -5291,9 +5992,14 @@ def _execute_node(
         _conversation_manager = None
         if _env_flag("FRONTIER_CONVERSATION_ENABLED", False):
             from frontier_runtime.conversation import ConversationManager
-            conv_max_tokens = _env_int("FRONTIER_CONVERSATION_MAX_TOKENS", 8000, minimum=500, maximum=32000)
+
+            conv_max_tokens = _env_int(
+                "FRONTIER_CONVERSATION_MAX_TOKENS", 8000, minimum=500, maximum=32000
+            )
             conv_threshold = float(os.getenv("FRONTIER_CONVERSATION_COMPACTION_THRESHOLD", "0.75"))
-            conv_redis_key = f"frontier:conversation:{session_id}:{execution_state.get('run_id', 'default')}"
+            conv_redis_key = (
+                f"frontier:conversation:{session_id}:{execution_state.get('run_id', 'default')}"
+            )
             _conversation_manager = None
             if _REDIS_MEMORY.enabled and _REDIS_MEMORY._client is not None:
                 try:
@@ -5332,14 +6038,24 @@ def _execute_node(
 
         # WS1: Persist conversation state after LLM call
         if _conversation_manager is not None:
-            reasoning_summaries = model_meta.get("reasoning", {}).get("summaries", []) if isinstance(model_meta.get("reasoning"), dict) else []
-            _conversation_manager.add_turn("assistant", response_text, metadata={
-                "reasoning_summaries": reasoning_summaries,
-                "node_title": node.title,
-            })
+            reasoning_summaries = (
+                model_meta.get("reasoning", {}).get("summaries", [])
+                if isinstance(model_meta.get("reasoning"), dict)
+                else []
+            )
+            _conversation_manager.add_turn(
+                "assistant",
+                response_text,
+                metadata={
+                    "reasoning_summaries": reasoning_summaries,
+                    "node_title": node.title,
+                },
+            )
             if _REDIS_MEMORY.enabled and _REDIS_MEMORY._client is not None:
                 try:
-                    _REDIS_MEMORY._client.set(conv_redis_key, _conversation_manager.serialize(), ex=3600)
+                    _REDIS_MEMORY._client.set(
+                        conv_redis_key, _conversation_manager.serialize(), ex=3600
+                    )
                 except Exception:  # noqa: BLE001
                     pass
 
@@ -5353,6 +6069,7 @@ def _execute_node(
         # WS2: Session auto-notes
         if _env_flag("FRONTIER_SESSION_NOTES_ENABLED", False):
             from frontier_runtime.session_notes import generate_session_note
+
             session_note = generate_session_note(
                 node_title=node.title,
                 user_input=str(upstream_message)[:2000],
@@ -5456,7 +6173,11 @@ def _execute_node(
                 },
             }
         by_port = incoming_by_port or {}
-        runtime_info = execution_state.get("runtime_info") if isinstance(execution_state.get("runtime_info"), dict) else {}
+        runtime_info = (
+            execution_state.get("runtime_info")
+            if isinstance(execution_state.get("runtime_info"), dict)
+            else {}
+        )
         node_role = _infer_graph_node_runtime_role(
             node,
             node_type=node_type,
@@ -5464,8 +6185,12 @@ def _execute_node(
             execution_state=execution_state,
         )
         node_runtime = _resolve_node_runtime_engine(runtime_info, node_role)
-        tool_selected_engine = _normalize_runtime_engine(node_runtime.get("selected_engine") or "native")
-        tool_executed_engine = _normalize_runtime_engine(node_runtime.get("executed_engine") or "native")
+        tool_selected_engine = _normalize_runtime_engine(
+            node_runtime.get("selected_engine") or "native"
+        )
+        tool_executed_engine = _normalize_runtime_engine(
+            node_runtime.get("executed_engine") or "native"
+        )
 
         tool_calls = int(execution_state.get("tool_call_count") or 0) + 1
         execution_state["tool_call_count"] = tool_calls
@@ -5485,10 +6210,18 @@ def _execute_node(
             }
 
         tool_id = str(tool_config.get("tool_id") or "tool/unspecified")
-        endpoint_url = str(tool_config.get("endpoint_url") or tool_config.get("server_url") or "").strip()
-        mcp_server_url = str(tool_config.get("mcp_server_url") or tool_config.get("server_url") or "").strip()
+        endpoint_url = str(
+            tool_config.get("endpoint_url") or tool_config.get("server_url") or ""
+        ).strip()
+        mcp_server_url = str(
+            tool_config.get("mcp_server_url") or tool_config.get("server_url") or ""
+        ).strip()
 
-        if platform.enforce_egress_allowlist and endpoint_url and not _is_host_allowed(endpoint_url, platform.allowed_egress_hosts):
+        if (
+            platform.enforce_egress_allowlist
+            and endpoint_url
+            and not _is_host_allowed(endpoint_url, platform.allowed_egress_hosts)
+        ):
             return {
                 "tool_output": {
                     "ok": False,
@@ -5502,7 +6235,11 @@ def _execute_node(
                 },
             }
 
-        if platform.enforce_local_network_only and endpoint_url and not _is_local_network_url(endpoint_url, platform.allow_local_network_hostnames):
+        if (
+            platform.enforce_local_network_only
+            and endpoint_url
+            and not _is_local_network_url(endpoint_url, platform.allow_local_network_hostnames)
+        ):
             return {
                 "tool_output": {
                     "ok": False,
@@ -5531,7 +6268,13 @@ def _execute_node(
                         "requested": mcp_server_url,
                     },
                 }
-            if platform.mcp_require_local_server and mcp_server_url and not _is_local_network_url(mcp_server_url, platform.allow_local_network_hostnames):
+            if (
+                platform.mcp_require_local_server
+                and mcp_server_url
+                and not _is_local_network_url(
+                    mcp_server_url, platform.allow_local_network_hostnames
+                )
+            ):
                 return {
                     "tool_output": {
                         "ok": False,
@@ -5545,7 +6288,9 @@ def _execute_node(
                     },
                 }
 
-        is_high_risk = any(pattern.lower() in tool_id.lower() for pattern in platform.high_risk_tool_patterns)
+        is_high_risk = any(
+            pattern.lower() in tool_id.lower() for pattern in platform.high_risk_tool_patterns
+        )
         if is_high_risk and platform.require_human_approval_for_high_risk_tools:
             return {
                 "tool_output": {
@@ -5561,8 +6306,14 @@ def _execute_node(
             }
 
         tool_input_guardrail = tool_config.get("tool_input_guardrail")
-        request_payload = (_port_values(by_port, "request", "tool_input") or incoming or [run_input])[-1]
-        context_payload = (_port_values(by_port, "context", "auth_context", "data") or [])[-1] if _port_values(by_port, "context", "auth_context", "data") else {}
+        request_payload = (
+            _port_values(by_port, "request", "tool_input") or incoming or [run_input]
+        )[-1]
+        context_payload = (
+            (_port_values(by_port, "context", "auth_context", "data") or [])[-1]
+            if _port_values(by_port, "context", "auth_context", "data")
+            else {}
+        )
         if isinstance(tool_input_guardrail, dict):
             input_payload = {
                 "request": request_payload,
@@ -5594,11 +6345,15 @@ def _execute_node(
                 endpoint_url=endpoint_url,
                 method=str(tool_config.get("method") or "POST"),
             )
-            tool_result_payload = dict(delegated_result) if isinstance(delegated_result, dict) else {
-                "ok": False,
-                "rejected": True,
-                "message": "Framework tool execution returned invalid payload.",
-            }
+            tool_result_payload = (
+                dict(delegated_result)
+                if isinstance(delegated_result, dict)
+                else {
+                    "ok": False,
+                    "rejected": True,
+                    "message": "Framework tool execution returned invalid payload.",
+                }
+            )
             tool_result_payload["framework"] = tool_selected_engine
             tool_result_payload["executed_engine"] = tool_executed_engine
             tool_result_payload["runtime_mode"] = str(node_runtime.get("mode") or "native")
@@ -5625,7 +6380,9 @@ def _execute_node(
 
         tool_output_guardrail = tool_config.get("tool_output_guardrail")
         if isinstance(tool_output_guardrail, dict):
-            postcheck = _evaluate_guardrail(result["result"], tool_output_guardrail, stage="tool_output")
+            postcheck = _evaluate_guardrail(
+                result["result"], tool_output_guardrail, stage="tool_output"
+            )
             if postcheck["tripwire_triggered"]:
                 behavior = postcheck["behavior"]
                 if behavior == "raise_exception":
@@ -5658,7 +6415,11 @@ def _execute_node(
             }
         retrieval_config = node.config if isinstance(node.config, dict) else {}
         by_port = incoming_by_port or {}
-        runtime_info = execution_state.get("runtime_info") if isinstance(execution_state.get("runtime_info"), dict) else {}
+        runtime_info = (
+            execution_state.get("runtime_info")
+            if isinstance(execution_state.get("runtime_info"), dict)
+            else {}
+        )
         node_role = _infer_graph_node_runtime_role(
             node,
             node_type=node_type,
@@ -5666,20 +6427,32 @@ def _execute_node(
             execution_state=execution_state,
         )
         node_runtime = _resolve_node_runtime_engine(runtime_info, node_role)
-        retrieval_selected_engine = _normalize_runtime_engine(node_runtime.get("selected_engine") or "native")
-        retrieval_executed_engine = _normalize_runtime_engine(node_runtime.get("executed_engine") or "native")
+        retrieval_selected_engine = _normalize_runtime_engine(
+            node_runtime.get("selected_engine") or "native"
+        )
+        retrieval_executed_engine = _normalize_runtime_engine(
+            node_runtime.get("executed_engine") or "native"
+        )
         source_id = str(retrieval_config.get("source_id") or "kb://default")
         source_url = str(retrieval_config.get("source_url") or "").strip()
 
         retrieval_calls = int(execution_state.get("retrieval_call_count") or 0) + 1
         execution_state["retrieval_call_count"] = retrieval_calls
 
-        query_payload = (_port_values(by_port, "query", "data", "request") or incoming or [run_input])[-1]
-        filters_payload = (_port_values(by_port, "filters") or [])[-1] if _port_values(by_port, "filters") else {}
+        query_payload = (
+            _port_values(by_port, "query", "data", "request") or incoming or [run_input]
+        )[-1]
+        filters_payload = (
+            (_port_values(by_port, "filters") or [])[-1] if _port_values(by_port, "filters") else {}
+        )
 
-        if source_url and platform.enforce_egress_allowlist and not _is_host_allowed(source_url, platform.allowed_egress_hosts):
+        if (
+            source_url
+            and platform.enforce_egress_allowlist
+            and not _is_host_allowed(source_url, platform.allowed_egress_hosts)
+        ):
             return {
-            "documents": [],
+                "documents": [],
                 "grounding_context": "Retrieval blocked by egress allowlist policy.",
                 "status": {"state": "policy_rejected"},
                 "policy": {
@@ -5689,7 +6462,11 @@ def _execute_node(
                 },
             }
 
-        if platform.retrieval_require_local_source_url and source_url and not _is_local_network_url(source_url, platform.allow_local_network_hostnames):
+        if (
+            platform.retrieval_require_local_source_url
+            and source_url
+            and not _is_local_network_url(source_url, platform.allow_local_network_hostnames)
+        ):
             return {
                 "documents": [],
                 "grounding_context": "Retrieval blocked: source_url must be local/private.",
@@ -5730,7 +6507,10 @@ def _execute_node(
             if not isinstance(docs, list):
                 docs = []
         else:
-            docs = [{"id": f"doc-{i}", "score": round(0.95 - (i * 0.04), 2), "source": source_id} for i in range(1, doc_count + 1)]
+            docs = [
+                {"id": f"doc-{i}", "score": round(0.95 - (i * 0.04), 2), "source": source_id}
+                for i in range(1, doc_count + 1)
+            ]
             grounding_context = f"Retrieved {len(docs)} context documents from trusted source."
             retrieval_meta = {"framework": "native", "mode": "live"}
 
@@ -5754,7 +6534,11 @@ def _execute_node(
         }
 
     if node_type == "frontier/memory":
-        runtime_info = execution_state.get("runtime_info") if isinstance(execution_state.get("runtime_info"), dict) else {}
+        runtime_info = (
+            execution_state.get("runtime_info")
+            if isinstance(execution_state.get("runtime_info"), dict)
+            else {}
+        )
         by_port = incoming_by_port or {}
         node_role = _infer_graph_node_runtime_role(
             node,
@@ -5763,14 +6547,24 @@ def _execute_node(
             execution_state=execution_state,
         )
         node_runtime = _resolve_node_runtime_engine(runtime_info, node_role)
-        memory_selected_engine = _normalize_runtime_engine(node_runtime.get("selected_engine") or "native")
-        memory_executed_engine = _normalize_runtime_engine(node_runtime.get("executed_engine") or "native")
+        memory_selected_engine = _normalize_runtime_engine(
+            node_runtime.get("selected_engine") or "native"
+        )
+        memory_executed_engine = _normalize_runtime_engine(
+            node_runtime.get("executed_engine") or "native"
+        )
         action = str(node.config.get("action") or "append").lower()
         scope = str(node.config.get("scope") or "session")
         _enforce_memory_scope_policy(scope, execution_state, node_id=node.id)
-        bucket_id = _resolve_memory_bucket_id(node.config if isinstance(node.config, dict) else {}, run_input, execution_state)
+        bucket_id = _resolve_memory_bucket_id(
+            node.config if isinstance(node.config, dict) else {}, run_input, execution_state
+        )
         write_inputs = _port_values(by_port, "write_payload", "payload")
-        source = write_inputs[-1] if write_inputs else (incoming[-1] if incoming else {"message": message})
+        source = (
+            write_inputs[-1]
+            if write_inputs
+            else (incoming[-1] if incoming else {"message": message})
+        )
         if isinstance(source, dict):
             source = {**source, "runtime_role": node_role}
         memory_result, memory_meta = _run_framework_memory(
@@ -5799,7 +6593,11 @@ def _execute_node(
         return memory_result
 
     if node_type == "frontier/guardrail":
-        runtime_info = execution_state.get("runtime_info") if isinstance(execution_state.get("runtime_info"), dict) else {}
+        runtime_info = (
+            execution_state.get("runtime_info")
+            if isinstance(execution_state.get("runtime_info"), dict)
+            else {}
+        )
         by_port = incoming_by_port or {}
         node_role = _infer_graph_node_runtime_role(
             node,
@@ -5808,17 +6606,35 @@ def _execute_node(
             execution_state=execution_state,
         )
         node_runtime = _resolve_node_runtime_engine(runtime_info, node_role)
-        guardrail_selected_engine = _normalize_runtime_engine(node_runtime.get("selected_engine") or "native")
-        guardrail_executed_engine = _normalize_runtime_engine(node_runtime.get("executed_engine") or "native")
+        guardrail_selected_engine = _normalize_runtime_engine(
+            node_runtime.get("selected_engine") or "native"
+        )
+        guardrail_executed_engine = _normalize_runtime_engine(
+            node_runtime.get("executed_engine") or "native"
+        )
         candidates = _port_values(by_port, "candidate_output", "candidate", "data")
-        candidate = candidates[-1] if candidates else (incoming[-1] if incoming else {"response": run_input.get("message", "")})
-        candidate_payload = candidate.get("response") if isinstance(candidate, dict) and "response" in candidate else candidate
+        candidate = (
+            candidates[-1]
+            if candidates
+            else (incoming[-1] if incoming else {"response": run_input.get("message", "")})
+        )
+        candidate_payload = (
+            candidate.get("response")
+            if isinstance(candidate, dict) and "response" in candidate
+            else candidate
+        )
         guardrail_config = node.config if isinstance(node.config, dict) else {}
-        guardrail_config, resolved_ruleset_id, ruleset_error = _resolve_guardrail_config(guardrail_config)
+        guardrail_config, resolved_ruleset_id, ruleset_error = _resolve_guardrail_config(
+            guardrail_config
+        )
         if ruleset_error == "not_found":
-            raise RuntimeError(f"Guardrail ruleset '{resolved_ruleset_id}' not found for node '{node.id}'")
+            raise RuntimeError(
+                f"Guardrail ruleset '{resolved_ruleset_id}' not found for node '{node.id}'"
+            )
         if ruleset_error == "not_published":
-            raise RuntimeError(f"Guardrail ruleset '{resolved_ruleset_id}' is not published for node '{node.id}'")
+            raise RuntimeError(
+                f"Guardrail ruleset '{resolved_ruleset_id}' is not published for node '{node.id}'"
+            )
         stage = str(guardrail_config.get("stage") or "output")
         evaluation, guardrail_meta = _run_framework_guardrail(
             engine=guardrail_executed_engine,
@@ -5828,12 +6644,13 @@ def _execute_node(
         )
 
         if evaluation["tripwire_triggered"] and evaluation["behavior"] == "raise_exception":
-            raise RuntimeError(f"{stage.capitalize()}GuardrailTripwireTriggered at node '{node.id}'")
+            raise RuntimeError(
+                f"{stage.capitalize()}GuardrailTripwireTriggered at node '{node.id}'"
+            )
 
         if evaluation["tripwire_triggered"] and evaluation["behavior"] == "reject_content":
             replacement = str(
-                guardrail_config.get("reject_message")
-                or "Content rejected by guardrail policy."
+                guardrail_config.get("reject_message") or "Content rejected by guardrail policy."
             )
             approved_output: Any = replacement
         else:
@@ -5864,7 +6681,11 @@ def _execute_node(
         }
 
     if node_type == "frontier/human-review":
-        runtime_info = execution_state.get("runtime_info") if isinstance(execution_state.get("runtime_info"), dict) else {}
+        runtime_info = (
+            execution_state.get("runtime_info")
+            if isinstance(execution_state.get("runtime_info"), dict)
+            else {}
+        )
         by_port = incoming_by_port or {}
         node_role = _infer_graph_node_runtime_role(
             node,
@@ -5873,11 +6694,17 @@ def _execute_node(
             execution_state=execution_state,
         )
         node_runtime = _resolve_node_runtime_engine(runtime_info, node_role)
-        review_selected_engine = _normalize_runtime_engine(node_runtime.get("selected_engine") or "native")
-        review_executed_engine = _normalize_runtime_engine(node_runtime.get("executed_engine") or "native")
+        review_selected_engine = _normalize_runtime_engine(
+            node_runtime.get("selected_engine") or "native"
+        )
+        review_executed_engine = _normalize_runtime_engine(
+            node_runtime.get("executed_engine") or "native"
+        )
 
         candidates = _port_values(by_port, "candidate", "approved_output", "data")
-        candidate_payload = candidates[-1] if candidates else (incoming[-1] if incoming else {"message": message})
+        candidate_payload = (
+            candidates[-1] if candidates else (incoming[-1] if incoming else {"message": message})
+        )
         reviewer_group = str(node.config.get("reviewer_group") or "reviewers")
         auto_approve = bool(node.config.get("auto_approve", True))
 
@@ -5891,7 +6718,9 @@ def _execute_node(
             review_result = {
                 "approved": bool(auto_approve),
                 "rejected": False,
-                "feedback": "Auto-approved in test execution mode." if auto_approve else "Pending human approval.",
+                "feedback": "Auto-approved in test execution mode."
+                if auto_approve
+                else "Pending human approval.",
                 "reviewer_group": reviewer_group,
                 "candidate": candidate_payload,
                 "review_status": "auto_approved" if auto_approve else "pending_approval",
@@ -5904,7 +6733,9 @@ def _execute_node(
 
     if node_type == "frontier/output":
         by_port = incoming_by_port or {}
-        result_inputs = _port_values(by_port, "result", "data", "approved", "approved_output", "payload")
+        result_inputs = _port_values(
+            by_port, "result", "data", "approved", "approved_output", "payload"
+        )
         payload = result_inputs[-1] if result_inputs else (incoming[-1] if incoming else run_input)
         return {
             "published": {
@@ -6102,14 +6933,30 @@ class InMemoryStore:
         self.run_details: dict[str, dict[str, Any]] = {
             "11111111-1111-4111-8111-111111111111": {
                 "artifacts": [
-                    {"id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1", "name": "Investor Brief", "status": "Needs Review", "version": 2},
-                    {"id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa2", "name": "Email Sequence", "status": "Draft", "version": 1},
+                    {
+                        "id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1",
+                        "name": "Investor Brief",
+                        "status": "Needs Review",
+                        "version": 2,
+                    },
+                    {
+                        "id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa2",
+                        "name": "Email Sequence",
+                        "status": "Draft",
+                        "version": 1,
+                    },
                 ],
                 "status": "Running",
                 "graph": {
                     "nodes": [
                         {"id": "start", "title": "Intake", "type": "trigger", "x": 80, "y": 80},
-                        {"id": "orchestrator", "title": "Orchestrator", "type": "agent", "x": 280, "y": 80},
+                        {
+                            "id": "orchestrator",
+                            "title": "Orchestrator",
+                            "type": "agent",
+                            "x": 280,
+                            "y": 80,
+                        },
                         {"id": "out", "title": "Artifact", "type": "output", "x": 520, "y": 80},
                     ],
                     "links": [
@@ -6137,8 +6984,18 @@ class InMemoryStore:
         }
 
         self.artifacts: list[ArtifactSummary] = [
-            ArtifactSummary(id="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1", name="Investor Brief", status="Needs Review", version=2),
-            ArtifactSummary(id="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa2", name="Email Sequence", status="Draft", version=1),
+            ArtifactSummary(
+                id="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1",
+                name="Investor Brief",
+                status="Needs Review",
+                version=2,
+            ),
+            ArtifactSummary(
+                id="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa2",
+                name="Email Sequence",
+                status="Draft",
+                version=1,
+            ),
         ]
 
         self.inbox: list[InboxItem] = [
@@ -6212,21 +7069,53 @@ class InMemoryStore:
                 graph_json={
                     "nodes": [
                         {"id": "trigger", "title": "Trigger", "type": "trigger", "x": 70, "y": 90},
-                        {"id": "prompt", "title": "System Prompt", "type": "prompt", "x": 320, "y": 90},
-                        {"id": "agent", "title": "Agent Runtime", "type": "agent", "x": 610, "y": 90},
-                        {"id": "retrieval", "title": "Retrieval", "type": "retrieval", "x": 870, "y": 90},
-                        {"id": "guardrail", "title": "Guardrail", "type": "guardrail", "x": 1120, "y": 90},
+                        {
+                            "id": "prompt",
+                            "title": "System Prompt",
+                            "type": "prompt",
+                            "x": 320,
+                            "y": 90,
+                        },
+                        {
+                            "id": "agent",
+                            "title": "Agent Runtime",
+                            "type": "agent",
+                            "x": 610,
+                            "y": 90,
+                        },
+                        {
+                            "id": "retrieval",
+                            "title": "Retrieval",
+                            "type": "retrieval",
+                            "x": 870,
+                            "y": 90,
+                        },
+                        {
+                            "id": "guardrail",
+                            "title": "Guardrail",
+                            "type": "guardrail",
+                            "x": 1120,
+                            "y": 90,
+                        },
                         {"id": "output", "title": "Output", "type": "output", "x": 1380, "y": 90},
                     ],
                     "links": [
                         {"from": "trigger", "to": "agent"},
-                        {"from": "prompt", "to": "agent", "from_port": "prompt", "to_port": "prompt"},
+                        {
+                            "from": "prompt",
+                            "to": "agent",
+                            "from_port": "prompt",
+                            "to_port": "prompt",
+                        },
                         {"from": "agent", "to": "retrieval"},
                         {"from": "retrieval", "to": "guardrail"},
                         {"from": "guardrail", "to": "output"},
                     ],
                 },
-                metadata_json={"template_version": 1, "recommended_team": ["marketing", "product", "compliance"]},
+                metadata_json={
+                    "template_version": 1,
+                    "recommended_team": ["marketing", "product", "compliance"],
+                },
             ),
             "pbk-incident-response": PlaybookDefinition(
                 id="pbk-incident-response",
@@ -6237,9 +7126,27 @@ class InMemoryStore:
                     "nodes": [
                         {"id": "trigger", "title": "Trigger", "type": "trigger", "x": 70, "y": 120},
                         {"id": "memory", "title": "Memory", "type": "memory", "x": 330, "y": 120},
-                        {"id": "agent", "title": "Agent Runtime", "type": "agent", "x": 620, "y": 120},
-                        {"id": "guardrail", "title": "Guardrail", "type": "guardrail", "x": 890, "y": 120},
-                        {"id": "review", "title": "Human Review", "type": "human-review", "x": 1150, "y": 120},
+                        {
+                            "id": "agent",
+                            "title": "Agent Runtime",
+                            "type": "agent",
+                            "x": 620,
+                            "y": 120,
+                        },
+                        {
+                            "id": "guardrail",
+                            "title": "Guardrail",
+                            "type": "guardrail",
+                            "x": 890,
+                            "y": 120,
+                        },
+                        {
+                            "id": "review",
+                            "title": "Human Review",
+                            "type": "human-review",
+                            "x": 1150,
+                            "y": 120,
+                        },
                         {"id": "output", "title": "Output", "type": "output", "x": 1410, "y": 120},
                     ],
                     "links": [
@@ -6250,7 +7157,10 @@ class InMemoryStore:
                         {"from": "review", "to": "output"},
                     ],
                 },
-                metadata_json={"template_version": 1, "recommended_team": ["secops", "platform", "legal"]},
+                metadata_json={
+                    "template_version": 1,
+                    "recommended_team": ["secops", "platform", "legal"],
+                },
             ),
             "pbk-founder-daily-brief": PlaybookDefinition(
                 id="pbk-founder-daily-brief",
@@ -6259,22 +7169,107 @@ class InMemoryStore:
                 category="operations",
                 graph_json={
                     "nodes": [
-                        {"id": "trigger", "title": "Trigger", "type": "trigger", "x": 70, "y": 100, "config": {"trigger_mode": "schedule", "schedule_preset": "daily", "schedule_time": "08:30"}},
-                        {"id": "prompt", "title": "Brief Prompt", "type": "prompt", "x": 310, "y": 100, "config": {"system_prompt_text": "Summarize today's priorities, risks, and recommended actions for founders."}},
-                        {"id": "retrieval", "title": "Retrieve Signals", "type": "retrieval", "x": 560, "y": 100, "config": {"source_type": "hybrid", "source_id": "kb://default", "top_k": 5}},
-                        {"id": "agent", "title": "Strategy Agent", "type": "agent", "x": 820, "y": 100, "config": {"agent_id": "ceo-strategy-agent", "model": "gpt-5.2", "temperature": 0.2}},
-                        {"id": "guard", "title": "Guardrail", "type": "guardrail", "x": 1070, "y": 100, "config": {"stage": "output", "tripwire_action": "allow"}},
-                        {"id": "output", "title": "Publish Brief", "type": "output", "x": 1320, "y": 100, "config": {"destination": "artifact_store", "format": "markdown"}},
+                        {
+                            "id": "trigger",
+                            "title": "Trigger",
+                            "type": "trigger",
+                            "x": 70,
+                            "y": 100,
+                            "config": {
+                                "trigger_mode": "schedule",
+                                "schedule_preset": "daily",
+                                "schedule_time": "08:30",
+                            },
+                        },
+                        {
+                            "id": "prompt",
+                            "title": "Brief Prompt",
+                            "type": "prompt",
+                            "x": 310,
+                            "y": 100,
+                            "config": {
+                                "system_prompt_text": "Summarize today's priorities, risks, and recommended actions for founders."
+                            },
+                        },
+                        {
+                            "id": "retrieval",
+                            "title": "Retrieve Signals",
+                            "type": "retrieval",
+                            "x": 560,
+                            "y": 100,
+                            "config": {
+                                "source_type": "hybrid",
+                                "source_id": "kb://default",
+                                "top_k": 5,
+                            },
+                        },
+                        {
+                            "id": "agent",
+                            "title": "Strategy Agent",
+                            "type": "agent",
+                            "x": 820,
+                            "y": 100,
+                            "config": {
+                                "agent_id": "ceo-strategy-agent",
+                                "model": "gpt-5.2",
+                                "temperature": 0.2,
+                            },
+                        },
+                        {
+                            "id": "guard",
+                            "title": "Guardrail",
+                            "type": "guardrail",
+                            "x": 1070,
+                            "y": 100,
+                            "config": {"stage": "output", "tripwire_action": "allow"},
+                        },
+                        {
+                            "id": "output",
+                            "title": "Publish Brief",
+                            "type": "output",
+                            "x": 1320,
+                            "y": 100,
+                            "config": {"destination": "artifact_store", "format": "markdown"},
+                        },
                     ],
                     "links": [
-                        {"from": "trigger", "to": "retrieval", "from_port": "payload", "to_port": "query"},
-                        {"from": "prompt", "to": "agent", "from_port": "prompt", "to_port": "prompt"},
-                        {"from": "retrieval", "to": "agent", "from_port": "grounding_context", "to_port": "retrieval"},
-                        {"from": "agent", "to": "guard", "from_port": "response", "to_port": "candidate_output"},
-                        {"from": "guard", "to": "output", "from_port": "approved_output", "to_port": "result"},
+                        {
+                            "from": "trigger",
+                            "to": "retrieval",
+                            "from_port": "payload",
+                            "to_port": "query",
+                        },
+                        {
+                            "from": "prompt",
+                            "to": "agent",
+                            "from_port": "prompt",
+                            "to_port": "prompt",
+                        },
+                        {
+                            "from": "retrieval",
+                            "to": "agent",
+                            "from_port": "grounding_context",
+                            "to_port": "retrieval",
+                        },
+                        {
+                            "from": "agent",
+                            "to": "guard",
+                            "from_port": "response",
+                            "to_port": "candidate_output",
+                        },
+                        {
+                            "from": "guard",
+                            "to": "output",
+                            "from_port": "approved_output",
+                            "to_port": "result",
+                        },
                     ],
                 },
-                metadata_json={"template_version": 1, "recommended_team": ["founders", "ops"], "automation_goal": "daily-prioritization"},
+                metadata_json={
+                    "template_version": 1,
+                    "recommended_team": ["founders", "ops"],
+                    "automation_goal": "daily-prioritization",
+                },
             ),
             "pbk-lead-qual-and-followup": PlaybookDefinition(
                 id="pbk-lead-qual-and-followup",
@@ -6283,23 +7278,110 @@ class InMemoryStore:
                 category="go_to_market",
                 graph_json={
                     "nodes": [
-                        {"id": "trigger", "title": "Trigger", "type": "trigger", "x": 70, "y": 160, "config": {"trigger_mode": "api_event", "api_event_name": "lead.created"}},
-                        {"id": "memory", "title": "Memory", "type": "memory", "x": 320, "y": 160, "config": {"action": "append", "scope": "tenant"}},
-                        {"id": "retrieval", "title": "Retrieve Context", "type": "retrieval", "x": 560, "y": 160, "config": {"source_type": "hybrid", "source_id": "kb://default", "top_k": 4}},
-                        {"id": "agent", "title": "Sales Agent", "type": "agent", "x": 820, "y": 160, "config": {"agent_id": "sales-agent", "model": "gpt-5.2", "temperature": 0.3}},
-                        {"id": "review", "title": "Human Review", "type": "human-review", "x": 1060, "y": 160, "config": {"reviewer_group": "sales"}},
-                        {"id": "output", "title": "Output", "type": "output", "x": 1300, "y": 160, "config": {"destination": "artifact_store", "format": "json"}},
+                        {
+                            "id": "trigger",
+                            "title": "Trigger",
+                            "type": "trigger",
+                            "x": 70,
+                            "y": 160,
+                            "config": {
+                                "trigger_mode": "api_event",
+                                "api_event_name": "lead.created",
+                            },
+                        },
+                        {
+                            "id": "memory",
+                            "title": "Memory",
+                            "type": "memory",
+                            "x": 320,
+                            "y": 160,
+                            "config": {"action": "append", "scope": "tenant"},
+                        },
+                        {
+                            "id": "retrieval",
+                            "title": "Retrieve Context",
+                            "type": "retrieval",
+                            "x": 560,
+                            "y": 160,
+                            "config": {
+                                "source_type": "hybrid",
+                                "source_id": "kb://default",
+                                "top_k": 4,
+                            },
+                        },
+                        {
+                            "id": "agent",
+                            "title": "Sales Agent",
+                            "type": "agent",
+                            "x": 820,
+                            "y": 160,
+                            "config": {
+                                "agent_id": "sales-agent",
+                                "model": "gpt-5.2",
+                                "temperature": 0.3,
+                            },
+                        },
+                        {
+                            "id": "review",
+                            "title": "Human Review",
+                            "type": "human-review",
+                            "x": 1060,
+                            "y": 160,
+                            "config": {"reviewer_group": "sales"},
+                        },
+                        {
+                            "id": "output",
+                            "title": "Output",
+                            "type": "output",
+                            "x": 1300,
+                            "y": 160,
+                            "config": {"destination": "artifact_store", "format": "json"},
+                        },
                     ],
                     "links": [
-                        {"from": "trigger", "to": "memory", "from_port": "payload", "to_port": "write_payload"},
-                        {"from": "trigger", "to": "retrieval", "from_port": "payload", "to_port": "query"},
-                        {"from": "memory", "to": "agent", "from_port": "context", "to_port": "memory"},
-                        {"from": "retrieval", "to": "agent", "from_port": "grounding_context", "to_port": "retrieval"},
-                        {"from": "agent", "to": "review", "from_port": "response", "to_port": "candidate"},
-                        {"from": "review", "to": "output", "from_port": "approved", "to_port": "result"},
+                        {
+                            "from": "trigger",
+                            "to": "memory",
+                            "from_port": "payload",
+                            "to_port": "write_payload",
+                        },
+                        {
+                            "from": "trigger",
+                            "to": "retrieval",
+                            "from_port": "payload",
+                            "to_port": "query",
+                        },
+                        {
+                            "from": "memory",
+                            "to": "agent",
+                            "from_port": "context",
+                            "to_port": "memory",
+                        },
+                        {
+                            "from": "retrieval",
+                            "to": "agent",
+                            "from_port": "grounding_context",
+                            "to_port": "retrieval",
+                        },
+                        {
+                            "from": "agent",
+                            "to": "review",
+                            "from_port": "response",
+                            "to_port": "candidate",
+                        },
+                        {
+                            "from": "review",
+                            "to": "output",
+                            "from_port": "approved",
+                            "to_port": "result",
+                        },
                     ],
                 },
-                metadata_json={"template_version": 1, "recommended_team": ["sales", "founders"], "automation_goal": "faster-lead-response"},
+                metadata_json={
+                    "template_version": 1,
+                    "recommended_team": ["sales", "founders"],
+                    "automation_goal": "faster-lead-response",
+                },
             ),
             "pbk-customer-insight-loop": PlaybookDefinition(
                 id="pbk-customer-insight-loop",
@@ -6308,22 +7390,102 @@ class InMemoryStore:
                 category="operations",
                 graph_json={
                     "nodes": [
-                        {"id": "trigger", "title": "Trigger", "type": "trigger", "x": 70, "y": 220, "config": {"trigger_mode": "api_event", "api_event_name": "customer.interview.logged"}},
-                        {"id": "prompt", "title": "Prompt", "type": "prompt", "x": 300, "y": 220, "config": {"system_prompt_text": "Extract pains, feature requests, and urgency with concise rationale."}},
-                        {"id": "agent", "title": "Product Agent", "type": "agent", "x": 550, "y": 220, "config": {"agent_id": "product-owner-agent", "model": "gpt-5.2", "temperature": 0.2}},
-                        {"id": "guard", "title": "Guardrail", "type": "guardrail", "x": 790, "y": 220, "config": {"stage": "output", "tripwire_action": "allow"}},
-                        {"id": "manifold", "title": "Manifold", "type": "manifold", "x": 1030, "y": 220, "config": {"logic_mode": "OR", "min_required": 1}},
-                        {"id": "output", "title": "Output", "type": "output", "x": 1270, "y": 220, "config": {"destination": "artifact_store", "format": "markdown"}},
+                        {
+                            "id": "trigger",
+                            "title": "Trigger",
+                            "type": "trigger",
+                            "x": 70,
+                            "y": 220,
+                            "config": {
+                                "trigger_mode": "api_event",
+                                "api_event_name": "customer.interview.logged",
+                            },
+                        },
+                        {
+                            "id": "prompt",
+                            "title": "Prompt",
+                            "type": "prompt",
+                            "x": 300,
+                            "y": 220,
+                            "config": {
+                                "system_prompt_text": "Extract pains, feature requests, and urgency with concise rationale."
+                            },
+                        },
+                        {
+                            "id": "agent",
+                            "title": "Product Agent",
+                            "type": "agent",
+                            "x": 550,
+                            "y": 220,
+                            "config": {
+                                "agent_id": "product-owner-agent",
+                                "model": "gpt-5.2",
+                                "temperature": 0.2,
+                            },
+                        },
+                        {
+                            "id": "guard",
+                            "title": "Guardrail",
+                            "type": "guardrail",
+                            "x": 790,
+                            "y": 220,
+                            "config": {"stage": "output", "tripwire_action": "allow"},
+                        },
+                        {
+                            "id": "manifold",
+                            "title": "Manifold",
+                            "type": "manifold",
+                            "x": 1030,
+                            "y": 220,
+                            "config": {"logic_mode": "OR", "min_required": 1},
+                        },
+                        {
+                            "id": "output",
+                            "title": "Output",
+                            "type": "output",
+                            "x": 1270,
+                            "y": 220,
+                            "config": {"destination": "artifact_store", "format": "markdown"},
+                        },
                     ],
                     "links": [
-                        {"from": "prompt", "to": "agent", "from_port": "prompt", "to_port": "prompt"},
-                        {"from": "agent", "to": "guard", "from_port": "response", "to_port": "candidate_output"},
-                        {"from": "guard", "to": "manifold", "from_port": "approved_output", "to_port": "in"},
-                        {"from": "agent", "to": "manifold", "from_port": "response", "to_port": "in"},
-                        {"from": "manifold", "to": "output", "from_port": "payload", "to_port": "result"},
+                        {
+                            "from": "prompt",
+                            "to": "agent",
+                            "from_port": "prompt",
+                            "to_port": "prompt",
+                        },
+                        {
+                            "from": "agent",
+                            "to": "guard",
+                            "from_port": "response",
+                            "to_port": "candidate_output",
+                        },
+                        {
+                            "from": "guard",
+                            "to": "manifold",
+                            "from_port": "approved_output",
+                            "to_port": "in",
+                        },
+                        {
+                            "from": "agent",
+                            "to": "manifold",
+                            "from_port": "response",
+                            "to_port": "in",
+                        },
+                        {
+                            "from": "manifold",
+                            "to": "output",
+                            "from_port": "payload",
+                            "to_port": "result",
+                        },
                     ],
                 },
-                metadata_json={"template_version": 1, "recommended_team": ["product", "founders", "customer-success"], "automation_goal": "voice-of-customer-to-roadmap"},
+                metadata_json={
+                    "template_version": 1,
+                    "recommended_team": ["product", "founders", "customer-success"],
+                    "automation_goal": "voice-of-customer-to-roadmap",
+                },
             ),
             "pbk-investor-update-autopilot": PlaybookDefinition(
                 id="pbk-investor-update-autopilot",
@@ -6332,22 +7494,106 @@ class InMemoryStore:
                 category="operations",
                 graph_json={
                     "nodes": [
-                        {"id": "trigger", "title": "Trigger", "type": "trigger", "x": 70, "y": 280, "config": {"trigger_mode": "schedule", "schedule_preset": "weekly", "schedule_day_of_week": "1", "schedule_time": "08:00"}},
-                        {"id": "retrieval", "title": "Retrieve Metrics", "type": "retrieval", "x": 320, "y": 280, "config": {"source_type": "hybrid", "source_id": "kb://default", "top_k": 6}},
-                        {"id": "agent", "title": "CFO Agent", "type": "agent", "x": 560, "y": 280, "config": {"agent_id": "cfo-agent", "model": "gpt-5.2", "temperature": 0.1}},
-                        {"id": "tool", "title": "Tool", "type": "tool-call", "x": 810, "y": 280, "config": {"tool_id": "tool/http", "method": "POST"}},
-                        {"id": "review", "title": "Human Review", "type": "human-review", "x": 1060, "y": 280, "config": {"reviewer_group": "founders"}},
-                        {"id": "output", "title": "Output", "type": "output", "x": 1310, "y": 280, "config": {"destination": "artifact_store", "format": "markdown"}},
+                        {
+                            "id": "trigger",
+                            "title": "Trigger",
+                            "type": "trigger",
+                            "x": 70,
+                            "y": 280,
+                            "config": {
+                                "trigger_mode": "schedule",
+                                "schedule_preset": "weekly",
+                                "schedule_day_of_week": "1",
+                                "schedule_time": "08:00",
+                            },
+                        },
+                        {
+                            "id": "retrieval",
+                            "title": "Retrieve Metrics",
+                            "type": "retrieval",
+                            "x": 320,
+                            "y": 280,
+                            "config": {
+                                "source_type": "hybrid",
+                                "source_id": "kb://default",
+                                "top_k": 6,
+                            },
+                        },
+                        {
+                            "id": "agent",
+                            "title": "CFO Agent",
+                            "type": "agent",
+                            "x": 560,
+                            "y": 280,
+                            "config": {
+                                "agent_id": "cfo-agent",
+                                "model": "gpt-5.2",
+                                "temperature": 0.1,
+                            },
+                        },
+                        {
+                            "id": "tool",
+                            "title": "Tool",
+                            "type": "tool-call",
+                            "x": 810,
+                            "y": 280,
+                            "config": {"tool_id": "tool/http", "method": "POST"},
+                        },
+                        {
+                            "id": "review",
+                            "title": "Human Review",
+                            "type": "human-review",
+                            "x": 1060,
+                            "y": 280,
+                            "config": {"reviewer_group": "founders"},
+                        },
+                        {
+                            "id": "output",
+                            "title": "Output",
+                            "type": "output",
+                            "x": 1310,
+                            "y": 280,
+                            "config": {"destination": "artifact_store", "format": "markdown"},
+                        },
                     ],
                     "links": [
-                        {"from": "trigger", "to": "retrieval", "from_port": "payload", "to_port": "query"},
-                        {"from": "retrieval", "to": "agent", "from_port": "grounding_context", "to_port": "retrieval"},
-                        {"from": "agent", "to": "tool", "from_port": "tool_request", "to_port": "request"},
-                        {"from": "tool", "to": "review", "from_port": "result", "to_port": "candidate"},
-                        {"from": "review", "to": "output", "from_port": "approved", "to_port": "result"},
+                        {
+                            "from": "trigger",
+                            "to": "retrieval",
+                            "from_port": "payload",
+                            "to_port": "query",
+                        },
+                        {
+                            "from": "retrieval",
+                            "to": "agent",
+                            "from_port": "grounding_context",
+                            "to_port": "retrieval",
+                        },
+                        {
+                            "from": "agent",
+                            "to": "tool",
+                            "from_port": "tool_request",
+                            "to_port": "request",
+                        },
+                        {
+                            "from": "tool",
+                            "to": "review",
+                            "from_port": "result",
+                            "to_port": "candidate",
+                        },
+                        {
+                            "from": "review",
+                            "to": "output",
+                            "from_port": "approved",
+                            "to_port": "result",
+                        },
                     ],
                 },
-                metadata_json={"template_version": 1, "recommended_team": ["founders", "finance"], "automation_goal": "weekly-investor-comms"},
+                metadata_json={
+                    "template_version": 1,
+                    "recommended_team": ["founders", "finance"],
+                    "automation_goal": "weekly-investor-comms",
+                },
             ),
             "pbk-hiring-pipeline-assistant": PlaybookDefinition(
                 id="pbk-hiring-pipeline-assistant",
@@ -6356,21 +7602,96 @@ class InMemoryStore:
                 category="operations",
                 graph_json={
                     "nodes": [
-                        {"id": "trigger", "title": "Trigger", "type": "trigger", "x": 70, "y": 340, "config": {"trigger_mode": "api_event", "api_event_name": "candidate.applied"}},
-                        {"id": "prompt", "title": "Prompt", "type": "prompt", "x": 320, "y": 340, "config": {"system_prompt_text": "Evaluate candidate fit by role criteria and output concise interview guidance."}},
-                        {"id": "agent", "title": "People Ops Agent", "type": "agent", "x": 570, "y": 340, "config": {"agent_id": "people-ops-agent", "model": "gpt-5.2", "temperature": 0.2}},
-                        {"id": "guard", "title": "Guardrail", "type": "guardrail", "x": 820, "y": 340, "config": {"stage": "output", "tripwire_action": "allow"}},
-                        {"id": "review", "title": "Human Review", "type": "human-review", "x": 1060, "y": 340, "config": {"reviewer_group": "hiring-managers"}},
-                        {"id": "output", "title": "Output", "type": "output", "x": 1310, "y": 340, "config": {"destination": "artifact_store", "format": "json"}},
+                        {
+                            "id": "trigger",
+                            "title": "Trigger",
+                            "type": "trigger",
+                            "x": 70,
+                            "y": 340,
+                            "config": {
+                                "trigger_mode": "api_event",
+                                "api_event_name": "candidate.applied",
+                            },
+                        },
+                        {
+                            "id": "prompt",
+                            "title": "Prompt",
+                            "type": "prompt",
+                            "x": 320,
+                            "y": 340,
+                            "config": {
+                                "system_prompt_text": "Evaluate candidate fit by role criteria and output concise interview guidance."
+                            },
+                        },
+                        {
+                            "id": "agent",
+                            "title": "People Ops Agent",
+                            "type": "agent",
+                            "x": 570,
+                            "y": 340,
+                            "config": {
+                                "agent_id": "people-ops-agent",
+                                "model": "gpt-5.2",
+                                "temperature": 0.2,
+                            },
+                        },
+                        {
+                            "id": "guard",
+                            "title": "Guardrail",
+                            "type": "guardrail",
+                            "x": 820,
+                            "y": 340,
+                            "config": {"stage": "output", "tripwire_action": "allow"},
+                        },
+                        {
+                            "id": "review",
+                            "title": "Human Review",
+                            "type": "human-review",
+                            "x": 1060,
+                            "y": 340,
+                            "config": {"reviewer_group": "hiring-managers"},
+                        },
+                        {
+                            "id": "output",
+                            "title": "Output",
+                            "type": "output",
+                            "x": 1310,
+                            "y": 340,
+                            "config": {"destination": "artifact_store", "format": "json"},
+                        },
                     ],
                     "links": [
-                        {"from": "prompt", "to": "agent", "from_port": "prompt", "to_port": "prompt"},
-                        {"from": "agent", "to": "guard", "from_port": "response", "to_port": "candidate_output"},
-                        {"from": "guard", "to": "review", "from_port": "approved_output", "to_port": "candidate"},
-                        {"from": "review", "to": "output", "from_port": "approved", "to_port": "result"},
+                        {
+                            "from": "prompt",
+                            "to": "agent",
+                            "from_port": "prompt",
+                            "to_port": "prompt",
+                        },
+                        {
+                            "from": "agent",
+                            "to": "guard",
+                            "from_port": "response",
+                            "to_port": "candidate_output",
+                        },
+                        {
+                            "from": "guard",
+                            "to": "review",
+                            "from_port": "approved_output",
+                            "to_port": "candidate",
+                        },
+                        {
+                            "from": "review",
+                            "to": "output",
+                            "from_port": "approved",
+                            "to_port": "result",
+                        },
                     ],
                 },
-                metadata_json={"template_version": 1, "recommended_team": ["people-ops", "founders"], "automation_goal": "faster-hiring-decisions"},
+                metadata_json={
+                    "template_version": 1,
+                    "recommended_team": ["people-ops", "founders"],
+                    "automation_goal": "faster-hiring-decisions",
+                },
             ),
         }
 
@@ -6422,7 +7743,9 @@ def _configured_trusted_oidc_issuers() -> set[str]:
         candidate = str(item or "").strip()
         if not candidate:
             continue
-        trusted.add(_normalize_absolute_http_url(candidate, setting_name="FRONTIER_AUTH_TRUSTED_ISSUERS"))
+        trusted.add(
+            _normalize_absolute_http_url(candidate, setting_name="FRONTIER_AUTH_TRUSTED_ISSUERS")
+        )
     return trusted
 
 
@@ -6433,7 +7756,10 @@ def _cors_allowed_origins() -> list[str]:
         if str(item).strip()
     ]
     if configured:
-        return [_normalize_origin_url(item, setting_name="FRONTIER_CORS_ALLOWED_ORIGINS") for item in configured]
+        return [
+            _normalize_origin_url(item, setting_name="FRONTIER_CORS_ALLOWED_ORIGINS")
+            for item in configured
+        ]
     return ["http://localhost:3000", "http://127.0.0.1:3000"]
 
 
@@ -6502,7 +7828,9 @@ def _configured_admin_actors() -> set[str]:
 
     bootstrap_defaults = {
         str(os.getenv("FRONTIER_BOOTSTRAP_ADMIN_USERNAME") or "frontier-admin").strip().lower(),
-        str(os.getenv("FRONTIER_BOOTSTRAP_ADMIN_EMAIL") or "admin@frontier.localhost").strip().lower(),
+        str(os.getenv("FRONTIER_BOOTSTRAP_ADMIN_EMAIL") or "admin@frontier.localhost")
+        .strip()
+        .lower(),
         str(os.getenv("FRONTIER_BOOTSTRAP_ADMIN_SUBJECT") or "frontier-admin").strip().lower(),
     }
     return {value for value in bootstrap_defaults if value}
@@ -6564,8 +7892,12 @@ def _configured_operator_oidc() -> dict[str, str]:
     jwks_url = str(os.getenv("FRONTIER_AUTH_OIDC_JWKS_URL") or "").strip()
     provider = str(os.getenv("FRONTIER_AUTH_OIDC_PROVIDER") or "").strip().lower()
     if issuer and audience and jwks_url:
-        normalized_issuer = _normalize_absolute_http_url(issuer, setting_name="FRONTIER_AUTH_OIDC_ISSUER")
-        normalized_jwks_url = _normalize_absolute_http_url(jwks_url, setting_name="FRONTIER_AUTH_OIDC_JWKS_URL")
+        normalized_issuer = _normalize_absolute_http_url(
+            issuer, setting_name="FRONTIER_AUTH_OIDC_ISSUER"
+        )
+        normalized_jwks_url = _normalize_absolute_http_url(
+            jwks_url, setting_name="FRONTIER_AUTH_OIDC_JWKS_URL"
+        )
         issuer_parts = urlsplit(normalized_issuer)
         jwks_parts = urlsplit(normalized_jwks_url)
         issuer_host = str(issuer_parts.hostname or "").strip().lower()
@@ -6573,19 +7905,31 @@ def _configured_operator_oidc() -> dict[str, str]:
         issuer_is_local = _hostname_is_local(issuer_host)
         jwks_is_local = _hostname_is_local(jwks_host)
         if issuer_parts.scheme != "https" and not issuer_is_local:
-            raise ValueError("FRONTIER_AUTH_OIDC_ISSUER must use https outside localhost development")
+            raise ValueError(
+                "FRONTIER_AUTH_OIDC_ISSUER must use https outside localhost development"
+            )
         if jwks_parts.scheme != "https" and not jwks_is_local:
-            raise ValueError("FRONTIER_AUTH_OIDC_JWKS_URL must use https outside localhost development")
+            raise ValueError(
+                "FRONTIER_AUTH_OIDC_JWKS_URL must use https outside localhost development"
+            )
         if issuer_host and jwks_host and issuer_host != jwks_host:
-            raise ValueError("FRONTIER_AUTH_OIDC_JWKS_URL must resolve to the same host as FRONTIER_AUTH_OIDC_ISSUER")
+            raise ValueError(
+                "FRONTIER_AUTH_OIDC_JWKS_URL must resolve to the same host as FRONTIER_AUTH_OIDC_ISSUER"
+            )
         trusted_issuers = _configured_trusted_oidc_issuers()
         if not issuer_is_local:
             if not trusted_issuers:
-                raise ValueError("FRONTIER_AUTH_TRUSTED_ISSUERS must include the configured OIDC issuer outside localhost development")
+                raise ValueError(
+                    "FRONTIER_AUTH_TRUSTED_ISSUERS must include the configured OIDC issuer outside localhost development"
+                )
             if normalized_issuer not in trusted_issuers:
-                raise ValueError("FRONTIER_AUTH_OIDC_ISSUER is not present in FRONTIER_AUTH_TRUSTED_ISSUERS")
+                raise ValueError(
+                    "FRONTIER_AUTH_OIDC_ISSUER is not present in FRONTIER_AUTH_TRUSTED_ISSUERS"
+                )
         elif trusted_issuers and normalized_issuer not in trusted_issuers:
-            raise ValueError("FRONTIER_AUTH_OIDC_ISSUER is not present in FRONTIER_AUTH_TRUSTED_ISSUERS")
+            raise ValueError(
+                "FRONTIER_AUTH_OIDC_ISSUER is not present in FRONTIER_AUTH_TRUSTED_ISSUERS"
+            )
         return {
             "issuer": normalized_issuer,
             "audience": audience,
@@ -6618,7 +7962,9 @@ def _decode_operator_bearer_token(token: str) -> dict[str, Any]:
 def _a2a_signing_secret() -> bytes:
     secret = str(os.getenv("A2A_JWT_SECRET") or "").strip()
     if not secret:
-        raise HTTPException(status_code=500, detail="A2A_JWT_SECRET is required for signed A2A transport")
+        raise HTTPException(
+            status_code=500, detail="A2A_JWT_SECRET is required for signed A2A transport"
+        )
     return secret.encode("utf-8")
 
 
@@ -6626,7 +7972,10 @@ def _startup_requires_a2a_secret() -> bool:
     runtime_profile = _active_runtime_profile()
     if runtime_profile.require_a2a_runtime_headers:
         return True
-    return bool(store.platform_settings.a2a_require_signed_messages or _effective_require_a2a_runtime_headers())
+    return bool(
+        store.platform_settings.a2a_require_signed_messages
+        or _effective_require_a2a_runtime_headers()
+    )
 
 
 def _validate_runtime_security_configuration() -> None:
@@ -6667,16 +8016,28 @@ def _a2a_request_body_bytes(request: Request | None, payload: Any | None = None)
     raw = getattr(request.state, "frontier_raw_body", b"")
     if isinstance(raw, bytes):
         if not raw and payload is not None and _a2a_request_requires_raw_body(request, payload):
-            raise HTTPException(status_code=401, detail="Signed A2A request body must be verified from raw request bytes")
+            raise HTTPException(
+                status_code=401,
+                detail="Signed A2A request body must be verified from raw request bytes",
+            )
         return raw
     cached_body = getattr(request, "_body", None)
     if isinstance(cached_body, bytes):
-        if not cached_body and payload is not None and _a2a_request_requires_raw_body(request, payload):
-            raise HTTPException(status_code=401, detail="Signed A2A request body must be verified from raw request bytes")
+        if (
+            not cached_body
+            and payload is not None
+            and _a2a_request_requires_raw_body(request, payload)
+        ):
+            raise HTTPException(
+                status_code=401,
+                detail="Signed A2A request body must be verified from raw request bytes",
+            )
         return cached_body
     if not _a2a_request_requires_raw_body(request, payload):
         return b""
-    raise HTTPException(status_code=401, detail="Signed A2A request body must be verified from raw request bytes")
+    raise HTTPException(
+        status_code=401, detail="Signed A2A request body must be verified from raw request bytes"
+    )
 
 
 def _build_runtime_signature(subject: str, nonce: str, correlation_id: str, body: bytes) -> str:
@@ -6685,11 +8046,17 @@ def _build_runtime_signature(subject: str, nonce: str, correlation_id: str, body
     return hmac.new(_a2a_signing_secret(), message, hashlib.sha256).hexdigest()
 
 
-def _verify_runtime_signature(request: Request, *, subject: str, nonce: str, signature: str, payload: Any | None = None) -> str:
+def _verify_runtime_signature(
+    request: Request, *, subject: str, nonce: str, signature: str, payload: Any | None = None
+) -> str:
     correlation_id = str(request.headers.get("x-correlation-id") or "").strip()
     if not correlation_id:
-        raise HTTPException(status_code=401, detail="Missing correlation id header for signed A2A request")
-    expected = _build_runtime_signature(subject, nonce, correlation_id, _a2a_request_body_bytes(request, payload))
+        raise HTTPException(
+            status_code=401, detail="Missing correlation id header for signed A2A request"
+        )
+    expected = _build_runtime_signature(
+        subject, nonce, correlation_id, _a2a_request_body_bytes(request, payload)
+    )
     if not hmac.compare_digest(expected, signature):
         raise HTTPException(status_code=401, detail="Invalid A2A signature")
     return correlation_id
@@ -6719,7 +8086,11 @@ def _claim_as_bool(value: Any) -> bool:
 def _auth_context_identity_references(auth_context: dict[str, Any] | None) -> set[str]:
     if not isinstance(auth_context, dict):
         return set()
-    claims = auth_context.get("runtime_token_claims") if isinstance(auth_context.get("runtime_token_claims"), dict) else {}
+    claims = (
+        auth_context.get("runtime_token_claims")
+        if isinstance(auth_context.get("runtime_token_claims"), dict)
+        else {}
+    )
     references = {
         str(value).strip().lower()
         for value in [
@@ -6746,7 +8117,11 @@ def _auth_context_identity_references(auth_context: dict[str, Any] | None) -> se
 def _auth_context_access_claims(auth_context: dict[str, Any] | None) -> set[str]:
     if not isinstance(auth_context, dict):
         return set()
-    claims = auth_context.get("runtime_token_claims") if isinstance(auth_context.get("runtime_token_claims"), dict) else {}
+    claims = (
+        auth_context.get("runtime_token_claims")
+        if isinstance(auth_context.get("runtime_token_claims"), dict)
+        else {}
+    )
     values = set()
     for key in ["role", "roles", "groups", "permissions", "scope", "scp"]:
         values.update(_claim_values(claims.get(key)))
@@ -6779,7 +8154,11 @@ def _infer_principal_type_from_identifier(identifier: str) -> str:
         return "user"
     if normalized.startswith("agent:") or "/agents/" in normalized:
         return "agent"
-    if normalized.startswith("service:") or normalized.startswith("svc:") or "/services/" in normalized:
+    if (
+        normalized.startswith("service:")
+        or normalized.startswith("svc:")
+        or "/services/" in normalized
+    ):
         return "service"
     if normalized.startswith("npe:") or normalized.startswith("client:") or "/npe/" in normalized:
         return "npe"
@@ -6790,7 +8169,9 @@ def _resolve_auth_context_principal(
     request: Request | None,
     actor: str,
 ) -> dict[str, Any]:
-    auth_context = getattr(request.state, "frontier_auth_context", None) if request is not None else None
+    auth_context = (
+        getattr(request.state, "frontier_auth_context", None) if request is not None else None
+    )
     if not isinstance(auth_context, dict):
         principal_id = str(actor or "anonymous").strip() or "anonymous"
         return {
@@ -6803,8 +8184,14 @@ def _resolve_auth_context_principal(
             "references": {principal_id},
         }
 
-    claims = auth_context.get("runtime_token_claims") if isinstance(auth_context.get("runtime_token_claims"), dict) else {}
-    subject = str(auth_context.get("subject") or claims.get("sub") or claims.get("subject") or "").strip()
+    claims = (
+        auth_context.get("runtime_token_claims")
+        if isinstance(auth_context.get("runtime_token_claims"), dict)
+        else {}
+    )
+    subject = str(
+        auth_context.get("subject") or claims.get("sub") or claims.get("subject") or ""
+    ).strip()
     agent_id = str(auth_context.get("agent_id") or claims.get("agent_id") or "").strip()
     inferred_type = "agent" if agent_id else _infer_principal_type_from_identifier(subject or actor)
     principal_type = _normalize_principal_type(
@@ -6824,14 +8211,17 @@ def _resolve_auth_context_principal(
     if not principal_id:
         principal_id = str(actor or subject or "anonymous").strip() or "anonymous"
 
-    display_name = str(
-        auth_context.get("display_name")
-        or claims.get("name")
-        or claims.get("preferred_username")
-        or claims.get("email")
-        or actor
+    display_name = (
+        str(
+            auth_context.get("display_name")
+            or claims.get("name")
+            or claims.get("preferred_username")
+            or claims.get("email")
+            or actor
+            or principal_id
+        ).strip()
         or principal_id
-    ).strip() or principal_id
+    )
 
     references = {
         str(value).strip()
@@ -6863,9 +8253,7 @@ def _collaboration_participant_matches_principal(
     references = {
         str(value).strip()
         for value in (
-            principal.get("references")
-            if isinstance(principal.get("references"), set)
-            else set()
+            principal.get("references") if isinstance(principal.get("references"), set) else set()
         )
         if str(value or "").strip()
     }
@@ -6913,7 +8301,10 @@ def _request_has_admin_access(request: Request | None) -> bool:
         return True
 
     references = _auth_context_identity_references(auth_context)
-    return bool(auth_context.get("used_bearer_token") and references.intersection(_configured_admin_actors()))
+    return bool(
+        auth_context.get("used_bearer_token")
+        and references.intersection(_configured_admin_actors())
+    )
 
 
 def _request_has_builder_access(request: Request | None) -> bool:
@@ -6925,7 +8316,17 @@ def _request_has_builder_access(request: Request | None) -> bool:
     if not isinstance(auth_context, dict):
         return False
     roles = _auth_context_access_claims(auth_context)
-    if roles.intersection({"builder", "builder-admin", "platform-admin", "admin", "owner", "builder:access", "frontier:builder"}):
+    if roles.intersection(
+        {
+            "builder",
+            "builder-admin",
+            "platform-admin",
+            "admin",
+            "owner",
+            "builder:access",
+            "frontier:builder",
+        }
+    ):
         return True
     if _request_uses_local_operator_oidc(request):
         return True
@@ -6989,12 +8390,27 @@ async def enforce_route_access_policy(request: Request, call_next: Any) -> Any:
                 action=rule.action or f"{request.method} {request.url.path}",
                 required=True,
             )
-            if rule.category == RouteAccessCategory.INTERNAL_ONLY and not _request_has_internal_access(request):
+            if (
+                rule.category == RouteAccessCategory.INTERNAL_ONLY
+                and not _request_has_internal_access(request)
+            ):
                 actor = _extract_actor_from_request(request)
-                _append_audit_event(rule.action or f"{request.method} {request.url.path}", actor, "blocked", {"reason": "internal_access_required"})
-                return apply_security_headers(JSONResponse(status_code=403, content={"detail": "Internal service authentication required"}))
+                _append_audit_event(
+                    rule.action or f"{request.method} {request.url.path}",
+                    actor,
+                    "blocked",
+                    {"reason": "internal_access_required"},
+                )
+                return apply_security_headers(
+                    JSONResponse(
+                        status_code=403,
+                        content={"detail": "Internal service authentication required"},
+                    )
+                )
         except HTTPException as exc:
-            return apply_security_headers(JSONResponse(status_code=exc.status_code, content={"detail": exc.detail}))
+            return apply_security_headers(
+                JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
+            )
     return await call_next(request)
 
 
@@ -7048,7 +8464,9 @@ def _persist_nonce_snapshot_or_raise() -> None:
     try:
         _POSTGRES_STATE.save_state(_serialize_store_state())
     except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=503, detail="A2A replay state persistence unavailable") from exc
+        raise HTTPException(
+            status_code=503, detail="A2A replay state persistence unavailable"
+        ) from exc
 
 
 def _register_a2a_nonce_or_raise(nonce: str) -> None:
@@ -7084,7 +8502,9 @@ def _sanitize_runtime_error_message(exc: Exception) -> str:
     return "Runtime execution failed."
 
 
-def _extract_actor_from_request(request: Request | None, payload: dict[str, Any] | None = None) -> str:
+def _extract_actor_from_request(
+    request: Request | None, payload: dict[str, Any] | None = None
+) -> str:
     payload = payload if isinstance(payload, dict) else {}
     headers = request.headers if request is not None else {}
     if request is not None:
@@ -7103,7 +8523,12 @@ def _extract_actor_from_request(request: Request | None, payload: dict[str, Any]
     return actor
 
 
-def _append_audit_event(action: str, actor: str, outcome: Literal["allowed", "blocked", "error"], metadata: dict[str, Any] | None = None) -> None:
+def _append_audit_event(
+    action: str,
+    actor: str,
+    outcome: Literal["allowed", "blocked", "error"],
+    metadata: dict[str, Any] | None = None,
+) -> None:
     store.audit_events.insert(
         0,
         AuditEvent(
@@ -7132,17 +8557,24 @@ def _enforce_request_authn(
     cached_auth_context = None
     if request is not None:
         cached_auth_context = getattr(request.state, "frontier_auth_context", None)
-        if isinstance(cached_auth_context, dict) and cached_auth_context.get("authenticated") is True:
+        if (
+            isinstance(cached_auth_context, dict)
+            and cached_auth_context.get("authenticated") is True
+        ):
             cached_actor = str(cached_auth_context.get("actor") or "").strip()
             if cached_actor:
                 return cached_actor
 
-    auth_required = _effective_require_authenticated_requests() if required is None else bool(required)
+    auth_required = (
+        _effective_require_authenticated_requests() if required is None else bool(required)
+    )
     if request is None:
         if not auth_required:
             return actor
         _append_audit_event(action, actor, "blocked", {"reason": "missing_request_context"})
-        raise HTTPException(status_code=401, detail="Request context required for authenticated operation")
+        raise HTTPException(
+            status_code=401, detail="Request context required for authenticated operation"
+        )
 
     header_actor = (
         str(request.headers.get("x-frontier-actor") or "").strip()
@@ -7152,9 +8584,16 @@ def _enforce_request_authn(
     configured_token = str(os.getenv("FRONTIER_API_BEARER_TOKEN", "")).strip()
     auth_header = str(request.headers.get("authorization") or "").strip()
     route_rule = getattr(request.state, "frontier_route_access", None)
-    internal_route = isinstance(route_rule, RouteAccessRule) and route_rule.category == RouteAccessCategory.INTERNAL_ONLY
+    internal_route = (
+        isinstance(route_rule, RouteAccessRule)
+        and route_rule.category == RouteAccessCategory.INTERNAL_ONLY
+    )
     bearer_prefix = "bearer "
-    provided_token = auth_header[len(bearer_prefix):].strip() if auth_header.lower().startswith(bearer_prefix) else ""
+    provided_token = (
+        auth_header[len(bearer_prefix) :].strip()
+        if auth_header.lower().startswith(bearer_prefix)
+        else ""
+    )
     if not provided_token:
         provided_token = _request_operator_session_token(request)
     used_bearer_token = False
@@ -7177,7 +8616,9 @@ def _enforce_request_authn(
                     runtime_token_identity = token_identity_from_claims(runtime_token_claims)
                     bearer_auth_kind = "oidc"
                 except Exception:
-                    _append_audit_event(action, actor, "blocked", {"reason": "invalid_bearer_token"})
+                    _append_audit_event(
+                        action, actor, "blocked", {"reason": "invalid_bearer_token"}
+                    )
                     raise HTTPException(status_code=401, detail="Invalid bearer token")
             used_bearer_token = True
             if bearer_auth_kind == "none":
@@ -7207,36 +8648,64 @@ def _enforce_request_authn(
         principal_id = f"agent:{agent_id}"
     if not principal_id:
         principal_id = resolved_actor
-    display_name = str(
-        runtime_token_claims.get("name")
-        or runtime_token_claims.get("preferred_username")
-        or runtime_token_claims.get("email")
-        or resolved_actor
-    ).strip() or principal_id
+    display_name = (
+        str(
+            runtime_token_claims.get("name")
+            or runtime_token_claims.get("preferred_username")
+            or runtime_token_claims.get("email")
+            or resolved_actor
+        ).strip()
+        or principal_id
+    )
 
     trusted_subject_authenticated = False
-    subject = str(runtime_token_identity.subject).strip() if runtime_token_identity is not None else ""
-    require_signed_a2a = platform.a2a_require_signed_messages and (internal_route or _effective_require_a2a_runtime_headers())
+    subject = (
+        str(runtime_token_identity.subject).strip() if runtime_token_identity is not None else ""
+    )
+    require_signed_a2a = platform.a2a_require_signed_messages and (
+        internal_route or _effective_require_a2a_runtime_headers()
+    )
     if require_signed_a2a:
         subject = str(request.headers.get("x-frontier-subject") or "").strip() or subject
         signature = str(request.headers.get("x-frontier-signature") or "").strip()
         nonce = str(request.headers.get("x-frontier-nonce") or "").strip()
 
         if not subject or subject not in platform.a2a_trusted_subjects:
-            _append_audit_event(action, actor, "blocked", {"reason": "untrusted_subject", "subject": subject})
+            _append_audit_event(
+                action, actor, "blocked", {"reason": "untrusted_subject", "subject": subject}
+            )
             raise HTTPException(status_code=401, detail="Untrusted or missing A2A subject")
         if not signature:
             _append_audit_event(action, actor, "blocked", {"reason": "missing_signature"})
             raise HTTPException(status_code=401, detail="Missing A2A signature header")
         try:
-            _verify_runtime_signature(request, subject=subject, nonce=nonce, signature=signature, payload=payload)
+            _verify_runtime_signature(
+                request, subject=subject, nonce=nonce, signature=signature, payload=payload
+            )
         except HTTPException as exc:
-            _append_audit_event(action, actor, "blocked", {"reason": "invalid_signature", "subject": subject})
+            _append_audit_event(
+                action, actor, "blocked", {"reason": "invalid_signature", "subject": subject}
+            )
             raise exc
 
-        if runtime_token_identity is not None and runtime_token_identity.subject and runtime_token_identity.subject != subject:
-            _append_audit_event(action, actor, "blocked", {"reason": "subject_mismatch", "header_subject": subject, "token_subject": runtime_token_identity.subject})
-            raise HTTPException(status_code=401, detail="A2A subject header does not match bearer token subject")
+        if (
+            runtime_token_identity is not None
+            and runtime_token_identity.subject
+            and runtime_token_identity.subject != subject
+        ):
+            _append_audit_event(
+                action,
+                actor,
+                "blocked",
+                {
+                    "reason": "subject_mismatch",
+                    "header_subject": subject,
+                    "token_subject": runtime_token_identity.subject,
+                },
+            )
+            raise HTTPException(
+                status_code=401, detail="A2A subject header does not match bearer token subject"
+            )
 
         if platform.a2a_replay_protection:
             if not nonce:
@@ -7245,7 +8714,9 @@ def _enforce_request_authn(
             try:
                 _register_a2a_nonce_or_raise(nonce)
             except HTTPException as exc:
-                _append_audit_event(action, actor, "blocked", {"reason": "nonce_replay", "nonce": nonce})
+                _append_audit_event(
+                    action, actor, "blocked", {"reason": "nonce_replay", "nonce": nonce}
+                )
                 raise exc
         trusted_subject_authenticated = True
     else:
@@ -7257,7 +8728,9 @@ def _enforce_request_authn(
         if any([header_subject, signature, nonce, correlation_id]):
             subject = header_subject or subject
             if not subject or subject not in platform.a2a_trusted_subjects:
-                _append_audit_event(action, actor, "blocked", {"reason": "untrusted_subject", "subject": subject})
+                _append_audit_event(
+                    action, actor, "blocked", {"reason": "untrusted_subject", "subject": subject}
+                )
                 raise HTTPException(status_code=401, detail="Untrusted or missing A2A subject")
             if not signature:
                 _append_audit_event(action, actor, "blocked", {"reason": "missing_signature"})
@@ -7267,25 +8740,40 @@ def _enforce_request_authn(
                 raise HTTPException(status_code=401, detail="Missing A2A nonce header")
             if not correlation_id:
                 _append_audit_event(action, actor, "blocked", {"reason": "missing_correlation_id"})
-                raise HTTPException(status_code=401, detail="Missing correlation id header for signed A2A request")
+                raise HTTPException(
+                    status_code=401, detail="Missing correlation id header for signed A2A request"
+                )
             try:
-                _verify_runtime_signature(request, subject=subject, nonce=nonce, signature=signature, payload=payload)
+                _verify_runtime_signature(
+                    request, subject=subject, nonce=nonce, signature=signature, payload=payload
+                )
             except HTTPException as exc:
-                _append_audit_event(action, actor, "blocked", {"reason": "invalid_signature", "subject": subject})
+                _append_audit_event(
+                    action, actor, "blocked", {"reason": "invalid_signature", "subject": subject}
+                )
                 raise exc
             if platform.a2a_replay_protection:
                 try:
                     _register_a2a_nonce_or_raise(nonce)
                 except HTTPException as exc:
-                    _append_audit_event(action, actor, "blocked", {"reason": "nonce_replay", "nonce": nonce})
+                    _append_audit_event(
+                        action, actor, "blocked", {"reason": "nonce_replay", "nonce": nonce}
+                    )
                     raise exc
             trusted_subject_authenticated = True
 
-    if auth_required and not used_bearer_token and not header_actor_authenticated and not trusted_subject_authenticated:
+    if (
+        auth_required
+        and not used_bearer_token
+        and not header_actor_authenticated
+        and not trusted_subject_authenticated
+    ):
         _append_audit_event(action, actor, "blocked", {"reason": "anonymous_actor"})
         raise HTTPException(status_code=401, detail="Authenticated bearer token required")
 
-    is_authenticated = bool(used_bearer_token or header_actor_authenticated or trusted_subject_authenticated)
+    is_authenticated = bool(
+        used_bearer_token or header_actor_authenticated or trusted_subject_authenticated
+    )
 
     request.state.frontier_auth_context = {
         "authenticated": is_authenticated,
@@ -7299,8 +8787,12 @@ def _enforce_request_authn(
         "bearer_auth_kind": bearer_auth_kind,
         "runtime_token_claims": runtime_token_claims,
         "header_actor_authenticated": header_actor_authenticated,
-        "tenant": str(runtime_token_identity.tenant_id).strip() if runtime_token_identity is not None else "",
-        "internal_service_authenticated": bool(runtime_token_identity.internal_service) if runtime_token_identity is not None else False,
+        "tenant": str(runtime_token_identity.tenant_id).strip()
+        if runtime_token_identity is not None
+        else "",
+        "internal_service_authenticated": bool(runtime_token_identity.internal_service)
+        if runtime_token_identity is not None
+        else False,
         "trusted_subject_authenticated": trusted_subject_authenticated,
         "a2a_headers_required": _effective_require_a2a_runtime_headers(),
         "require_authenticated_requests": auth_required,
@@ -7325,11 +8817,18 @@ def _resolve_authenticated_payload_identity(
             payload_identities.append((field_name, candidate))
 
     if not payload_identities:
-        return str(_resolve_auth_context_principal(request, actor).get("principal_id") or actor).strip() or actor
+        return (
+            str(
+                _resolve_auth_context_principal(request, actor).get("principal_id") or actor
+            ).strip()
+            or actor
+        )
 
     if _effective_require_authenticated_requests():
         principal = _resolve_auth_context_principal(request, actor)
-        references = principal.get("references") if isinstance(principal.get("references"), set) else {actor}
+        references = (
+            principal.get("references") if isinstance(principal.get("references"), set) else {actor}
+        )
         mismatched = [
             {"field": field_name, "value": candidate}
             for field_name, candidate in payload_identities
@@ -7345,27 +8844,37 @@ def _resolve_authenticated_payload_identity(
                     "payload_identities": mismatched,
                 },
             )
-            raise HTTPException(status_code=403, detail="Payload identity must match the authenticated actor")
+            raise HTTPException(
+                status_code=403, detail="Payload identity must match the authenticated actor"
+            )
         return str(principal.get("principal_id") or actor).strip() or actor
 
     return payload_identities[0][1]
 
 
 def _authenticated_tenant(request: Request | None) -> str:
-    auth_context = getattr(request.state, "frontier_auth_context", None) if request is not None else None
+    auth_context = (
+        getattr(request.state, "frontier_auth_context", None) if request is not None else None
+    )
     if not isinstance(auth_context, dict):
         return ""
     tenant = str(auth_context.get("tenant") or "").strip()
     if tenant:
         return tenant
-    claims = auth_context.get("runtime_token_claims") if isinstance(auth_context.get("runtime_token_claims"), dict) else {}
+    claims = (
+        auth_context.get("runtime_token_claims")
+        if isinstance(auth_context.get("runtime_token_claims"), dict)
+        else {}
+    )
     return str(claims.get("tenant_id") or "").strip()
 
 
 def _request_has_privileged_control_plane_access(request: Request | None) -> bool:
     if _request_has_builder_access(request):
         return True
-    auth_context = getattr(request.state, "frontier_auth_context", None) if request is not None else None
+    auth_context = (
+        getattr(request.state, "frontier_auth_context", None) if request is not None else None
+    )
     if not isinstance(auth_context, dict):
         return False
     return bool(
@@ -7394,11 +8903,7 @@ def _normalize_run_access_context(raw: Any) -> dict[str, Any]:
         normalized["principal_id"],
         normalized["subject"],
     ]
-    normalized["references"] = [
-        value
-        for value in [*references, *fallback_references]
-        if value
-    ]
+    normalized["references"] = [value for value in [*references, *fallback_references] if value]
     return normalized
 
 
@@ -7407,7 +8912,11 @@ def _build_run_access_context(request: Request | None, actor: str) -> dict[str, 
     references = sorted(
         {
             str(value).strip()
-            for value in (principal.get("references") if isinstance(principal.get("references"), set) else set())
+            for value in (
+                principal.get("references")
+                if isinstance(principal.get("references"), set)
+                else set()
+            )
             if str(value or "").strip()
         }
     )
@@ -7438,9 +8947,7 @@ def _run_visible_to_principal(request: Request | None, actor: str, run_id: str) 
 
     access = _run_access_context(run_id)
     references = {
-        str(value).strip()
-        for value in access.get("references", [])
-        if str(value or "").strip()
+        str(value).strip() for value in access.get("references", []) if str(value or "").strip()
     }
     if not references:
         return False
@@ -7448,7 +8955,9 @@ def _run_visible_to_principal(request: Request | None, actor: str, run_id: str) 
     principal = _resolve_auth_context_principal(request, actor)
     principal_references = {
         str(value).strip()
-        for value in (principal.get("references") if isinstance(principal.get("references"), set) else set())
+        for value in (
+            principal.get("references") if isinstance(principal.get("references"), set) else set()
+        )
         if str(value or "").strip()
     }
     if not principal_references.intersection(references):
@@ -7462,7 +8971,9 @@ def _run_visible_to_principal(request: Request | None, actor: str, run_id: str) 
     return True
 
 
-def _enforce_run_access(request: Request | None, actor: str, run_id: str, *, action: str) -> WorkflowRunSummary:
+def _enforce_run_access(
+    request: Request | None, actor: str, run_id: str, *, action: str
+) -> WorkflowRunSummary:
     run = store.runs.get(run_id)
     if run is None:
         raise HTTPException(status_code=404, detail="run not found")
@@ -7473,7 +8984,10 @@ def _enforce_run_access(request: Request | None, actor: str, run_id: str, *, act
 
 
 def _visible_run_ids(request: Request | None, actor: str) -> set[str]:
-    if not _effective_require_authenticated_requests() or _request_has_privileged_control_plane_access(request):
+    if (
+        not _effective_require_authenticated_requests()
+        or _request_has_privileged_control_plane_access(request)
+    ):
         return set(store.runs.keys())
     return {run_id for run_id in store.runs if _run_visible_to_principal(request, actor, run_id)}
 
@@ -7487,7 +9001,10 @@ def _find_run_id_for_artifact(artifact_id: str) -> str | None:
             continue
         artifacts = detail.get("artifacts") if isinstance(detail.get("artifacts"), list) else []
         for artifact in artifacts:
-            if isinstance(artifact, dict) and str(artifact.get("id") or "").strip() == normalized_artifact_id:
+            if (
+                isinstance(artifact, dict)
+                and str(artifact.get("id") or "").strip() == normalized_artifact_id
+            ):
                 return candidate_run_id
     return None
 
@@ -7538,7 +9055,14 @@ def _memory_bucket_matches_scope(bucket_id: str, memory_scope: str) -> bool:
     if normalized_scope == "session":
         if normalized_bucket.startswith(expected_prefix):
             return True
-        return not any(normalized_bucket.startswith(prefix) for name, prefix in _MEMORY_SCOPE_PREFIXES.items() if name != "session") and normalized_bucket != "global"
+        return (
+            not any(
+                normalized_bucket.startswith(prefix)
+                for name, prefix in _MEMORY_SCOPE_PREFIXES.items()
+                if name != "session"
+            )
+            and normalized_bucket != "global"
+        )
     return normalized_bucket.startswith(expected_prefix)
 
 
@@ -7555,8 +9079,12 @@ def _validate_memory_bucket_scope_pair(bucket_id: str, memory_scope: str) -> tup
     return normalized_bucket, normalized_scope
 
 
-def _extract_memory_tenant_claim(request: Request | None, payload: dict[str, Any] | None = None) -> str:
-    auth_context = getattr(request.state, "frontier_auth_context", None) if request is not None else None
+def _extract_memory_tenant_claim(
+    request: Request | None, payload: dict[str, Any] | None = None
+) -> str:
+    auth_context = (
+        getattr(request.state, "frontier_auth_context", None) if request is not None else None
+    )
     tenant_from_auth = ""
     if isinstance(auth_context, dict):
         tenant_from_auth = str(auth_context.get("tenant") or "").strip()
@@ -7569,14 +9097,17 @@ def _extract_memory_tenant_claim(request: Request | None, payload: dict[str, Any
 
 def _actor_participates_in_memory_entity(actor: str, bucket_id: str, memory_scope: str) -> bool:
     normalized_actor = str(actor or "").strip()
-    normalized_bucket, normalized_scope = _validate_memory_bucket_scope_pair(bucket_id, memory_scope)
+    normalized_bucket, normalized_scope = _validate_memory_bucket_scope_pair(
+        bucket_id, memory_scope
+    )
     if normalized_scope not in {"agent", "workflow"}:
         return False
     session = store.collaboration_sessions.get(normalized_bucket)
     if not session:
         return False
     return any(
-        normalized_actor in {
+        normalized_actor
+        in {
             str(participant.user_id or "").strip(),
             str(participant.principal_id or "").strip(),
             str(participant.auth_subject or "").strip(),
@@ -7594,7 +9125,9 @@ def _authorize_memory_bucket_access(
     action: str,
     payload: dict[str, Any] | None = None,
 ) -> tuple[str, str]:
-    normalized_bucket, normalized_scope = _validate_memory_bucket_scope_pair(bucket_id, memory_scope)
+    normalized_bucket, normalized_scope = _validate_memory_bucket_scope_pair(
+        bucket_id, memory_scope
+    )
     normalized_actor = str(actor or "anonymous").strip() or "anonymous"
 
     if _request_has_internal_access(request):
@@ -7609,7 +9142,9 @@ def _authorize_memory_bucket_access(
         tenant_claim = _extract_memory_tenant_claim(request, payload=payload)
         allowed = bool(tenant_claim) and normalized_bucket == f"tenant:{tenant_claim}"
     elif normalized_scope in {"agent", "workflow"}:
-        allowed = _actor_participates_in_memory_entity(normalized_actor, normalized_bucket, normalized_scope)
+        allowed = _actor_participates_in_memory_entity(
+            normalized_actor, normalized_bucket, normalized_scope
+        )
         if not allowed:
             principal = _resolve_auth_context_principal(request, normalized_actor)
             allowed = any(
@@ -7624,7 +9159,11 @@ def _authorize_memory_bucket_access(
             action,
             normalized_actor,
             "blocked",
-            {"reason": "memory_scope_access_denied", "bucket_id": normalized_bucket, "memory_scope": normalized_scope},
+            {
+                "reason": "memory_scope_access_denied",
+                "bucket_id": normalized_bucket,
+                "memory_scope": normalized_scope,
+            },
         )
         raise HTTPException(status_code=403, detail="Access denied for requested memory scope")
 
@@ -7675,10 +9214,17 @@ def _validate_platform_settings_update(
         immutable_violations.append("a2a_require_signed_messages must remain enabled")
     if baseline.enforce_a2a_replay_protection and not candidate.a2a_replay_protection:
         immutable_violations.append("a2a_replay_protection must remain enabled")
-    if _active_runtime_profile().require_authenticated_requests and not candidate.require_authenticated_requests:
-        immutable_violations.append("require_authenticated_requests cannot be disabled in secure runtime profiles")
+    if (
+        _active_runtime_profile().require_authenticated_requests
+        and not candidate.require_authenticated_requests
+    ):
+        immutable_violations.append(
+            "require_authenticated_requests cannot be disabled in secure runtime profiles"
+        )
     if candidate.a2a_require_signed_messages and not candidate.a2a_trusted_subjects:
-        immutable_violations.append("a2a_trusted_subjects must contain at least one trusted subject when signed A2A is enabled")
+        immutable_violations.append(
+            "a2a_trusted_subjects must contain at least one trusted subject when signed A2A is enabled"
+        )
 
     if immutable_violations:
         _append_config_mutation_audit(
@@ -7691,7 +9237,13 @@ def _validate_platform_settings_update(
             after=candidate.model_dump(),
             extra={"reason": "immutable_baseline_violation", "violations": immutable_violations},
         )
-        raise HTTPException(status_code=400, detail={"message": "Platform settings update violates immutable security baseline", "violations": immutable_violations})
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "message": "Platform settings update violates immutable security baseline",
+                "violations": immutable_violations,
+            },
+        )
 
     sensitive_keys = {
         "require_authenticated_requests",
@@ -7709,7 +9261,11 @@ def _validate_platform_settings_update(
         "block_tool_calls",
         "block_retrieval_calls",
     }
-    changed_sensitive_keys = sorted(key for key in sensitive_keys if key in payload and getattr(current, key) != getattr(candidate, key))
+    changed_sensitive_keys = sorted(
+        key
+        for key in sensitive_keys
+        if key in payload and getattr(current, key) != getattr(candidate, key)
+    )
     if changed_sensitive_keys and payload.get("confirm_security_change") is not True:
         _append_config_mutation_audit(
             "platform.settings.save",
@@ -7719,7 +9275,10 @@ def _validate_platform_settings_update(
             outcome="blocked",
             before=current.model_dump(),
             after=candidate.model_dump(),
-            extra={"reason": "security_change_confirmation_required", "changed_sensitive_keys": changed_sensitive_keys},
+            extra={
+                "reason": "security_change_confirmation_required",
+                "changed_sensitive_keys": changed_sensitive_keys,
+            },
         )
         raise HTTPException(
             status_code=400,
@@ -7866,20 +9425,26 @@ def _restore_definition_snapshot(
             published_at=published_at,
             active_revision_id=active_revision_id,
             active_at=active_at,
-            graph_json=_ensure_supported_graph_json(payload.get("graph_json"), context_label="Workflow rollback"),
+            graph_json=_ensure_supported_graph_json(
+                payload.get("graph_json"), context_label="Workflow rollback"
+            ),
             security_config=security_config,
             generated_artifacts=[],
         )
 
     if entity_type == "agent_definition":
-        config_json = payload.get("config_json") if isinstance(payload.get("config_json"), dict) else {}
+        config_json = (
+            payload.get("config_json") if isinstance(payload.get("config_json"), dict) else {}
+        )
         canonical_config = _canonicalize_agent_config(
             config_json,
             agent_id=str(payload.get("id") or uuid4()),
             agent_name=str(payload.get("name") or "Untitled Agent"),
             source_agent_id=str(config_json.get("source_agent_id") or payload.get("id") or ""),
             system_prompt=str(config_json.get("system_prompt") or ""),
-            model_defaults=config_json.get("model_defaults") if isinstance(config_json.get("model_defaults"), dict) else None,
+            model_defaults=config_json.get("model_defaults")
+            if isinstance(config_json.get("model_defaults"), dict)
+            else None,
             tags=_normalize_text_list(config_json.get("tags")),
             capabilities=_normalize_text_list(config_json.get("capabilities")),
             owners=_normalize_text_list(config_json.get("owners")),
@@ -7889,7 +9454,9 @@ def _restore_definition_snapshot(
             url_manifest=str(config_json.get("url_manifest") or "") or None,
         )
         _validate_security_guardrail_reference(
-            canonical_config.get("security") if isinstance(canonical_config.get("security"), dict) else {},
+            canonical_config.get("security")
+            if isinstance(canonical_config.get("security"), dict)
+            else {},
             label="Agent security policy",
         )
         return AgentDefinition(
@@ -7966,11 +9533,15 @@ def _definition_model_from_snapshot(
                 agent_name=model.name,
                 source_agent_id=str(model.config_json.get("source_agent_id") or model.id),
                 system_prompt=str(model.config_json.get("system_prompt") or ""),
-                model_defaults=model.config_json.get("model_defaults") if isinstance(model.config_json.get("model_defaults"), dict) else None,
+                model_defaults=model.config_json.get("model_defaults")
+                if isinstance(model.config_json.get("model_defaults"), dict)
+                else None,
                 tags=_normalize_text_list(model.config_json.get("tags")),
                 capabilities=_normalize_text_list(model.config_json.get("capabilities")),
                 owners=_normalize_text_list(model.config_json.get("owners")),
-                tools=model.config_json.get("tools") if isinstance(model.config_json.get("tools"), list) else None,
+                tools=model.config_json.get("tools")
+                if isinstance(model.config_json.get("tools"), list)
+                else None,
                 seed_source=str(model.config_json.get("seed_source") or "") or None,
                 prompt_file=str(model.config_json.get("prompt_file") or "") or None,
                 url_manifest=str(model.config_json.get("url_manifest") or "") or None,
@@ -8005,7 +9576,9 @@ def _backfill_definition_published_pointer(
     pointer_was_missing = not bool(published_revision_id)
     if published_revision_id:
         try:
-            revision = _select_definition_revision(entity_type, item.id, revision_id=published_revision_id)
+            revision = _select_definition_revision(
+                entity_type, item.id, revision_id=published_revision_id
+            )
         except HTTPException:
             revision = None
 
@@ -8031,7 +9604,9 @@ def _backfill_definition_active_pointer(
     active_revision_id = str(getattr(item, "active_revision_id", "") or "").strip()
     if active_revision_id:
         try:
-            revision = _select_definition_revision(entity_type, item.id, revision_id=active_revision_id)
+            revision = _select_definition_revision(
+                entity_type, item.id, revision_id=active_revision_id
+            )
         except HTTPException:
             revision = None
 
@@ -8142,7 +9717,9 @@ def _activate_definition_revision(
     target_revision: DefinitionRevision,
 ) -> tuple[WorkflowDefinition | AgentDefinition | GuardrailRuleSet, DefinitionRevision]:
     if target_revision.status != "published":
-        raise HTTPException(status_code=400, detail="Only published revisions can be activated for runtime use")
+        raise HTTPException(
+            status_code=400, detail="Only published revisions can be activated for runtime use"
+        )
 
     current_store = _definition_current_store(entity_type)
     current = current_store.get(entity_id)
@@ -8186,12 +9763,16 @@ def _upsert_collaboration_participant(
     next_participants: list[CollaborationParticipant] = []
     found = False
     resolved_principal_id = str(principal_id or user_id).strip() or user_id
-    resolved_principal_type = _normalize_principal_type(principal_type, fallback=_infer_principal_type_from_identifier(resolved_principal_id))
+    resolved_principal_type = _normalize_principal_type(
+        principal_type, fallback=_infer_principal_type_from_identifier(resolved_principal_id)
+    )
     resolved_auth_subject = str(auth_subject or "").strip() or None
     resolved_metadata = dict(metadata_json) if isinstance(metadata_json, dict) else {}
     for participant in participants:
         matches_existing = any(
-            candidate and candidate in {
+            candidate
+            and candidate
+            in {
                 str(participant.user_id or "").strip(),
                 str(participant.principal_id or "").strip(),
                 str(participant.auth_subject or "").strip(),
@@ -8210,7 +9791,11 @@ def _upsert_collaboration_participant(
                     role=role,
                     last_seen_at=_now_iso(),
                     metadata_json={
-                        **(participant.metadata_json if isinstance(participant.metadata_json, dict) else {}),
+                        **(
+                            participant.metadata_json
+                            if isinstance(participant.metadata_json, dict)
+                            else {}
+                        ),
                         **resolved_metadata,
                     },
                 )
@@ -8257,7 +9842,9 @@ def _estimate_tokens_from_text(text: str) -> int:
 
 def _build_observability_trace(run_id: str) -> ObservabilityRunTrace:
     run_summary = store.runs.get(run_id)
-    run_detail = store.run_details.get(run_id, {}) if isinstance(store.run_details.get(run_id), dict) else {}
+    run_detail = (
+        store.run_details.get(run_id, {}) if isinstance(store.run_details.get(run_id), dict) else {}
+    )
     events = store.run_events.get(run_id, [])
 
     graph = run_detail.get("graph") if isinstance(run_detail.get("graph"), dict) else {}
@@ -8339,7 +9926,9 @@ def _build_atf_alignment_report() -> dict[str, Any]:
                 "secure_local_mode": _secure_local_mode_enabled(),
                 "runtime_profile": runtime_profile.name,
             },
-            "gaps": [] if effective_auth_required else ["Enable require_authenticated_requests for strong API identity assurance"],
+            "gaps": []
+            if effective_auth_required
+            else ["Enable require_authenticated_requests for strong API identity assurance"],
         },
         "behavior_monitoring": {
             "status": "strong",
@@ -8356,20 +9945,34 @@ def _build_atf_alignment_report() -> dict[str, Any]:
                 "mask_secrets_in_events": platform.mask_secrets_in_events,
                 "global_blocked_keywords": len(platform.global_blocked_keywords),
             },
-            "gaps": [] if platform.mask_secrets_in_events else ["Enable mask_secrets_in_events to reduce accidental sensitive data exposure"],
+            "gaps": []
+            if platform.mask_secrets_in_events
+            else ["Enable mask_secrets_in_events to reduce accidental sensitive data exposure"],
         },
         "segmentation": {
-            "status": "strong" if platform.enforce_local_network_only and platform.enforce_egress_allowlist else "partial",
+            "status": "strong"
+            if platform.enforce_local_network_only and platform.enforce_egress_allowlist
+            else "partial",
             "controls": {
                 "enforce_egress_allowlist": platform.enforce_egress_allowlist,
                 "enforce_local_network_only": platform.enforce_local_network_only,
                 "mcp_require_local_server": platform.mcp_require_local_server,
                 "retrieval_require_local_source_url": platform.retrieval_require_local_source_url,
             },
-            "gaps": [] if platform.enforce_local_network_only and platform.enforce_egress_allowlist else ["Enable both local-network and egress allowlist controls for stronger segmentation"],
+            "gaps": []
+            if platform.enforce_local_network_only and platform.enforce_egress_allowlist
+            else [
+                "Enable both local-network and egress allowlist controls for stronger segmentation"
+            ],
         },
         "incident_response": {
-            "status": "strong" if (platform.emergency_read_only_mode or platform.block_new_runs or platform.block_graph_runs) else "partial",
+            "status": "strong"
+            if (
+                platform.emergency_read_only_mode
+                or platform.block_new_runs
+                or platform.block_graph_runs
+            )
+            else "partial",
             "controls": {
                 "emergency_read_only_mode": platform.emergency_read_only_mode,
                 "block_new_runs": platform.block_new_runs,
@@ -8377,13 +9980,27 @@ def _build_atf_alignment_report() -> dict[str, Any]:
                 "block_tool_calls": platform.block_tool_calls,
                 "block_retrieval_calls": platform.block_retrieval_calls,
             },
-            "gaps": [] if (platform.emergency_read_only_mode or platform.block_new_runs or platform.block_graph_runs) else ["Incident containment controls are available but currently not enabled"],
+            "gaps": []
+            if (
+                platform.emergency_read_only_mode
+                or platform.block_new_runs
+                or platform.block_graph_runs
+            )
+            else ["Incident containment controls are available but currently not enabled"],
         },
     }
 
     strong_count = len([item for item in pillars.values() if str(item.get("status")) == "strong"])
     coverage_percent = int(round((strong_count / 5) * 100))
-    maturity = "principal" if strong_count == 5 else "senior" if strong_count >= 4 else "junior" if strong_count >= 2 else "intern"
+    maturity = (
+        "principal"
+        if strong_count == 5
+        else "senior"
+        if strong_count >= 4
+        else "junior"
+        if strong_count >= 2
+        else "intern"
+    )
 
     return {
         "generated_at": now.isoformat(),
@@ -8441,7 +10058,10 @@ def _serialize_store_state() -> dict[str, Any]:
             for entity_id, revisions in store.guardrail_ruleset_revisions.items()
         },
         "runs": [item.model_dump() for item in store.runs.values()],
-        "run_events": {run_id: [event.model_dump() for event in events] for run_id, events in store.run_events.items()},
+        "run_events": {
+            run_id: [event.model_dump() for event in events]
+            for run_id, events in store.run_events.items()
+        },
         "run_details": store.run_details,
         "artifacts": [item.model_dump() for item in store.artifacts],
         "inbox": [item.model_dump() for item in store.inbox],
@@ -8450,7 +10070,9 @@ def _serialize_store_state() -> dict[str, Any]:
         "integrations": [item.model_dump() for item in store.integrations.values()],
         "agent_templates": [item.model_dump() for item in store.agent_templates.values()],
         "playbooks": [item.model_dump() for item in store.playbooks.values()],
-        "collaboration_sessions": [item.model_dump() for item in store.collaboration_sessions.values()],
+        "collaboration_sessions": [
+            item.model_dump() for item in store.collaboration_sessions.values()
+        ],
         "audit_events": [item.model_dump() for item in store.audit_events],
         "a2a_seen_nonces": store.a2a_seen_nonces,
     }
@@ -8495,16 +10117,40 @@ def _apply_store_state(payload: dict[str, Any]) -> None:
                     model.config_json if isinstance(model.config_json, dict) else {},
                     agent_id=model.id,
                     agent_name=model.name,
-                    source_agent_id=str((model.config_json or {}).get("source_agent_id") or model.id) if isinstance(model.config_json, dict) else model.id,
-                    system_prompt=str((model.config_json or {}).get("system_prompt") or "") if isinstance(model.config_json, dict) else "",
-                    model_defaults=(model.config_json or {}).get("model_defaults") if isinstance(model.config_json, dict) and isinstance((model.config_json or {}).get("model_defaults"), dict) else None,
-                    tags=_normalize_text_list((model.config_json or {}).get("tags")) if isinstance(model.config_json, dict) else None,
-                    capabilities=_normalize_text_list((model.config_json or {}).get("capabilities")) if isinstance(model.config_json, dict) else None,
-                    owners=_normalize_text_list((model.config_json or {}).get("owners")) if isinstance(model.config_json, dict) else None,
-                    tools=(model.config_json or {}).get("tools") if isinstance(model.config_json, dict) and isinstance((model.config_json or {}).get("tools"), list) else None,
-                    seed_source=str((model.config_json or {}).get("seed_source") or "") if isinstance(model.config_json, dict) else None,
-                    prompt_file=str((model.config_json or {}).get("prompt_file") or "") if isinstance(model.config_json, dict) else None,
-                    url_manifest=str((model.config_json or {}).get("url_manifest") or "") if isinstance(model.config_json, dict) else None,
+                    source_agent_id=str(
+                        (model.config_json or {}).get("source_agent_id") or model.id
+                    )
+                    if isinstance(model.config_json, dict)
+                    else model.id,
+                    system_prompt=str((model.config_json or {}).get("system_prompt") or "")
+                    if isinstance(model.config_json, dict)
+                    else "",
+                    model_defaults=(model.config_json or {}).get("model_defaults")
+                    if isinstance(model.config_json, dict)
+                    and isinstance((model.config_json or {}).get("model_defaults"), dict)
+                    else None,
+                    tags=_normalize_text_list((model.config_json or {}).get("tags"))
+                    if isinstance(model.config_json, dict)
+                    else None,
+                    capabilities=_normalize_text_list((model.config_json or {}).get("capabilities"))
+                    if isinstance(model.config_json, dict)
+                    else None,
+                    owners=_normalize_text_list((model.config_json or {}).get("owners"))
+                    if isinstance(model.config_json, dict)
+                    else None,
+                    tools=(model.config_json or {}).get("tools")
+                    if isinstance(model.config_json, dict)
+                    and isinstance((model.config_json or {}).get("tools"), list)
+                    else None,
+                    seed_source=str((model.config_json or {}).get("seed_source") or "")
+                    if isinstance(model.config_json, dict)
+                    else None,
+                    prompt_file=str((model.config_json or {}).get("prompt_file") or "")
+                    if isinstance(model.config_json, dict)
+                    else None,
+                    url_manifest=str((model.config_json or {}).get("url_manifest") or "")
+                    if isinstance(model.config_json, dict)
+                    else None,
                 )
                 model.type = "graph"
                 store.agent_definitions[model.id] = model
@@ -8749,7 +10395,9 @@ def _startup_initialize_state() -> None:
     _persist_store_state()
 
 
-def _merge_memory_entries(*memory_groups: list[dict[str, Any]], limit: int = 100) -> list[dict[str, Any]]:
+def _merge_memory_entries(
+    *memory_groups: list[dict[str, Any]], limit: int = 100
+) -> list[dict[str, Any]]:
     merged: list[dict[str, Any]] = []
     seen: set[tuple[str, str]] = set()
     for group in memory_groups:
@@ -8761,7 +10409,7 @@ def _merge_memory_entries(*memory_groups: list[dict[str, Any]], limit: int = 100
                 continue
             seen.add(key)
             merged.append(entry)
-    return merged[-max(1, limit):]
+    return merged[-max(1, limit) :]
 
 
 def _memory_get_short_term_entries(session_id: str, limit: int = 100) -> list[dict[str, Any]]:
@@ -8831,9 +10479,7 @@ def _memory_token_estimate(text: str) -> int:
 
 def _memory_query_overlap_score(text: str, query_text: str) -> int:
     text_tokens = {
-        token
-        for token in re.findall(r"[a-z0-9]+", str(text or "").lower())
-        if len(token) >= 3
+        token for token in re.findall(r"[a-z0-9]+", str(text or "").lower()) if len(token) >= 3
     }
     query_tokens = {
         token
@@ -8854,7 +10500,10 @@ def _memory_runtime_role_bonus(entry: dict[str, Any], runtime_role: str) -> int:
         bonus += 20
     if role in {"orchestration", "planner", "coordinator"} and candidate_kind == "task-learning":
         bonus += 12
-    if role in {"tooling", "implementation"} and "evidence" in str(entry.get("content") or "").lower():
+    if (
+        role in {"tooling", "implementation"}
+        and "evidence" in str(entry.get("content") or "").lower()
+    ):
         bonus += 10
     return bonus
 
@@ -8867,6 +10516,7 @@ def _memory_age_decay_factor(entry: dict[str, Any], *, half_life_days: float) ->
         return 1.0
     try:
         from datetime import datetime, timezone as _tz
+
         if entry_time.endswith("Z"):
             entry_time = entry_time[:-1] + "+00:00"
         created = datetime.fromisoformat(entry_time)
@@ -8886,7 +10536,9 @@ def _rank_hybrid_memory_entries(
     runtime_role: str,
 ) -> list[dict[str, Any]]:
     decay_enabled = _env_flag("FRONTIER_MEMORY_DECAY_ENABLED", False)
-    decay_half_life = float(_env_int("FRONTIER_MEMORY_DECAY_HALF_LIFE_DAYS", 30, minimum=1, maximum=365))
+    decay_half_life = float(
+        _env_int("FRONTIER_MEMORY_DECAY_HALF_LIFE_DAYS", 30, minimum=1, maximum=365)
+    )
     tier_base = {
         "short-term": 90,
         "long-term": 70,
@@ -8908,16 +10560,25 @@ def _rank_hybrid_memory_entries(
         ranked_entry["retrieval_tokens"] = _memory_token_estimate(content)
         ranked_entry["_retrieval_index"] = index
         ranked.append(ranked_entry)
-    ranked.sort(key=lambda item: (-int(item.get("retrieval_score") or 0), int(item.get("_retrieval_index") or 0)))
+    ranked.sort(
+        key=lambda item: (
+            -int(item.get("retrieval_score") or 0),
+            int(item.get("_retrieval_index") or 0),
+        )
+    )
     return ranked
 
 
-def _apply_memory_token_budget(entries: list[dict[str, Any]], *, max_tokens: int) -> list[dict[str, Any]]:
+def _apply_memory_token_budget(
+    entries: list[dict[str, Any]], *, max_tokens: int
+) -> list[dict[str, Any]]:
     budget = max(1, max_tokens)
     kept: list[dict[str, Any]] = []
     used = 0
     for entry in entries:
-        tokens = int(entry.get("retrieval_tokens") or _memory_token_estimate(str(entry.get("content") or "")))
+        tokens = int(
+            entry.get("retrieval_tokens") or _memory_token_estimate(str(entry.get("content") or ""))
+        )
         if kept and used + tokens > budget:
             continue
         kept.append(entry)
@@ -8931,7 +10592,11 @@ def _memory_seed_short_term(bucket_id: str, entries: list[dict[str, Any]]) -> No
     if not entries:
         return
     current_entries = list(store.memory_by_session.get(bucket_id, []))
-    seen = {(str(item.get("id") or ""), str(item.get("content") or "")) for item in current_entries if isinstance(item, dict)}
+    seen = {
+        (str(item.get("id") or ""), str(item.get("content") or ""))
+        for item in current_entries
+        if isinstance(item, dict)
+    }
     additions: list[dict[str, Any]] = []
     for entry in entries:
         if not isinstance(entry, dict):
@@ -9017,16 +10682,35 @@ def _memory_get_hybrid_context(
         query_text=query_text,
         limit=min(limit, 25),
     )
-    graph_memories = [dict(item, tier=str(item.get("tier") or "world-graph")) for item in (world_graph.get("memories") if isinstance(world_graph.get("memories"), list) else []) if isinstance(item, dict)]
-    short_term_rankable = [dict(item, tier=str(item.get("tier") or "short-term")) for item in short_term if isinstance(item, dict)]
-    long_term_rankable = [dict(item, tier=str(item.get("tier") or "long-term")) for item in long_term if isinstance(item, dict)]
-    merged = _merge_memory_entries(short_term_rankable, long_term_rankable, graph_memories, limit=limit * 3)
+    graph_memories = [
+        dict(item, tier=str(item.get("tier") or "world-graph"))
+        for item in (
+            world_graph.get("memories") if isinstance(world_graph.get("memories"), list) else []
+        )
+        if isinstance(item, dict)
+    ]
+    short_term_rankable = [
+        dict(item, tier=str(item.get("tier") or "short-term"))
+        for item in short_term
+        if isinstance(item, dict)
+    ]
+    long_term_rankable = [
+        dict(item, tier=str(item.get("tier") or "long-term"))
+        for item in long_term
+        if isinstance(item, dict)
+    ]
+    merged = _merge_memory_entries(
+        short_term_rankable, long_term_rankable, graph_memories, limit=limit * 3
+    )
     if _env_flag("FRONTIER_MEMORY_FILE_DEDUP_ENABLED", False):
         from frontier_runtime.context_dedup import dedup_file_operations
+
         merged = dedup_file_operations(merged)
     ranked = _rank_hybrid_memory_entries(merged, query_text=query_text, runtime_role=runtime_role)
     token_budget = _env_int("FRONTIER_MEMORY_HYBRID_MAX_TOKENS", 1200, minimum=100, maximum=12000)
-    entries = _apply_memory_token_budget(ranked[: max(1, limit * 2)], max_tokens=token_budget)[:limit]
+    entries = _apply_memory_token_budget(ranked[: max(1, limit * 2)], max_tokens=token_budget)[
+        :limit
+    ]
     topic_limit = _env_int("FRONTIER_MEMORY_HYBRID_MAX_TOPICS", 8, minimum=1, maximum=50)
     topics = world_graph.get("topics") if isinstance(world_graph.get("topics"), list) else []
     ranked_topics = sorted(
@@ -9039,16 +10723,25 @@ def _memory_get_hybrid_context(
         "long_term_entries": long_term,
         "world_graph_entries": graph_memories,
         "world_graph_topics": ranked_topics,
-        "world_graph_relations": world_graph.get("relations") if isinstance(world_graph.get("relations"), list) else [],
+        "world_graph_relations": world_graph.get("relations")
+        if isinstance(world_graph.get("relations"), list)
+        else [],
     }
 
 
-def _memory_clear_entries(session_id: str, *, memory_scope: str = "session", clear_long_term: bool = True) -> None:
+def _memory_clear_entries(
+    session_id: str, *, memory_scope: str = "session", clear_long_term: bool = True
+) -> None:
     session_id, memory_scope = _validate_memory_bucket_scope_pair(session_id, memory_scope)
     if _REDIS_MEMORY.enabled and _REDIS_MEMORY.healthcheck():
         _REDIS_MEMORY.clear_entries(session_id)
     store.memory_by_session[session_id] = []
-    if clear_long_term and _env_flag("FRONTIER_MEMORY_ENABLE_LONG_TERM", True) and _POSTGRES_MEMORY.enabled and _POSTGRES_MEMORY.healthcheck():
+    if (
+        clear_long_term
+        and _env_flag("FRONTIER_MEMORY_ENABLE_LONG_TERM", True)
+        and _POSTGRES_MEMORY.enabled
+        and _POSTGRES_MEMORY.healthcheck()
+    ):
         _POSTGRES_MEMORY.clear_entries(
             bucket_id=session_id,
             session_id=session_id if memory_scope == "session" else None,
@@ -9070,7 +10763,12 @@ def _memory_append_entry(
     if _REDIS_MEMORY.enabled and _REDIS_MEMORY.healthcheck():
         _REDIS_MEMORY.append_entry(session_id, entry)
     store.memory_by_session.setdefault(session_id, []).append(entry)
-    if persist_long_term and _env_flag("FRONTIER_MEMORY_ENABLE_LONG_TERM", True) and _POSTGRES_MEMORY.enabled and _POSTGRES_MEMORY.healthcheck():
+    if (
+        persist_long_term
+        and _env_flag("FRONTIER_MEMORY_ENABLE_LONG_TERM", True)
+        and _POSTGRES_MEMORY.enabled
+        and _POSTGRES_MEMORY.healthcheck()
+    ):
         _POSTGRES_MEMORY.append_entry(
             bucket_id=session_id,
             session_id=long_term_session_id or session_id,
@@ -9096,11 +10794,14 @@ def _maybe_trigger_inline_consolidation(bucket_id: str, *, memory_scope: str = "
         return
     if not _POSTGRES_MEMORY.enabled or not _POSTGRES_MEMORY.healthcheck():
         return
-    threshold = _env_int("FRONTIER_MEMORY_INLINE_CONSOLIDATION_THRESHOLD", 10, minimum=2, maximum=100)
+    threshold = _env_int(
+        "FRONTIER_MEMORY_INLINE_CONSOLIDATION_THRESHOLD", 10, minimum=2, maximum=100
+    )
     pending_count = _POSTGRES_MEMORY.count_consolidation_candidates(status="pending")
     if pending_count < threshold:
         return
     import threading
+
     threading.Thread(
         daemon=True,
         target=_run_memory_consolidation,
@@ -9113,7 +10814,9 @@ def _maybe_trigger_inline_consolidation(bucket_id: str, *, memory_scope: str = "
     ).start()
 
 
-def _memory_should_schedule_consolidation(entry: dict[str, Any], *, memory_scope: str, source: str) -> bool:
+def _memory_should_schedule_consolidation(
+    entry: dict[str, Any], *, memory_scope: str, source: str
+) -> bool:
     if not _env_flag("FRONTIER_MEMORY_CONSOLIDATION_ENABLED", True):
         return False
     if not _env_flag("FRONTIER_MEMORY_ENABLE_LONG_TERM", True):
@@ -9183,10 +10886,7 @@ def _record_task_learning(
     learning_entry = {
         "id": str(uuid4()),
         "at": _now_iso(),
-        "content": (
-            f"Task: {prompt_text[:1200]}\n\n"
-            f"Response: {response_text[:2400]}"
-        ).strip(),
+        "content": (f"Task: {prompt_text[:1200]}\n\nResponse: {response_text[:2400]}").strip(),
         "actor": actor,
         "agent_id": selected_agent_id,
         "agent_name": selected_agent_name,
@@ -9234,7 +10934,9 @@ def _record_task_learning(
         )
 
 
-def _memory_consolidation_summary_points(candidates: list[dict[str, Any]], *, max_points: int = 5) -> list[str]:
+def _memory_consolidation_summary_points(
+    candidates: list[dict[str, Any]], *, max_points: int = 5
+) -> list[str]:
     lines: list[str] = []
     seen: set[str] = set()
     for candidate in candidates:
@@ -9261,11 +10963,7 @@ def _memory_consolidation_min_candidates(candidate_kind: str) -> int:
 
 
 def _memory_consolidation_token_set(text: str) -> set[str]:
-    return {
-        token
-        for token in re.findall(r"[a-z0-9]+", str(text or "").lower())
-        if len(token) >= 3
-    }
+    return {token for token in re.findall(r"[a-z0-9]+", str(text or "").lower()) if len(token) >= 3}
 
 
 def _memory_consolidation_overlap_percent(left: str, right: str) -> int:
@@ -9279,11 +10977,57 @@ def _memory_consolidation_overlap_percent(left: str, right: str) -> int:
 
 
 _MEMORY_GRAPH_STOPWORDS = {
-    "about", "after", "also", "agent", "agents", "and", "are", "because", "been", "before", "being", "between",
-    "build", "candidate", "compliance", "content", "continue", "drift", "each", "entry", "from", "have", "into",
-    "keep", "memory", "must", "needs", "node", "onto", "over", "project", "recent", "same", "should", "summary",
-    "task", "that", "their", "them", "then", "these", "they", "this", "those", "through", "want", "wants", "weekly",
-    "with", "workflow", "workflows",
+    "about",
+    "after",
+    "also",
+    "agent",
+    "agents",
+    "and",
+    "are",
+    "because",
+    "been",
+    "before",
+    "being",
+    "between",
+    "build",
+    "candidate",
+    "compliance",
+    "content",
+    "continue",
+    "drift",
+    "each",
+    "entry",
+    "from",
+    "have",
+    "into",
+    "keep",
+    "memory",
+    "must",
+    "needs",
+    "node",
+    "onto",
+    "over",
+    "project",
+    "recent",
+    "same",
+    "should",
+    "summary",
+    "task",
+    "that",
+    "their",
+    "them",
+    "then",
+    "these",
+    "they",
+    "this",
+    "those",
+    "through",
+    "want",
+    "wants",
+    "weekly",
+    "with",
+    "workflow",
+    "workflows",
 }
 
 
@@ -9302,7 +11046,9 @@ def _memory_graph_owner_entity(bucket_id: str, memory_scope: str) -> dict[str, A
 
 def _memory_graph_extract_topics(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
     max_topics = _env_int("FRONTIER_MEMORY_GRAPH_MAX_TOPICS", 5, minimum=1, maximum=20)
-    min_occurrences = _env_int("FRONTIER_MEMORY_GRAPH_TOPIC_MIN_OCCURRENCES", 2, minimum=1, maximum=10)
+    min_occurrences = _env_int(
+        "FRONTIER_MEMORY_GRAPH_TOPIC_MIN_OCCURRENCES", 2, minimum=1, maximum=10
+    )
     phrase_counts: Counter[str] = Counter()
     token_counts: Counter[str] = Counter()
 
@@ -9344,9 +11090,13 @@ def _memory_graph_extract_topics(candidates: list[dict[str, Any]]) -> list[dict[
     return topics
 
 
-def _build_memory_world_graph_projection(consolidated_entry: dict[str, Any], candidates: list[dict[str, Any]]) -> dict[str, Any]:
+def _build_memory_world_graph_projection(
+    consolidated_entry: dict[str, Any], candidates: list[dict[str, Any]]
+) -> dict[str, Any]:
     bucket_id = str(consolidated_entry.get("bucket_id") or "").strip()
-    memory_scope = str(consolidated_entry.get("memory_scope") or "session").strip().lower() or "session"
+    memory_scope = (
+        str(consolidated_entry.get("memory_scope") or "session").strip().lower() or "session"
+    )
     owner = _memory_graph_owner_entity(bucket_id, memory_scope)
     evidences = [
         {
@@ -9363,11 +11113,19 @@ def _build_memory_world_graph_projection(consolidated_entry: dict[str, Any], can
     relations = [
         {"type": "OWNS_MEMORY", "from": owner["id"], "to": str(consolidated_entry.get("id") or "")},
         *[
-            {"type": "DERIVED_FROM", "from": str(consolidated_entry.get("id") or ""), "to": evidence["id"]}
+            {
+                "type": "DERIVED_FROM",
+                "from": str(consolidated_entry.get("id") or ""),
+                "to": evidence["id"],
+            }
             for evidence in evidences
         ],
         *[
-            {"type": "MENTIONS_TOPIC", "from": str(consolidated_entry.get("id") or ""), "to": topic["id"]}
+            {
+                "type": "MENTIONS_TOPIC",
+                "from": str(consolidated_entry.get("id") or ""),
+                "to": topic["id"],
+            }
             for topic in topics
         ],
     ]
@@ -9381,7 +11139,9 @@ def _build_memory_world_graph_projection(consolidated_entry: dict[str, Any], can
     }
 
 
-def _project_memory_world_graph(consolidated_entry: dict[str, Any], candidates: list[dict[str, Any]]) -> dict[str, Any] | None:
+def _project_memory_world_graph(
+    consolidated_entry: dict[str, Any], candidates: list[dict[str, Any]]
+) -> dict[str, Any] | None:
     if not _env_flag("FRONTIER_MEMORY_GRAPH_PROJECTION_ENABLED", True):
         return None
     if not _NEO4J_GRAPH.enabled or not _NEO4J_GRAPH.healthcheck():
@@ -9412,12 +11172,18 @@ def _run_memory_world_graph_projection(
 
     entries = [
         entry
-        for entry in _POSTGRES_MEMORY.get_entries(bucket_id=bucket_id, memory_scope=memory_scope, limit=bounded_limit)
+        for entry in _POSTGRES_MEMORY.get_entries(
+            bucket_id=bucket_id, memory_scope=memory_scope, limit=bounded_limit
+        )
         if str(entry.get("kind") or "").strip().lower() == "memory-consolidation"
     ]
     projections: list[dict[str, Any]] = []
     for entry in entries:
-        source_candidate_ids = entry.get("source_candidate_ids") if isinstance(entry.get("source_candidate_ids"), list) else []
+        source_candidate_ids = (
+            entry.get("source_candidate_ids")
+            if isinstance(entry.get("source_candidate_ids"), list)
+            else []
+        )
         candidates = [
             {
                 "id": str(candidate_id),
@@ -9477,17 +11243,30 @@ def _find_duplicate_memory_consolidation(
             limit=1,
         )
         for entry in similar:
-            if str(entry.get("kind") or entry.get("metadata", {}).get("kind") or "").strip().lower() == "memory-consolidation":
+            if (
+                str(entry.get("kind") or entry.get("metadata", {}).get("kind") or "")
+                .strip()
+                .lower()
+                == "memory-consolidation"
+            ):
                 return entry
 
     # Fall back to token overlap
-    overlap_threshold = _env_int("FRONTIER_MEMORY_CONSOLIDATION_DUPLICATE_MIN_OVERLAP", 80, minimum=1, maximum=100)
-    history_limit = _env_int("FRONTIER_MEMORY_CONSOLIDATION_DUPLICATE_HISTORY_LIMIT", 25, minimum=1, maximum=200)
-    existing_entries = _POSTGRES_MEMORY.get_entries(bucket_id=bucket_id, memory_scope=memory_scope, limit=history_limit)
+    overlap_threshold = _env_int(
+        "FRONTIER_MEMORY_CONSOLIDATION_DUPLICATE_MIN_OVERLAP", 80, minimum=1, maximum=100
+    )
+    history_limit = _env_int(
+        "FRONTIER_MEMORY_CONSOLIDATION_DUPLICATE_HISTORY_LIMIT", 25, minimum=1, maximum=200
+    )
+    existing_entries = _POSTGRES_MEMORY.get_entries(
+        bucket_id=bucket_id, memory_scope=memory_scope, limit=history_limit
+    )
     for entry in reversed(existing_entries):
         if str(entry.get("kind") or "").strip().lower() != "memory-consolidation":
             continue
-        overlap = _memory_consolidation_overlap_percent(consolidated_content, str(entry.get("content") or ""))
+        overlap = _memory_consolidation_overlap_percent(
+            consolidated_content, str(entry.get("content") or "")
+        )
         if overlap >= overlap_threshold:
             return entry
     return None
@@ -9508,7 +11287,11 @@ def _build_memory_consolidation_entry(
     if not summary_points:
         return None
 
-    heading = "Task learning summary" if candidate_kind == "task-learning" else "Consolidated memory summary"
+    heading = (
+        "Task learning summary"
+        if candidate_kind == "task-learning"
+        else "Consolidated memory summary"
+    )
     content = "\n".join([f"{heading} for {bucket_id}:", *[f"- {line}" for line in summary_points]])
     return {
         "id": str(uuid4()),
@@ -9519,7 +11302,9 @@ def _build_memory_consolidation_entry(
         "candidate_kind": candidate_kind,
         "bucket_id": bucket_id,
         "session_id": session_id,
-        "source_candidate_ids": [str(item.get("entry_id") or item.get("id") or "") for item in candidates],
+        "source_candidate_ids": [
+            str(item.get("entry_id") or item.get("id") or "") for item in candidates
+        ],
         "source_count": len(candidates),
         "tier": "long-term",
     }
@@ -9536,11 +11321,25 @@ def _run_memory_consolidation(
         bucket_id, memory_scope = _validate_memory_bucket_scope_pair(bucket_id, memory_scope)
     bounded_limit = max(1, min(200, int(limit)))
     if not _env_flag("FRONTIER_MEMORY_CONSOLIDATION_ENABLED", True):
-        result = {"ok": True, "status": "disabled", "processed_candidates": 0, "generated_entries": []}
+        result = {
+            "ok": True,
+            "status": "disabled",
+            "processed_candidates": 0,
+            "generated_entries": [],
+        }
         _append_audit_event("memory.consolidation.run", actor, "allowed", result)
         return result
-    if not _env_flag("FRONTIER_MEMORY_ENABLE_LONG_TERM", True) or not _POSTGRES_MEMORY.enabled or not _POSTGRES_MEMORY.healthcheck():
-        result = {"ok": False, "status": "unavailable", "processed_candidates": 0, "generated_entries": []}
+    if (
+        not _env_flag("FRONTIER_MEMORY_ENABLE_LONG_TERM", True)
+        or not _POSTGRES_MEMORY.enabled
+        or not _POSTGRES_MEMORY.healthcheck()
+    ):
+        result = {
+            "ok": False,
+            "status": "unavailable",
+            "processed_candidates": 0,
+            "generated_entries": [],
+        }
         _append_audit_event("memory.consolidation.run", actor, "error", result)
         return result
 
@@ -9558,15 +11357,28 @@ def _run_memory_consolidation(
     grouped: dict[tuple[str, str, str, str], list[dict[str, Any]]] = {}
     for candidate in pending:
         candidate_bucket = str(candidate.get("bucket_id") or "").strip()
-        candidate_session = str(candidate.get("session_id") or candidate_bucket).strip() or candidate_bucket
-        candidate_scope = str(candidate.get("memory_scope") or "session").strip().lower() or "session"
-        candidate_kind = str(candidate.get("candidate_kind") or "promotion").strip().lower() or "promotion"
-        grouped.setdefault((candidate_bucket, candidate_session, candidate_scope, candidate_kind), []).append(candidate)
+        candidate_session = (
+            str(candidate.get("session_id") or candidate_bucket).strip() or candidate_bucket
+        )
+        candidate_scope = (
+            str(candidate.get("memory_scope") or "session").strip().lower() or "session"
+        )
+        candidate_kind = (
+            str(candidate.get("candidate_kind") or "promotion").strip().lower() or "promotion"
+        )
+        grouped.setdefault(
+            (candidate_bucket, candidate_session, candidate_scope, candidate_kind), []
+        ).append(candidate)
 
     generated_entries: list[dict[str, Any]] = []
     consolidated_candidate_count = 0
     skipped_candidate_ids: list[str] = []
-    for (candidate_bucket, candidate_session, candidate_scope, candidate_kind), candidates in grouped.items():
+    for (
+        candidate_bucket,
+        candidate_session,
+        candidate_scope,
+        candidate_kind,
+    ), candidates in grouped.items():
         min_candidates = _memory_consolidation_min_candidates(candidate_kind)
         if len(candidates) < min_candidates:
             for candidate in candidates:
@@ -9581,7 +11393,11 @@ def _run_memory_consolidation(
                             "candidate_count": len(candidates),
                         },
                     )
-            skipped_candidate_ids.extend(str(candidate.get("id") or "") for candidate in candidates if str(candidate.get("id") or ""))
+            skipped_candidate_ids.extend(
+                str(candidate.get("id") or "")
+                for candidate in candidates
+                if str(candidate.get("id") or "")
+            )
             continue
 
         consolidated_entry = _build_memory_consolidation_entry(
@@ -9595,7 +11411,9 @@ def _run_memory_consolidation(
             for candidate in candidates:
                 candidate_id = str(candidate.get("id") or "")
                 if candidate_id:
-                    _POSTGRES_MEMORY.mark_consolidation_candidate(candidate_id, status="skipped", extra_metadata={"reason": "empty_summary"})
+                    _POSTGRES_MEMORY.mark_consolidation_candidate(
+                        candidate_id, status="skipped", extra_metadata={"reason": "empty_summary"}
+                    )
                     skipped_candidate_ids.append(candidate_id)
             continue
 
@@ -9676,7 +11494,11 @@ def _build_runtime_l3_parity_report() -> dict[str, Any]:
     total_cells = 0
 
     probes = {
-        engine: ({"engine": "native", "available": True, "missing_modules": []} if engine == "native" else _framework_runtime_probe(engine))
+        engine: (
+            {"engine": "native", "available": True, "missing_modules": []}
+            if engine == "native"
+            else _framework_runtime_probe(engine)
+        )
         for engine in engines
     }
 
@@ -9690,7 +11512,10 @@ def _build_runtime_l3_parity_report() -> dict[str, Any]:
             total_cells += 1
             adapter = _framework_adapter_mapping(engine).get(node_type, "")
             probe = probes[engine]
-            has_delegated_or_native = node_type in _L3_DELEGATED_NODE_TYPES or node_type in _L3_NATIVE_CONTROL_PLANE_NODE_TYPES
+            has_delegated_or_native = (
+                node_type in _L3_DELEGATED_NODE_TYPES
+                or node_type in _L3_NATIVE_CONTROL_PLANE_NODE_TYPES
+            )
             l3_ready = bool(adapter) and has_delegated_or_native
             if l3_ready:
                 l3_ready_cells += 1
@@ -9813,12 +11638,17 @@ def _version_sort_key(value: str) -> tuple[tuple[int, object], ...]:
     return tuple(key)
 
 
-def _parse_semverish_version(value: str) -> tuple[tuple[int, int, int], tuple[tuple[int, object], ...] | None] | None:
+def _parse_semverish_version(
+    value: str,
+) -> tuple[tuple[int, int, int], tuple[tuple[int, object], ...] | None] | None:
     normalized = str(value or "").strip().lstrip("vV")
     if not normalized:
         return None
     normalized = normalized.split("+", 1)[0]
-    match = re.fullmatch(r"(?P<major>\d+)(?:\.(?P<minor>\d+))?(?:\.(?P<patch>\d+))?(?:-(?P<prerelease>[0-9A-Za-z.-]+))?", normalized)
+    match = re.fullmatch(
+        r"(?P<major>\d+)(?:\.(?P<minor>\d+))?(?:\.(?P<patch>\d+))?(?:-(?P<prerelease>[0-9A-Za-z.-]+))?",
+        normalized,
+    )
     if not match:
         return None
     core = (
@@ -9831,7 +11661,9 @@ def _parse_semverish_version(value: str) -> tuple[tuple[int, int, int], tuple[tu
         return core, None
     prerelease: list[tuple[int, object]] = []
     for identifier in prerelease_text.split("."):
-        prerelease.append((0, int(identifier)) if identifier.isdigit() else (1, identifier.casefold()))
+        prerelease.append(
+            (0, int(identifier)) if identifier.isdigit() else (1, identifier.casefold())
+        )
     return core, tuple(prerelease)
 
 
@@ -9884,7 +11716,11 @@ def _default_update_manifest_url() -> str:
     if override:
         return override
 
-    public_repo = str(os.getenv("INSTALLER_PUBLIC_REPO") or "https://github.com/LATTIX-IO/lattix-xfrontier").strip().rstrip("/")
+    public_repo = (
+        str(os.getenv("INSTALLER_PUBLIC_REPO") or "https://github.com/LATTIX-IO/lattix-xfrontier")
+        .strip()
+        .rstrip("/")
+    )
     ref = str(os.getenv("INSTALLER_DEFAULT_REF") or "main").strip() or "main"
     parsed = urlsplit(public_repo)
     owner_repo = parsed.path.strip("/")
@@ -9963,7 +11799,9 @@ def _fetch_remote_release_manifest() -> dict[str, Any] | None:
     with _REMOTE_RELEASE_MANIFEST_CACHE_LOCK:
         _REMOTE_RELEASE_MANIFEST_CACHE["manifest_url"] = manifest_url
         _REMOTE_RELEASE_MANIFEST_CACHE["expires_at"] = expires_at
-        _REMOTE_RELEASE_MANIFEST_CACHE["payload"] = dict(payload) if isinstance(payload, dict) else None
+        _REMOTE_RELEASE_MANIFEST_CACHE["payload"] = (
+            dict(payload) if isinstance(payload, dict) else None
+        )
 
     return dict(payload) if isinstance(payload, dict) else None
 
@@ -9972,12 +11810,18 @@ def _platform_version_payload() -> dict[str, Any]:
     current_version = _platform_version()
     release_manifest = _fetch_remote_release_manifest() or {}
     version_status = "unknown"
-    latest_version = str(release_manifest.get("version") or current_version).strip() or current_version
+    latest_version = (
+        str(release_manifest.get("version") or current_version).strip() or current_version
+    )
     repo_root = _metadata_repo_root()
     install_mode = "editable" if (repo_root / ".git").exists() else "wheel"
-    update_command = str(release_manifest.get("update_command") or "lattix update").strip() or "lattix update"
+    update_command = (
+        str(release_manifest.get("update_command") or "lattix update").strip() or "lattix update"
+    )
     update_available = _version_is_newer(latest_version, current_version)
-    release_notes_url = str(release_manifest.get("release_notes_url") or release_manifest.get("publicRepo") or "").strip()
+    release_notes_url = str(
+        release_manifest.get("release_notes_url") or release_manifest.get("publicRepo") or ""
+    ).strip()
     if release_manifest:
         version_status = "update_available" if update_available else "up_to_date"
 
@@ -9994,7 +11838,11 @@ def _platform_version_payload() -> dict[str, Any]:
         "summary": (
             f"Version {latest_version} is available. Run `{update_command}` to refresh the local app without deleting workflows, agents, settings, or installer-managed env files."
             if version_status == "update_available"
-            else ("Your local app is up to date." if version_status == "up_to_date" else "Version metadata is unavailable right now.")
+            else (
+                "Your local app is up to date."
+                if version_status == "up_to_date"
+                else "Version metadata is unavailable right now."
+            )
         ),
     }
 
@@ -10009,7 +11857,11 @@ def get_auth_session(request: Request) -> dict[str, Any]:
     actor = _enforce_request_authn(request, action="auth.session.read", required=False)
     auth_context = getattr(request.state, "frontier_auth_context", None)
     auth_context = auth_context if isinstance(auth_context, dict) else {}
-    claims = auth_context.get("runtime_token_claims") if isinstance(auth_context.get("runtime_token_claims"), dict) else {}
+    claims = (
+        auth_context.get("runtime_token_claims")
+        if isinstance(auth_context.get("runtime_token_claims"), dict)
+        else {}
+    )
     bearer_authenticated = bool(auth_context.get("used_bearer_token"))
     capabilities = {
         "can_admin": _request_has_admin_access(request) if bearer_authenticated else False,
@@ -10027,7 +11879,11 @@ def get_auth_session(request: Request) -> dict[str, Any]:
         allowed_modes.append("builder")
 
     session_actor = actor if bearer_authenticated else "anonymous"
-    session_principal_id = str(auth_context.get("principal_id") or actor).strip() or actor if bearer_authenticated else "anonymous"
+    session_principal_id = (
+        str(auth_context.get("principal_id") or actor).strip() or actor
+        if bearer_authenticated
+        else "anonymous"
+    )
     session_principal_type = str(auth_context.get("principal_type") or "user").strip() or "user"
     if not bearer_authenticated:
         session_principal_type = "user"
@@ -10037,12 +11893,27 @@ def get_auth_session(request: Request) -> dict[str, Any]:
         "actor": session_actor,
         "principal_id": session_principal_id,
         "principal_type": session_principal_type,
-        "display_name": str(auth_context.get("display_name") or claims.get("name") or claims.get("email") or actor).strip() if bearer_authenticated else "",
-        "subject": str(auth_context.get("subject") or claims.get("sub") or "").strip() if bearer_authenticated else "",
+        "display_name": str(
+            auth_context.get("display_name") or claims.get("name") or claims.get("email") or actor
+        ).strip()
+        if bearer_authenticated
+        else "",
+        "subject": str(auth_context.get("subject") or claims.get("sub") or "").strip()
+        if bearer_authenticated
+        else "",
         "email": str(claims.get("email") or "").strip() if bearer_authenticated else "",
-        "preferred_username": str(claims.get("preferred_username") or "").strip() if bearer_authenticated else "",
-        "auth_mode": str(auth_context.get("bearer_auth_kind") or os.getenv("FRONTIER_AUTH_MODE") or "shared-token").strip() or "shared-token",
-        "provider": str(configured_oidc.get("provider") or os.getenv("FRONTIER_AUTH_OIDC_PROVIDER") or "").strip(),
+        "preferred_username": str(claims.get("preferred_username") or "").strip()
+        if bearer_authenticated
+        else "",
+        "auth_mode": str(
+            auth_context.get("bearer_auth_kind")
+            or os.getenv("FRONTIER_AUTH_MODE")
+            or "shared-token"
+        ).strip()
+        or "shared-token",
+        "provider": str(
+            configured_oidc.get("provider") or os.getenv("FRONTIER_AUTH_OIDC_PROVIDER") or ""
+        ).strip(),
         "roles": sorted(_auth_context_access_claims(auth_context)) if bearer_authenticated else [],
         "capabilities": capabilities,
         "allowed_modes": allowed_modes,
@@ -10061,18 +11932,22 @@ def get_auth_session(request: Request) -> dict[str, Any]:
 def login_with_local_password(payload: PasswordLoginRequest, request: Request) -> JSONResponse:
     account = _authenticate_local_casdoor_user(payload.username, payload.password)
     token = _mint_operator_session_token_from_casdoor_account(account)
-    response = JSONResponse({
-        "ok": True,
-        "authenticated": True,
-        "provider": "casdoor",
-        "mode": "password",
-    })
+    response = JSONResponse(
+        {
+            "ok": True,
+            "authenticated": True,
+            "provider": "casdoor",
+            "mode": "password",
+        }
+    )
     _set_operator_session_cookie(response, request, token)
     return response
 
 
 @app.post("/auth/register")
-def register_with_local_password(payload: PasswordRegisterRequest, request: Request) -> JSONResponse:
+def register_with_local_password(
+    payload: PasswordRegisterRequest, request: Request
+) -> JSONResponse:
     account = _provision_local_casdoor_user(
         username=payload.username,
         email=payload.email,
@@ -10080,13 +11955,15 @@ def register_with_local_password(payload: PasswordRegisterRequest, request: Requ
         password=payload.password,
     )
     token = _mint_operator_session_token_from_casdoor_account(account)
-    response = JSONResponse({
-        "ok": True,
-        "authenticated": True,
-        "provider": "casdoor",
-        "mode": "password",
-        "created": True,
-    })
+    response = JSONResponse(
+        {
+            "ok": True,
+            "authenticated": True,
+            "provider": "casdoor",
+            "mode": "password",
+            "created": True,
+        }
+    )
     _set_operator_session_cookie(response, request, token)
     return response
 
@@ -10109,9 +11986,15 @@ def _build_health_payload() -> dict[str, str]:
         "postgres": "connected" if postgres_ok else "disabled",
         "redis": "connected" if redis_ok else "disabled",
         "long_term_memory": "connected" if long_term_ok else "disabled",
-        "memory_consolidation": "enabled" if long_term_ok and _env_flag("FRONTIER_MEMORY_CONSOLIDATION_ENABLED", True) else "disabled",
-        "memory_hybrid_retrieval": "enabled" if long_term_ok and _env_flag("FRONTIER_MEMORY_HYBRID_RETRIEVAL_ENABLED", True) else "disabled",
-        "memory_world_graph": "enabled" if neo4j_ok and _env_flag("FRONTIER_MEMORY_GRAPH_PROJECTION_ENABLED", True) else "disabled",
+        "memory_consolidation": "enabled"
+        if long_term_ok and _env_flag("FRONTIER_MEMORY_CONSOLIDATION_ENABLED", True)
+        else "disabled",
+        "memory_hybrid_retrieval": "enabled"
+        if long_term_ok and _env_flag("FRONTIER_MEMORY_HYBRID_RETRIEVAL_ENABLED", True)
+        else "disabled",
+        "memory_world_graph": "enabled"
+        if neo4j_ok and _env_flag("FRONTIER_MEMORY_GRAPH_PROJECTION_ENABLED", True)
+        else "disabled",
         "neo4j": "connected" if neo4j_ok else "disabled",
     }
 
@@ -10127,7 +12010,9 @@ def healthz_details(request: Request) -> dict[str, str]:
 def get_federation_status(request: Request) -> dict[str, Any]:
     actor = _enforce_request_authn(request, action="federation.status.read")
     _append_audit_event("federation.status.read", actor, "allowed")
-    peers = [item.strip() for item in str(os.getenv("FEDERATION_PEERS", "")).split(",") if item.strip()]
+    peers = [
+        item.strip() for item in str(os.getenv("FEDERATION_PEERS", "")).split(",") if item.strip()
+    ]
     return {
         "enabled": _env_flag("FEDERATION_ENABLED", False),
         "cluster_name": str(os.getenv("FEDERATION_CLUSTER_NAME", "")).strip(),
@@ -10169,9 +12054,15 @@ def get_local_integration_readiness(request: Request) -> dict[str, Any]:
         for url in platform.allowed_mcp_server_urls
         if _is_local_network_url(url, platform.allow_local_network_hostnames)
     ]
-    rag_local_ready = bool(platform.allowed_retrieval_sources) and bool(platform.retrieval_require_local_source_url)
+    rag_local_ready = bool(platform.allowed_retrieval_sources) and bool(
+        platform.retrieval_require_local_source_url
+    )
     mcp_local_ready = bool(platform.mcp_require_local_server) and len(mcp_local_servers) > 0
-    a2a_local_ready = bool(platform.a2a_require_signed_messages and platform.a2a_replay_protection and platform.a2a_trusted_subjects)
+    a2a_local_ready = bool(
+        platform.a2a_require_signed_messages
+        and platform.a2a_replay_protection
+        and platform.a2a_trusted_subjects
+    )
 
     scores = {
         "rag": 88 if rag_local_ready else 62,
@@ -10251,7 +12142,9 @@ def get_platform_security_policy(request: Request) -> dict[str, Any]:
 
 
 @app.post("/platform/settings")
-def save_platform_settings(request: Request, payload: dict[str, Any] = Body(default_factory=dict)) -> dict[str, bool]:
+def save_platform_settings(
+    request: Request, payload: dict[str, Any] = Body(default_factory=dict)
+) -> dict[str, bool]:
     actor = _enforce_admin_access(request, payload=payload, action="platform.settings.save")
     current_settings = store.platform_settings
     current = current_settings.model_dump()
@@ -10260,18 +12153,28 @@ def save_platform_settings(request: Request, payload: dict[str, Any] = Body(defa
         if key in payload:
             merged[key] = payload[key]
     if "allowed_runtime_engines" in payload:
-        merged["allowed_runtime_engines"] = _normalize_runtime_engine_list(payload.get("allowed_runtime_engines", [])) or ["native"]
+        merged["allowed_runtime_engines"] = _normalize_runtime_engine_list(
+            payload.get("allowed_runtime_engines", [])
+        ) or ["native"]
     if "default_runtime_engine" in payload:
-        merged["default_runtime_engine"] = _normalize_runtime_engine(payload.get("default_runtime_engine"))
+        merged["default_runtime_engine"] = _normalize_runtime_engine(
+            payload.get("default_runtime_engine")
+        )
     if "default_runtime_strategy" in payload:
-        merged["default_runtime_strategy"] = _normalize_runtime_strategy(payload.get("default_runtime_strategy"))
+        merged["default_runtime_strategy"] = _normalize_runtime_strategy(
+            payload.get("default_runtime_strategy")
+        )
     if "default_hybrid_runtime_routing" in payload:
         merged["default_hybrid_runtime_routing"] = _normalize_hybrid_runtime_routing(
             payload.get("default_hybrid_runtime_routing"),
-            default_engine=_normalize_runtime_engine(merged.get("default_runtime_engine") or "native"),
+            default_engine=_normalize_runtime_engine(
+                merged.get("default_runtime_engine") or "native"
+            ),
         )
     candidate_settings = PlatformSettings.model_validate(merged)
-    _validate_platform_settings_update(current_settings, candidate_settings, payload=payload, actor=actor)
+    _validate_platform_settings_update(
+        current_settings, candidate_settings, payload=payload, actor=actor
+    )
     store.platform_settings = candidate_settings
     _append_config_mutation_audit(
         "platform.settings.save",
@@ -10295,7 +12198,9 @@ def get_memory(
     query: str | None = None,
 ) -> dict[str, Any]:
     actor = _enforce_request_authn(request, action="memory.read")
-    session_id, scope = _authorize_memory_bucket_access(request, actor=actor, bucket_id=session_id, memory_scope=scope, action="memory.read")
+    session_id, scope = _authorize_memory_bucket_access(
+        request, actor=actor, bucket_id=session_id, memory_scope=scope, action="memory.read"
+    )
     short_term_entries = _memory_get_short_term_entries(session_id, limit=100)
     long_term_entries = (
         _memory_load_long_term_entries(
@@ -10332,15 +12237,21 @@ def get_memory(
 def clear_memory(session_id: str, request: Request, scope: str = "session") -> dict[str, Any]:
     actor = _enforce_request_authn(request, action="memory.clear")
     _enforce_emergency_write_policy("memory.clear", actor)
-    session_id, scope = _authorize_memory_bucket_access(request, actor=actor, bucket_id=session_id, memory_scope=scope, action="memory.clear")
+    session_id, scope = _authorize_memory_bucket_access(
+        request, actor=actor, bucket_id=session_id, memory_scope=scope, action="memory.clear"
+    )
     _memory_clear_entries(session_id, memory_scope=scope)
-    _append_audit_event("memory.clear", actor, "allowed", {"session_id": session_id, "scope": scope})
+    _append_audit_event(
+        "memory.clear", actor, "allowed", {"session_id": session_id, "scope": scope}
+    )
     _persist_store_state()
     return {"ok": True, "session_id": session_id}
 
 
 @app.post("/internal/memory/consolidation/run")
-def run_memory_consolidation(request: Request, payload: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
+def run_memory_consolidation(
+    request: Request, payload: dict[str, Any] = Body(default_factory=dict)
+) -> dict[str, Any]:
     actor = _enforce_request_authn(request, payload=payload, action="memory.consolidation.run")
     _enforce_emergency_write_policy("memory.consolidation.run", actor)
     raw_limit = payload.get("limit", 20)
@@ -10359,13 +12270,17 @@ def run_memory_consolidation(request: Request, payload: dict[str, Any] = Body(de
             action="memory.consolidation.run",
             payload=payload,
         )
-    result = _run_memory_consolidation(actor=actor, bucket_id=bucket_id, memory_scope=scope, limit=limit)
+    result = _run_memory_consolidation(
+        actor=actor, bucket_id=bucket_id, memory_scope=scope, limit=limit
+    )
     _persist_store_state()
     return result
 
 
 @app.post("/internal/memory/world-graph/project")
-def run_memory_world_graph_projection(request: Request, payload: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
+def run_memory_world_graph_projection(
+    request: Request, payload: dict[str, Any] = Body(default_factory=dict)
+) -> dict[str, Any]:
     actor = _enforce_request_authn(request, payload=payload, action="memory.world_graph.project")
     _enforce_emergency_write_policy("memory.world_graph.project", actor)
     raw_limit = payload.get("limit", 20)
@@ -10384,7 +12299,9 @@ def run_memory_world_graph_projection(request: Request, payload: dict[str, Any] 
             action="memory.world_graph.project",
             payload=payload,
         )
-    result = _run_memory_world_graph_projection(actor=actor, bucket_id=bucket_id, memory_scope=scope, limit=limit)
+    result = _run_memory_world_graph_projection(
+        actor=actor, bucket_id=bucket_id, memory_scope=scope, limit=limit
+    )
     _persist_store_state()
     return result
 
@@ -10408,12 +12325,16 @@ def get_active_workflows() -> list[dict[str, Any]]:
 
 
 @app.post("/workflow-runs")
-def create_workflow_run(request: Request, payload: dict[str, Any] = Body(default_factory=dict)) -> dict[str, str]:
+def create_workflow_run(
+    request: Request, payload: dict[str, Any] = Body(default_factory=dict)
+) -> dict[str, str]:
     actor = _enforce_request_authn(request, payload=payload, action="workflow.run.create")
     _enforce_emergency_write_policy("workflow.run.create", actor)
     if store.platform_settings.block_new_runs:
         _append_audit_event("workflow.run.create", actor, "blocked", {"reason": "block_new_runs"})
-        raise HTTPException(status_code=423, detail="New workflow runs are temporarily blocked by policy")
+        raise HTTPException(
+            status_code=423, detail="New workflow runs are temporarily blocked by policy"
+        )
 
     run_id = str(uuid4())
     title = str(payload.get("title") or payload.get("workflowName") or "Workflow Run")
@@ -10424,17 +12345,23 @@ def create_workflow_run(request: Request, payload: dict[str, Any] = Body(default
     requested_agent_tokens = [
         str(token.get("value", "")).strip()
         for token in tokens_raw
-        if isinstance(token, dict) and str(token.get("kind")) == "agent" and str(token.get("value", "")).strip()
+        if isinstance(token, dict)
+        and str(token.get("kind")) == "agent"
+        and str(token.get("value", "")).strip()
     ]
     requested_workflow_tokens = [
         str(token.get("value", "")).strip()
         for token in tokens_raw
-        if isinstance(token, dict) and str(token.get("kind")) == "workflow" and str(token.get("value", "")).strip()
+        if isinstance(token, dict)
+        and str(token.get("kind")) == "workflow"
+        and str(token.get("value", "")).strip()
     ]
     requested_tags = [
         str(token.get("value", "")).strip().lower()
         for token in tokens_raw
-        if isinstance(token, dict) and str(token.get("kind")) == "tag" and str(token.get("value", "")).strip()
+        if isinstance(token, dict)
+        and str(token.get("kind")) == "tag"
+        and str(token.get("value", "")).strip()
     ]
 
     published_agent_keys: set[str] = set()
@@ -10491,17 +12418,28 @@ def create_workflow_run(request: Request, payload: dict[str, Any] = Body(default
         )
 
     selected_agent_token = requested_agents[0] if requested_agents else None
-    selected_agent_definition = _resolve_published_agent_definition(selected_agent_token or "") if selected_agent_token else None
+    selected_agent_definition = (
+        _resolve_published_agent_definition(selected_agent_token or "")
+        if selected_agent_token
+        else None
+    )
     if selected_agent_token and selected_agent_definition is None:
-        raise HTTPException(status_code=400, detail=f"Selected agent '{selected_agent_token}' is not available or not published")
+        raise HTTPException(
+            status_code=400,
+            detail=f"Selected agent '{selected_agent_token}' is not available or not published",
+        )
 
     if selected_agent_definition is None:
-        selected_agent_definition = _ensure_default_chat_agent_present(actor="system/default-chat-agent")
+        selected_agent_definition = _ensure_default_chat_agent_present(
+            actor="system/default-chat-agent"
+        )
 
     selected_agent = selected_agent_definition.name
     selected_agent_id = selected_agent_definition.id
 
-    blocked_terms = _text_contains_blocked_keywords(prompt_text, store.platform_settings.global_blocked_keywords)
+    blocked_terms = _text_contains_blocked_keywords(
+        prompt_text, store.platform_settings.global_blocked_keywords
+    )
     guardrail_block_reasons: list[str] = []
     chat_guardrail_config = _build_agent_chat_guardrail_config(selected_agent_definition)
     if selected_agent_definition and prompt_text and chat_guardrail_config:
@@ -10510,14 +12448,18 @@ def create_workflow_run(request: Request, payload: dict[str, Any] = Body(default
             {
                 **chat_guardrail_config,
                 "stage": "input",
-                "tripwire_action": str(chat_guardrail_config.get("tripwire_action") or "reject_content"),
+                "tripwire_action": str(
+                    chat_guardrail_config.get("tripwire_action") or "reject_content"
+                ),
             },
             stage="input",
         )
         if input_guardrail.get("tripwire_triggered"):
             first_issue = next(iter(input_guardrail.get("output_info", {}).get("issues", [])), None)
             if isinstance(first_issue, dict):
-                guardrail_block_reasons.append(str(first_issue.get("message") or "Input blocked by guardrail."))
+                guardrail_block_reasons.append(
+                    str(first_issue.get("message") or "Input blocked by guardrail.")
+                )
             else:
                 guardrail_block_reasons.append("Input blocked by guardrail policy.")
 
@@ -10532,7 +12474,9 @@ def create_workflow_run(request: Request, payload: dict[str, Any] = Body(default
         )
         summary_parts: list[str] = []
         if blocked_terms:
-            summary_parts.append(f"Prompt blocked by platform policy keywords: {', '.join(blocked_terms)}")
+            summary_parts.append(
+                f"Prompt blocked by platform policy keywords: {', '.join(blocked_terms)}"
+            )
         summary_parts.extend(guardrail_block_reasons)
         summary = " ; ".join(summary_parts)
         store.run_events[run_id] = [
@@ -10588,7 +12532,9 @@ def create_workflow_run(request: Request, payload: dict[str, Any] = Body(default
     selected_model = _resolve_agent_chat_model(selected_agent_definition)
     request_prompt = _with_architecture_contract(
         model_prompt or "Execute the requested workflow task.",
-        enabled=_should_enforce_architecture_contract(selected_agent=selected_agent_definition, prompt_text=model_prompt),
+        enabled=_should_enforce_architecture_contract(
+            selected_agent=selected_agent_definition, prompt_text=model_prompt
+        ),
     )
 
     response_text, model_meta = _run_openai_chat(
@@ -10634,7 +12580,10 @@ def create_workflow_run(request: Request, payload: dict[str, Any] = Body(default
                 title="Failure artifact created",
                 summary="Captured provider/auth configuration failure details.",
                 createdAt=_now_iso(),
-                metadata={"artifact_id": failure_artifact.id, "artifact_name": failure_artifact.name},
+                metadata={
+                    "artifact_id": failure_artifact.id,
+                    "artifact_name": failure_artifact.name,
+                },
             ),
         ]
         store.run_details[run_id] = {
@@ -10662,7 +12611,11 @@ def create_workflow_run(request: Request, payload: dict[str, Any] = Body(default
                 {
                     "agent": selected_agent,
                     "reasoningSummary": "Execution halted due to provider authentication/configuration error.",
-                    "actions": ["Parsed kickoff prompt", "Resolved agent prompt", "Failed provider auth/config check"],
+                    "actions": [
+                        "Parsed kickoff prompt",
+                        "Resolved agent prompt",
+                        "Failed provider auth/config check",
+                    ],
                     "output": reason,
                 }
             ],
@@ -10690,7 +12643,9 @@ def create_workflow_run(request: Request, payload: dict[str, Any] = Body(default
             {
                 **chat_guardrail_config,
                 "stage": "output",
-                "tripwire_action": str(chat_guardrail_config.get("tripwire_action") or "reject_content"),
+                "tripwire_action": str(
+                    chat_guardrail_config.get("tripwire_action") or "reject_content"
+                ),
             },
             stage="output",
         )
@@ -10702,15 +12657,25 @@ def create_workflow_run(request: Request, payload: dict[str, Any] = Body(default
                     chat_guardrail_config.get("reject_message")
                     or "Response blocked by guardrail policy."
                 )
-            first_issue = next(iter(output_guardrail.get("output_info", {}).get("issues", [])), None)
+            first_issue = next(
+                iter(output_guardrail.get("output_info", {}).get("issues", [])), None
+            )
             if isinstance(first_issue, dict):
-                guardrail_output_summary = str(first_issue.get("message") or "Output blocked by guardrail.")
+                guardrail_output_summary = str(
+                    first_issue.get("message") or "Output blocked by guardrail."
+                )
             else:
                 guardrail_output_summary = "Output blocked by guardrail."
 
-    approval_required = store.platform_settings.require_human_approval or any(tag in {"need-review", "approval", "needs-approval"} for tag in requested_tags)
+    approval_required = store.platform_settings.require_human_approval or any(
+        tag in {"need-review", "approval", "needs-approval"} for tag in requested_tags
+    )
     artifact_id = str(uuid4())
-    artifact_status: Literal["Draft", "Needs Review", "Approved", "Blocked"] = "Blocked" if guardrail_output_triggered else ("Needs Review" if approval_required else "Draft")
+    artifact_status: Literal["Draft", "Needs Review", "Approved", "Blocked"] = (
+        "Blocked"
+        if guardrail_output_triggered
+        else ("Needs Review" if approval_required else "Draft")
+    )
     artifacts = [
         ArtifactSummary(
             id=artifact_id,
@@ -10738,7 +12703,11 @@ def create_workflow_run(request: Request, payload: dict[str, Any] = Body(default
         {"from": "n-agent", "to": "n-output", "from_port": "output", "to_port": "in"},
     ]
 
-    run_status: Literal["Running", "Blocked", "Needs Review", "Done", "Failed"] = "Blocked" if guardrail_output_triggered else ("Needs Review" if approval_required else "Running")
+    run_status: Literal["Running", "Blocked", "Needs Review", "Done", "Failed"] = (
+        "Blocked"
+        if guardrail_output_triggered
+        else ("Needs Review" if approval_required else "Running")
+    )
 
     store.runs[run_id] = WorkflowRunSummary(
         id=run_id,
@@ -10752,8 +12721,12 @@ def create_workflow_run(request: Request, payload: dict[str, Any] = Body(default
         event_response_text = _redact_sensitive_text(event_response_text)
     event_response_summary = _truncate_event_summary(event_response_text)
 
-    reasoning_meta = model_meta.get("reasoning") if isinstance(model_meta.get("reasoning"), dict) else {}
-    reasoning_summaries = reasoning_meta.get("summaries") if isinstance(reasoning_meta.get("summaries"), list) else []
+    reasoning_meta = (
+        model_meta.get("reasoning") if isinstance(model_meta.get("reasoning"), dict) else {}
+    )
+    reasoning_summaries = (
+        reasoning_meta.get("summaries") if isinstance(reasoning_meta.get("summaries"), list) else []
+    )
     reasoning_summary_text = ""
     for item in reasoning_summaries:
         candidate = str(item or "").strip()
@@ -10844,7 +12817,9 @@ def create_workflow_run(request: Request, payload: dict[str, Any] = Body(default
                 "reasoningSummary": reasoning_summary_text,
                 "actions": [
                     "Parsed kickoff prompt",
-                    "Executed default chat agent" if selected_agent_token is None else "Executed selected agent",
+                    "Executed default chat agent"
+                    if selected_agent_token is None
+                    else "Executed selected agent",
                     "Emitted response artifact",
                 ],
                 "output": response_text,
@@ -10892,7 +12867,9 @@ def create_workflow_run(request: Request, payload: dict[str, Any] = Body(default
         agent=selected_agent,
         workflow=requested_workflows[0] if requested_workflows else None,
     )
-    _append_audit_event("workflow.run.create", actor, "allowed", {"run_id": run_id, "status": "started"})
+    _append_audit_event(
+        "workflow.run.create", actor, "allowed", {"run_id": run_id, "status": "started"}
+    )
     _persist_store_state()
     return {"id": run_id, "status": "started"}
 
@@ -10917,13 +12894,22 @@ def get_workflow_run(run_id: str, request: Request) -> dict[str, Any]:
         detail_changed = False
         detail_status = str(detail.get("status") or "").strip().lower()
         if detail_status == "failed":
-            graph = detail.get("graph") if isinstance(detail.get("graph"), dict) else {"nodes": [], "links": []}
+            graph = (
+                detail.get("graph")
+                if isinstance(detail.get("graph"), dict)
+                else {"nodes": [], "links": []}
+            )
             nodes = graph.get("nodes") if isinstance(graph.get("nodes"), list) else []
             links = graph.get("links") if isinstance(graph.get("links"), list) else []
 
-            has_output_node = any(isinstance(node, dict) and str(node.get("id") or "") == "n-output" for node in nodes)
+            has_output_node = any(
+                isinstance(node, dict) and str(node.get("id") or "") == "n-output" for node in nodes
+            )
             if not has_output_node:
-                nodes = [*nodes, {"id": "n-output", "title": "Output", "type": "output", "x": 660, "y": 110}]
+                nodes = [
+                    *nodes,
+                    {"id": "n-output", "title": "Output", "type": "output", "x": 660, "y": 110},
+                ]
                 detail_changed = True
 
             has_agent_to_output = any(
@@ -10933,13 +12919,18 @@ def get_workflow_run(run_id: str, request: Request) -> dict[str, Any]:
                 for link in links
             )
             if not has_agent_to_output:
-                links = [*links, {"from": "n-agent", "to": "n-output", "from_port": "out", "to_port": "in"}]
+                links = [
+                    *links,
+                    {"from": "n-agent", "to": "n-output", "from_port": "out", "to_port": "in"},
+                ]
                 detail_changed = True
 
             if detail_changed:
                 detail["graph"] = {"nodes": nodes, "links": links}
 
-            artifacts_payload = detail.get("artifacts") if isinstance(detail.get("artifacts"), list) else []
+            artifacts_payload = (
+                detail.get("artifacts") if isinstance(detail.get("artifacts"), list) else []
+            )
             if len(artifacts_payload) == 0:
                 failure_artifact = ArtifactSummary(
                     id=str(uuid4()),
@@ -10965,7 +12956,10 @@ def get_workflow_run(run_id: str, request: Request) -> dict[str, Any]:
                             title="Failure artifact created",
                             summary="Captured provider/auth configuration failure details.",
                             createdAt=_now_iso(),
-                            metadata={"artifact_id": failure_artifact.id, "artifact_name": failure_artifact.name},
+                            metadata={
+                                "artifact_id": failure_artifact.id,
+                                "artifact_name": failure_artifact.name,
+                            },
                         )
                     )
 
@@ -10996,12 +12990,16 @@ def get_workflow_run(run_id: str, request: Request) -> dict[str, Any]:
     requested_agents = [
         str(token.get("value", "")).strip()
         for token in tokens_raw
-        if isinstance(token, dict) and str(token.get("kind")) == "agent" and str(token.get("value", "")).strip()
+        if isinstance(token, dict)
+        and str(token.get("kind")) == "agent"
+        and str(token.get("value", "")).strip()
     ]
     requested_tags = [
         str(token.get("value", "")).strip().lower()
         for token in tokens_raw
-        if isinstance(token, dict) and str(token.get("kind")) == "tag" and str(token.get("value", "")).strip()
+        if isinstance(token, dict)
+        and str(token.get("kind")) == "tag"
+        and str(token.get("value", "")).strip()
     ]
     published_agent_keys: set[str] = set()
     for agent in store.agent_definitions.values():
@@ -11021,11 +13019,17 @@ def get_workflow_run(run_id: str, request: Request) -> dict[str, Any]:
         if token_slug and token_slug in published_agent_keys:
             selected_agent = token_slug
             break
-    selected_agent_definition = _resolve_published_agent_definition(selected_agent or "") if selected_agent else None
+    selected_agent_definition = (
+        _resolve_published_agent_definition(selected_agent or "") if selected_agent else None
+    )
     if selected_agent_definition is None:
-        selected_agent_definition = _ensure_default_chat_agent_present(actor="system/default-chat-agent")
+        selected_agent_definition = _ensure_default_chat_agent_present(
+            actor="system/default-chat-agent"
+        )
     selected_agent = selected_agent_definition.name
-    approval_required = any(tag in {"need-review", "approval", "needs-approval"} for tag in requested_tags)
+    approval_required = any(
+        tag in {"need-review", "approval", "needs-approval"} for tag in requested_tags
+    )
 
     response_text = ""
     for event in store.run_events.get(run_id, []):
@@ -11144,7 +13148,9 @@ def archive_workflow_run(run_id: str, request: Request) -> dict[str, bool]:
 
 
 @app.post("/artifacts/{artifact_id}/versions")
-def create_artifact_version(artifact_id: str, request: Request, _payload: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
+def create_artifact_version(
+    artifact_id: str, request: Request, _payload: dict[str, Any] = Body(default_factory=dict)
+) -> dict[str, Any]:
     actor = _enforce_request_authn(request, payload=_payload, action="artifact.version.create")
     _enforce_emergency_write_policy("artifact.version.create", actor)
     _append_audit_event(
@@ -11157,7 +13163,9 @@ def create_artifact_version(artifact_id: str, request: Request, _payload: dict[s
 
 
 @app.post("/approvals")
-def submit_approval(request: Request, _payload: dict[str, Any] = Body(default_factory=dict)) -> dict[str, bool]:
+def submit_approval(
+    request: Request, _payload: dict[str, Any] = Body(default_factory=dict)
+) -> dict[str, bool]:
     actor = _enforce_request_authn(request, payload=_payload, action="approval.submit")
     _enforce_emergency_write_policy("approval.submit", actor)
     run_id = str(_payload.get("run_id") or "")
@@ -11183,7 +13191,9 @@ def submit_approval(request: Request, _payload: dict[str, Any] = Body(default_fa
         details["approvals"] = approvals
         store.run_details[run_id] = details
     _persist_store_state()
-    _append_audit_event("approval.submit", actor, "allowed", {"run_id": run_id, "decision": decision})
+    _append_audit_event(
+        "approval.submit", actor, "allowed", {"run_id": run_id, "decision": decision}
+    )
     return {"ok": True}
 
 
@@ -11202,7 +13212,9 @@ def get_integrations(request: Request) -> list[dict[str, Any]]:
 
 
 @app.post("/integrations")
-def save_integration(request: Request, payload: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
+def save_integration(
+    request: Request, payload: dict[str, Any] = Body(default_factory=dict)
+) -> dict[str, Any]:
     actor = _enforce_builder_access(request, payload=payload, action="integration.save")
     _enforce_emergency_write_policy("integration.save", actor)
     integration_id = str(payload.get("id") or uuid4())
@@ -11229,24 +13241,56 @@ def save_integration(request: Request, payload: dict[str, Any] = Body(default_fa
     else:
         metadata_json = {}
 
-    raw_secret_ref = payload.get("secret_ref") if "secret_ref" in payload else (existing.secret_ref if existing else "")
+    raw_secret_ref = (
+        payload.get("secret_ref")
+        if "secret_ref" in payload
+        else (existing.secret_ref if existing else "")
+    )
 
-    capabilities = _normalize_string_list(payload.get("capabilities") if "capabilities" in payload else (existing.capabilities if existing else []))
-    permission_scopes = _normalize_string_list(payload.get("permission_scopes") if "permission_scopes" in payload else (existing.permission_scopes if existing else []))
-    data_access = _normalize_string_list(payload.get("data_access") if "data_access" in payload else (existing.data_access if existing else []))
-    egress_allowlist = _normalize_string_list(payload.get("egress_allowlist") if "egress_allowlist" in payload else (existing.egress_allowlist if existing else []))
+    capabilities = _normalize_string_list(
+        payload.get("capabilities")
+        if "capabilities" in payload
+        else (existing.capabilities if existing else [])
+    )
+    permission_scopes = _normalize_string_list(
+        payload.get("permission_scopes")
+        if "permission_scopes" in payload
+        else (existing.permission_scopes if existing else [])
+    )
+    data_access = _normalize_string_list(
+        payload.get("data_access")
+        if "data_access" in payload
+        else (existing.data_access if existing else [])
+    )
+    egress_allowlist = _normalize_string_list(
+        payload.get("egress_allowlist")
+        if "egress_allowlist" in payload
+        else (existing.egress_allowlist if existing else [])
+    )
 
     publisher = str(payload.get("publisher") or (existing.publisher if existing else "custom"))
     if publisher not in {"first_party", "third_party", "custom"}:
         publisher = "custom"
 
-    execution_mode = str(payload.get("execution_mode") or (existing.execution_mode if existing else "local"))
+    execution_mode = str(
+        payload.get("execution_mode") or (existing.execution_mode if existing else "local")
+    )
     if execution_mode not in {"local", "sandboxed"}:
         execution_mode = "local"
 
-    signature_verified_raw = payload.get("signature_verified") if "signature_verified" in payload else (existing.signature_verified if existing else False)
-    approved_for_marketplace_raw = payload.get("approved_for_marketplace") if "approved_for_marketplace" in payload else (existing.approved_for_marketplace if existing else False)
-    integration_name = str(payload.get("name") or (existing.name if existing else "Untitled Integration"))
+    signature_verified_raw = (
+        payload.get("signature_verified")
+        if "signature_verified" in payload
+        else (existing.signature_verified if existing else False)
+    )
+    approved_for_marketplace_raw = (
+        payload.get("approved_for_marketplace")
+        if "approved_for_marketplace" in payload
+        else (existing.approved_for_marketplace if existing else False)
+    )
+    integration_name = str(
+        payload.get("name") or (existing.name if existing else "Untitled Integration")
+    )
     integration_base_url = str(payload.get("base_url") or (existing.base_url if existing else ""))
 
     integration = IntegrationDefinition(
@@ -11313,10 +13357,7 @@ def test_integration(integration_id: str, request: Request) -> dict[str, Any]:
     is_valid = bool(
         checks.get("has_base_url")
         and checks.get("no_embedded_credentials")
-        and (
-            not checks.get("secret_required")
-            or checks.get("has_secret_ref")
-        )
+        and (not checks.get("secret_required") or checks.get("has_secret_ref"))
     )
     if store.platform_settings.enforce_integration_policies and not bool(policy.get("ok", True)):
         is_valid = False
@@ -11343,7 +13384,9 @@ def test_integration(integration_id: str, request: Request) -> dict[str, Any]:
         "ok": is_valid,
         "id": integration_id,
         "status": integration.status,
-        "message": "Connectivity check simulated successfully" if is_valid else "Integration test failed one or more policy checks",
+        "message": "Connectivity check simulated successfully"
+        if is_valid
+        else "Integration test failed one or more policy checks",
         "diagnostics": diagnostics,
     }
 
@@ -11390,7 +13433,9 @@ def get_template_catalog(request: Request) -> list[dict[str, Any]]:
 
 
 @app.post("/templates/agents/{template_id}/instantiate")
-def instantiate_agent_template(template_id: str, request: Request, payload: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
+def instantiate_agent_template(
+    template_id: str, request: Request, payload: dict[str, Any] = Body(default_factory=dict)
+) -> dict[str, Any]:
     actor = _enforce_admin_access(request, payload=payload, action="template.agent.instantiate")
     _enforce_emergency_write_policy("template.agent.instantiate", actor)
     template = store.agent_templates.get(template_id)
@@ -11401,7 +13446,9 @@ def instantiate_agent_template(template_id: str, request: Request, payload: dict
     agent_name = str(payload.get("name") or f"{template.name} Instance")
 
     config_json = dict(template.config_json)
-    override_config = payload.get("config_json") if isinstance(payload.get("config_json"), dict) else {}
+    override_config = (
+        payload.get("config_json") if isinstance(payload.get("config_json"), dict) else {}
+    )
     config_json.update(override_config)
     if "security_config" in payload or "security" in config_json:
         config_json["security"] = _normalize_security_scope_config(
@@ -11419,7 +13466,9 @@ def instantiate_agent_template(template_id: str, request: Request, payload: dict
         agent_name=agent_name,
         source_agent_id=str(config_json.get("source_agent_id") or new_agent_id),
         system_prompt=str(config_json.get("system_prompt") or ""),
-        model_defaults=config_json.get("model_defaults") if isinstance(config_json.get("model_defaults"), dict) else None,
+        model_defaults=config_json.get("model_defaults")
+        if isinstance(config_json.get("model_defaults"), dict)
+        else None,
         tags=_normalize_text_list(config_json.get("tags")),
         capabilities=_normalize_text_list(config_json.get("capabilities")),
         owners=_normalize_text_list(config_json.get("owners")),
@@ -11457,25 +13506,36 @@ def instantiate_agent_template(template_id: str, request: Request, payload: dict
 
 
 @app.post("/templates/workflows/{workflow_id}/instantiate")
-def instantiate_workflow_template(workflow_id: str, request: Request, payload: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
-    actor = _enforce_builder_access(request, payload=payload, action="template.workflow.instantiate")
+def instantiate_workflow_template(
+    workflow_id: str, request: Request, payload: dict[str, Any] = Body(default_factory=dict)
+) -> dict[str, Any]:
+    actor = _enforce_builder_access(
+        request, payload=payload, action="template.workflow.instantiate"
+    )
     _enforce_emergency_write_policy("template.workflow.instantiate", actor)
     workflow = store.workflow_definitions.get(workflow_id)
     if not workflow:
         raise HTTPException(status_code=404, detail="workflow template not found")
 
     if workflow.status == "archived":
-        raise HTTPException(status_code=400, detail="archived workflow definitions cannot be instantiated as templates")
+        raise HTTPException(
+            status_code=400,
+            detail="archived workflow definitions cannot be instantiated as templates",
+        )
 
     new_workflow_id = str(payload.get("workflow_id") or uuid4())
     workflow_name = str(payload.get("name") or f"{workflow.name} Instance")
     workflow_description = str(payload.get("description") or workflow.description)
 
     graph_json = _normalize_graph_json_payload(dict(workflow.graph_json))
-    override_graph = payload.get("graph_json") if isinstance(payload.get("graph_json"), dict) else {}
+    override_graph = (
+        payload.get("graph_json") if isinstance(payload.get("graph_json"), dict) else {}
+    )
     if override_graph:
         graph_json.update(override_graph)
-    graph_json = _ensure_supported_graph_json(graph_json, context_label="Workflow template instantiation")
+    graph_json = _ensure_supported_graph_json(
+        graph_json, context_label="Workflow template instantiation"
+    )
 
     store.workflow_definitions[new_workflow_id] = WorkflowDefinition(
         id=new_workflow_id,
@@ -11521,7 +13581,9 @@ def get_playbook(playbook_id: str, request: Request) -> dict[str, Any]:
 
 
 @app.post("/playbooks/{playbook_id}/instantiate")
-def instantiate_playbook(playbook_id: str, request: Request, payload: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
+def instantiate_playbook(
+    playbook_id: str, request: Request, payload: dict[str, Any] = Body(default_factory=dict)
+) -> dict[str, Any]:
     actor = _enforce_builder_access(request, payload=payload, action="playbook.instantiate")
     _enforce_emergency_write_policy("playbook.instantiate", actor)
     playbook = store.playbooks.get(playbook_id)
@@ -11533,7 +13595,9 @@ def instantiate_playbook(playbook_id: str, request: Request, payload: dict[str, 
     workflow_description = str(payload.get("description") or playbook.description)
 
     graph_json = _normalize_graph_json_payload(dict(playbook.graph_json))
-    override_graph = payload.get("graph_json") if isinstance(payload.get("graph_json"), dict) else {}
+    override_graph = (
+        payload.get("graph_json") if isinstance(payload.get("graph_json"), dict) else {}
+    )
     if override_graph:
         graph_json.update(override_graph)
     graph_json = _ensure_supported_graph_json(graph_json, context_label="Playbook instantiation")
@@ -11584,8 +13648,12 @@ def get_observability_dashboard(request: Request, limit: int = 20) -> dict[str, 
     total_runs = len(traces)
     total_tokens = sum(item.token_estimate or 0 for item in traces)
     total_cost = round(sum(item.cost_estimate_usd or 0 for item in traces), 6)
-    avg_latency = int(sum(item.duration_ms or 0 for item in traces) / total_runs) if total_runs > 0 else 0
-    failed_runs = len([item for item in traces if str(item.status).lower() in {"failed", "blocked"}])
+    avg_latency = (
+        int(sum(item.duration_ms or 0 for item in traces) / total_runs) if total_runs > 0 else 0
+    )
+    failed_runs = len(
+        [item for item in traces if str(item.status).lower() in {"failed", "blocked"}]
+    )
 
     return {
         "summary": {
@@ -11617,7 +13685,9 @@ def get_atf_alignment_report() -> dict[str, Any]:
 
 
 @app.post("/collab/sessions/join")
-def join_collaboration_session(request: Request, payload: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
+def join_collaboration_session(
+    request: Request, payload: dict[str, Any] = Body(default_factory=dict)
+) -> dict[str, Any]:
     actor = _enforce_request_authn(request, payload=payload, action="collab.session.join")
     _enforce_emergency_write_policy("collab.session.join", actor)
     principal = _resolve_auth_context_principal(request, actor)
@@ -11630,7 +13700,9 @@ def join_collaboration_session(request: Request, payload: dict[str, Any] = Body(
         action="collab.session.join",
         field_names=("principal_id", "user_id"),
     )
-    display_name = str(payload.get("display_name") or principal.get("display_name") or user_id or "anonymous").strip()
+    display_name = str(
+        payload.get("display_name") or principal.get("display_name") or user_id or "anonymous"
+    ).strip()
     requested_role = str(payload.get("role") or "editor").strip()
 
     if entity_type not in {"agent", "workflow"}:
@@ -11658,8 +13730,12 @@ def join_collaboration_session(request: Request, payload: dict[str, Any] = Body(
     if not participants:
         effective_role: Literal["owner", "editor", "viewer"] = "owner"
     else:
-        effective_role = requested_role if requested_role in {"owner", "editor", "viewer"} else "editor"
-        if effective_role == "owner" and not any(participant.role == "owner" for participant in participants):
+        effective_role = (
+            requested_role if requested_role in {"owner", "editor", "viewer"} else "editor"
+        )
+        if effective_role == "owner" and not any(
+            participant.role == "owner" for participant in participants
+        ):
             effective_role = "owner"
 
     session.participants = _upsert_collaboration_participant(
@@ -11715,7 +13791,9 @@ def get_collaboration_session(session_id: str, request: Request) -> dict[str, An
 
 
 @app.post("/collab/sessions/{session_id}/sync")
-def sync_collaboration_session(session_id: str, request: Request, payload: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
+def sync_collaboration_session(
+    session_id: str, request: Request, payload: dict[str, Any] = Body(default_factory=dict)
+) -> dict[str, Any]:
     actor = _enforce_request_authn(request, payload=payload, action="collab.session.sync")
     _enforce_emergency_write_policy("collab.session.sync", actor)
     session = store.collaboration_sessions.get(session_id)
@@ -11736,7 +13814,8 @@ def sync_collaboration_session(session_id: str, request: Request, payload: dict[
             item
             for item in session.participants
             if _collaboration_participant_matches_principal(item, principal)
-            or user_id in {
+            or user_id
+            in {
                 str(item.user_id or "").strip(),
                 str(item.principal_id or "").strip(),
                 str(item.auth_subject or "").strip(),
@@ -11750,7 +13829,9 @@ def sync_collaboration_session(session_id: str, request: Request, payload: dict[
         raise HTTPException(status_code=403, detail="viewer participants cannot modify graph state")
 
     base_version = int(payload.get("base_version") or session.version)
-    incoming_graph = payload.get("graph_json") if isinstance(payload.get("graph_json"), dict) else None
+    incoming_graph = (
+        payload.get("graph_json") if isinstance(payload.get("graph_json"), dict) else None
+    )
     force = bool(payload.get("force", False))
 
     if incoming_graph is None:
@@ -11771,7 +13852,9 @@ def sync_collaboration_session(session_id: str, request: Request, payload: dict[
             "updated_at": session.updated_at,
         }
 
-    session.graph_json = _ensure_supported_graph_json(incoming_graph, context_label="Collaboration session graph")
+    session.graph_json = _ensure_supported_graph_json(
+        incoming_graph, context_label="Collaboration session graph"
+    )
     session.version += 1
     session.updated_at = _now_iso()
     session.participants = _upsert_collaboration_participant(
@@ -11781,8 +13864,11 @@ def sync_collaboration_session(session_id: str, request: Request, payload: dict[
         participant.role,
         principal_id=str(principal.get("principal_id") or user_id).strip() or user_id,
         principal_type=str(principal.get("principal_type") or participant.principal_type or "user"),
-        auth_subject=str(principal.get("subject") or participant.auth_subject or "").strip() or None,
-        metadata_json=participant.metadata_json if isinstance(participant.metadata_json, dict) else None,
+        auth_subject=str(principal.get("subject") or participant.auth_subject or "").strip()
+        or None,
+        metadata_json=participant.metadata_json
+        if isinstance(participant.metadata_json, dict)
+        else None,
     )
 
     store.collaboration_sessions[session_id] = session
@@ -11808,8 +13894,12 @@ def sync_collaboration_session(session_id: str, request: Request, payload: dict[
 
 
 @app.post("/collab/sessions/{session_id}/permissions")
-def update_collaboration_permissions(session_id: str, request: Request, payload: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
-    actor_user = _enforce_request_authn(request, payload=payload, action="collab.session.permissions.update")
+def update_collaboration_permissions(
+    session_id: str, request: Request, payload: dict[str, Any] = Body(default_factory=dict)
+) -> dict[str, Any]:
+    actor_user = _enforce_request_authn(
+        request, payload=payload, action="collab.session.permissions.update"
+    )
     _enforce_emergency_write_policy("collab.session.permissions.update", actor_user)
     session = store.collaboration_sessions.get(session_id)
     if not session:
@@ -11823,7 +13913,9 @@ def update_collaboration_permissions(session_id: str, request: Request, payload:
         action="collab.session.permissions.update",
         field_names=("actor_principal_id", "actor_user_id"),
     )
-    target_user_id = str(payload.get("target_principal_id") or payload.get("target_user_id") or "").strip()
+    target_user_id = str(
+        payload.get("target_principal_id") or payload.get("target_user_id") or ""
+    ).strip()
     next_role = str(payload.get("role") or "").strip()
     if not target_user_id:
         raise HTTPException(status_code=400, detail="target_user_id is required")
@@ -11835,7 +13927,8 @@ def update_collaboration_permissions(session_id: str, request: Request, payload:
             item
             for item in session.participants
             if _collaboration_participant_matches_principal(item, principal)
-            or actor_user_id in {
+            or actor_user_id
+            in {
                 str(item.user_id or "").strip(),
                 str(item.principal_id or "").strip(),
                 str(item.auth_subject or "").strip(),
@@ -11874,7 +13967,9 @@ def update_collaboration_permissions(session_id: str, request: Request, payload:
                     display_name=participant.display_name,
                     role=next_role,  # type: ignore[arg-type]
                     last_seen_at=_now_iso(),
-                    metadata_json=participant.metadata_json if isinstance(participant.metadata_json, dict) else {},
+                    metadata_json=participant.metadata_json
+                    if isinstance(participant.metadata_json, dict)
+                    else {},
                 )
             )
         else:
@@ -11913,11 +14008,15 @@ _GENERATED_ARTIFACT_SERVICE = GeneratedArtifactService(
 )
 
 
-def _build_generated_artifacts_for_workflow(item: WorkflowDefinition, *, version: int) -> list[GeneratedCodeArtifact]:
+def _build_generated_artifacts_for_workflow(
+    item: WorkflowDefinition, *, version: int
+) -> list[GeneratedCodeArtifact]:
     return _GENERATED_ARTIFACT_SERVICE.build_generated_artifacts_for_workflow(item, version=version)
 
 
-def _build_generated_artifacts_for_agent(item: AgentDefinition, *, version: int) -> list[GeneratedCodeArtifact]:
+def _build_generated_artifacts_for_agent(
+    item: AgentDefinition, *, version: int
+) -> list[GeneratedCodeArtifact]:
     return _GENERATED_ARTIFACT_SERVICE.build_generated_artifacts_for_agent(item, version=version)
 
 
@@ -11933,7 +14032,10 @@ def _find_generated_artifact(artifact_id: str) -> GeneratedCodeArtifact | None:
 def get_artifacts(request: Request) -> list[dict[str, Any]]:
     actor = _enforce_request_authn(request, action="artifact.list")
     deduped: dict[str, ArtifactSummary] = {}
-    if not _effective_require_authenticated_requests() or _request_has_privileged_control_plane_access(request):
+    if (
+        not _effective_require_authenticated_requests()
+        or _request_has_privileged_control_plane_access(request)
+    ):
         deduped = {item.id: item for item in store.artifacts}
         for artifact in _iter_generated_artifacts():
             deduped[artifact.id] = ArtifactSummary(
@@ -11962,8 +14064,16 @@ def get_artifact(artifact_id: str, request: Request) -> dict[str, Any]:
     actor = _enforce_request_authn(request, action="artifact.read")
     generated_artifact = _find_generated_artifact(artifact_id)
     if generated_artifact is not None:
-        if _effective_require_authenticated_requests() and not _request_has_privileged_control_plane_access(request):
-            _append_audit_event("artifact.read", actor, "blocked", {"reason": "generated_artifact_access_denied", "artifact_id": artifact_id})
+        if (
+            _effective_require_authenticated_requests()
+            and not _request_has_privileged_control_plane_access(request)
+        ):
+            _append_audit_event(
+                "artifact.read",
+                actor,
+                "blocked",
+                {"reason": "generated_artifact_access_denied", "artifact_id": artifact_id},
+            )
             raise HTTPException(status_code=403, detail="Artifact access denied")
         return {
             "id": generated_artifact.id,
@@ -11989,7 +14099,11 @@ def get_artifact(artifact_id: str, request: Request) -> dict[str, Any]:
     run_id = _find_run_id_for_artifact(artifact_id)
     if run_id is not None:
         detail = store.run_details.get(run_id)
-        artifacts = detail.get("artifacts") if isinstance(detail, dict) and isinstance(detail.get("artifacts"), list) else []
+        artifacts = (
+            detail.get("artifacts")
+            if isinstance(detail, dict) and isinstance(detail.get("artifacts"), list)
+            else []
+        )
         for artifact in artifacts:
             if not isinstance(artifact, dict):
                 continue
@@ -12004,19 +14118,31 @@ def get_artifact(artifact_id: str, request: Request) -> dict[str, Any]:
     if artifact_summary is None:
         raise HTTPException(status_code=404, detail="artifact not found")
 
-    if _effective_require_authenticated_requests() and not _request_has_privileged_control_plane_access(request):
+    if (
+        _effective_require_authenticated_requests()
+        and not _request_has_privileged_control_plane_access(request)
+    ):
         if run_id is None:
-            _append_audit_event("artifact.read", actor, "blocked", {"reason": "artifact_access_denied", "artifact_id": artifact_id})
+            _append_audit_event(
+                "artifact.read",
+                actor,
+                "blocked",
+                {"reason": "artifact_access_denied", "artifact_id": artifact_id},
+            )
             raise HTTPException(status_code=403, detail="Artifact access denied")
         _enforce_run_access(request, actor, run_id, action="artifact.read")
 
     response_text = ""
     created_at = ""
     if run_id is not None:
-        detail = store.run_details.get(run_id) if isinstance(store.run_details.get(run_id), dict) else {}
+        detail = (
+            store.run_details.get(run_id) if isinstance(store.run_details.get(run_id), dict) else {}
+        )
         response_text = str(detail.get("response_text") or "")
         if not response_text:
-            traces = detail.get("agent_traces") if isinstance(detail.get("agent_traces"), list) else []
+            traces = (
+                detail.get("agent_traces") if isinstance(detail.get("agent_traces"), list) else []
+            )
             for trace in traces:
                 if isinstance(trace, dict) and str(trace.get("output") or "").strip():
                     response_text = str(trace.get("output") or "")
@@ -12025,7 +14151,10 @@ def get_artifact(artifact_id: str, request: Request) -> dict[str, Any]:
         run_events = store.run_events.get(run_id, [])
         for event in run_events:
             metadata = event.metadata if isinstance(event.metadata, dict) else {}
-            if event.type == "artifact_created" and str(metadata.get("artifact_id") or "") == artifact_id:
+            if (
+                event.type == "artifact_created"
+                and str(metadata.get("artifact_id") or "") == artifact_id
+            ):
                 created_at = event.createdAt
                 break
         if not created_at and run_events:
@@ -12046,7 +14175,10 @@ def get_artifact(artifact_id: str, request: Request) -> dict[str, Any]:
 @app.get("/workflow-definitions")
 def get_workflow_definitions(request: Request) -> list[dict[str, Any]]:
     _enforce_builder_access(request, action="workflow.definition.list")
-    return [item.model_dump(exclude={"graph_json", "generated_artifacts"}) for item in store.workflow_definitions.values()]
+    return [
+        item.model_dump(exclude={"graph_json", "generated_artifacts"})
+        for item in store.workflow_definitions.values()
+    ]
 
 
 @app.get("/workflow-definitions/{item_id}")
@@ -12061,7 +14193,10 @@ def get_workflow_definition(item_id: str, request: Request) -> dict[str, Any]:
 @app.get("/workflow-definitions/{item_id}/versions")
 def get_workflow_definition_versions(item_id: str, request: Request) -> dict[str, Any]:
     _enforce_builder_access(request, action="workflow.definition.versions.read")
-    if item_id not in store.workflow_definitions and item_id not in store.workflow_definition_revisions:
+    if (
+        item_id not in store.workflow_definitions
+        and item_id not in store.workflow_definition_revisions
+    ):
         raise HTTPException(status_code=404, detail="workflow definition not found")
     versions = [
         _definition_revision_summary(revision)
@@ -12071,7 +14206,9 @@ def get_workflow_definition_versions(item_id: str, request: Request) -> dict[str
 
 
 @app.get("/workflow-definitions/{item_id}/versions/{revision_id}")
-def get_workflow_definition_version(item_id: str, revision_id: str, request: Request) -> dict[str, Any]:
+def get_workflow_definition_version(
+    item_id: str, revision_id: str, request: Request
+) -> dict[str, Any]:
     _enforce_builder_access(request, action="workflow.definition.version.read")
     revision = _select_definition_revision("workflow_definition", item_id, revision_id=revision_id)
     return revision.model_dump()
@@ -12095,7 +14232,9 @@ def get_workflow_security_policy_legacy_alias(item_id: str, request: Request) ->
 
 
 @app.post("/workflow-definitions")
-def save_workflow_definition(request: Request, payload: dict[str, Any] = Body(default_factory=dict)) -> dict[str, bool]:
+def save_workflow_definition(
+    request: Request, payload: dict[str, Any] = Body(default_factory=dict)
+) -> dict[str, bool]:
     actor = _enforce_builder_access(request, payload=payload, action="workflow.definition.save")
     _enforce_emergency_write_policy("workflow.definition.save", actor)
     item_id = str(payload.get("id") or uuid4())
@@ -12107,7 +14246,9 @@ def save_workflow_definition(request: Request, payload: dict[str, Any] = Body(de
         else (existing.security_config if existing else {})
     )
     workflow_name = str(payload.get("name") or (existing.name if existing else "Untitled Workflow"))
-    workflow_description = str(payload.get("description") or (existing.description if existing else ""))
+    workflow_description = str(
+        payload.get("description") or (existing.description if existing else "")
+    )
     _validate_security_guardrail_reference(security_config, label="Workflow security policy")
     normalized_graph_json = _ensure_supported_graph_json(
         payload.get("graph_json") or payload.get("config_json", {}).get("graph_json") or {},
@@ -12118,7 +14259,9 @@ def save_workflow_definition(request: Request, payload: dict[str, Any] = Body(de
         name=workflow_name,
         description=workflow_description,
         version=(existing.version if existing else 0) + 1,
-        status="draft" if existing and (existing.status == "published" or existing.published_revision_id) else (existing.status if existing else "draft"),
+        status="draft"
+        if existing and (existing.status == "published" or existing.published_revision_id)
+        else (existing.status if existing else "draft"),
         published_revision_id=existing.published_revision_id if existing else None,
         published_at=existing.published_at if existing else None,
         active_revision_id=existing.active_revision_id if existing else None,
@@ -12133,7 +14276,11 @@ def save_workflow_definition(request: Request, payload: dict[str, Any] = Body(de
         actor=actor,
         action="save",
         snapshot=saved_item,
-        metadata={"previous_version": previous_state.get("version") if isinstance(previous_state, dict) else None},
+        metadata={
+            "previous_version": previous_state.get("version")
+            if isinstance(previous_state, dict)
+            else None
+        },
     )
     _append_config_mutation_audit(
         "workflow.definition.save",
@@ -12168,12 +14315,17 @@ def publish_workflow_definition(item_id: str, request: Request) -> dict[str, Any
         try:
             payload = _graph_payload_from_json(graph_json)
         except Exception:  # noqa: BLE001
-            raise HTTPException(status_code=400, detail={"message": "Invalid workflow graph payload"})
+            raise HTTPException(
+                status_code=400, detail={"message": "Invalid workflow graph payload"}
+            )
         validation = _validate_graph(payload)
         if not validation.valid:
             raise HTTPException(
                 status_code=400,
-                detail={"message": "Workflow graph failed validation", "issues": [issue.model_dump() for issue in validation.issues]},
+                detail={
+                    "message": "Workflow graph failed validation",
+                    "issues": [issue.model_dump() for issue in validation.issues],
+                },
             )
 
     _validate_security_guardrail_reference(item.security_config, label="Workflow security policy")
@@ -12218,7 +14370,10 @@ def publish_workflow_definition(item_id: str, request: Request) -> dict[str, Any
         },
     )
     _persist_store_state()
-    return {"ok": True, "generated_artifacts": [artifact.model_dump() for artifact in generated_artifacts]}
+    return {
+        "ok": True,
+        "generated_artifacts": [artifact.model_dump() for artifact in generated_artifacts],
+    }
 
 
 @app.post("/workflow-definitions/{item_id}/archive")
@@ -12288,7 +14443,9 @@ def delete_workflow_definition(item_id: str, request: Request) -> dict[str, bool
 
 
 @app.post("/workflow-definitions/{item_id}/rollback")
-def rollback_workflow_definition(item_id: str, request: Request, payload: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
+def rollback_workflow_definition(
+    item_id: str, request: Request, payload: dict[str, Any] = Body(default_factory=dict)
+) -> dict[str, Any]:
     actor = _enforce_builder_access(request, payload=payload, action="workflow.definition.rollback")
     _enforce_emergency_write_policy("workflow.definition.rollback", actor)
     target_revision = _select_definition_revision(
@@ -12330,7 +14487,9 @@ def rollback_workflow_definition(item_id: str, request: Request, payload: dict[s
 
 
 @app.post("/workflow-definitions/{item_id}/activate")
-def activate_workflow_definition(item_id: str, request: Request, payload: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
+def activate_workflow_definition(
+    item_id: str, request: Request, payload: dict[str, Any] = Body(default_factory=dict)
+) -> dict[str, Any]:
     actor = _enforce_builder_access(request, payload=payload, action="workflow.definition.activate")
     _enforce_emergency_write_policy("workflow.definition.activate", actor)
     item = store.workflow_definitions.get(item_id)
@@ -12340,7 +14499,8 @@ def activate_workflow_definition(item_id: str, request: Request, payload: dict[s
     target_revision = _select_definition_revision(
         "workflow_definition",
         item_id,
-        revision_id=str(payload.get("revision_id") or item.published_revision_id or "").strip() or None,
+        revision_id=str(payload.get("revision_id") or item.published_revision_id or "").strip()
+        or None,
         revision_number=_normalize_optional_positive_int(payload.get("revision")),
         version=_normalize_optional_positive_int(payload.get("version")),
     )
@@ -12376,7 +14536,10 @@ def activate_workflow_definition(item_id: str, request: Request, payload: dict[s
 @app.get("/agent-definitions")
 def get_agent_definitions(request: Request) -> list[dict[str, Any]]:
     _enforce_builder_access(request, action="agent.definition.list")
-    return [item.model_dump(exclude={"config_json", "generated_artifacts"}) for item in store.agent_definitions.values()]
+    return [
+        item.model_dump(exclude={"config_json", "generated_artifacts"})
+        for item in store.agent_definitions.values()
+    ]
 
 
 @app.get("/agent-definitions/{item_id}")
@@ -12401,7 +14564,9 @@ def get_agent_definition_versions(item_id: str, request: Request) -> dict[str, A
 
 
 @app.get("/agent-definitions/{item_id}/versions/{revision_id}")
-def get_agent_definition_version(item_id: str, revision_id: str, request: Request) -> dict[str, Any]:
+def get_agent_definition_version(
+    item_id: str, revision_id: str, request: Request
+) -> dict[str, Any]:
     _enforce_builder_access(request, action="agent.definition.version.read")
     revision = _select_definition_revision("agent_definition", item_id, revision_id=revision_id)
     return revision.model_dump()
@@ -12419,7 +14584,9 @@ def get_agent_security_policy(item_id: str, request: Request) -> dict[str, Any]:
     return _resolve_effective_security_policy(
         platform=store.platform_settings,
         workflow_config=workflow.security_config if workflow else None,
-        agent_config=config_json.get("security") if isinstance(config_json.get("security"), dict) else None,
+        agent_config=config_json.get("security")
+        if isinstance(config_json.get("security"), dict)
+        else None,
     )
 
 
@@ -12429,7 +14596,9 @@ def get_agent_security_policy_legacy_alias(item_id: str, request: Request) -> di
 
 
 @app.post("/agent-definitions")
-def save_agent_definition(request: Request, payload: dict[str, Any] = Body(default_factory=dict)) -> dict[str, bool]:
+def save_agent_definition(
+    request: Request, payload: dict[str, Any] = Body(default_factory=dict)
+) -> dict[str, bool]:
     actor = _enforce_admin_access(request, payload=payload, action="agent.definition.save")
     _enforce_emergency_write_policy("agent.definition.save", actor)
     item_id = str(payload.get("id") or uuid4())
@@ -12437,10 +14606,18 @@ def save_agent_definition(request: Request, payload: dict[str, Any] = Body(defau
     previous_state = existing.model_dump() if existing else None
     incoming_config = payload.get("config_json")
     if isinstance(incoming_config, dict):
-        merged_config = dict(existing.config_json) if existing and isinstance(existing.config_json, dict) else {}
+        merged_config = (
+            dict(existing.config_json)
+            if existing and isinstance(existing.config_json, dict)
+            else {}
+        )
         merged_config.update(incoming_config)
     else:
-        merged_config = dict(existing.config_json) if existing and isinstance(existing.config_json, dict) else {}
+        merged_config = (
+            dict(existing.config_json)
+            if existing and isinstance(existing.config_json, dict)
+            else {}
+        )
 
     if "security_config" in payload or "security" in merged_config:
         merged_config["security"] = _normalize_security_scope_config(
@@ -12460,7 +14637,9 @@ def save_agent_definition(request: Request, payload: dict[str, Any] = Body(defau
         agent_name=agent_name,
         source_agent_id=str(merged_config.get("source_agent_id") or item_id),
         system_prompt=str(merged_config.get("system_prompt") or ""),
-        model_defaults=merged_config.get("model_defaults") if isinstance(merged_config.get("model_defaults"), dict) else None,
+        model_defaults=merged_config.get("model_defaults")
+        if isinstance(merged_config.get("model_defaults"), dict)
+        else None,
         tags=_normalize_text_list(merged_config.get("tags")),
         capabilities=_normalize_text_list(merged_config.get("capabilities")),
         owners=_normalize_text_list(merged_config.get("owners")),
@@ -12474,7 +14653,9 @@ def save_agent_definition(request: Request, payload: dict[str, Any] = Body(defau
         id=item_id,
         name=agent_name,
         version=(existing.version if existing else 0) + 1,
-        status="draft" if existing and (existing.status == "published" or existing.published_revision_id) else (existing.status if existing else "draft"),
+        status="draft"
+        if existing and (existing.status == "published" or existing.published_revision_id)
+        else (existing.status if existing else "draft"),
         published_revision_id=existing.published_revision_id if existing else None,
         published_at=existing.published_at if existing else None,
         active_revision_id=existing.active_revision_id if existing else None,
@@ -12489,7 +14670,11 @@ def save_agent_definition(request: Request, payload: dict[str, Any] = Body(defau
         actor=actor,
         action="save",
         snapshot=saved_item,
-        metadata={"previous_version": previous_state.get("version") if isinstance(previous_state, dict) else None},
+        metadata={
+            "previous_version": previous_state.get("version")
+            if isinstance(previous_state, dict)
+            else None
+        },
     )
     _append_config_mutation_audit(
         "agent.definition.save",
@@ -12529,12 +14714,18 @@ def publish_agent_definition(item_id: str, request: Request) -> dict[str, Any]:
         try:
             payload = _graph_payload_from_json(graph_json)
         except Exception as exc:  # noqa: BLE001
-            raise HTTPException(status_code=400, detail={"message": "Invalid agent graph payload", "reason": str(exc)})
+            raise HTTPException(
+                status_code=400,
+                detail={"message": "Invalid agent graph payload", "reason": str(exc)},
+            )
         validation = _validate_graph(payload)
         if not validation.valid:
             raise HTTPException(
                 status_code=400,
-                detail={"message": "Agent graph failed validation", "issues": [issue.model_dump() for issue in validation.issues]},
+                detail={
+                    "message": "Agent graph failed validation",
+                    "issues": [issue.model_dump() for issue in validation.issues],
+                },
             )
 
     next_version = item.version + 1
@@ -12577,7 +14768,10 @@ def publish_agent_definition(item_id: str, request: Request) -> dict[str, Any]:
         },
     )
     _persist_store_state()
-    return {"ok": True, "generated_artifacts": [artifact.model_dump() for artifact in generated_artifacts]}
+    return {
+        "ok": True,
+        "generated_artifacts": [artifact.model_dump() for artifact in generated_artifacts],
+    }
 
 
 @app.delete("/agent-definitions/{item_id}")
@@ -12588,7 +14782,11 @@ def delete_agent_definition(item_id: str, request: Request) -> dict[str, bool]:
     deleted_session = store.collaboration_sessions.pop(_collab_session_key("agent", item_id), None)
     if deleted is not None:
         deleted_snapshot = deleted.model_copy(deep=True)
-        deleted_config = dict(deleted_snapshot.config_json) if isinstance(deleted_snapshot.config_json, dict) else {}
+        deleted_config = (
+            dict(deleted_snapshot.config_json)
+            if isinstance(deleted_snapshot.config_json, dict)
+            else {}
+        )
         deleted_config["iam"] = _canonicalize_agent_iam_identity(
             deleted_config.get("iam"),
             agent_id=deleted_snapshot.id,
@@ -12604,8 +14802,12 @@ def delete_agent_definition(item_id: str, request: Request) -> dict[str, bool]:
             snapshot=deleted_snapshot,
             metadata={
                 "deleted": True,
-                "revoked_principal_id": deleted_config.get("iam", {}).get("principal_id") if isinstance(deleted_config.get("iam"), dict) else None,
-                "revoked_subject": deleted_config.get("iam", {}).get("subject") if isinstance(deleted_config.get("iam"), dict) else None,
+                "revoked_principal_id": deleted_config.get("iam", {}).get("principal_id")
+                if isinstance(deleted_config.get("iam"), dict)
+                else None,
+                "revoked_subject": deleted_config.get("iam", {}).get("subject")
+                if isinstance(deleted_config.get("iam"), dict)
+                else None,
                 "deleted_collaboration_session": deleted_session is not None,
             },
         )
@@ -12630,7 +14832,9 @@ def delete_agent_definition(item_id: str, request: Request) -> dict[str, bool]:
 
 
 @app.post("/agent-definitions/{item_id}/rollback")
-def rollback_agent_definition(item_id: str, request: Request, payload: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
+def rollback_agent_definition(
+    item_id: str, request: Request, payload: dict[str, Any] = Body(default_factory=dict)
+) -> dict[str, Any]:
     actor = _enforce_admin_access(request, payload=payload, action="agent.definition.rollback")
     _enforce_emergency_write_policy("agent.definition.rollback", actor)
     target_revision = _select_definition_revision(
@@ -12672,7 +14876,9 @@ def rollback_agent_definition(item_id: str, request: Request, payload: dict[str,
 
 
 @app.post("/agent-definitions/{item_id}/activate")
-def activate_agent_definition(item_id: str, request: Request, payload: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
+def activate_agent_definition(
+    item_id: str, request: Request, payload: dict[str, Any] = Body(default_factory=dict)
+) -> dict[str, Any]:
     actor = _enforce_admin_access(request, payload=payload, action="agent.definition.activate")
     _enforce_emergency_write_policy("agent.definition.activate", actor)
     item = store.agent_definitions.get(item_id)
@@ -12682,7 +14888,8 @@ def activate_agent_definition(item_id: str, request: Request, payload: dict[str,
     target_revision = _select_definition_revision(
         "agent_definition",
         item_id,
-        revision_id=str(payload.get("revision_id") or item.published_revision_id or "").strip() or None,
+        revision_id=str(payload.get("revision_id") or item.published_revision_id or "").strip()
+        or None,
         revision_number=_normalize_optional_positive_int(payload.get("revision")),
         version=_normalize_optional_positive_int(payload.get("version")),
     )
@@ -12719,20 +14926,80 @@ def activate_agent_definition(item_id: str, request: Request, payload: dict[str,
 def get_node_definitions(request: Request, include_internal: bool = False) -> list[dict[str, Any]]:
     _enforce_builder_access(request, action="node.definition.list")
     base_nodes: list[NodeDefinition] = [
-        NodeDefinition(type_key="frontier/trigger", title="Trigger", description="Workflow entrypoint for user kickoff, schedule, or external event.", category="Core", color="#6ca0ff"),
-        NodeDefinition(type_key="frontier/agent", title="Agent", description="Execute a delegated objective with a selected specialist agent.", category="Agent", color="#1f7f53"),
-        NodeDefinition(type_key="frontier/prompt", title="Prompt", description="Compose reusable system prompt instructions and pass them to agent nodes.", category="Agent", color="#5f4bb6"),
-        NodeDefinition(type_key="frontier/tool-call", title="Tool / API Call", description="Invoke external APIs or internal tools with schema-validated IO.", category="Integration", color="#6fd3ff"),
-        NodeDefinition(type_key="frontier/retrieval", title="Retrieval", description="Retrieve and rank context from vector DB, docs, or KB sources.", category="Knowledge", color="#8a6717"),
-        NodeDefinition(type_key="frontier/guardrail", title="Guardrail", description="Apply safety, policy, and quality controls to input/output content.", category="Control", color="#9f3550"),
-        NodeDefinition(type_key="frontier/human-review", title="Human Review", description="Approval or clarification gate with feedback loop and audit trail.", category="Control", color="#8d5c1a"),
-        NodeDefinition(type_key="frontier/manifold", title="Manifold", description="Consolidate multiple inbound flows using AND/OR logic into a single output.", category="Logic", color="#7863d3"),
-        NodeDefinition(type_key="frontier/output", title="Output", description="Finalize artifacts, emit events, and publish run outcomes.", category="Core", color="#69a3ff"),
+        NodeDefinition(
+            type_key="frontier/trigger",
+            title="Trigger",
+            description="Workflow entrypoint for user kickoff, schedule, or external event.",
+            category="Core",
+            color="#6ca0ff",
+        ),
+        NodeDefinition(
+            type_key="frontier/agent",
+            title="Agent",
+            description="Execute a delegated objective with a selected specialist agent.",
+            category="Agent",
+            color="#1f7f53",
+        ),
+        NodeDefinition(
+            type_key="frontier/prompt",
+            title="Prompt",
+            description="Compose reusable system prompt instructions and pass them to agent nodes.",
+            category="Agent",
+            color="#5f4bb6",
+        ),
+        NodeDefinition(
+            type_key="frontier/tool-call",
+            title="Tool / API Call",
+            description="Invoke external APIs or internal tools with schema-validated IO.",
+            category="Integration",
+            color="#6fd3ff",
+        ),
+        NodeDefinition(
+            type_key="frontier/retrieval",
+            title="Retrieval",
+            description="Retrieve and rank context from vector DB, docs, or KB sources.",
+            category="Knowledge",
+            color="#8a6717",
+        ),
+        NodeDefinition(
+            type_key="frontier/guardrail",
+            title="Guardrail",
+            description="Apply safety, policy, and quality controls to input/output content.",
+            category="Control",
+            color="#9f3550",
+        ),
+        NodeDefinition(
+            type_key="frontier/human-review",
+            title="Human Review",
+            description="Approval or clarification gate with feedback loop and audit trail.",
+            category="Control",
+            color="#8d5c1a",
+        ),
+        NodeDefinition(
+            type_key="frontier/manifold",
+            title="Manifold",
+            description="Consolidate multiple inbound flows using AND/OR logic into a single output.",
+            category="Logic",
+            color="#7863d3",
+        ),
+        NodeDefinition(
+            type_key="frontier/output",
+            title="Output",
+            description="Finalize artifacts, emit events, and publish run outcomes.",
+            category="Core",
+            color="#69a3ff",
+        ),
     ]
     if include_internal:
         base_nodes.insert(
             5,
-            NodeDefinition(type_key="frontier/memory", title="Memory", description="Read/write short-term or long-term memory scoped to tenant/run.", category="Knowledge", color="#4f5966"),
+            NodeDefinition(
+                type_key="frontier/memory",
+                title="Memory",
+                description="Read/write short-term or long-term memory scoped to tenant/run.",
+                category="Knowledge",
+                color="#4f5966",
+            ),
         )
     return [node.model_dump() for node in base_nodes]
 
@@ -12744,7 +15011,9 @@ def get_guardrail_rulesets(request: Request) -> list[dict[str, Any]]:
 
 
 @app.post("/guardrail-rulesets")
-def save_guardrail_ruleset(request: Request, payload: dict[str, Any] = Body(default_factory=dict)) -> dict[str, bool]:
+def save_guardrail_ruleset(
+    request: Request, payload: dict[str, Any] = Body(default_factory=dict)
+) -> dict[str, bool]:
     actor = _enforce_admin_access(request, payload=payload, action="guardrail.ruleset.save")
     _enforce_emergency_write_policy("guardrail.ruleset.save", actor)
     item_id = str(payload.get("id") or uuid4())
@@ -12757,13 +15026,17 @@ def save_guardrail_ruleset(request: Request, payload: dict[str, Any] = Body(defa
         config_json = dict(existing.config_json)
     else:
         config_json = {}
-    guardrail_name = str(payload.get("name") or (existing.name if existing else "Untitled Guardrail"))
+    guardrail_name = str(
+        payload.get("name") or (existing.name if existing else "Untitled Guardrail")
+    )
 
     store.guardrail_rulesets[item_id] = GuardrailRuleSet(
         id=item_id,
         name=guardrail_name,
         version=(existing.version if existing else 0) + 1,
-        status="draft" if existing and (existing.status == "published" or existing.published_revision_id) else (existing.status if existing else "draft"),
+        status="draft"
+        if existing and (existing.status == "published" or existing.published_revision_id)
+        else (existing.status if existing else "draft"),
         published_revision_id=existing.published_revision_id if existing else None,
         published_at=existing.published_at if existing else None,
         active_revision_id=existing.active_revision_id if existing else None,
@@ -12777,7 +15050,11 @@ def save_guardrail_ruleset(request: Request, payload: dict[str, Any] = Body(defa
         actor=actor,
         action="save",
         snapshot=saved_item,
-        metadata={"previous_version": previous_state.get("version") if isinstance(previous_state, dict) else None},
+        metadata={
+            "previous_version": previous_state.get("version")
+            if isinstance(previous_state, dict)
+            else None
+        },
     )
     _append_config_mutation_audit(
         "guardrail.ruleset.save",
@@ -12907,7 +15184,9 @@ def archive_guardrail_ruleset(item_id: str, request: Request) -> dict[str, bool]
 
 
 @app.post("/guardrail-rulesets/{item_id}/activate")
-def activate_guardrail_ruleset(item_id: str, request: Request, payload: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
+def activate_guardrail_ruleset(
+    item_id: str, request: Request, payload: dict[str, Any] = Body(default_factory=dict)
+) -> dict[str, Any]:
     actor = _enforce_admin_access(request, payload=payload, action="guardrail.ruleset.activate")
     _enforce_emergency_write_policy("guardrail.ruleset.activate", actor)
     item = store.guardrail_rulesets.get(item_id)
@@ -12917,7 +15196,8 @@ def activate_guardrail_ruleset(item_id: str, request: Request, payload: dict[str
     target_revision = _select_definition_revision(
         "guardrail_ruleset",
         item_id,
-        revision_id=str(payload.get("revision_id") or item.published_revision_id or "").strip() or None,
+        revision_id=str(payload.get("revision_id") or item.published_revision_id or "").strip()
+        or None,
         revision_number=_normalize_optional_positive_int(payload.get("revision")),
         version=_normalize_optional_positive_int(payload.get("version")),
     )
@@ -12968,7 +15248,9 @@ def get_guardrail_ruleset_version(item_id: str, revision_id: str) -> dict[str, A
 
 
 @app.post("/guardrail-rulesets/{item_id}/rollback")
-def rollback_guardrail_ruleset(item_id: str, request: Request, payload: dict[str, Any] = Body(default_factory=dict)) -> dict[str, Any]:
+def rollback_guardrail_ruleset(
+    item_id: str, request: Request, payload: dict[str, Any] = Body(default_factory=dict)
+) -> dict[str, Any]:
     actor = _enforce_admin_access(request, payload=payload, action="guardrail.ruleset.rollback")
     _enforce_emergency_write_policy("guardrail.ruleset.rollback", actor)
     target_revision = _select_definition_revision(
@@ -13022,7 +15304,11 @@ def validate_graph(payload: GraphPayload) -> dict[str, Any]:
 
 @app.post("/graph/runs")
 def run_graph(request: Request, payload: GraphPayload) -> dict[str, Any]:
-    actor = _enforce_request_authn(request, payload=payload.input if isinstance(payload.input, dict) else {}, action="graph.run")
+    actor = _enforce_request_authn(
+        request,
+        payload=payload.input if isinstance(payload.input, dict) else {},
+        action="graph.run",
+    )
     _enforce_emergency_write_policy("graph.run", actor)
     if store.platform_settings.block_graph_runs:
         _append_audit_event("graph.run", actor, "blocked", {"reason": "block_graph_runs"})
@@ -13032,21 +15318,34 @@ def run_graph(request: Request, payload: GraphPayload) -> dict[str, Any]:
 
     validation = _validate_graph(payload)
     if not validation.valid:
-        raise HTTPException(status_code=400, detail={"message": "Graph validation failed", "validation": validation.model_dump()})
+        raise HTTPException(
+            status_code=400,
+            detail={"message": "Graph validation failed", "validation": validation.model_dump()},
+        )
 
     blocked_terms = _input_contains_platform_blocked_keywords(payload.input)
     if blocked_terms:
-        result = _build_graph_policy_block_result(run_id=run_id, validation=validation, blocked_terms=blocked_terms)
+        result = _build_graph_policy_block_result(
+            run_id=run_id, validation=validation, blocked_terms=blocked_terms
+        )
         _append_audit_event(
             "graph.run",
             actor,
             "blocked",
-            {"run_id": run_id, "status": "blocked_by_platform_keywords", "blocked_keywords": blocked_terms},
+            {
+                "run_id": run_id,
+                "status": "blocked_by_platform_keywords",
+                "blocked_keywords": blocked_terms,
+            },
         )
         return result.model_dump()
 
     max_collaborators = max(1, int(store.platform_settings.collaboration_max_agents))
-    collaborating_agents = [node for node in payload.nodes if _normalize_node_type(node.type).startswith("frontier/agent")]
+    collaborating_agents = [
+        node
+        for node in payload.nodes
+        if _normalize_node_type(node.type).startswith("frontier/agent")
+    ]
     if len(collaborating_agents) > max_collaborators:
         raise HTTPException(
             status_code=400,
@@ -13065,7 +15364,9 @@ def run_graph(request: Request, payload: GraphPayload) -> dict[str, Any]:
     if not isinstance(runtime, dict):
         runtime = {}
     runtime_info = _resolve_runtime_engine(payload.input, store.platform_settings)
-    session_id = str(runtime.get("session_id") or payload.input.get("session_id") or f"session:{run_id}")
+    session_id = str(
+        runtime.get("session_id") or payload.input.get("session_id") or f"session:{run_id}"
+    )
     execution_state: dict[str, Any] = {
         "run_id": run_id,
         "runtime": runtime,
@@ -13089,9 +15390,15 @@ def run_graph(request: Request, payload: GraphPayload) -> dict[str, Any]:
     )
 
     if runtime_info.get("strategy") == "hybrid":
-        hybrid_routing = runtime_info.get("hybrid_effective_routing") if isinstance(runtime_info.get("hybrid_effective_routing"), dict) else {}
+        hybrid_routing = (
+            runtime_info.get("hybrid_effective_routing")
+            if isinstance(runtime_info.get("hybrid_effective_routing"), dict)
+            else {}
+        )
         if hybrid_routing:
-            routing_summary = ", ".join(f"{role}:{engine}" for role, engine in hybrid_routing.items())
+            routing_summary = ", ".join(
+                f"{role}:{engine}" for role, engine in hybrid_routing.items()
+            )
             events.append(
                 GraphRunEvent(
                     id=f"evt-{uuid4()}",
@@ -13148,8 +15455,12 @@ def run_graph(request: Request, payload: GraphPayload) -> dict[str, Any]:
             node_runtime = _resolve_node_runtime_engine(runtime_info, node_role)
             node_runtime_meta = {
                 "role": node_role,
-                "requested_engine": _normalize_runtime_engine(node_runtime.get("selected_engine") or "native"),
-                "executed_engine": _normalize_runtime_engine(node_runtime.get("executed_engine") or "native"),
+                "requested_engine": _normalize_runtime_engine(
+                    node_runtime.get("selected_engine") or "native"
+                ),
+                "executed_engine": _normalize_runtime_engine(
+                    node_runtime.get("executed_engine") or "native"
+                ),
                 "mode": str(node_runtime.get("mode") or "native"),
                 "strategy": str(runtime_info.get("strategy") or "single"),
             }
@@ -13158,7 +15469,10 @@ def run_graph(request: Request, payload: GraphPayload) -> dict[str, Any]:
 
             runtime_dispatches = execution_state.setdefault("runtime_dispatches", [])
             if isinstance(runtime_dispatches, list):
-                existing = any(isinstance(item, dict) and item.get("node_id") == node_id for item in runtime_dispatches)
+                existing = any(
+                    isinstance(item, dict) and item.get("node_id") == node_id
+                    for item in runtime_dispatches
+                )
                 if not existing:
                     runtime_dispatches.append(
                         {
@@ -13202,7 +15516,9 @@ def run_graph(request: Request, payload: GraphPayload) -> dict[str, Any]:
                 validation=validation,
                 runtime=runtime_snapshot,
             )
-            _append_audit_event("graph.run", actor, "error", {"run_id": run_id, "status": result.status})
+            _append_audit_event(
+                "graph.run", actor, "error", {"run_id": run_id, "status": result.status}
+            )
             return result.model_dump()
 
     runtime_snapshot = dict(runtime_info)

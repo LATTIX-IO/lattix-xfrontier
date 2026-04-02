@@ -9,4 +9,3 @@ class SemanticKernelAdapter:
     def invoke_skill(self, name: str, inputs: Dict[str, Any]) -> Dict[str, Any]:
         # Placeholder for SK integration (Python)
         return {"skill": name, "result": "not-implemented", "inputs": inputs}
-

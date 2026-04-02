@@ -94,10 +94,12 @@ class ConversationManager:
         """Return OpenAI-format messages list from current turns."""
         messages: list[dict[str, str]] = []
         if self._summary:
-            messages.append({
-                "role": "system",
-                "content": f"[Conversation summary from earlier turns]\n{self._summary}",
-            })
+            messages.append(
+                {
+                    "role": "system",
+                    "content": f"[Conversation summary from earlier turns]\n{self._summary}",
+                }
+            )
         for turn in self._turns:
             if turn.compacted:
                 continue
@@ -146,7 +148,9 @@ class ConversationManager:
             if turn.role == "assistant" and turn.metadata.get("reasoning_summaries"):
                 summaries = turn.metadata["reasoning_summaries"]
                 if isinstance(summaries, list) and summaries:
-                    last_reasoning = summaries[-1] if isinstance(summaries[-1], str) else str(summaries[-1])
+                    last_reasoning = (
+                        summaries[-1] if isinstance(summaries[-1], str) else str(summaries[-1])
+                    )
                     break
 
         summary_parts: list[str] = []
@@ -207,15 +211,17 @@ class ConversationManager:
 
     def serialize(self) -> str:
         """Serialize to JSON for Redis persistence."""
-        return json.dumps({
-            "session_id": self.session_id,
-            "run_id": self.run_id,
-            "max_tokens": self.max_tokens,
-            "compaction_threshold": self.compaction_threshold,
-            "next_index": self._next_index,
-            "summary": self._summary,
-            "turns": [asdict(t) for t in self._turns],
-        })
+        return json.dumps(
+            {
+                "session_id": self.session_id,
+                "run_id": self.run_id,
+                "max_tokens": self.max_tokens,
+                "compaction_threshold": self.compaction_threshold,
+                "next_index": self._next_index,
+                "summary": self._summary,
+                "turns": [asdict(t) for t in self._turns],
+            }
+        )
 
     @classmethod
     def deserialize(cls, data: str) -> ConversationManager:
@@ -230,13 +236,15 @@ class ConversationManager:
         manager._next_index = parsed.get("next_index", 0)
         manager._summary = parsed.get("summary")
         for turn_data in parsed.get("turns", []):
-            manager._turns.append(ConversationTurn(
-                role=turn_data["role"],
-                content=turn_data["content"],
-                turn_index=turn_data["turn_index"],
-                token_estimate=turn_data["token_estimate"],
-                timestamp=turn_data["timestamp"],
-                metadata=turn_data.get("metadata", {}),
-                compacted=turn_data.get("compacted", False),
-            ))
+            manager._turns.append(
+                ConversationTurn(
+                    role=turn_data["role"],
+                    content=turn_data["content"],
+                    turn_index=turn_data["turn_index"],
+                    token_estimate=turn_data["token_estimate"],
+                    timestamp=turn_data["timestamp"],
+                    metadata=turn_data.get("metadata", {}),
+                    compacted=turn_data.get("compacted", False),
+                )
+            )
         return manager

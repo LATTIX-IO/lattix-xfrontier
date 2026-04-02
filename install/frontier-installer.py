@@ -64,7 +64,9 @@ def _download_url_bytes(url: str, *, redirects_remaining: int = 3) -> bytes:
             location = response.getheader("Location")
             if not location or redirects_remaining <= 0:
                 raise SystemExit("Installer archive download redirected too many times.")
-            return _download_url_bytes(urljoin(validated_url, location), redirects_remaining=redirects_remaining - 1)
+            return _download_url_bytes(
+                urljoin(validated_url, location), redirects_remaining=redirects_remaining - 1
+            )
         if response.status >= 400:
             raise SystemExit(f"Installer archive download failed with HTTP {response.status}.")
         return response.read()
@@ -111,4 +113,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

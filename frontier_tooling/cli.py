@@ -28,7 +28,9 @@ from .common import (
 ROOT = repo_root()
 
 
-def _request_local_api(path: str, *, method: str = "GET", payload: Mapping[str, object] | None = None) -> object:
+def _request_local_api(
+    path: str, *, method: str = "GET", payload: Mapping[str, object] | None = None
+) -> object:
     return request_json(
         configured_local_api_url(path),
         method=method,
@@ -44,7 +46,15 @@ def _full_compose(*extra: str) -> list[str]:
 
 def _local_compose(*extra: str) -> list[str]:
     env_path = ensure_compose_env_file(local_profile=True)
-    return ["docker", "compose", "--env-file", str(env_path), "-f", "docker-compose.local.yml", *extra]
+    return [
+        "docker",
+        "compose",
+        "--env-file",
+        str(env_path),
+        "-f",
+        "docker-compose.local.yml",
+        *extra,
+    ]
 
 
 @click.group()
@@ -67,7 +77,9 @@ def up_command() -> None:
 @cli.command("local-up")
 def local_up_command() -> None:
     run_command(_local_compose("up", "-d"), cwd=ROOT)
-    click.echo("Lightweight local stack running. Frontend: http://localhost:3000 ; API health: http://localhost:8000/healthz")
+    click.echo(
+        "Lightweight local stack running. Frontend: http://localhost:3000 ; API health: http://localhost:8000/healthz"
+    )
 
 
 @cli.command("down")
@@ -184,7 +196,9 @@ def policy_lint() -> None:
 @cli.command("install-opa")
 def install_opa() -> None:
     if os.name != "nt":
-        click.echo("Automatic OPA installation is currently implemented in the PowerShell helper on Windows. Install 'opa' on PATH or place it under .tools/opa/.")
+        click.echo(
+            "Automatic OPA installation is currently implemented in the PowerShell helper on Windows. Install 'opa' on PATH or place it under .tools/opa/."
+        )
         return
     opa_dir = ROOT / ".tools" / "opa"
     opa_dir.mkdir(parents=True, exist_ok=True)
@@ -217,7 +231,9 @@ def agent_list() -> None:
 @agent.command("scaffold")
 @click.option("--name", required=True)
 def agent_scaffold(name: str) -> None:
-    run_command([python_executable(), "apps/workers/scripts/scaffold_agent_service.py", name], cwd=ROOT)
+    run_command(
+        [python_executable(), "apps/workers/scripts/scaffold_agent_service.py", name], cwd=ROOT
+    )
 
 
 @cli.group()

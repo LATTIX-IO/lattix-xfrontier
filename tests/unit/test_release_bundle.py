@@ -43,7 +43,10 @@ def test_build_release_bundle_copies_artifacts_and_writes_manifests(tmp_path: Pa
     copied_installer = bundle_dir / "artifacts" / "installer" / "bootstrap.ps1"
     assert copied_chart.exists()
     assert copied_installer.exists()
-    assert any(item["path"].endswith("artifacts/chart/lattix-frontier-1.2.3.tgz") for item in manifest["artifacts"]["chart"])
+    assert any(
+        item["path"].endswith("artifacts/chart/lattix-frontier-1.2.3.tgz")
+        for item in manifest["artifacts"]["chart"]
+    )
 
 
 def test_build_release_bundle_requires_artifacts(tmp_path: Path) -> None:

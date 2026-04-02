@@ -15,7 +15,11 @@ def test_mcp_gateway_plans_tool_execution() -> None:
         )
     )
     valid_backends = {
-        "kernel-bwrap", "kernel-seatbelt", "hardened-docker",
-        "k8s-gvisor", "k8s-kata", "restricted-process",
+        "kernel-bwrap",
+        "kernel-seatbelt",
+        "hardened-docker",
+        "k8s-gvisor",
+        "k8s-kata",
+        "restricted-process",
     }
     assert result.plan.backend in valid_backends

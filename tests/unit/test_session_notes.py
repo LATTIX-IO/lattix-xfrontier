@@ -73,7 +73,9 @@ class TestExtractToolsUsed:
 
 class TestSummarizeRuleBased:
     def test_basic_summary(self):
-        result = _summarize_rule_based("Code Agent", "Fix the bug", "I fixed the null pointer exception")
+        result = _summarize_rule_based(
+            "Code Agent", "Fix the bug", "I fixed the null pointer exception"
+        )
         assert "Code Agent" in result
         assert "Fix the bug" in result
 

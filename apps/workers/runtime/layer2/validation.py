@@ -31,4 +31,3 @@ def validate_envelope_dict(env: Dict[str, Any]) -> List[str]:
         errors.append("budget must be an object or null")
 
     return errors
-

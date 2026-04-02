@@ -63,9 +63,10 @@ def verify_token(token: str, cfg: Optional[JWTConfig] = None) -> Dict[str, Any]:
         key = cfg.public_key
         if not key:
             raise RuntimeError("A2A_JWT_PUBLIC_KEY is required for asymmetric verification")
-    return jwt.decode(token, key, algorithms=[cfg.algorithm], audience=cfg.audience, issuer=cfg.issuer)
+    return jwt.decode(
+        token, key, algorithms=[cfg.algorithm], audience=cfg.audience, issuer=cfg.issuer
+    )
 
 
 def extract_identity(token: str, cfg: Optional[JWTConfig] = None) -> RuntimeTokenIdentity:
     return token_identity_from_claims(verify_token(token, cfg))
-

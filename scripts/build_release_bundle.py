@@ -26,7 +26,9 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _copy_tree_files(source_dir: Path, destination_dir: Path, *, relative_to: Path) -> list[dict[str, Any]]:
+def _copy_tree_files(
+    source_dir: Path, destination_dir: Path, *, relative_to: Path
+) -> list[dict[str, Any]]:
     copied: list[dict[str, Any]] = []
     if not source_dir.exists():
         return copied
@@ -71,7 +73,9 @@ def build_release_bundle(
     installer_bundle_dir.mkdir(parents=True, exist_ok=True)
 
     chart_artifacts = _copy_tree_files(chart_dist, chart_bundle_dir, relative_to=bundle_dir)
-    installer_artifacts = _copy_tree_files(installer_dist, installer_bundle_dir, relative_to=bundle_dir)
+    installer_artifacts = _copy_tree_files(
+        installer_dist, installer_bundle_dir, relative_to=bundle_dir
+    )
 
     if not chart_artifacts:
         raise ValueError(f"no chart artifacts found under {chart_dist}")
@@ -140,8 +144,12 @@ def build_release_bundle(
     }
 
     (bundle_dir / "manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
-    (bundle_dir / "promotion-plan.json").write_text(json.dumps(promotion_plan, indent=2), encoding="utf-8")
-    (bundle_dir / "rollback-plan.json").write_text(json.dumps(rollback_plan, indent=2), encoding="utf-8")
+    (bundle_dir / "promotion-plan.json").write_text(
+        json.dumps(promotion_plan, indent=2), encoding="utf-8"
+    )
+    (bundle_dir / "rollback-plan.json").write_text(
+        json.dumps(rollback_plan, indent=2), encoding="utf-8"
+    )
     (bundle_dir / "RELEASE_NOTES.md").write_text(
         "\n".join(
             [

@@ -2,12 +2,7 @@
 
 from __future__ import annotations
 
-import json
-import time
-
-import pytest
-
-from frontier_runtime.conversation import ConversationManager, ConversationTurn, _estimate_tokens
+from frontier_runtime.conversation import ConversationManager, _estimate_tokens
 
 
 class TestEstimateTokens:
@@ -84,7 +79,9 @@ class TestConversationManager:
 
     def test_get_last_reasoning(self):
         mgr = self._make_manager()
-        mgr.add_turn("assistant", "Answer", metadata={"reasoning_summaries": ["Thought A", "Thought B"]})
+        mgr.add_turn(
+            "assistant", "Answer", metadata={"reasoning_summaries": ["Thought A", "Thought B"]}
+        )
         assert mgr.get_last_reasoning() == "Thought B"
 
     def test_serialize_deserialize(self):

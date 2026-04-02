@@ -2,16 +2,16 @@
 
 from __future__ import annotations
 
-import math
 import os
 from datetime import datetime, timezone, timedelta
 from unittest.mock import patch
 
-import pytest
-
 # We test the decay function directly from main
 import sys
-sys.path.insert(0, str(__import__("pathlib").Path(__file__).resolve().parents[2] / "apps" / "backend"))
+
+sys.path.insert(
+    0, str(__import__("pathlib").Path(__file__).resolve().parents[2] / "apps" / "backend")
+)
 
 from app.main import _memory_age_decay_factor, _rank_hybrid_memory_entries
 
@@ -59,7 +59,10 @@ class TestRankWithDecay:
         ts = (datetime.now(timezone.utc) - timedelta(days=days_old)).isoformat()
         return {"content": content, "tier": tier, "at": ts}
 
-    @patch.dict(os.environ, {"FRONTIER_MEMORY_DECAY_ENABLED": "true", "FRONTIER_MEMORY_DECAY_HALF_LIFE_DAYS": "30"})
+    @patch.dict(
+        os.environ,
+        {"FRONTIER_MEMORY_DECAY_ENABLED": "true", "FRONTIER_MEMORY_DECAY_HALF_LIFE_DAYS": "30"},
+    )
     def test_decay_reduces_old_long_term_score(self):
         recent = self._make_entry("keyword match", "long-term", days_old=1)
         old = self._make_entry("keyword match", "long-term", days_old=90)
@@ -70,7 +73,10 @@ class TestRankWithDecay:
         )
         assert ranked[0]["retrieval_score"] > ranked[1]["retrieval_score"]
 
-    @patch.dict(os.environ, {"FRONTIER_MEMORY_DECAY_ENABLED": "true", "FRONTIER_MEMORY_DECAY_HALF_LIFE_DAYS": "30"})
+    @patch.dict(
+        os.environ,
+        {"FRONTIER_MEMORY_DECAY_ENABLED": "true", "FRONTIER_MEMORY_DECAY_HALF_LIFE_DAYS": "30"},
+    )
     def test_short_term_not_decayed(self):
         old = self._make_entry("keyword match", "short-term", days_old=90)
         ranked = _rank_hybrid_memory_entries(

@@ -2,15 +2,6 @@
 
 from __future__ import annotations
 
-import json
-import os
-import tempfile
-from datetime import datetime, timedelta, timezone
-from pathlib import Path
-from unittest.mock import MagicMock, patch
-
-import pytest
-
 from frontier_runtime.conversation import ConversationManager
 from frontier_runtime.context_dedup import dedup_file_operations
 from frontier_runtime.session_notes import generate_session_note
@@ -25,9 +16,13 @@ class TestMemoryPipelineIntegration:
         mgr = ConversationManager(session_id="int-sess", run_id="int-run", max_tokens=4000)
         mgr.add_turn("system", "You are a research agent.")
         mgr.add_turn("user", "Find information about Redis persistence")
-        mgr.add_turn("assistant", "I decided to use RDB snapshots for periodic persistence.", metadata={
-            "reasoning_summaries": ["Evaluated AOF vs RDB", "RDB chosen for simplicity"],
-        })
+        mgr.add_turn(
+            "assistant",
+            "I decided to use RDB snapshots for periodic persistence.",
+            metadata={
+                "reasoning_summaries": ["Evaluated AOF vs RDB", "RDB chosen for simplicity"],
+            },
+        )
 
         # Step 2: Generate session note from the last assistant turn
         last_turn = mgr.turns[-1]
@@ -75,14 +70,28 @@ class TestMemoryPipelineIntegration:
     def test_file_dedup_in_ranked_pipeline(self):
         """Verify file dedup removes redundant file operations before ranking."""
         entries = [
-            {"content": "read `config.py` version 1", "metadata": {"file_path": "config.py"}, "tier": "short-term"},
+            {
+                "content": "read `config.py` version 1",
+                "metadata": {"file_path": "config.py"},
+                "tier": "short-term",
+            },
             {"content": "analyzed the data structure", "tier": "short-term"},
-            {"content": "modified `config.py` version 2", "metadata": {"file_path": "config.py"}, "tier": "short-term"},
-            {"content": "read `utils.py` helper", "metadata": {"file_path": "utils.py"}, "tier": "long-term"},
+            {
+                "content": "modified `config.py` version 2",
+                "metadata": {"file_path": "config.py"},
+                "tier": "short-term",
+            },
+            {
+                "content": "read `utils.py` helper",
+                "metadata": {"file_path": "utils.py"},
+                "tier": "long-term",
+            },
         ]
         deduped = dedup_file_operations(entries)
         assert len(deduped) == 3
-        config_entries = [e for e in deduped if e.get("metadata", {}).get("file_path") == "config.py"]
+        config_entries = [
+            e for e in deduped if e.get("metadata", {}).get("file_path") == "config.py"
+        ]
         assert len(config_entries) == 1
         assert "version 2" in config_entries[0]["content"]
 
@@ -96,9 +105,13 @@ class TestMemoryPipelineIntegration:
         )
         mgr.add_turn("system", "Agent system prompt")
         mgr.add_turn("user", "Complex task " * 20)
-        mgr.add_turn("assistant", "Analysis complete " * 20, metadata={
-            "reasoning_summaries": ["Critical insight: the memory architecture needs WAL"],
-        })
+        mgr.add_turn(
+            "assistant",
+            "Analysis complete " * 20,
+            metadata={
+                "reasoning_summaries": ["Critical insight: the memory architecture needs WAL"],
+            },
+        )
         # Add many more turns to force compaction
         for i in range(10):
             role = "user" if i % 2 == 0 else "assistant"

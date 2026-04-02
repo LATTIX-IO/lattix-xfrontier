@@ -25,7 +25,9 @@ class DiagnosticResult:
 def hostname_prefix_valid(prefix: str) -> DiagnosticResult:
     normalized = str(prefix).strip()
     ok = bool(re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", normalized))
-    return DiagnosticResult("hostname-prefix", ok, "valid" if ok else "Use lowercase letters, numbers, and hyphens only")
+    return DiagnosticResult(
+        "hostname-prefix", ok, "valid" if ok else "Use lowercase letters, numbers, and hyphens only"
+    )
 
 
 def writable_directory(path: Path) -> DiagnosticResult:
@@ -49,7 +51,9 @@ def port_available(port: int) -> DiagnosticResult:
     return DiagnosticResult(f"port:{port}", True, "available")
 
 
-def _normalize_absolute_http_url(value: str, *, setting_name: str, allow_query: bool = False) -> str:
+def _normalize_absolute_http_url(
+    value: str, *, setting_name: str, allow_query: bool = False
+) -> str:
     raw = str(value or "").strip()
     if not raw:
         return ""
@@ -71,7 +75,9 @@ def _normalize_absolute_http_url(value: str, *, setting_name: str, allow_query: 
     if "\\" in parsed.netloc or "\\" in parsed.path:
         raise ValueError(f"{setting_name} contains invalid path separators")
 
-    return urlunsplit((scheme, parsed.netloc, parsed.path or "", parsed.query if allow_query else "", ""))
+    return urlunsplit(
+        (scheme, parsed.netloc, parsed.path or "", parsed.query if allow_query else "", "")
+    )
 
 
 def sandbox_backend_available() -> DiagnosticResult:
@@ -97,7 +103,9 @@ def docker_daemon_available() -> DiagnosticResult:
         return DiagnosticResult("docker-daemon", False, "Docker is not installed or not on PATH")
     result = subprocess.run(["docker", "info"], capture_output=True, text=True)
     if result.returncode != 0:
-        return DiagnosticResult("docker-daemon", False, "Start Docker Desktop or the docker service before continuing")
+        return DiagnosticResult(
+            "docker-daemon", False, "Start Docker Desktop or the docker service before continuing"
+        )
     return DiagnosticResult("docker-daemon", True, "available")
 
 
@@ -106,7 +114,9 @@ def docker_compose_available() -> DiagnosticResult:
         return DiagnosticResult("docker-compose", False, "Docker is not installed or not on PATH")
     result = subprocess.run(["docker", "compose", "version"], capture_output=True, text=True)
     if result.returncode != 0:
-        return DiagnosticResult("docker-compose", False, "Docker Compose v2 plugin is not available")
+        return DiagnosticResult(
+            "docker-compose", False, "Docker Compose v2 plugin is not available"
+        )
     return DiagnosticResult("docker-compose", True, "available")
 
 
@@ -129,7 +139,7 @@ class MissingPrerequisite:
 class InstallerAnswers:
     installation_root: str
     deployment_mode: str = "local"
-    local_hostname: str = "frontier"
+    local_hostname: str = "xfrontier"
     local_auth_provider: str = "oidc"
     oidc_provider_template: str = "casdoor"
     bootstrap_admin_username: str = ""
@@ -173,7 +183,9 @@ class FrontierInstaller:
             env_map[key] = value
         return env_map
 
-    def _prompt_secret_with_existing(self, prompt: str, description: str, *, existing_value: str = "") -> str:
+    def _prompt_secret_with_existing(
+        self, prompt: str, description: str, *, existing_value: str = ""
+    ) -> str:
         provided = self._prompt_secret(prompt, description)
         if provided:
             return provided
@@ -198,10 +210,14 @@ class FrontierInstaller:
         if not existing_env:
             return None
 
-        local_auth_provider = self._normalize_auth_provider(existing_env.get("FRONTIER_AUTH_MODE", "oidc"))
+        local_auth_provider = self._normalize_auth_provider(
+            existing_env.get("FRONTIER_AUTH_MODE", "oidc")
+        )
         oidc_provider_template = ""
         if local_auth_provider == "oidc":
-            provider_name = str(existing_env.get("FRONTIER_AUTH_OIDC_PROVIDER") or "").strip().lower()
+            provider_name = (
+                str(existing_env.get("FRONTIER_AUTH_OIDC_PROVIDER") or "").strip().lower()
+            )
             oidc_provider_template = "casdoor" if provider_name == "casdoor" else "external"
 
         federation_peers = self._csv_env_values(existing_env.get("FEDERATION_PEERS", ""))
@@ -212,25 +228,44 @@ class FrontierInstaller:
             local_hostname=self._hostname_prefix_from_env(existing_env.get("LOCAL_STACK_HOST", "")),
             local_auth_provider=local_auth_provider,
             oidc_provider_template=oidc_provider_template,
-            bootstrap_admin_username=str(existing_env.get("FRONTIER_BOOTSTRAP_ADMIN_USERNAME") or "").strip(),
-            bootstrap_admin_email=str(existing_env.get("FRONTIER_BOOTSTRAP_ADMIN_EMAIL") or "").strip(),
-            bootstrap_admin_subject=str(existing_env.get("FRONTIER_BOOTSTRAP_ADMIN_SUBJECT") or "").strip(),
-            bootstrap_login_username=str(existing_env.get("CASDOOR_BOOTSTRAP_LOGIN_USERNAME") or "").strip(),
-            bootstrap_login_email=str(existing_env.get("CASDOOR_BOOTSTRAP_LOGIN_EMAIL") or "").strip(),
-            bootstrap_login_display_name=str(existing_env.get("CASDOOR_BOOTSTRAP_LOGIN_DISPLAY_NAME") or "").strip(),
-            bootstrap_login_password=str(existing_env.get("CASDOOR_BOOTSTRAP_LOGIN_PASSWORD") or ""),
+            bootstrap_admin_username=str(
+                existing_env.get("FRONTIER_BOOTSTRAP_ADMIN_USERNAME") or ""
+            ).strip(),
+            bootstrap_admin_email=str(
+                existing_env.get("FRONTIER_BOOTSTRAP_ADMIN_EMAIL") or ""
+            ).strip(),
+            bootstrap_admin_subject=str(
+                existing_env.get("FRONTIER_BOOTSTRAP_ADMIN_SUBJECT") or ""
+            ).strip(),
+            bootstrap_login_username=str(
+                existing_env.get("CASDOOR_BOOTSTRAP_LOGIN_USERNAME") or ""
+            ).strip(),
+            bootstrap_login_email=str(
+                existing_env.get("CASDOOR_BOOTSTRAP_LOGIN_EMAIL") or ""
+            ).strip(),
+            bootstrap_login_display_name=str(
+                existing_env.get("CASDOOR_BOOTSTRAP_LOGIN_DISPLAY_NAME") or ""
+            ).strip(),
+            bootstrap_login_password=str(
+                existing_env.get("CASDOOR_BOOTSTRAP_LOGIN_PASSWORD") or ""
+            ),
             bootstrap_login_password_generated=False,
             openai_api_key=str(existing_env.get("OPENAI_API_KEY") or "").strip(),
             oidc_issuer=str(existing_env.get("FRONTIER_AUTH_OIDC_ISSUER") or "").strip(),
             oidc_audience=str(existing_env.get("FRONTIER_AUTH_OIDC_AUDIENCE") or "").strip(),
             oidc_jwks_url=str(existing_env.get("FRONTIER_AUTH_OIDC_JWKS_URL") or "").strip(),
             oidc_client_id=str(existing_env.get("FRONTIER_AUTH_OIDC_CLIENT_ID") or "").strip(),
-            oidc_authorization_url=str(existing_env.get("FRONTIER_AUTH_OIDC_AUTHORIZATION_URL") or "").strip(),
+            oidc_authorization_url=str(
+                existing_env.get("FRONTIER_AUTH_OIDC_AUTHORIZATION_URL") or ""
+            ).strip(),
             oidc_token_url=str(existing_env.get("FRONTIER_AUTH_OIDC_TOKEN_URL") or "").strip(),
             oidc_signin_url=str(existing_env.get("FRONTIER_AUTH_OIDC_SIGNIN_URL") or "").strip(),
             oidc_signup_url=str(existing_env.get("FRONTIER_AUTH_OIDC_SIGNUP_URL") or "").strip(),
-            oidc_scopes=str(existing_env.get("FRONTIER_AUTH_OIDC_SCOPES") or "openid profile email").split(),
-            federation_enabled=str(existing_env.get("FEDERATION_ENABLED") or "").strip().lower() in {"1", "true", "yes", "on"},
+            oidc_scopes=str(
+                existing_env.get("FRONTIER_AUTH_OIDC_SCOPES") or "openid profile email"
+            ).split(),
+            federation_enabled=str(existing_env.get("FEDERATION_ENABLED") or "").strip().lower()
+            in {"1", "true", "yes", "on"},
             federation_cluster_name=str(existing_env.get("FEDERATION_CLUSTER_NAME") or "").strip(),
             federation_region=str(existing_env.get("FEDERATION_REGION") or "").strip(),
             federation_peers=federation_peers,
@@ -248,7 +283,10 @@ class FrontierInstaller:
             if not line:
                 wrapped.append("")
                 continue
-            wrapped.extend(textwrap.wrap(line, width=width, replace_whitespace=False, drop_whitespace=False) or [""])
+            wrapped.extend(
+                textwrap.wrap(line, width=width, replace_whitespace=False, drop_whitespace=False)
+                or [""]
+            )
         return wrapped
 
     @classmethod
@@ -267,14 +305,7 @@ class FrontierInstaller:
 
     @staticmethod
     def _default_local_hostname() -> str:
-        configured = str(os.getenv("LOCAL_STACK_HOST") or "").strip().lower()
-        candidate = configured
-        for suffix in (".localhost", ".local"):
-            if candidate.endswith(suffix):
-                candidate = candidate[: -len(suffix)]
-                break
-        validation = hostname_prefix_valid(candidate)
-        return candidate if validation.ok else "xfrontier"
+        return "xfrontier"
 
     @staticmethod
     def _normalized_local_bind_host(value: str | None) -> str:
@@ -290,7 +321,9 @@ class FrontierInstaller:
 
     @classmethod
     def _default_casdoor_public_url(cls) -> str:
-        host = cls._normalized_local_bind_host(os.getenv("CASDOOR_BIND_HOST") or os.getenv("LOCAL_GATEWAY_BIND_HOST") or "127.0.0.1")
+        host = cls._normalized_local_bind_host(
+            os.getenv("CASDOOR_BIND_HOST") or os.getenv("LOCAL_GATEWAY_BIND_HOST") or "127.0.0.1"
+        )
         port = cls._normalized_local_http_port(os.getenv("CASDOOR_HTTP_PORT"), default="8081")
         authority = host if port == "80" else f"{host}:{port}"
         return f"http://{authority}"
@@ -346,11 +379,15 @@ class FrontierInstaller:
     @staticmethod
     def _prompt_hostname(default: str) -> str:
         while True:
-            candidate = FrontierInstaller._prompt_with_default(
-                "Local portal hostname prefix",
-                default,
-                description="This becomes the local gateway hostname for the portal, for example xfrontier.local.",
-            ).strip().lower()
+            candidate = (
+                FrontierInstaller._prompt_with_default(
+                    "Local portal hostname prefix",
+                    default,
+                    description="This becomes the local gateway hostname for the portal, for example xfrontier.local.",
+                )
+                .strip()
+                .lower()
+            )
             validation = hostname_prefix_valid(candidate)
             if validation.ok:
                 return candidate
@@ -364,7 +401,11 @@ class FrontierInstaller:
             else:
                 cls._print_panel(
                     "Installer prompt",
-                    [*( [description] if description else []), f"Field      : {prompt}", "Action     : Enter a required value to continue."],
+                    [
+                        *([description] if description else []),
+                        f"Field      : {prompt}",
+                        "Action     : Enter a required value to continue.",
+                    ],
                 )
                 candidate = cls._raw_input().strip()
             candidate = candidate.strip()
@@ -375,7 +416,7 @@ class FrontierInstaller:
     @classmethod
     def _prompt_required_explicit_value(cls, prompt: str, description: str = "") -> str:
         while True:
-            lines = [*( [description] if description else []), f"Field      : {prompt}"]
+            lines = [*([description] if description else []), f"Field      : {prompt}"]
             lines.append("Action     : Enter a required value to continue.")
             cls._print_panel("Installer prompt", lines)
             candidate = cls._raw_input().strip()
@@ -481,7 +522,9 @@ class FrontierInstaller:
             bootstrap_admin_subject=bootstrap_admin["subject"],
         )
 
-    def collect_local_answers(self, *, installation_root: Path, interactive: bool) -> InstallerAnswers:
+    def collect_local_answers(
+        self, *, installation_root: Path, interactive: bool
+    ) -> InstallerAnswers:
         if not interactive:
             raise SystemExit(
                 "Interactive installer input is required to create the Casdoor bootstrap login user for local installs. "
@@ -594,7 +637,10 @@ class FrontierInstaller:
                 description="Subject claim that maps the initial operator into the admin allowlist.",
             )
 
-            if answers.local_auth_provider == "oidc" and answers.oidc_provider_template == "casdoor":
+            if (
+                answers.local_auth_provider == "oidc"
+                and answers.oidc_provider_template == "casdoor"
+            ):
                 answers.bootstrap_login_username = self._prompt_required_explicit_value(
                     "Bootstrap login username",
                     description="Casdoor user created automatically so you can sign in from the login screen after install.",
@@ -654,7 +700,9 @@ class FrontierInstaller:
             return ""
         if str(answers.local_auth_provider or "").strip().lower() == "casdoor":
             return "casdoor"
-        template = FrontierInstaller._normalize_oidc_provider_template(answers.oidc_provider_template)
+        template = FrontierInstaller._normalize_oidc_provider_template(
+            answers.oidc_provider_template
+        )
         return "casdoor" if template == "casdoor" else "oidc"
 
     @classmethod
@@ -703,12 +751,18 @@ class FrontierInstaller:
         )
         return {
             "provider": provider_name,
-            "issuer": _normalize_absolute_http_url(answers.oidc_issuer, setting_name="FRONTIER_AUTH_OIDC_ISSUER"),
+            "issuer": _normalize_absolute_http_url(
+                answers.oidc_issuer, setting_name="FRONTIER_AUTH_OIDC_ISSUER"
+            ),
             "audience": answers.oidc_audience,
-            "jwks_url": _normalize_absolute_http_url(answers.oidc_jwks_url, setting_name="FRONTIER_AUTH_OIDC_JWKS_URL"),
+            "jwks_url": _normalize_absolute_http_url(
+                answers.oidc_jwks_url, setting_name="FRONTIER_AUTH_OIDC_JWKS_URL"
+            ),
             "client_id": answers.oidc_client_id,
             "authorization_url": authorization_url,
-            "token_url": _normalize_absolute_http_url(answers.oidc_token_url, setting_name="FRONTIER_AUTH_OIDC_TOKEN_URL"),
+            "token_url": _normalize_absolute_http_url(
+                answers.oidc_token_url, setting_name="FRONTIER_AUTH_OIDC_TOKEN_URL"
+            ),
             "signin_url": _normalize_absolute_http_url(
                 answers.oidc_signin_url or authorization_url,
                 setting_name="FRONTIER_AUTH_OIDC_SIGNIN_URL",
@@ -730,7 +784,10 @@ class FrontierInstaller:
     @staticmethod
     def _resolved_bootstrap_admin_identity(answers: InstallerAnswers) -> dict[str, str]:
         username = str(answers.bootstrap_admin_username or "").strip() or "frontier-admin"
-        email = str(answers.bootstrap_admin_email or "").strip() or f"admin@{answers.local_hostname}.localhost"
+        email = (
+            str(answers.bootstrap_admin_email or "").strip()
+            or f"admin@{answers.local_hostname}.localhost"
+        )
         subject = str(answers.bootstrap_admin_subject or "").strip() or username
         references: list[str] = []
         for candidate in [username, email, subject]:
@@ -764,7 +821,11 @@ class FrontierInstaller:
         base_lines: list[str] = []
         example_path = self.repo_root / ".env.example"
         if example_path.exists():
-            base_lines = [line.rstrip("\n") for line in example_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+            base_lines = [
+                line.rstrip("\n")
+                for line in example_path.read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
         generated_lines = [
             *base_lines,
             f"LOCAL_STACK_HOST={answers.local_hostname}.localhost",
@@ -780,14 +841,17 @@ class FrontierInstaller:
             f"FRONTEND_ORIGIN=http://{answers.local_hostname}.localhost",
             f"FRONTIER_AUTH_MODE={self._normalize_auth_provider(answers.local_auth_provider)}",
             "A2A_JWT_AUD=frontier-runtime",
-            "A2A_TRUSTED_SUBJECTS=backend,research,code,review,coordinator",
+            "A2A_TRUSTED_SUBJECTS=backend,orchestrator,research,code,review,coordinator",
             f"FEDERATION_ENABLED={'true' if answers.federation_enabled else 'false'}",
             f"FEDERATION_CLUSTER_NAME={answers.federation_cluster_name}",
             f"FEDERATION_REGION={answers.federation_region}",
             f"FEDERATION_PEERS={','.join(answers.federation_peers)}",
         ]
         casdoor_public_url = _normalize_absolute_http_url(
-            answers.oidc_issuer if self._normalized_oidc_provider_name(answers) == "casdoor" and str(answers.oidc_issuer or "").strip() else self._default_casdoor_public_url(),
+            answers.oidc_issuer
+            if self._normalized_oidc_provider_name(answers) == "casdoor"
+            and str(answers.oidc_issuer or "").strip()
+            else self._default_casdoor_public_url(),
             setting_name="CASDOOR_PUBLIC_URL",
         )
         generated_lines.insert(3, f"CASDOOR_PUBLIC_URL={casdoor_public_url}")
@@ -952,7 +1016,11 @@ class FrontierInstaller:
             if shutil.which(command) is None:
                 return DiagnosticResult(check_name, False, f"{command} is missing from PATH")
             return DiagnosticResult(check_name, True, "available")
-        return DiagnosticResult(check_name or definition.key, False, f"Unsupported prerequisite check: {check_name or definition.key}")
+        return DiagnosticResult(
+            check_name or definition.key,
+            False,
+            f"Unsupported prerequisite check: {check_name or definition.key}",
+        )
 
     def _attempt_missing_prerequisite_installs(
         self,
@@ -981,7 +1049,9 @@ class FrontierInstaller:
                 )
         return unresolved
 
-    def _resolve_missing_prerequisites(self, missing: list[MissingPrerequisite], intro: str) -> None:
+    def _resolve_missing_prerequisites(
+        self, missing: list[MissingPrerequisite], intro: str
+    ) -> None:
         if not missing:
             return
         if self._ask_yes_no(intro, True):

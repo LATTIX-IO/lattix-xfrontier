@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import re
 import time
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass
 from typing import Any
 
 
@@ -44,7 +44,9 @@ def _extract_decisions(text: str) -> list[str]:
     """Extract decision-like statements from assistant output."""
     decisions: list[str] = []
     patterns = [
-        re.compile(r"(?:decided|choosing|selected|using|going with|opted for)\s+(.{10,80})", re.IGNORECASE),
+        re.compile(
+            r"(?:decided|choosing|selected|using|going with|opted for)\s+(.{10,80})", re.IGNORECASE
+        ),
         re.compile(r"(?:will|should|need to)\s+(.{10,80})", re.IGNORECASE),
     ]
     for pattern in patterns:
@@ -97,7 +99,7 @@ def _summarize_rule_based(node_title: str, user_input: str, assistant_output: st
     """Generate a 1-2 sentence summary using rules (no LLM cost)."""
     user_snippet = user_input[:100].replace("\n", " ").strip()
     response_snippet = assistant_output[:150].replace("\n", " ").strip()
-    return f"Node '{node_title}' processed: \"{user_snippet}\" -> \"{response_snippet}\""
+    return f'Node \'{node_title}\' processed: "{user_snippet}" -> "{response_snippet}"'
 
 
 def generate_session_note(

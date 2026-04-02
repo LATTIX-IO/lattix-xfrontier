@@ -3,25 +3,31 @@
 from __future__ import annotations
 
 import os
-from unittest.mock import MagicMock, patch, call
-
-import pytest
+from unittest.mock import MagicMock, patch
 
 import sys
-sys.path.insert(0, str(__import__("pathlib").Path(__file__).resolve().parents[2] / "apps" / "backend"))
+
+sys.path.insert(
+    0, str(__import__("pathlib").Path(__file__).resolve().parents[2] / "apps" / "backend")
+)
 
 from app.main import _maybe_trigger_inline_consolidation
 
 
 class TestInlineConsolidation:
-    @patch.dict(os.environ, {
-        "FRONTIER_MEMORY_INLINE_CONSOLIDATION_ENABLED": "true",
-        "FRONTIER_MEMORY_INLINE_CONSOLIDATION_THRESHOLD": "5",
-    })
+    @patch.dict(
+        os.environ,
+        {
+            "FRONTIER_MEMORY_INLINE_CONSOLIDATION_ENABLED": "true",
+            "FRONTIER_MEMORY_INLINE_CONSOLIDATION_THRESHOLD": "5",
+        },
+    )
     def test_triggers_when_threshold_exceeded(self):
-        with patch("app.main._POSTGRES_MEMORY") as mock_pg, \
-             patch("app.main._run_memory_consolidation") as mock_run, \
-             patch("threading.Thread") as mock_thread:
+        with (
+            patch("app.main._POSTGRES_MEMORY") as mock_pg,
+            patch("app.main._run_memory_consolidation"),
+            patch("threading.Thread") as mock_thread,
+        ):
             mock_pg.enabled = True
             mock_pg.healthcheck.return_value = True
             mock_pg.count_consolidation_candidates.return_value = 7
@@ -34,13 +40,18 @@ class TestInlineConsolidation:
             mock_thread.assert_called_once()
             mock_thread_instance.start.assert_called_once()
 
-    @patch.dict(os.environ, {
-        "FRONTIER_MEMORY_INLINE_CONSOLIDATION_ENABLED": "true",
-        "FRONTIER_MEMORY_INLINE_CONSOLIDATION_THRESHOLD": "10",
-    })
+    @patch.dict(
+        os.environ,
+        {
+            "FRONTIER_MEMORY_INLINE_CONSOLIDATION_ENABLED": "true",
+            "FRONTIER_MEMORY_INLINE_CONSOLIDATION_THRESHOLD": "10",
+        },
+    )
     def test_no_trigger_below_threshold(self):
-        with patch("app.main._POSTGRES_MEMORY") as mock_pg, \
-             patch("threading.Thread") as mock_thread:
+        with (
+            patch("app.main._POSTGRES_MEMORY") as mock_pg,
+            patch("threading.Thread") as mock_thread,
+        ):
             mock_pg.enabled = True
             mock_pg.healthcheck.return_value = True
             mock_pg.count_consolidation_candidates.return_value = 3

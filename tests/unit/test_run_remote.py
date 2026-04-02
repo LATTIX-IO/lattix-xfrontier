@@ -24,7 +24,9 @@ def _load_run_remote_module():
     return module
 
 
-def test_run_remote_uses_orchestrator_remote_dispatch_path(monkeypatch, capsys: pytest.CaptureFixture[str], tmp_path: Path) -> None:
+def test_run_remote_uses_orchestrator_remote_dispatch_path(
+    monkeypatch, capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
     module = _load_run_remote_module()
     captured: dict[str, object] = {}
 
@@ -34,7 +36,11 @@ def test_run_remote_uses_orchestrator_remote_dispatch_path(monkeypatch, capsys: 
 
         def run_stage(self, **kwargs):
             captured.update(kwargs)
-            env = Envelope(topic=str(kwargs["topic"]), sender="orchestrator", payload={"remote_responses": [{"accepted": True, "via": "remote"}]})
+            env = Envelope(
+                topic=str(kwargs["topic"]),
+                sender="orchestrator",
+                payload={"remote_responses": [{"accepted": True, "via": "remote"}]},
+            )
             return env
 
     monkeypatch.setattr(module, "Orchestrator", _FakeOrchestrator)

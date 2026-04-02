@@ -14,7 +14,9 @@ def main() -> None:
     parser.add_argument("--destination", default="generated-agents")
     args = parser.parse_args()
     if Path(args.destination) != Path("generated-agents"):
-        raise SystemExit("Custom destinations are not supported by the apps/workers scaffold. Use the default generated-agents flow or call the worker scaffold script directly.")
+        raise SystemExit(
+            "Custom destinations are not supported by the apps/workers scaffold. Use the default generated-agents flow or call the worker scaffold script directly."
+        )
     subprocess.run(
         [sys.executable, "apps/workers/scripts/scaffold_agent_service.py", args.name],
         check=True,

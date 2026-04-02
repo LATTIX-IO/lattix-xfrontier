@@ -19,11 +19,9 @@ isolation backend.
 
 from __future__ import annotations
 
-import json
 import os
 import platform as platform_module
 import shutil
-import time
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
@@ -253,8 +251,8 @@ class _KernelSeatbeltStrategy:
             rules.append(f'(allow file-write* (subpath (param "WRITABLE_ROOT_{idx}")))')
 
         # /tmp writable
-        rules.append("(allow file-write* (subpath \"/private/tmp\"))")
-        rules.append("(allow file-write* (subpath \"/tmp\"))")
+        rules.append('(allow file-write* (subpath "/private/tmp"))')
+        rules.append('(allow file-write* (subpath "/tmp"))')
 
         # Network
         if policy.allow_network:
@@ -263,7 +261,7 @@ class _KernelSeatbeltStrategy:
             rules.append("(allow system-socket)")
         else:
             # Allow localhost-only for IPC
-            rules.append('(allow system-socket (socket-domain AF_UNIX))')
+            rules.append("(allow system-socket (socket-domain AF_UNIX))")
             rules.append('(allow network-bind (local ip "localhost:*"))')
 
         # System basics
@@ -280,7 +278,9 @@ class _HardenedDockerStrategy:
 
     def build_command(self, spec: ExecutionSpec, policy: SandboxPolicy) -> list[str]:
         args: list[str] = [
-            "docker", "run", "--rm",
+            "docker",
+            "run",
+            "--rm",
             # --- Security ---
             "--cap-drop=ALL",
             "--security-opt=no-new-privileges",
@@ -396,9 +396,7 @@ class SandboxManager:
             requested = set(spec.requested_hosts)
             allowed = set(policy.allowed_hosts)
             if not requested.issubset(allowed):
-                raise PermissionError(
-                    f"Requested hosts not allowlisted: {requested - allowed}"
-                )
+                raise PermissionError(f"Requested hosts not allowlisted: {requested - allowed}")
 
         # --- Strategy dispatch ---
         if strategy == IsolationStrategy.KERNEL_BWRAP:
@@ -440,7 +438,9 @@ class SandboxManager:
         strategy: IsolationStrategy,
     ) -> dict[str, Any]:
         """Generate K8s pod spec fragment for the workflow engine."""
-        runtime_class = "frontier-sandbox-vm" if strategy == IsolationStrategy.K8S_KATA else "frontier-sandbox"
+        runtime_class = (
+            "frontier-sandbox-vm" if strategy == IsolationStrategy.K8S_KATA else "frontier-sandbox"
+        )
         return {
             "runtimeClassName": runtime_class,
             "securityContext": {

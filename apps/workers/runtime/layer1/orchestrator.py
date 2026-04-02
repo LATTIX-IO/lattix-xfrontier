@@ -37,7 +37,11 @@ class Orchestrator:
     ) -> Envelope:
         clock = BudgetClock()
         next_payload = dict(payload or {})
-        auth_context = next_payload.get("auth_context") if isinstance(next_payload.get("auth_context"), dict) else {}
+        auth_context = (
+            next_payload.get("auth_context")
+            if isinstance(next_payload.get("auth_context"), dict)
+            else {}
+        )
         if actor:
             auth_context.setdefault("actor", actor)
         if tenant_id:
@@ -57,13 +61,17 @@ class Orchestrator:
         resolve_runtime_auth_context(env)
         # Deliver locally or dispatch to remote services
         if dispatch_mode == "remote":
-            dispatcher = TopicDispatcher(_Path(remote_map_path or topic_endpoints_map_path()).resolve())
+            dispatcher = TopicDispatcher(
+                _Path(remote_map_path or topic_endpoints_map_path()).resolve()
+            )
             # Best-effort remote dispatch; response recorded in payload
             try:
                 resp = dispatcher.dispatch(topic, env)
             except Exception as exc:
                 env.errors.append(f"remote dispatch failed: {exc}")
-                add_trace(env, "orchestrator.dispatch", "error", {"topic": topic, "reason": str(exc)})
+                add_trace(
+                    env, "orchestrator.dispatch", "error", {"topic": topic, "reason": str(exc)}
+                )
             else:
                 try:
                     (env.payload.setdefault("remote_responses", []).append(resp))  # type: ignore
@@ -71,6 +79,7 @@ class Orchestrator:
                     pass
         else:
             self.bus.publish(topic, env)
+
         # Check termination conditions
         def is_done() -> bool:
             if done_when is not None:
@@ -78,7 +87,9 @@ class Orchestrator:
                     return bool(done_when(env))
                 except Exception as exc:
                     env.errors.append(f"stage completion check failed: {exc}")
-                    add_trace(env, "orchestrator.done_when", "error", {"topic": topic, "reason": str(exc)})
+                    add_trace(
+                        env, "orchestrator.done_when", "error", {"topic": topic, "reason": str(exc)}
+                    )
                     return False
             if expected_keys:
                 return all(k in (env.payload or {}) for k in expected_keys)
@@ -87,7 +98,12 @@ class Orchestrator:
         if not is_done():
             if not within_time(env.budget, clock):
                 env.errors.append("stage time budget exceeded before completion")
-                add_trace(env, "orchestrator.stage", "blocked", {"reason": "time_budget_exceeded", "topic": topic})
+                add_trace(
+                    env,
+                    "orchestrator.stage",
+                    "blocked",
+                    {"reason": "time_budget_exceeded", "topic": topic},
+                )
             # In a real async system, we would wait for events. Here, we respect time budget and return.
             pass
         return env

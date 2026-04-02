@@ -6,8 +6,19 @@ from threading import Thread
 import frontier_runtime.security as security_module
 from frontier_runtime.events import AgentEvent, get_event_bus, reset_event_bus
 from frontier_runtime.orchestrator import get_approval_store, reset_approval_store
-from frontier_runtime.persistence import load_state, mutate_state, reset_shared_state_backend, save_state
-from frontier_runtime.security import decode_token, mint_token, reset_token_caches, token_identity_from_claims, verify_token
+from frontier_runtime.persistence import (
+    load_state,
+    mutate_state,
+    reset_shared_state_backend,
+    save_state,
+)
+from frontier_runtime.security import (
+    decode_token,
+    mint_token,
+    reset_token_caches,
+    token_identity_from_claims,
+    verify_token,
+)
 
 
 def test_approval_store_persists_across_singleton_reset(monkeypatch, tmp_path: Path) -> None:
@@ -26,7 +37,9 @@ def test_approval_store_persists_across_singleton_reset(monkeypatch, tmp_path: P
     assert restored.status == "pending"
 
 
-def test_event_bus_fallback_persists_events_across_singleton_reset(monkeypatch, tmp_path: Path) -> None:
+def test_event_bus_fallback_persists_events_across_singleton_reset(
+    monkeypatch, tmp_path: Path
+) -> None:
     monkeypatch.setenv("FRONTIER_STATE_STORE", str(tmp_path / "state.db"))
     reset_shared_state_backend()
     reset_event_bus()
@@ -62,7 +75,9 @@ def test_replay_cache_persists_across_singleton_reset(monkeypatch, tmp_path: Pat
         raise AssertionError("expected replay detection after cache reset")
 
 
-def test_decode_token_preserves_identity_claims_without_consuming_replay_cache(monkeypatch, tmp_path: Path) -> None:
+def test_decode_token_preserves_identity_claims_without_consuming_replay_cache(
+    monkeypatch, tmp_path: Path
+) -> None:
     monkeypatch.setenv("FRONTIER_STATE_STORE", str(tmp_path / "state.db"))
     reset_shared_state_backend()
     reset_token_caches()
@@ -93,6 +108,7 @@ def test_mutate_state_serializes_concurrent_updates(monkeypatch, tmp_path: Path)
 
     def _worker() -> None:
         for _ in range(25):
+
             def _mutate(snapshot: dict[str, object]) -> None:
                 snapshot["counter"] = int(snapshot.get("counter", 0)) + 1
 

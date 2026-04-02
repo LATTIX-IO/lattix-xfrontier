@@ -76,6 +76,33 @@ function Get-HelmCommand {
   return $null
 }
 
+function Get-SyftCommand {
+  $repoSyftCandidates = @(
+    (Join-Path $RepoRoot ".tools\syft\syft.exe"),
+    (Join-Path $RepoRoot ".tools\syft\windows-amd64\syft.exe")
+  )
+
+  foreach ($candidate in $repoSyftCandidates) {
+    if (Test-Path $candidate) {
+      return (Resolve-Path $candidate).Path
+    }
+  }
+
+  $syftExe = Get-Command syft.exe -ErrorAction SilentlyContinue
+  if ($syftExe -and -not [string]::IsNullOrWhiteSpace($syftExe.Source)) {
+    return $syftExe.Source
+  }
+
+  $syftFallback = Get-Command syft -ErrorAction SilentlyContinue
+  if ($syftFallback -and -not [string]::IsNullOrWhiteSpace($syftFallback.Source)) {
+    if ($syftFallback.Source -match '\.(exe|cmd|bat)$') {
+      return $syftFallback.Source
+    }
+  }
+
+  return $null
+}
+
 function Add-StepResult {
   param(
     [Parameter(Mandatory = $true)]
@@ -177,12 +204,14 @@ function Invoke-IfAvailable {
 $Python = Get-PythonCommand
 $Opa = Get-OpaCommand
 $Helm = Get-HelmCommand
+$Syft = Get-SyftCommand
 $env:PYTHONUTF8 = "1"
 $env:PYTHONIOENCODING = "utf-8"
 
 Invoke-Step -Name "Install Python dependencies" -Action { Invoke-Python -Arguments @("-m", "pip", "install", "-e", ".[dev]") }
 Invoke-Step -Name "Install frontend dependencies" -Action { npm ci } -WorkingDirectory $FrontendRoot
 Invoke-Step -Name "Python lint" -Action { Invoke-Python -Arguments @("-m", "ruff", "check", ".") }
+Invoke-Step -Name "Python format check" -Action { Invoke-Python -Arguments @("-m", "ruff", "format", ".", "--check") }
 Invoke-Step -Name "Python typecheck" -Action { Invoke-Python -Arguments @("-m", "mypy", "frontier_tooling/", "frontier_runtime/") }
 Invoke-Step -Name "Python tests" -Action { Invoke-Python -Arguments @("-m", "pytest", "apps/backend/tests", "tests", "-v", "--cov=app", "--cov=frontier_runtime", "--cov-report=term-missing") }
 
@@ -199,9 +228,34 @@ Invoke-Step -Name "Frontend lint" -Action { npm run lint } -WorkingDirectory $Fr
 Invoke-Step -Name "Frontend tests" -Action { npm test } -WorkingDirectory $FrontendRoot
 Invoke-Step -Name "Frontend build" -Action { npm run build } -WorkingDirectory $FrontendRoot
 
+Invoke-IfAvailable -CommandName "docker" -Description "Compose config validation" -Action {
+  docker compose config --quiet
+  if ($LASTEXITCODE -ne 0) {
+    exit $LASTEXITCODE
+  }
+  docker compose -f docker-compose.local.yml config --quiet
+} -WorkingDirectory $RepoRoot
+
 Invoke-IfAvailable -CommandName "semgrep" -Description "SAST via Semgrep" -Action { semgrep --config=auto --exclude .venv --exclude .next --exclude node_modules --exclude dist . }
 Invoke-IfAvailable -CommandName "gitleaks" -Description "Secret scanning via Gitleaks" -Action { gitleaks detect --source . --no-git --redact }
 Invoke-IfAvailable -CommandName "trivy" -Description "SCA/config via Trivy" -Action { trivy fs --scanners vuln,misconfig --severity HIGH,CRITICAL --exit-code 1 --skip-dirs .venv,.next,node_modules,dist . }
+if ($Syft) {
+  Invoke-Step -Name "SBOM generation via Syft" -Action {
+    $sbomDir = Join-Path $RepoRoot ".artifacts\sbom"
+    if (-not (Test-Path $sbomDir)) {
+      New-Item -ItemType Directory -Path $sbomDir -Force | Out-Null
+    }
+    & $Syft "dir:." "-o" "cyclonedx-json=$sbomDir\repository.cdx.json"
+    if ($LASTEXITCODE -ne 0) {
+      exit $LASTEXITCODE
+    }
+  } -WorkingDirectory $RepoRoot
+}
+else {
+  $sbomDetail = "missing syft.exe (install Syft to .tools\\syft\\syft.exe or add syft.exe to PATH)"
+  Write-Host ("SKIP: SBOM generation via Syft ({0})" -f $sbomDetail)
+  Add-StepResult -Name "SBOM generation via Syft" -Status "SKIP" -Detail $sbomDetail
+}
 if ($Helm) {
   Invoke-Step -Name "Helm chart validation" -Action {
     & $Helm lint ./helm/lattix-frontier

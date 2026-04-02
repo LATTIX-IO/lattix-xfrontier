@@ -18,7 +18,11 @@ class FederationTopologyService:
         self._settings = settings
 
     def status(self) -> FederationStatus:
-        peers = [item.strip() for item in self._settings.FEDERATION_PEER_ENDPOINTS.split(",") if item.strip()]
+        peers = [
+            item.strip()
+            for item in self._settings.FEDERATION_PEER_ENDPOINTS.split(",")
+            if item.strip()
+        ]
         return FederationStatus(
             enabled=bool(self._settings.FEDERATION_ENABLED),
             cluster_name=str(self._settings.FEDERATION_CLUSTER_NAME),

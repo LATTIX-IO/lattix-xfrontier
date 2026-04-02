@@ -54,7 +54,9 @@ def add_log(env: Envelope, key: str, value: Any) -> None:
     logs.append({key: value})
 
 
-def add_trace(env: Envelope, stage: str, outcome: str, metadata: dict[str, Any] | None = None) -> None:
+def add_trace(
+    env: Envelope, stage: str, outcome: str, metadata: dict[str, Any] | None = None
+) -> None:
     event = {
         "ts_ms": int(time.time() * 1000),
         "correlation_id": env.correlation_id,
@@ -102,7 +104,9 @@ def add_security_event(
             "internal_service": bool(auth_context.get("internal_service")),
             "session_id": str(auth_context.get("session_id") or "").strip(),
         }
-        event["auth_context"] = {key: value for key, value in sanitized_auth.items() if value not in {"", None}}
+        event["auth_context"] = {
+            key: value for key, value in sanitized_auth.items() if value not in {"", None}
+        }
     if isinstance(metadata, dict) and metadata:
         event["metadata"] = metadata
 
@@ -125,4 +129,3 @@ def add_security_event(
             "topic": env.topic,
         },
     )
-

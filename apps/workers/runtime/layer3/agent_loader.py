@@ -45,7 +45,9 @@ def _load_allowed_module(module_path: str, *, agent_id: str, agents_root: Path) 
     return module
 
 
-def _try_import(module_path: str, function_name: str, *, agent_id: str, agents_root: Path) -> Optional[Callable[[Envelope], None]]:
+def _try_import(
+    module_path: str, function_name: str, *, agent_id: str, agents_root: Path
+) -> Optional[Callable[[Envelope], None]]:
     try:
         mod = _load_allowed_module(module_path, agent_id=agent_id, agents_root=agents_root)
         if mod is None:
@@ -71,9 +73,12 @@ def _load_runtime_cfg(agent_dir: Path) -> Optional[Dict[str, Any]]:
 def _default_handler(agent_id: str, agent_name: str) -> Callable[[Envelope], None]:
     def _h(env: Envelope) -> None:
         add_log(env, "l3", f"{agent_id} observed {env.topic}")
-        participants = env.payload.setdefault("participants", []) if isinstance(env.payload, dict) else None
+        participants = (
+            env.payload.setdefault("participants", []) if isinstance(env.payload, dict) else None
+        )
         if isinstance(participants, list):
             participants.append({"agent": agent_id, "name": agent_name})
+
     return _h
 
 
@@ -115,4 +120,3 @@ def register_agents(
             bus.subscribe(t, handler)
             count += 1
     return count
-

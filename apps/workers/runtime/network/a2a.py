@@ -20,7 +20,9 @@ def _runtime_profile() -> str:
 
 
 def _strict_transport_required() -> bool:
-    return _runtime_profile() in {"local-secure", "hosted"} or _env_flag("FRONTIER_REQUIRE_A2A_RUNTIME_HEADERS", False)
+    return _runtime_profile() in {"local-secure", "hosted"} or _env_flag(
+        "FRONTIER_REQUIRE_A2A_RUNTIME_HEADERS", False
+    )
 
 
 def _env_flag(name: str, default: bool = False) -> bool:
@@ -31,12 +33,13 @@ def _env_flag(name: str, default: bool = False) -> bool:
 
 
 def _trusted_subjects() -> set[str]:
+    baseline = {"backend", "orchestrator", "research", "code", "review", "coordinator"}
     configured = {
         str(item).strip()
         for item in str(os.getenv("A2A_TRUSTED_SUBJECTS") or "").split(",")
         if str(item).strip()
     }
-    return configured or {"backend", "orchestrator", "research", "code", "review", "coordinator"}
+    return baseline | configured
 
 
 def _signing_secret() -> bytes:
@@ -65,7 +68,9 @@ def _validated_a2a_url(url: str) -> str:
     return parsed.geturl()
 
 
-def _enforce_transport_policy(url: str, *, sub: str, internal_service: bool, explicit_token: bool) -> None:
+def _enforce_transport_policy(
+    url: str, *, sub: str, internal_service: bool, explicit_token: bool
+) -> None:
     if _strict_transport_required():
         if not sub:
             raise ValueError("Strict runtime transport requires a non-empty subject")
@@ -104,7 +109,9 @@ def post_envelope(
     if internal_service:
         claim_overrides.setdefault("internal_service", True)
         claim_overrides.setdefault("subject", sub)
-    _enforce_transport_policy(validated_url, sub=sub, internal_service=internal_service, explicit_token=bool(token))
+    _enforce_transport_policy(
+        validated_url, sub=sub, internal_service=internal_service, explicit_token=bool(token)
+    )
     tok = token or issue_token(sub=sub, additional_claims=claim_overrides or None)
     headers["Authorization"] = f"Bearer {tok}"
     # Propagate correlation id for cross-service tracing
@@ -117,12 +124,18 @@ def post_envelope(
     if _strict_transport_required():
         nonce = str(uuid4())
         headers["X-Frontier-Nonce"] = nonce
-        headers["X-Frontier-Signature"] = _build_runtime_signature(sub, nonce, env.correlation_id, data)
+        headers["X-Frontier-Signature"] = _build_runtime_signature(
+            sub, nonce, env.correlation_id, data
+        )
 
     parsed = urlparse(validated_url)
     ssl_context = None
     if parsed.scheme.lower() == "https":
-        ssl_context = ssl.create_default_context(cafile=ca_bundle) if ca_bundle else ssl.create_default_context()
+        ssl_context = (
+            ssl.create_default_context(cafile=ca_bundle)
+            if ca_bundle
+            else ssl.create_default_context()
+        )
     elif _runtime_profile() == "hosted":
         raise ValueError("Hosted runtime profile requires HTTPS A2A endpoints")
     response = httpx.post(

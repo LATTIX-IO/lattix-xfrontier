@@ -49,4 +49,3 @@ class Envelope:
         b = d.get("budget") or {}
         d["budget"] = Budget(**b)
         return Envelope(**d)
-

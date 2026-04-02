@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 """
 Template for a Layer 3 agent runtime handler.
 Usage:
@@ -16,4 +17,3 @@ def handle(env: Envelope) -> None:
     add_log(env, "agent", "processed by example runtime handler")
     add_tokens(env, 120)  # report token usage if applicable
     env.payload.setdefault("artifacts", []).append({"by": "example-agent", "note": "ok"})
-

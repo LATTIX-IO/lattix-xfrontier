@@ -46,14 +46,20 @@ def test_compose_files_set_bounded_json_file_logging() -> None:
     local_compose = (REPO_ROOT / "docker-compose.local.yml").read_text(encoding="utf-8")
 
     for compose in (full_compose, local_compose):
-        assert 'driver: json-file' in compose
+        assert "driver: json-file" in compose
         assert 'max-size: "10m"' in compose
         assert 'max-file: "3"' in compose
 
 
 def test_agent_templates_do_not_use_latest_tags() -> None:
     deployment_template = (
-        REPO_ROOT / "apps" / "workers" / "services" / "AGENT_SERVICE_TEMPLATE" / "k8s" / "deployment.yaml"
+        REPO_ROOT
+        / "apps"
+        / "workers"
+        / "services"
+        / "AGENT_SERVICE_TEMPLATE"
+        / "k8s"
+        / "deployment.yaml"
     ).read_text(encoding="utf-8")
     compose_template = (
         REPO_ROOT / "apps" / "workers" / "services" / "docker-compose.example.yml"
@@ -62,7 +68,9 @@ def test_agent_templates_do_not_use_latest_tags() -> None:
     assert ":latest" not in compose_template
     assert "ghcr.io/your-org/agent-service:v0.1.0" in deployment_template
     assert "ghcr.io/your-org/agent-service:v0.1.0" in compose_template
-    assert "USER appuser" in (REPO_ROOT / "apps" / "workers" / "services" / "AGENT_SERVICE_TEMPLATE" / "Dockerfile").read_text(encoding="utf-8")
+    assert "USER appuser" in (
+        REPO_ROOT / "apps" / "workers" / "services" / "AGENT_SERVICE_TEMPLATE" / "Dockerfile"
+    ).read_text(encoding="utf-8")
     assert "runAsNonRoot: true" in deployment_template
     assert "allowPrivilegeEscalation: false" in deployment_template
     assert "no-new-privileges:true" in compose_template
