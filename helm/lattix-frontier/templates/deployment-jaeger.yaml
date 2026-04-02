@@ -16,6 +16,6 @@ spec:
 {{ toYaml .Values.security.podSecurityContext | indent 8 }}
       containers:
         - name: jaeger
-          image: {{ .Values.vendorImages.jaeger }}
+          image: {{ include "lattix-frontier.imageRef" .Values.vendorImages.jaeger }}
           securityContext:
 {{ toYaml .Values.security.containerSecurityContext | indent 12 }}

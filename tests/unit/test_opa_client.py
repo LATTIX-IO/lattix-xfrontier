@@ -154,6 +154,82 @@ def test_opa_client_local_agent_policy_denies_secret_like_json_filename() -> Non
     assert decision.allowed is False
 
 
+def test_opa_client_local_agent_policy_denies_keystore_and_bearer_like_paths() -> None:
+    client = OPAClient(base_url="http://127.0.0.1:9")
+
+    keystore = asyncio.run(
+        client.evaluate(
+            "agent_policy",
+            {
+                "agent_id": "research",
+                "tool": "read_file",
+                "resource": "secrets/prod.jks",
+                "allowed_tools": ["read_file"],
+                "budget": {"tokens_used": 0, "max_tokens": 10},
+                "action": "read_file",
+                "classification": "internal",
+                "provider": "local",
+            },
+        )
+    )
+    bearer = asyncio.run(
+        client.evaluate(
+            "agent_policy",
+            {
+                "agent_id": "research",
+                "tool": "read_file",
+                "resource": "tmp/bearer_token_backup.txt",
+                "allowed_tools": ["read_file"],
+                "budget": {"tokens_used": 0, "max_tokens": 10},
+                "action": "read_file",
+                "classification": "internal",
+                "provider": "local",
+            },
+        )
+    )
+
+    assert keystore.allowed is False
+    assert bearer.allowed is False
+
+
+def test_opa_client_local_agent_policy_denies_access_and_refresh_token_like_paths() -> None:
+    client = OPAClient(base_url="http://127.0.0.1:9")
+
+    access = asyncio.run(
+        client.evaluate(
+            "agent_policy",
+            {
+                "agent_id": "research",
+                "tool": "read_file",
+                "resource": "tmp/access_token_cache.txt",
+                "allowed_tools": ["read_file"],
+                "budget": {"tokens_used": 0, "max_tokens": 10},
+                "action": "read_file",
+                "classification": "internal",
+                "provider": "local",
+            },
+        )
+    )
+    refresh = asyncio.run(
+        client.evaluate(
+            "agent_policy",
+            {
+                "agent_id": "research",
+                "tool": "read_file",
+                "resource": "tmp/refresh-token-backup.txt",
+                "allowed_tools": ["read_file"],
+                "budget": {"tokens_used": 0, "max_tokens": 10},
+                "action": "read_file",
+                "classification": "internal",
+                "provider": "local",
+            },
+        )
+    )
+
+    assert access.allowed is False
+    assert refresh.allowed is False
+
+
 def test_opa_client_local_agent_policy_denies_restricted_external_llm() -> None:
     client = OPAClient(base_url="http://127.0.0.1:9")
     decision = asyncio.run(
@@ -198,6 +274,8 @@ def test_opa_client_local_fallback_denies_root_tool_jail() -> None:
                 "require_egress_mediation": True,
                 "allow_network": False,
                 "run_as_user": "0:0",
+                "command": ["python", "-c", "1+1"],
+                "allowed_executables": ["python"],
             },
         )
     )
@@ -214,6 +292,10 @@ def test_opa_client_local_fallback_allows_safe_tool_jail() -> None:
                 "require_egress_mediation": True,
                 "allow_network": True,
                 "run_as_user": "1000:1000",
+                "command": ["python", "-c", "1+1"],
+                "allowed_executables": ["python"],
+                "allowed_hosts": ["api.example.com"],
+                "requested_hosts": ["api.example.com"],
             },
         )
     )
@@ -230,6 +312,8 @@ def test_opa_client_local_fallback_denies_invalid_run_as_user() -> None:
                 "require_egress_mediation": True,
                 "allow_network": False,
                 "run_as_user": "nobody:1000",
+                "command": ["python", "-c", "1+1"],
+                "allowed_executables": ["python"],
             },
         )
     )
@@ -246,10 +330,73 @@ def test_opa_client_local_fallback_denies_network_without_mediation() -> None:
                 "require_egress_mediation": False,
                 "allow_network": True,
                 "run_as_user": "1000:1000",
+                "command": ["python", "-c", "1+1"],
+                "allowed_executables": ["python"],
+                "allowed_hosts": ["api.example.com"],
+                "requested_hosts": ["api.example.com"],
             },
         )
     )
     assert decision.allowed is False
+
+
+def test_opa_client_local_fallback_denies_tool_jail_without_allowed_executables() -> None:
+    client = OPAClient(base_url="http://127.0.0.1:9")
+    decision = asyncio.run(
+        client.evaluate(
+            "tool_jail",
+            {
+                "readonly_rootfs": True,
+                "require_egress_mediation": True,
+                "allow_network": False,
+                "run_as_user": "1000:1000",
+                "command": ["python", "-c", "1+1"],
+            },
+        )
+    )
+    assert decision.allowed is False
+    assert decision.details["control"] == "allowed_executables"
+
+
+def test_opa_client_local_fallback_denies_tool_jail_unallowlisted_hosts() -> None:
+    client = OPAClient(base_url="http://127.0.0.1:9")
+    decision = asyncio.run(
+        client.evaluate(
+            "tool_jail",
+            {
+                "readonly_rootfs": True,
+                "require_egress_mediation": True,
+                "allow_network": True,
+                "run_as_user": "1000:1000",
+                "command": ["python", "-c", "1+1"],
+                "allowed_executables": ["python"],
+                "allowed_hosts": ["api.example.com"],
+                "requested_hosts": ["evil.example.com"],
+            },
+        )
+    )
+    assert decision.allowed is False
+    assert decision.details["control"] == "requested_hosts"
+
+
+def test_opa_client_local_fallback_denies_requested_hosts_when_network_disabled() -> None:
+    client = OPAClient(base_url="http://127.0.0.1:9")
+    decision = asyncio.run(
+        client.evaluate(
+            "tool_jail",
+            {
+                "readonly_rootfs": True,
+                "require_egress_mediation": True,
+                "allow_network": False,
+                "run_as_user": "1000:1000",
+                "command": ["python", "-c", "1+1"],
+                "allowed_executables": ["python"],
+                "requested_hosts": ["api.example.com"],
+            },
+        )
+    )
+    assert decision.allowed is False
+    assert decision.details["control"] == "requested_hosts"
 
 
 def test_opa_client_filesystem_path_policy_uses_canonical_containment(tmp_path) -> None:

@@ -56,6 +56,29 @@ def test_event_bus_fallback_persists_events_across_singleton_reset(
     assert reloaded[-1].event_hash == published.event_hash
 
 
+def test_event_bus_rate_limit_records_observability(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("FRONTIER_STATE_STORE", str(tmp_path / "state.db"))
+    monkeypatch.setenv("FRONTIER_EVENT_BUS_RATE_LIMIT_COUNT", "1")
+    monkeypatch.setenv("FRONTIER_EVENT_BUS_RATE_LIMIT_WINDOW_SECONDS", "60")
+    reset_shared_state_backend()
+    reset_event_bus()
+
+    bus = get_event_bus()
+    asyncio.run(bus.publish(AgentEvent(event_type="demo", source="tester")))
+
+    try:
+        asyncio.run(bus.publish(AgentEvent(event_type="demo", source="tester")))
+    except PermissionError as exc:
+        assert "rate limit exceeded" in str(exc)
+    else:  # pragma: no cover - safety net
+        raise AssertionError("expected event bus rate limiting to block second publish")
+
+    metrics = load_state().get("event_bus_metrics", {})
+    assert metrics.get("published") == 1
+    assert metrics.get("rate_limited") == 1
+    assert metrics.get("last_rate_limited_source") == "tester"
+
+
 def test_replay_cache_persists_across_singleton_reset(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setenv("FRONTIER_STATE_STORE", str(tmp_path / "state.db"))
     reset_shared_state_backend()

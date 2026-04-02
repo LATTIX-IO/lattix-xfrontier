@@ -28,16 +28,11 @@ class FilterResult:
 class DLPFilter:
     async def evaluate(self, envelope: Envelope, context: FilterContext) -> FilterResult:
         mutated = copy.deepcopy(envelope)
-        findings: list[str] = []
-        for key, value in list(mutated.payload.items()):
-            if isinstance(value, str):
-                redacted, value_findings = _redact_sensitive_text(value)
-                if redacted != value:
-                    mutated.payload[key] = redacted
-                findings.extend(value_findings)
+        mutated.payload, findings = _redact_payload_value(mutated.payload)
         if findings:
+            restricted_findings = {"api_key", "bearer_token", "credit_card", "private_key", "ssn"}
             mutated.metadata["classification"] = (
-                "restricted" if "credit_card" in findings else "confidential"
+                "restricted" if restricted_findings.intersection(findings) else "confidential"
             )
             mutated.metadata["dlp_findings"] = findings
             return FilterResult(action="modify", envelope=mutated)
@@ -121,11 +116,51 @@ def _redact_sensitive_text(text: str) -> tuple[str, list[str]]:
         ("email", r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b", "[REDACTED_EMAIL]"),
         ("phone", r"\b(?:\+?\d{1,2}\s*)?(?:\(?\d{3}\)?[-.\s]?){2}\d{4}\b", "[REDACTED_PHONE]"),
         ("credit_card", r"\b(?:\d[ -]*?){13,16}\b", "[REDACTED_CREDIT_CARD]"),
+        ("ssn", r"\b\d{3}-?\d{2}-?\d{4}\b", "[REDACTED_SSN]"),
+        (
+            "api_key",
+            r"\b(?:sk-[A-Za-z0-9_-]{10,}|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|AKIA[0-9A-Z]{16})\b",
+            "[REDACTED_API_KEY]",
+        ),
+        ("api_key", r"(?i)(api[_-]?key\s*[=:]\s*)([^\s,;]+)", r"\1[REDACTED_API_KEY]"),
+        ("bearer_token", r"(?i)(bearer\s+)[A-Za-z0-9._\-]+", r"\1[REDACTED_TOKEN]"),
         ("password", r"(?i)(password\s*[=:]\s*)([^\s,;]+)", r"\1[REDACTED_PASSWORD]"),
+        (
+            "private_key",
+            r"-----BEGIN[^-]*PRIVATE KEY-----.*?-----END[^-]*PRIVATE KEY-----",
+            "[REDACTED_PRIVATE_KEY]",
+        ),
     ]
     for finding, pattern, replacement in patterns:
-        updated = re.sub(pattern, replacement, redacted)
+        updated = re.sub(pattern, replacement, redacted, flags=re.DOTALL)
         if updated != redacted:
-            findings.append(finding)
+            if finding not in findings:
+                findings.append(finding)
             redacted = updated
     return redacted, findings
+
+
+def _redact_payload_value(value: Any) -> tuple[Any, list[str]]:
+    if isinstance(value, str):
+        return _redact_sensitive_text(value)
+    if isinstance(value, dict):
+        findings: list[str] = []
+        redacted_map: dict[str, Any] = {}
+        for key, item in value.items():
+            redacted_item, item_findings = _redact_payload_value(item)
+            redacted_map[key] = redacted_item
+            for finding in item_findings:
+                if finding not in findings:
+                    findings.append(finding)
+        return redacted_map, findings
+    if isinstance(value, list):
+        findings: list[str] = []
+        redacted_items: list[Any] = []
+        for item in value:
+            redacted_item, item_findings = _redact_payload_value(item)
+            redacted_items.append(redacted_item)
+            for finding in item_findings:
+                if finding not in findings:
+                    findings.append(finding)
+        return redacted_items, findings
+    return value, []

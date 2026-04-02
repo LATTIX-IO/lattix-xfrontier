@@ -17,12 +17,17 @@ orchestrator:
   image:
     repository: lattix-frontier/orchestrator
     tag: 0.1.0
+    digest: ""
   resources:
     requests: { cpu: 500m, memory: 512Mi }
     limits: { cpu: "2", memory: 2Gi }
 
 vault:
   enabled: true
+  image:
+    repository: hashicorp/vault
+    tag: "1.18"
+    digest: ""
   dev: false
   ha:
     enabled: false
@@ -33,6 +38,10 @@ opa:
 
 nats:
   enabled: true
+  image:
+    repository: nats
+    tag: 2.11-alpine
+    digest: ""
   jetstream:
     enabled: true
     memStorage: 1Gi
@@ -40,6 +49,10 @@ nats:
 
 postgres:
   enabled: true
+  image:
+    repository: postgres
+    tag: 16-alpine
+    digest: ""
   persistence:
     size: 20Gi
 
@@ -112,6 +125,15 @@ sandbox:
     timeoutSeconds: 60
 
 vendorImages:
-  envoy: envoyproxy/envoy:v1.32.4
-  opa: openpolicyagent/opa:0.68.0-static
-  jaeger: jaegertracing/all-in-one:1.61.0
+  envoy:
+    repository: envoyproxy/envoy
+    tag: v1.32.4
+    digest: ""
+  opa:
+    repository: openpolicyagent/opa
+    tag: 0.68.0-static
+    digest: ""
+  jaeger:
+    repository: jaegertracing/all-in-one
+    tag: 1.61.0
+    digest: ""

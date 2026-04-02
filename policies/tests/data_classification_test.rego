@@ -11,3 +11,11 @@ test_restricted_text if {
 test_confidential_text if {
   data_classification.classification == "confidential" with input as {"text": "customer escalation"}
 }
+
+test_restricted_private_key_text if {
+  data_classification.classification == "restricted" with input as {"text": "contains private key material"}
+}
+
+test_confidential_password_text if {
+  data_classification.classification == "confidential" with input as {"text": "password reset email"}
+}
