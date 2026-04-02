@@ -4,6 +4,7 @@ import hmac
 import json
 import os
 import ssl
+import time
 from uuid import uuid4
 from typing import Any, Dict, Optional
 from urllib.parse import urlparse
@@ -49,9 +50,15 @@ def _signing_secret() -> bytes:
     return secret.encode("utf-8")
 
 
-def _build_runtime_signature(subject: str, nonce: str, correlation_id: str, body: bytes) -> str:
+def _build_runtime_signature(
+    subject: str,
+    nonce: str,
+    correlation_id: str,
+    body: bytes,
+    timestamp: str = "",
+) -> str:
     digest = hashlib.sha256(body).hexdigest()
-    message = f"{subject}:{nonce}:{correlation_id}:{digest}".encode("utf-8")
+    message = f"{subject}:{nonce}:{correlation_id}:{timestamp}:{digest}".encode("utf-8")
     return hmac.new(_signing_secret(), message, hashlib.sha256).hexdigest()
 
 
@@ -123,9 +130,11 @@ def post_envelope(
         headers["X-Frontier-Tenant"] = tenant_id
     if _strict_transport_required():
         nonce = str(uuid4())
+        timestamp = str(int(time.time()))
         headers["X-Frontier-Nonce"] = nonce
+        headers["X-Frontier-Timestamp"] = timestamp
         headers["X-Frontier-Signature"] = _build_runtime_signature(
-            sub, nonce, env.correlation_id, data
+            sub, nonce, env.correlation_id, data, timestamp=timestamp
         )
 
     parsed = urlparse(validated_url)

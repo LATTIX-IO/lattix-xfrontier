@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import time
 import types
 from collections import defaultdict
 from pathlib import Path
@@ -366,14 +367,17 @@ def _signed_internal_headers(
     subject: str = "backend",
     nonce: str = "nonce-1",
     correlation_id: str = "corr-1",
+    timestamp: str | None = None,
 ) -> dict[str, str]:
+    resolved_timestamp = timestamp or str(int(time.time()))
     return {
         "x-frontier-actor": actor,
         "x-correlation-id": correlation_id,
         "x-frontier-subject": subject,
         "x-frontier-nonce": nonce,
+        "x-frontier-timestamp": resolved_timestamp,
         "x-frontier-signature": main_module._build_runtime_signature(
-            subject, nonce, correlation_id, payload
+            subject, nonce, correlation_id, payload, timestamp=resolved_timestamp
         ),
         "content-type": "application/json",
     }
@@ -2248,9 +2252,11 @@ def test_signed_a2a_nonce_replay_survives_restart_via_state_snapshot_when_redis_
 def test_signed_a2a_json_requests_require_raw_request_body_for_signature_verification() -> None:
     payload = {"bucket_id": "agent:test", "scope": "agent", "limit": 10}
     payload_bytes = json.dumps(payload).encode("utf-8")
+    timestamp = str(int(time.time()))
     request = types.SimpleNamespace(
         headers={
             "x-correlation-id": "corr-raw-body",
+            "x-frontier-timestamp": timestamp,
             "content-type": "application/json",
             "content-length": str(len(payload_bytes)),
         },
@@ -2265,7 +2271,11 @@ def test_signed_a2a_json_requests_require_raw_request_body_for_signature_verific
             subject="backend",
             nonce="raw-body-nonce",
             signature=main_module._build_runtime_signature(
-                "backend", "raw-body-nonce", "corr-raw-body", payload_bytes
+                "backend",
+                "raw-body-nonce",
+                "corr-raw-body",
+                payload_bytes,
+                timestamp=timestamp,
             ),
             payload=payload,
         )
@@ -2275,6 +2285,27 @@ def test_signed_a2a_json_requests_require_raw_request_body_for_signature_verific
         missing_raw_body.value.detail
         == "Signed A2A request body must be verified from raw request bytes"
     )
+
+
+def test_signed_a2a_requests_require_timestamp_header() -> None:
+    request = types.SimpleNamespace(
+        headers={"x-correlation-id": "corr-missing-ts"},
+        method="GET",
+        state=types.SimpleNamespace(frontier_raw_body=b""),
+        _body=b"",
+    )
+
+    with pytest.raises(main_module.HTTPException) as missing_timestamp:
+        main_module._verify_runtime_signature(
+            request,
+            subject="backend",
+            nonce="nonce-no-ts",
+            signature="sig",
+            payload=None,
+        )
+
+    assert missing_timestamp.value.status_code == 401
+    assert missing_timestamp.value.detail == "Missing A2A timestamp header"
 
 
 def test_runtime_profile_local_secure_matches_fail_closed_local_behavior(monkeypatch) -> None:
@@ -2350,7 +2381,7 @@ def test_cors_preflight_uses_explicit_methods_and_headers() -> None:
         headers={
             "Origin": "http://localhost:3000",
             "Access-Control-Request-Method": "POST",
-            "Access-Control-Request-Headers": "authorization,content-type,x-frontier-actor,x-frontier-signature,x-frontier-nonce",
+            "Access-Control-Request-Headers": "authorization,content-type,x-frontier-actor,x-frontier-signature,x-frontier-nonce,x-frontier-timestamp",
         },
     )
 
@@ -2363,6 +2394,7 @@ def test_cors_preflight_uses_explicit_methods_and_headers() -> None:
     assert "x-frontier-actor" in allowed_headers
     assert "x-frontier-signature" in allowed_headers
     assert "x-frontier-nonce" in allowed_headers
+    assert "x-frontier-timestamp" in allowed_headers
 
 
 def test_security_headers_are_applied_from_shared_policy() -> None:

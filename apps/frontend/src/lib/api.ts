@@ -51,13 +51,9 @@ function isMockDataEnabled(): boolean {
 
 function getRequestIdentityHeaders(): Record<string, string> {
   const actor = (process.env.NEXT_PUBLIC_FRONTIER_ACTOR ?? "").trim();
-  const token = process.env.NEXT_PUBLIC_FRONTIER_API_TOKEN ?? "";
   const headers: Record<string, string> = {};
   if (actor) {
     headers["x-frontier-actor"] = actor;
-  }
-  if (token.trim()) {
-    headers.Authorization = `Bearer ${token.trim()}`;
   }
   return headers;
 }

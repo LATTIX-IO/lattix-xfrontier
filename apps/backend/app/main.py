@@ -9,6 +9,7 @@ import hashlib
 import hmac
 import ipaddress
 import socket
+import time
 import tomllib
 import http.cookiejar
 import importlib
@@ -7778,6 +7779,7 @@ def _cors_allowed_headers() -> list[str]:
         "x-frontier-subject",
         "x-frontier-signature",
         "x-frontier-nonce",
+        "x-frontier-timestamp",
     ]
 
 
@@ -8040,9 +8042,24 @@ def _a2a_request_body_bytes(request: Request | None, payload: Any | None = None)
     )
 
 
-def _build_runtime_signature(subject: str, nonce: str, correlation_id: str, body: bytes) -> str:
+def _a2a_clock_skew_seconds() -> int:
+    raw = str(os.getenv("A2A_CLOCK_SKEW_SECONDS") or "30").strip()
+    try:
+        skew = int(raw)
+    except ValueError:
+        skew = 30
+    return max(1, min(skew, 300))
+
+
+def _build_runtime_signature(
+    subject: str,
+    nonce: str,
+    correlation_id: str,
+    body: bytes,
+    timestamp: str = "",
+) -> str:
     digest = hashlib.sha256(body).hexdigest()
-    message = f"{subject}:{nonce}:{correlation_id}:{digest}".encode("utf-8")
+    message = f"{subject}:{nonce}:{correlation_id}:{timestamp}:{digest}".encode("utf-8")
     return hmac.new(_a2a_signing_secret(), message, hashlib.sha256).hexdigest()
 
 
@@ -8050,12 +8067,25 @@ def _verify_runtime_signature(
     request: Request, *, subject: str, nonce: str, signature: str, payload: Any | None = None
 ) -> str:
     correlation_id = str(request.headers.get("x-correlation-id") or "").strip()
+    timestamp = str(request.headers.get("x-frontier-timestamp") or "").strip()
     if not correlation_id:
         raise HTTPException(
             status_code=401, detail="Missing correlation id header for signed A2A request"
         )
+    if not timestamp:
+        raise HTTPException(status_code=401, detail="Missing A2A timestamp header")
+    try:
+        timestamp_value = int(timestamp)
+    except ValueError as exc:
+        raise HTTPException(status_code=401, detail="Invalid A2A timestamp header") from exc
+    if abs(int(time.time()) - timestamp_value) > _a2a_clock_skew_seconds():
+        raise HTTPException(status_code=401, detail="Stale A2A timestamp")
     expected = _build_runtime_signature(
-        subject, nonce, correlation_id, _a2a_request_body_bytes(request, payload)
+        subject,
+        nonce,
+        correlation_id,
+        _a2a_request_body_bytes(request, payload),
+        timestamp=timestamp,
     )
     if not hmac.compare_digest(expected, signature):
         raise HTTPException(status_code=401, detail="Invalid A2A signature")

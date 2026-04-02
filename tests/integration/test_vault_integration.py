@@ -1,5 +1,6 @@
 import json
 
+import httpx
 import pytest
 
 from frontier_runtime.security import VaultClient
@@ -88,3 +89,20 @@ def test_vault_client_writes_kv_v2_secret(monkeypatch) -> None:
     assert captured["accept"] == "application/json"
     assert captured["json"] == {"data": {"value": "super-secret", "enabled": True}}
     assert captured["timeout"] == 9
+
+
+def test_vault_client_sanitizes_http_error_details(monkeypatch) -> None:
+    response = httpx.Response(403, text="permission denied: secret/data/prod/root-token")
+
+    def _fake_request(method, url, headers=None, json=None, timeout=0, follow_redirects=False):
+        raise httpx.HTTPStatusError("denied", request=httpx.Request(method, url), response=response)
+
+    monkeypatch.setattr("frontier_runtime.security.httpx.request", _fake_request)
+
+    client = VaultClient(addr="http://vault:8200", token="vault-token", timeout_seconds=5)
+    with pytest.raises(RuntimeError) as exc:
+        client.read_secret("secret/data/demo/path")
+
+    message = str(exc.value)
+    assert "403" in message
+    assert "permission denied" not in message
