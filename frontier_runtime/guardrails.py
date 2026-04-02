@@ -144,23 +144,23 @@ def _redact_payload_value(value: Any) -> tuple[Any, list[str]]:
     if isinstance(value, str):
         return _redact_sensitive_text(value)
     if isinstance(value, dict):
-        findings: list[str] = []
+        dict_findings: list[str] = []
         redacted_map: dict[str, Any] = {}
         for key, item in value.items():
             redacted_item, item_findings = _redact_payload_value(item)
             redacted_map[key] = redacted_item
             for finding in item_findings:
-                if finding not in findings:
-                    findings.append(finding)
-        return redacted_map, findings
+                if finding not in dict_findings:
+                    dict_findings.append(finding)
+        return redacted_map, dict_findings
     if isinstance(value, list):
-        findings: list[str] = []
+        list_findings: list[str] = []
         redacted_items: list[Any] = []
         for item in value:
             redacted_item, item_findings = _redact_payload_value(item)
             redacted_items.append(redacted_item)
             for finding in item_findings:
-                if finding not in findings:
-                    findings.append(finding)
-        return redacted_items, findings
+                if finding not in list_findings:
+                    list_findings.append(finding)
+        return redacted_items, list_findings
     return value, []
