@@ -77,7 +77,7 @@ export default function WorkflowStartPage() {
       {lastRunId ? (
         <div className="fx-panel flex items-center justify-between p-3 text-sm">
           <p className="fx-muted">Workflow run started: <span className="font-mono text-[var(--foreground)]">{lastRunId}</span></p>
-          <Link className="fx-btn-secondary px-3 py-1.5 text-xs" href={`/runs/${lastRunId}`}>
+          <Link className="fx-btn-secondary px-3 py-1.5 text-xs" href={`/inbox?session=${encodeURIComponent(lastRunId)}`}>
             Open run
           </Link>
         </div>

@@ -241,6 +241,8 @@ def test_bootstrap_powershell_script_validates_python_runtime() -> None:
     readme = _read("README.md")
 
     assert "function Test-PythonCommand" in bootstrap_ps1
+    assert "function Ensure-Python" in bootstrap_ps1
+    assert "function Ensure-Docker" in bootstrap_ps1
     assert "function Stop-Bootstrap" in bootstrap_ps1
     assert "$commandExitCode = $LASTEXITCODE" in bootstrap_ps1
     assert "$installerExitCode = $LASTEXITCODE" in bootstrap_ps1
@@ -249,16 +251,17 @@ def test_bootstrap_powershell_script_validates_python_runtime() -> None:
         in bootstrap_ps1
     )
     assert "exit $installerExitCode" not in bootstrap_ps1
-    assert "working 'py' or 'python' command" in bootstrap_ps1
-    assert "App execution aliases" in bootstrap_ps1
+    assert "Python 3.12+" in bootstrap_ps1
+    assert "Docker.DockerDesktop" in bootstrap_ps1
+    assert "Python.Python.3.12" in bootstrap_ps1
     assert "$LocalInstallerPath = if ($PSScriptRoot)" in bootstrap_ps1
     assert "Using local checkout installer" in bootstrap_ps1
     assert "$InstallerPath = $LocalInstallerPath" in bootstrap_ps1
     assert "FRONTIER_INSTALLER_OUTPUT" in bootstrap_ps1
     assert "[Console]::IsInputRedirected" in bootstrap_ps1
     assert "$env:FRONTIER_INSTALLER_OUTPUT = 'tui'" in bootstrap_ps1
-    assert "working Python 3 runtime" in installer_docs
-    assert "working Python 3 runtime" in readme
+    assert "install Python 3.12+ and Docker" in installer_docs
+    assert "install Python 3.12+ and Docker" in readme
 
 
 def test_bootstrap_shell_script_does_not_replace_caller_shell() -> None:
@@ -269,6 +272,11 @@ def test_bootstrap_shell_script_does_not_replace_caller_shell() -> None:
         "Installer failed with exit code $installer_exit_code. The current shell was left intact"
         in bootstrap_sh
     )
+    assert "detect_and_install_prerequisites" in bootstrap_sh
+    assert "ensure_macos_python" in bootstrap_sh
+    assert "ensure_macos_docker" in bootstrap_sh
+    assert "python_is_supported" in bootstrap_sh
+    assert "MIN_PYTHON_MINOR=12" in bootstrap_sh
     assert (
         'LOCAL_INSTALLER="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)/frontier-installer.py"'
         in bootstrap_sh
@@ -315,9 +323,12 @@ def test_public_frontier_installer_imports_packaged_module() -> None:
     assert "_validated_http_url" in tooling_common
     assert 'return "editable" if (root / ".git").exists() else "wheel"' in packaged_installer
     assert 'if _install_mode(root) == "editable":' in packaged_installer
-    assert 'args.append("--user")' in packaged_installer
     assert 'args.append("-e")' in packaged_installer
     assert 'args.append(".[dev]")' in packaged_installer
+    assert 'def _managed_venv_dir(root: Path) -> Path:' in packaged_installer
+    assert 'def _bootstrap_managed_venv(install_root: Path, env: dict[str, str]) -> dict[str, str]:' in packaged_installer
+    assert '"-m", "venv"' in packaged_installer
+    assert '"managed_runtime": str(venv_dir)' in packaged_installer
     assert '"install_mode": mode' in packaged_installer
     assert '"auto_started": True' in packaged_installer
     assert '"urls": urls' in packaged_installer

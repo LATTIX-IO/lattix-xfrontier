@@ -1,11 +1,12 @@
 "use client";
 
 import Link from "next/link";
-import { usePathname, useRouter } from "next/navigation";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { ApiStatusBanner } from "@/components/api-status-banner";
 import { ModeSwitch } from "@/components/mode-switch";
 import { LeftNav } from "@/components/navigation/left-nav";
+import { UserConsoleSidebar } from "@/components/navigation/user-console-sidebar";
 import { getOperatorSession, getPlatformVersionStatus, logoutOperator } from "@/lib/api";
 import type { AppMode, OperatorSession, PlatformVersionStatus } from "@/types/frontier";
 
@@ -39,6 +40,7 @@ function resolveOperatorInitials(session: OperatorSession | null): string {
 
 export function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
+  const searchParams = useSearchParams();
   const router = useRouter();
   const isPublicAuthRoute = pathname.startsWith("/auth");
   const isProtectedRoute = !isPublicAuthRoute;
@@ -178,6 +180,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const canBuilder = operatorSession?.capabilities.can_builder ?? false;
   const canAdmin = operatorSession?.capabilities.can_admin ?? false;
   const activeMode: AppMode = requestedMode === "builder" && canBuilder ? "builder" : "user";
+  const selectedSessionId = searchParams.get("session");
 
   if (isPublicAuthRoute) {
     return (
@@ -390,13 +393,22 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             borderRightWidth: sidebarExpanded ? "1px" : "0px",
           }}
         >
-          <LeftNav
-            mode={activeMode}
-            pathname={pathname}
-            inAdmin={inAdmin && canAdmin}
-            expanded={sidebarExpanded}
-            platformVersion={platformVersion}
-          />
+          {activeMode === "user" ? (
+            <UserConsoleSidebar
+              pathname={pathname}
+              selectedSessionId={selectedSessionId}
+              expanded={sidebarExpanded}
+              platformVersion={platformVersion}
+            />
+          ) : (
+            <LeftNav
+              mode={activeMode}
+              pathname={pathname}
+              inAdmin={inAdmin && canAdmin}
+              expanded={sidebarExpanded}
+              platformVersion={platformVersion}
+            />
+          )}
         </aside>
 
         <main

@@ -316,7 +316,7 @@ export function TaskKickoffComposer() {
             {isSubmitting ? "Starting..." : "Start task"}
           </button>
           {createdRunId ? (
-            <Link className="fx-btn-secondary px-3 py-2 text-sm" href={`/runs/${createdRunId}`}>
+            <Link className="fx-btn-secondary px-3 py-2 text-sm" href={`/inbox?session=${encodeURIComponent(createdRunId)}`}>
               Open run
             </Link>
           ) : null}

@@ -53,8 +53,9 @@ Lattix xFrontier is built around four layers:
 ## Quick start
 
 1. Run the public bootstrap installer.
-2. The installer pulls the vetted `main` content, installs `lattix`, updates your user `PATH`, and automatically starts the secure stack.
-3. Open `http://xfrontier.local` or use the printed `127.0.0.1` / LAN URLs.
+2. The bootstrap detects your OS, installs Python 3.12+ and Docker when they are missing, and then launches the installer.
+3. The installer pulls the vetted `main` content, creates a managed runtime under the install root, installs `lattix`, updates your user `PATH`, and automatically starts the secure stack.
+4. Open `http://xfrontier.local` or use the printed `127.0.0.1` / LAN URLs.
 
 ```text
 curl -fsSL https://raw.githubusercontent.com/LATTIX-IO/lattix-xfrontier/main/install/bootstrap.sh | sh
@@ -71,7 +72,7 @@ lattix up
 
 For source-checkout testing, you can still run `pwsh -File .\install\bootstrap.ps1` on Windows or `sh ./install/bootstrap.sh` on POSIX shells. When launched from a checkout, those bootstrap scripts now use the checkout's bundled installer instead of silently downloading `main` again.
 
-The bootstrap requires a working Python 3 runtime (`py -3` or `python`) on `PATH`. On Windows, the Microsoft Store placeholder alias is not sufficient by itself.
+On clean machines, the bootstrap now installs Python 3.12+ and Docker prerequisites automatically when it can, refreshes the current shell `PATH`, and then continues into the interactive installer. In other words, the default bootstrap path can install Python 3.12+ and Docker before proceeding with the rest of the setup. The installer itself uses a managed virtual environment under the install root so local installs do not depend on mutable system or Homebrew Python package state.
 
 To remove the local install during testing and start fresh, use:
 

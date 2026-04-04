@@ -245,7 +245,7 @@ export function RunFollowupComposer({ runId, recentContext }: Props) {
         router.refresh();
       } else {
         setSubmitInfo(`Follow-up sent. Opening run ${nextRun.id}...`);
-        router.push(`/runs/${nextRun.id}`);
+        router.push(`/inbox?session=${encodeURIComponent(nextRun.id)}`);
         router.refresh();
       }
       setDraft("");
@@ -320,7 +320,7 @@ export function RunFollowupComposer({ runId, recentContext }: Props) {
       {submitInfo ? <p className="text-xs text-[hsl(var(--state-success))]">{submitInfo}</p> : null}
       {createdRunId ? (
         <p className="text-xs text-[var(--foreground)]">
-          Run created: <Link href={`/runs/${createdRunId}`} className="underline decoration-dotted underline-offset-2">{createdRunId}</Link>
+          Run created: <Link href={`/inbox?session=${encodeURIComponent(createdRunId)}`} className="underline decoration-dotted underline-offset-2">{createdRunId}</Link>
         </p>
       ) : null}
       {submitError ? <p className="text-xs text-[var(--fx-danger)]">{submitError}</p> : null}

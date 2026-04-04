@@ -15,7 +15,7 @@ export async function RunsSidebar() {
         {runs.map((run) => (
           <Link
             key={run.id}
-            href={`/runs/${run.id}`}
+            href={`/inbox?session=${encodeURIComponent(run.id)}`}
             className="fx-panel block p-3 transition hover:bg-[var(--fx-nav-hover)]"
           >
             <p className="truncate text-sm font-medium text-[var(--foreground)]">{run.title}</p>
