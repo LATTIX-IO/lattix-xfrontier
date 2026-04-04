@@ -1,18 +1,27 @@
 import "@testing-library/jest-dom/vitest";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const replaceMock = vi.fn();
+const refreshMock = vi.fn();
 
 const {
   getOperatorSessionMock,
   getPlatformVersionStatusMock,
+  getWorkflowRunsMock,
+  getInboxMock,
+  logoutOperatorMock,
   pathnameState,
+  searchParamsState,
 } = vi.hoisted(() => ({
   getOperatorSessionMock: vi.fn(),
   getPlatformVersionStatusMock: vi.fn(),
+  getWorkflowRunsMock: vi.fn(),
+  getInboxMock: vi.fn(),
+  logoutOperatorMock: vi.fn(),
   pathnameState: { current: "/inbox" },
+  searchParamsState: { current: new URLSearchParams() },
 }));
 
 vi.mock("next/link", () => ({
@@ -21,8 +30,10 @@ vi.mock("next/link", () => ({
 
 vi.mock("next/navigation", () => ({
   usePathname: () => pathnameState.current,
+  useSearchParams: () => searchParamsState.current,
   useRouter: () => ({
     replace: replaceMock,
+    refresh: refreshMock,
   }),
 }));
 
@@ -33,6 +44,9 @@ vi.mock("@/components/api-status-banner", () => ({
 vi.mock("@/lib/api", () => ({
   getOperatorSession: getOperatorSessionMock,
   getPlatformVersionStatus: getPlatformVersionStatusMock,
+  getWorkflowRuns: getWorkflowRunsMock,
+  getInbox: getInboxMock,
+  logoutOperator: logoutOperatorMock,
 }));
 
 import { AppShell } from "@/components/app-shell";
@@ -101,9 +115,52 @@ const updateAvailableVersion = {
   summary: "Version 0.1.1 is available.",
 } as const;
 
+const userSidebarRuns = [
+  {
+    id: "run-1",
+    title: "Quarterly review",
+    status: "Done",
+    updatedAt: "2026-03-26T00:00:00Z",
+    progressLabel: "Completed",
+  },
+] as const;
+
+const userSidebarInbox = [
+  {
+    id: "inbox-1",
+    runId: "run-1",
+    runName: "Quarterly review",
+    artifactType: "summary",
+    reason: "Needs approval",
+    queue: "Needs Approval",
+  },
+] as const;
+
+beforeEach(() => {
+  Object.defineProperty(window, "innerWidth", {
+    configurable: true,
+    writable: true,
+    value: 1280,
+  });
+  replaceMock.mockReset();
+  refreshMock.mockReset();
+  logoutOperatorMock.mockReset();
+  getOperatorSessionMock.mockReset();
+  getPlatformVersionStatusMock.mockReset();
+  getWorkflowRunsMock.mockReset();
+  getInboxMock.mockReset();
+  searchParamsState.current = new URLSearchParams();
+  pathnameState.current = "/inbox";
+
+  getWorkflowRunsMock.mockResolvedValue(userSidebarRuns);
+  getInboxMock.mockResolvedValue(userSidebarInbox);
+  logoutOperatorMock.mockResolvedValue({ ok: true });
+});
+
 describe("AppShell", () => {
   it("redirects unauthenticated users away from protected routes without rendering protected content", async () => {
     pathnameState.current = "/inbox";
+    searchParamsState.current = new URLSearchParams();
     replaceMock.mockReset();
     getOperatorSessionMock.mockResolvedValue(guestSession);
     getPlatformVersionStatusMock.mockResolvedValue(currentVersion);
@@ -117,6 +174,7 @@ describe("AppShell", () => {
 
   it("redirects authenticated non-builders away from builder routes", async () => {
     pathnameState.current = "/builder/workflows";
+    searchParamsState.current = new URLSearchParams();
     replaceMock.mockReset();
     getPlatformVersionStatusMock.mockResolvedValue(currentVersion);
     getOperatorSessionMock.mockResolvedValue({
@@ -142,6 +200,7 @@ describe("AppShell", () => {
 
   it("shows builder navigation when the operator session allows builder mode", async () => {
     pathnameState.current = "/builder/workflows";
+    searchParamsState.current = new URLSearchParams();
     replaceMock.mockReset();
     getOperatorSessionMock.mockResolvedValue(builderSession);
     getPlatformVersionStatusMock.mockResolvedValue(updateAvailableVersion);
@@ -160,6 +219,7 @@ describe("AppShell", () => {
 
   it("shows user navigation with shared settings destination", async () => {
     pathnameState.current = "/inbox";
+    searchParamsState.current = new URLSearchParams();
     replaceMock.mockReset();
     getPlatformVersionStatusMock.mockResolvedValue(currentVersion);
     getOperatorSessionMock.mockResolvedValue({
@@ -169,13 +229,14 @@ describe("AppShell", () => {
 
     render(<AppShell><div>user child</div></AppShell>);
 
-    expect(await screen.findByRole("link", { name: /^inbox$/i })).toHaveAttribute("href", "/inbox");
-    expect(screen.getByRole("link", { name: /^settings$/i })).toHaveAttribute("href", "/settings");
+    expect(await screen.findByRole("link", { name: /^workflows$/i })).toHaveAttribute("href", "/workflows/start");
+    expect(screen.getByRole("link", { name: /^preferences$/i })).toHaveAttribute("href", "/settings");
     expect(screen.getByText(/user child/i)).toBeInTheDocument();
   });
 
   it("does not let a stale session request resolve a later navigation", async () => {
     pathnameState.current = "/builder/workflows";
+    searchParamsState.current = new URLSearchParams();
     replaceMock.mockReset();
     getPlatformVersionStatusMock.mockResolvedValue(currentVersion);
 
@@ -203,6 +264,7 @@ describe("AppShell", () => {
 
   it("does not expose a skip-to-console link on auth routes", async () => {
     pathnameState.current = "/auth";
+    searchParamsState.current = new URLSearchParams();
     replaceMock.mockReset();
     getOperatorSessionMock.mockResolvedValue(guestSession);
     getPlatformVersionStatusMock.mockResolvedValue(currentVersion);
@@ -216,6 +278,7 @@ describe("AppShell", () => {
 
   it("redirects authenticated operators away from the public auth route", async () => {
     pathnameState.current = "/auth";
+    searchParamsState.current = new URLSearchParams();
     replaceMock.mockReset();
     getOperatorSessionMock.mockResolvedValue(builderSession);
     getPlatformVersionStatusMock.mockResolvedValue(currentVersion);
@@ -227,6 +290,7 @@ describe("AppShell", () => {
 
   it("shows the resolved operator identity and builder access in the user menu", async () => {
     pathnameState.current = "/inbox";
+    searchParamsState.current = new URLSearchParams();
     replaceMock.mockReset();
     getOperatorSessionMock.mockResolvedValue({
       ...builderSession,
@@ -254,6 +318,7 @@ describe("AppShell", () => {
 
   it("does not claim the current build is up to date when version status is unavailable", async () => {
     pathnameState.current = "/inbox";
+    searchParamsState.current = new URLSearchParams();
     replaceMock.mockReset();
     getOperatorSessionMock.mockResolvedValue({
       ...builderSession,
@@ -263,7 +328,7 @@ describe("AppShell", () => {
 
     render(<AppShell><div>user child</div></AppShell>);
 
-    expect(await screen.findByText(/update status is unavailable right now/i)).toBeInTheDocument();
-    expect(screen.queryByText(/current build is up to date/i)).not.toBeInTheDocument();
+    expect(await screen.findByText(/unchecked/i)).toBeInTheDocument();
+    expect(screen.queryByText(/current/i)).not.toBeInTheDocument();
   });
 });

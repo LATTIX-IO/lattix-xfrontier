@@ -53,6 +53,24 @@ _ROUTE_ACCESS_RULES: tuple[RouteAccessRule, ...] = (
     ),
     RouteAccessRule(
         ("GET",),
+        "/runtime/user-providers",
+        RouteAccessCategory.AUTHENTICATED_READ,
+        "runtime.providers.read",
+    ),
+    RouteAccessRule(
+        ("PUT",),
+        "/runtime/user-providers/{provider}",
+        RouteAccessCategory.AUTHENTICATED_MUTATE,
+        "runtime.providers.write",
+    ),
+    RouteAccessRule(
+        ("DELETE",),
+        "/runtime/user-providers/{provider}",
+        RouteAccessCategory.AUTHENTICATED_MUTATE,
+        "runtime.providers.write",
+    ),
+    RouteAccessRule(
+        ("GET",),
         "/runtime/l3-parity-report",
         RouteAccessCategory.AUTHENTICATED_READ,
         "runtime.l3_parity.read",
@@ -129,6 +147,12 @@ _ROUTE_ACCESS_RULES: tuple[RouteAccessRule, ...] = (
     RouteAccessRule(
         ("GET",),
         "/workflow-runs/{run_id}/events",
+        RouteAccessCategory.AUTHENTICATED_READ,
+        "workflow.run.events.read",
+    ),
+    RouteAccessRule(
+        ("GET",),
+        "/workflow-runs/{run_id}/stream",
         RouteAccessCategory.AUTHENTICATED_READ,
         "workflow.run.events.read",
     ),

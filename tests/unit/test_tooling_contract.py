@@ -325,8 +325,11 @@ def test_public_frontier_installer_imports_packaged_module() -> None:
     assert 'if _install_mode(root) == "editable":' in packaged_installer
     assert 'args.append("-e")' in packaged_installer
     assert 'args.append(".[dev]")' in packaged_installer
-    assert 'def _managed_venv_dir(root: Path) -> Path:' in packaged_installer
-    assert 'def _bootstrap_managed_venv(install_root: Path, env: dict[str, str]) -> dict[str, str]:' in packaged_installer
+    assert "def _managed_venv_dir(root: Path) -> Path:" in packaged_installer
+    assert (
+        "def _bootstrap_managed_venv(install_root: Path, env: dict[str, str]) -> dict[str, str]:"
+        in packaged_installer
+    )
     assert '"-m", "venv"' in packaged_installer
     assert '"managed_runtime": str(venv_dir)' in packaged_installer
     assert '"install_mode": mode' in packaged_installer
@@ -535,3 +538,38 @@ def test_precommit_script_runs_repo_native_checks() -> None:
     assert 'Invoke-Step -Name "Helm chart validation"' in precommit
     assert "missing helm.exe" in precommit
     assert "Write-StepSummary -Final" in precommit
+
+
+def test_precommit_shell_script_runs_repo_native_checks() -> None:
+    precommit = _read("precommit.sh")
+
+    assert 'echo "Lattix xFrontier pre-commit checks"' in precommit
+    assert "invoke_python()" in precommit
+    assert "write_step_summary()" in precommit
+    assert 'invoke_step "Install Python dependencies"' in precommit
+    assert 'invoke_step "Install frontend dependencies"' in precommit
+    assert 'invoke_step "Python lint"' in precommit
+    assert 'invoke_step "Python typecheck"' in precommit
+    assert 'invoke_step "Python tests"' in precommit
+    assert 'invoke_step "Policy tests"' in precommit
+    assert 'invoke_step "Frontend lint"' in precommit
+    assert 'invoke_step "Frontend tests"' in precommit
+    assert 'invoke_step "Frontend build"' in precommit
+    assert 'invoke_if_available semgrep "SAST via Semgrep"' in precommit
+    assert 'invoke_if_available gitleaks "Secret scanning via Gitleaks"' in precommit
+    assert "gitleaks detect --source . --no-git --redact --config .gitleaks.toml" in precommit
+    assert 'invoke_if_available trivy "SCA/config via Trivy"' in precommit
+    assert "get_helm_command()" in precommit
+    assert ".tools/helm/darwin-arm64/helm" in precommit
+    assert 'invoke_step "Helm chart validation"' in precommit
+    assert "missing helm" in precommit
+    assert "write_step_summary 1" in precommit
+
+
+def test_repo_gitleaks_config_ignores_generated_paths() -> None:
+    config = _read(".gitleaks.toml")
+
+    assert "useDefault = true" in config
+    assert "^\\.artifacts/" in config
+    assert "^\\.installer/" in config
+    assert "^apps/frontend/\\.next/" in config

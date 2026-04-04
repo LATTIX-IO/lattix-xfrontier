@@ -21,16 +21,6 @@ import {
   WorkflowRunSummary,
 } from "@/types/frontier";
 export type { ObservabilityRunTrace } from "@/types/frontier";
-import {
-  mockAgentDefinitions,
-  mockArtifacts,
-  mockEvents,
-  mockGuardrailRulesets,
-  mockInbox,
-  mockPublishedWorkflows,
-  mockRuns,
-  mockWorkflowDefinitions,
-} from "@/lib/mock-data";
 
 /* ------------------------------------------------------------------ */
 /*  Configuration helpers                                              */
@@ -42,11 +32,6 @@ function getApiBase(): string {
   }
 
   return process.env.NEXT_PUBLIC_API_BASE_URL ?? "/api";
-}
-
-function isMockDataEnabled(): boolean {
-  const flag = process.env.NEXT_PUBLIC_ENABLE_MOCK_DATA ?? "";
-  return flag === "1" || flag.toLowerCase() === "true";
 }
 
 function getRequestIdentityHeaders(): Record<string, string> {
@@ -114,6 +99,44 @@ function setApiConnected(connected: boolean) {
 
 type Json = Record<string, unknown> | unknown[];
 
+type CacheEntry<T> = {
+  value: T;
+  expiresAt: number;
+};
+
+const responseCache = new Map<string, CacheEntry<unknown>>();
+const EMPTY_WORKFLOWS: WorkflowDefinition[] = [];
+const EMPTY_RUNS: WorkflowRunSummary[] = [];
+const EMPTY_EVENTS: WorkflowRunEvent[] = [];
+const EMPTY_INBOX: InboxItem[] = [];
+const EMPTY_ARTIFACTS: ArtifactSummary[] = [];
+const EMPTY_AGENTS: AgentDefinition[] = [];
+const EMPTY_GUARDRAILS: GuardrailRuleSet[] = [];
+const DEFAULT_RUN_DETAIL: WorkflowRunDetail = {
+  artifacts: [],
+  status: "Running",
+  graph: { nodes: [], links: [] },
+  agent_traces: [],
+  approvals: { required: false, pending: false },
+};
+
+function readCachedValue<T>(cacheKey: string): T | null {
+  const cached = responseCache.get(cacheKey);
+  if (!cached) {
+    return null;
+  }
+  if (cached.expiresAt <= Date.now()) {
+    responseCache.delete(cacheKey);
+    return null;
+  }
+  return cached.value as T;
+}
+
+function writeCachedValue<T>(cacheKey: string, value: T, ttlMs: number): T {
+  responseCache.set(cacheKey, { value, expiresAt: Date.now() + ttlMs });
+  return value;
+}
+
 const FRONTIER_GRAPH_SCHEMA_VERSION = "frontier-graph/1.0";
 
 export type GraphCanvasPayload = {
@@ -146,6 +169,16 @@ export type RuntimeFrameworkAdapterProbe = {
 export type RuntimeProvidersResponse = {
   providers: RuntimeProvider[];
   framework_adapters?: Record<string, RuntimeFrameworkAdapterProbe>;
+};
+
+export type UserRuntimeProviderConfig = {
+  provider: string;
+  configured: boolean;
+  model: string;
+  base_url: string;
+  api_key_masked: string;
+  updated_at: string;
+  source: "user" | "environment";
 };
 
 export type RuntimeEngineName = "native" | "langgraph" | "langchain" | "semantic-kernel" | "autogen";
@@ -285,7 +318,6 @@ async function safeFetch<T>(path: string, fallback: T, init?: RequestInit): Prom
 
     if (!res.ok) {
       setApiConnected(true); // Server reachable, just returned an error
-      if (isMockDataEnabled()) return fallback;
       return fallback;
     }
 
@@ -293,11 +325,6 @@ async function safeFetch<T>(path: string, fallback: T, init?: RequestInit): Prom
     return (await res.json()) as T;
   } catch {
     setApiConnected(false);
-    if (!isMockDataEnabled()) {
-      // Return fallback even when mock is disabled so pages don't crash,
-      // but the connectivity listener will trigger a UI warning.
-      return fallback;
-    }
     return fallback;
   }
 }
@@ -332,7 +359,7 @@ async function strictFetch<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export async function getPublishedWorkflows(): Promise<WorkflowDefinition[]> {
-  return safeFetch<WorkflowDefinition[]>("/workflows/published", mockPublishedWorkflows);
+  return safeFetch<WorkflowDefinition[]>("/workflows/published", EMPTY_WORKFLOWS);
 }
 
 export async function createWorkflowRun(
@@ -387,50 +414,133 @@ export async function createWorkflowRun(
 
 export async function getWorkflowRuns(status?: string): Promise<WorkflowRunSummary[]> {
   const suffix = status ? `?status=${encodeURIComponent(status)}` : "";
-  return safeFetch<WorkflowRunSummary[]>(`/workflow-runs${suffix}`, mockRuns);
+  const cacheKey = `workflow-runs:${status ?? "all"}`;
+  const cached = readCachedValue<WorkflowRunSummary[]>(cacheKey);
+  if (cached) {
+    return cached;
+  }
+  const value = await safeFetch<WorkflowRunSummary[]>(`/workflow-runs${suffix}`, EMPTY_RUNS);
+  return writeCachedValue(cacheKey, value, 5000);
 }
 
 export async function getWorkflowRun(_id: string): Promise<WorkflowRunDetail> {
-  return safeFetch<WorkflowRunDetail>(`/workflow-runs/${_id}`, {
-    artifacts: mockArtifacts,
-    status: "Running",
-    graph: { nodes: [], links: [] },
-    agent_traces: [],
-    approvals: { required: false, pending: false },
-  });
+  const cacheKey = `workflow-run:${_id}`;
+  const cached = readCachedValue<WorkflowRunDetail>(cacheKey);
+  if (cached) {
+    return cached;
+  }
+  const value = await safeFetch<WorkflowRunDetail>(`/workflow-runs/${_id}`, DEFAULT_RUN_DETAIL);
+  return writeCachedValue(cacheKey, value, 1500);
 }
 
 export async function getWorkflowRunEvents(id: string): Promise<WorkflowRunEvent[]> {
-  return safeFetch<WorkflowRunEvent[]>(`/workflow-runs/${id}/events`, mockEvents);
+  const cacheKey = `workflow-run-events:${id}`;
+  const cached = readCachedValue<WorkflowRunEvent[]>(cacheKey);
+  if (cached) {
+    return cached;
+  }
+  const value = await safeFetch<WorkflowRunEvent[]>(`/workflow-runs/${id}/events`, EMPTY_EVENTS);
+  return writeCachedValue(cacheKey, value, 1500);
+}
+
+export function streamWorkflowRun(
+  id: string,
+  handlers: {
+    onMessage: (event: { id: string; type: string; createdAt: string; payload: Record<string, unknown> }) => void;
+    onError?: () => void;
+  },
+): () => void {
+  const controller = new AbortController();
+  void (async () => {
+    try {
+      const res = await fetch(`${getApiBase()}/workflow-runs/${encodeURIComponent(id)}/stream`, {
+        method: "GET",
+        headers: {
+          ...getRequestIdentityHeaders(),
+        },
+        cache: "no-store",
+        signal: controller.signal,
+      });
+      if (!res.ok || !res.body) {
+        handlers.onError?.();
+        return;
+      }
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) {
+          break;
+        }
+        buffer += decoder.decode(value, { stream: true });
+        const frames = buffer.split("\n\n");
+        buffer = frames.pop() ?? "";
+        for (const frame of frames) {
+          const line = frame
+            .split("\n")
+            .find((candidate) => candidate.startsWith("data:"));
+          if (!line) {
+            continue;
+          }
+          try {
+            handlers.onMessage(
+              JSON.parse(line.slice(5).trim()) as {
+                id: string;
+                type: string;
+                createdAt: string;
+                payload: Record<string, unknown>;
+              },
+            );
+          } catch {
+            handlers.onError?.();
+          }
+        }
+      }
+    } catch {
+      if (!controller.signal.aborted) {
+        handlers.onError?.();
+      }
+    }
+  })();
+  return () => {
+    controller.abort();
+  };
 }
 
 export async function archiveWorkflowRun(id: string): Promise<{ ok: boolean }> {
-  return safeFetch<{ ok: boolean }>(`/workflow-runs/${id}/archive`, { ok: true }, { method: "POST" });
+  return strictFetch<{ ok: boolean }>(`/workflow-runs/${id}/archive`, { method: "POST" });
 }
 
 export async function createArtifactVersion(
   id: string,
   payload: Json,
 ): Promise<{ ok: boolean; artifactId: string }> {
-  return safeFetch(`/artifacts/${id}/versions`, { ok: true, artifactId: id }, {
+  return strictFetch(`/artifacts/${id}/versions`, {
     method: "POST",
     body: JSON.stringify(payload),
   });
 }
 
 export async function submitApproval(payload: Json): Promise<{ ok: boolean }> {
-  return safeFetch<{ ok: boolean }>("/approvals", { ok: true }, {
+  return strictFetch<{ ok: boolean }>("/approvals", {
     method: "POST",
     body: JSON.stringify(payload),
   });
 }
 
 export async function getInbox(): Promise<InboxItem[]> {
-  return safeFetch<InboxItem[]>("/inbox", mockInbox);
+  const cached = readCachedValue<InboxItem[]>("inbox");
+  if (cached) {
+    return cached;
+  }
+  const value = await safeFetch<InboxItem[]>("/inbox", EMPTY_INBOX);
+  return writeCachedValue("inbox", value, 5000);
 }
 
 export async function getArtifacts(): Promise<ArtifactSummary[]> {
-  return safeFetch<ArtifactSummary[]>("/artifacts", mockArtifacts);
+  return safeFetch<ArtifactSummary[]>("/artifacts", EMPTY_ARTIFACTS);
 }
 
 export async function getArtifact(id: string): Promise<ArtifactDetail | null> {
@@ -439,7 +549,7 @@ export async function getArtifact(id: string): Promise<ArtifactDetail | null> {
 
 // Builder mode endpoints
 export async function getWorkflowDefinitions(): Promise<WorkflowDefinition[]> {
-  return safeFetch<WorkflowDefinition[]>("/workflow-definitions", mockWorkflowDefinitions);
+  return safeFetch<WorkflowDefinition[]>("/workflow-definitions", EMPTY_WORKFLOWS);
 }
 
 export async function saveWorkflowDefinition(payload: Json): Promise<{ ok: boolean }> {
@@ -454,15 +564,15 @@ export async function publishWorkflowDefinition(id: string): Promise<{ ok: boole
 }
 
 export async function archiveWorkflowDefinition(id: string): Promise<{ ok: boolean }> {
-  return safeFetch<{ ok: boolean }>(`/workflow-definitions/${id}/archive`, { ok: true }, { method: "POST" });
+  return strictFetch<{ ok: boolean }>(`/workflow-definitions/${id}/archive`, { method: "POST" });
 }
 
 export async function deleteWorkflowDefinition(id: string): Promise<{ ok: boolean }> {
-  return safeFetch<{ ok: boolean }>(`/workflow-definitions/${id}`, { ok: true }, { method: "DELETE" });
+  return strictFetch<{ ok: boolean }>(`/workflow-definitions/${id}`, { method: "DELETE" });
 }
 
 export async function getAgentDefinitions(): Promise<AgentDefinition[]> {
-  return safeFetch<AgentDefinition[]>("/agent-definitions", mockAgentDefinitions);
+  return safeFetch<AgentDefinition[]>("/agent-definitions", EMPTY_AGENTS);
 }
 
 export async function getAgentDefinition(id: string): Promise<AgentDefinition | null> {
@@ -481,7 +591,7 @@ export async function publishAgentDefinition(id: string): Promise<{ ok: boolean 
 }
 
 export async function deleteAgentDefinition(id: string): Promise<{ ok: boolean }> {
-  return safeFetch<{ ok: boolean }>(`/agent-definitions/${id}`, { ok: true }, { method: "DELETE" });
+  return strictFetch<{ ok: boolean }>(`/agent-definitions/${id}`, { method: "DELETE" });
 }
 
 export async function getNodeDefinitions(options?: { includeInternal?: boolean }): Promise<Array<{ type_key: string; title?: string; description: string; category?: string; color?: string }>> {
@@ -500,7 +610,7 @@ export async function getNodeDefinitions(options?: { includeInternal?: boolean }
 }
 
 export async function getGuardrailRulesets(): Promise<GuardrailRuleSet[]> {
-  return safeFetch<GuardrailRuleSet[]>("/guardrail-rulesets", mockGuardrailRulesets);
+  return safeFetch<GuardrailRuleSet[]>("/guardrail-rulesets", EMPTY_GUARDRAILS);
 }
 
 export async function getWorkflowSecurityPolicy(workflowId: string): Promise<SecurityPolicyResponse> {
@@ -598,6 +708,29 @@ export async function getRuntimeProviders(): Promise<RuntimeProvidersResponse> {
   });
 }
 
+export async function getUserRuntimeProviders(): Promise<UserRuntimeProviderConfig[]> {
+  return safeFetch<UserRuntimeProviderConfig[]>("/runtime/user-providers", []);
+}
+
+export async function saveUserRuntimeProvider(
+  provider: string,
+  payload: { api_key?: string; model?: string; base_url?: string },
+): Promise<UserRuntimeProviderConfig> {
+  return strictFetch<UserRuntimeProviderConfig>(
+    `/runtime/user-providers/${encodeURIComponent(provider)}`,
+    {
+      method: "PUT",
+      body: JSON.stringify(payload),
+    },
+  );
+}
+
+export async function deleteUserRuntimeProvider(provider: string): Promise<{ ok: boolean }> {
+  return strictFetch<{ ok: boolean }>(`/runtime/user-providers/${encodeURIComponent(provider)}`, {
+    method: "DELETE",
+  });
+}
+
 export async function getMemorySession(sessionId: string): Promise<MemorySessionResponse> {
   return safeFetch<MemorySessionResponse>(`/memory/${encodeURIComponent(sessionId)}`, {
     session_id: sessionId,
@@ -607,15 +740,18 @@ export async function getMemorySession(sessionId: string): Promise<MemorySession
 }
 
 export async function clearMemorySession(sessionId: string): Promise<{ ok: boolean; session_id: string }> {
-  return safeFetch<{ ok: boolean; session_id: string }>(
+  return strictFetch<{ ok: boolean; session_id: string }>(
     `/memory/${encodeURIComponent(sessionId)}`,
-    { ok: true, session_id: sessionId },
     { method: "DELETE" },
   );
 }
 
 export async function getPlatformSettings(): Promise<PlatformSettings> {
-  return safeFetch<PlatformSettings>("/platform/settings", {
+  const cached = readCachedValue<PlatformSettings>("platform-settings");
+  if (cached) {
+    return cached;
+  }
+  const value = await safeFetch<PlatformSettings>("/platform/settings", {
     org_name: "Lattix xFrontier",
     org_slug: "lattix-frontier",
     support_email: "support@lattix.io",
@@ -665,10 +801,15 @@ export async function getPlatformSettings(): Promise<PlatformSettings> {
     enable_foss_guardrail_signals: true,
     foss_guardrail_signal_enforcement: "block_high",
   });
+  return writeCachedValue("platform-settings", value, 30000);
 }
 
 export async function getOperatorSession(): Promise<OperatorSession> {
-  return safeFetch<OperatorSession>("/auth/session", {
+  const cached = readCachedValue<OperatorSession>("operator-session");
+  if (cached) {
+    return cached;
+  }
+  const value = await safeFetch<OperatorSession>("/auth/session", {
     authenticated: false,
     actor: "anonymous",
     principal_id: "anonymous",
@@ -694,6 +835,7 @@ export async function getOperatorSession(): Promise<OperatorSession> {
       validation_error: "",
     },
   });
+  return writeCachedValue("operator-session", value, 15000);
 }
 
 export async function loginWithLocalPassword(payload: {
@@ -726,7 +868,11 @@ export async function logoutOperator(): Promise<{ ok: boolean }> {
 }
 
 export async function getPlatformVersionStatus(): Promise<PlatformVersionStatus> {
-  return safeFetch<PlatformVersionStatus>("/platform/version", {
+  const cached = readCachedValue<PlatformVersionStatus>("platform-version");
+  if (cached) {
+    return cached;
+  }
+  const value = await safeFetch<PlatformVersionStatus>("/platform/version", {
     current_version: "0.0.0",
     latest_version: "0.0.0",
     update_available: false,
@@ -738,6 +884,7 @@ export async function getPlatformVersionStatus(): Promise<PlatformVersionStatus>
     source: "",
     summary: "Version metadata is unavailable right now.",
   });
+  return writeCachedValue("platform-version", value, 30000);
 }
 
 export async function getPlatformSecurityPolicy(): Promise<SecurityPolicyResponse> {

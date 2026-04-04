@@ -11,6 +11,7 @@ import {
   getAtfAlignmentReport,
   getWorkflowRun,
   getWorkflowRunEvents,
+  streamWorkflowRun,
   submitApproval,
   type WorkflowRunDetail,
 } from "@/lib/api";
@@ -241,6 +242,7 @@ export function UserChatWorkspace({
   const [approvalBusy, setApprovalBusy] = useState<"approved" | "changes_requested" | null>(null);
   const [approvalMessage, setApprovalMessage] = useState<string | null>(null);
   const [atfReport, setAtfReport] = useState<AtfAlignmentReport | null>(null);
+  const [streamedResponse, setStreamedResponse] = useState("");
 
   useEffect(() => {
     if (initialSelectedRunId) {
@@ -258,11 +260,13 @@ export function UserChatWorkspace({
     if (!selectedRunId) {
       setSelectedRun(null);
       setEvents([]);
+      setStreamedResponse("");
       return;
     }
 
     let active = true;
     setLoading(true);
+    setStreamedResponse("");
 
     void Promise.all([getWorkflowRun(selectedRunId), getWorkflowRunEvents(selectedRunId)])
       .then(([runDetail, runEvents]) => {
@@ -288,6 +292,44 @@ export function UserChatWorkspace({
 
     return () => {
       active = false;
+    };
+  }, [selectedRunId]);
+
+  useEffect(() => {
+    if (!selectedRunId) {
+      return;
+    }
+    const stopStreaming = streamWorkflowRun(selectedRunId, {
+      onMessage: (event) => {
+        if (event.type === "delta") {
+          const text = typeof event.payload.text === "string" ? event.payload.text : "";
+          if (text) {
+            setStreamedResponse((current: string) => current + text);
+          }
+          return;
+        }
+        if (event.type === "final") {
+          const text = typeof event.payload.text === "string" ? event.payload.text : "";
+          setStreamedResponse(text);
+          void Promise.all([getWorkflowRun(selectedRunId), getWorkflowRunEvents(selectedRunId)]).then(
+            ([runDetail, runEvents]) => {
+              setSelectedRun(runDetail);
+              setEvents(runEvents);
+            },
+          );
+          return;
+        }
+        if (event.type === "complete") {
+          setStreamedResponse("");
+        }
+      },
+      onError: () => {
+        // Keep the current snapshot; polling refresh can recover on the next selection.
+      },
+    });
+
+    return () => {
+      stopStreaming();
     };
   }, [selectedRunId]);
 
@@ -321,15 +363,35 @@ export function UserChatWorkspace({
     }
     return inboxByRunId(initialInbox).get(selectedRunId) ?? [];
   }, [initialInbox, selectedRunId]);
-  const ordered = useMemo(() => orderEvents(events), [events]);
+  const ordered = useMemo<WorkflowRunEvent[]>(() => {
+    const base = orderEvents(events);
+    if (!streamedResponse.trim()) {
+      return base;
+    }
+    const lastEvent = base[base.length - 1];
+    if (lastEvent?.type === "agent_message" && lastEvent.summary === streamedResponse) {
+      return base;
+    }
+    const streamingEvent: WorkflowRunEvent = {
+      id: "streaming-agent-message",
+      type: "agent_message",
+      title: "Assistant",
+      summary: streamedResponse,
+      createdAt: new Date().toISOString(),
+    };
+    return [
+      ...base,
+      streamingEvent,
+    ];
+  }, [events, streamedResponse]);
   const recentContext = useMemo(
-    () => ordered.filter(isChatEvent).slice(-6).map((event) => `${event.type === "user_message" ? "User" : "Agent"}: ${event.summary}`).join("\n"),
+    () => ordered.filter(isChatEvent).slice(-6).map((event: WorkflowRunEvent) => `${event.type === "user_message" ? "User" : "Agent"}: ${event.summary}`).join("\n"),
     [ordered],
   );
   const stats = useMemo(() => ({
     chatTurns: ordered.filter(isChatEvent).length,
-    systemEvents: ordered.filter((event) => !isChatEvent(event)).length,
-    blockers: ordered.filter((event) => event.type === "error" || /blocked|reject|failed/i.test(`${event.title} ${event.summary}`)).length,
+    systemEvents: ordered.filter((event: WorkflowRunEvent) => !isChatEvent(event)).length,
+    blockers: ordered.filter((event: WorkflowRunEvent) => event.type === "error" || /blocked|reject|failed/i.test(`${event.title} ${event.summary}`)).length,
     topics: extractTopics(selectedRunSummary?.title ?? "", ordered),
   }), [ordered, selectedRunSummary?.title]);
   const graph = useMemo(
@@ -337,7 +399,7 @@ export function UserChatWorkspace({
     [ordered, selectedRun, selectedRunId, selectedRunSummary?.title],
   );
   const approvals = selectedRun?.approvals ?? { required: false, pending: false };
-  const guardrailEvents = ordered.filter((event) => event.type === "guardrail_result");
+  const guardrailEvents = ordered.filter((event: WorkflowRunEvent) => event.type === "guardrail_result");
 
   useEffect(() => {
     const timeline = timelineRef.current;

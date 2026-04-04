@@ -63,6 +63,40 @@ function generateCollaborationUserId(entityType: StudioEntityType, entityId: str
   return `${prefix}${Date.now().toString(36)}`;
 }
 
+function readLocalStorage(key: string): string | null {
+  if (typeof window === "undefined") {
+    return null;
+  }
+
+  const storage = window.localStorage;
+  if (!storage || typeof storage.getItem !== "function") {
+    return null;
+  }
+
+  try {
+    return storage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+
+function writeLocalStorage(key: string, value: string): void {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  const storage = window.localStorage;
+  if (!storage || typeof storage.setItem !== "function") {
+    return;
+  }
+
+  try {
+    storage.setItem(key, value);
+  } catch {
+    // Ignore storage write failures and continue with in-memory state.
+  }
+}
+
 export function StudioFullCanvas({
   entityType,
   entityId,
@@ -301,16 +335,14 @@ export function StudioFullCanvas({
 
   useEffect(() => {
     const storageKey = `frontier:collab:${entityType}:${entityId}:user`;
-    const existing = typeof window !== "undefined" ? window.localStorage.getItem(storageKey) : null;
+    const existing = readLocalStorage(storageKey);
     if (existing) {
       setCollabUserId(existing);
       return;
     }
 
     const generated = generateCollaborationUserId(entityType, entityId);
-    if (typeof window !== "undefined") {
-      window.localStorage.setItem(storageKey, generated);
-    }
+    writeLocalStorage(storageKey, generated);
     setCollabUserId(generated);
   }, [entityId, entityType]);
 

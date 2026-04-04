@@ -38,6 +38,40 @@ function resolveOperatorInitials(session: OperatorSession | null): string {
   return label.slice(0, 2).toUpperCase();
 }
 
+function readLocalStorage(key: string): string | null {
+  if (typeof window === "undefined") {
+    return null;
+  }
+
+  const storage = window.localStorage;
+  if (!storage || typeof storage.getItem !== "function") {
+    return null;
+  }
+
+  try {
+    return storage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+
+function writeLocalStorage(key: string, value: string): void {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  const storage = window.localStorage;
+  if (!storage || typeof storage.setItem !== "function") {
+    return;
+  }
+
+  try {
+    storage.setItem(key, value);
+  } catch {
+    // Ignore storage write failures and continue with in-memory theme state.
+  }
+}
+
 export function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const searchParams = useSearchParams();
@@ -71,7 +105,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       return "dark";
     }
 
-    const stored = window.localStorage.getItem("frontier-theme");
+    const stored = readLocalStorage("frontier-theme");
     return stored === "light" ? "light" : "dark";
   });
   const [menuOpen, setMenuOpen] = useState(false);
@@ -94,7 +128,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     const html = document.documentElement;
     html.classList.remove("theme-light", "theme-dark");
     html.classList.add(`theme-${theme}`);
-    window.localStorage.setItem("frontier-theme", theme);
+    writeLocalStorage("frontier-theme", theme);
   }, [theme]);
 
   useEffect(() => {

@@ -1098,7 +1098,9 @@ def test_packaged_installer_retries_secure_gateway_on_fallback_port(
         return subprocess.CompletedProcess(command, 0, stdout="started\n", stderr="")
 
     monkeypatch.setattr(packaged_installer, "_compose_up_with_output", _fake_compose_run)
-    monkeypatch.setattr(packaged_installer, "_prebuild_secure_stack_images", lambda install_root, env: None)
+    monkeypatch.setattr(
+        packaged_installer, "_prebuild_secure_stack_images", lambda install_root, env: None
+    )
     monkeypatch.setattr(
         packaged_installer, "_select_fallback_gateway_port", lambda bind_host, occupied_port: 8080
     )
@@ -1118,23 +1120,27 @@ def test_packaged_installer_retries_secure_gateway_on_fallback_port(
     assert "FRONTIER_LOCAL_API_BASE_URL=http://127.0.0.1:8080/api" in updated_env
 
 
-def test_auto_start_stack_prebuilds_secure_images_once(
-    monkeypatch, tmp_path: Path
-) -> None:
+def test_auto_start_stack_prebuilds_secure_images_once(monkeypatch, tmp_path: Path) -> None:
     commands: list[list[str]] = []
 
     monkeypatch.setattr(
         packaged_installer,
         "run_command",
-        lambda command, *, cwd=None, check=True, env=None: commands.append(command)
-        or subprocess.CompletedProcess(command, 0, stdout="", stderr=""),
+        lambda command, *, cwd=None, check=True, env=None: (
+            commands.append(command)
+            or subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+        ),
     )
     monkeypatch.setattr(
         packaged_installer,
         "_compose_up_with_output",
-        lambda command, *, cwd, env: subprocess.CompletedProcess(command, 0, stdout="started\n", stderr=""),
+        lambda command, *, cwd, env: subprocess.CompletedProcess(
+            command, 0, stdout="started\n", stderr=""
+        ),
     )
-    monkeypatch.setattr(packaged_installer, "portal_urls", lambda root=None: ["http://xfrontier.local"])
+    monkeypatch.setattr(
+        packaged_installer, "portal_urls", lambda root=None: ["http://xfrontier.local"]
+    )
 
     urls = packaged_installer._auto_start_stack(tmp_path, {})
 
