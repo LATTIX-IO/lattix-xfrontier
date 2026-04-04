@@ -1,0 +1,12 @@
+title = "lattix-xfrontier gitleaks config"
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Ignore generated local installer state and build artifacts"
+paths = [
+  '''^\.artifacts/''',
+  '''^\.installer/''',
+  '''^apps/frontend/\.next/''',
+]

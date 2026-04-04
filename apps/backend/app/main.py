@@ -5,10 +5,12 @@ import math
 import os
 import re
 import asyncio
+import base64
 import hashlib
 import hmac
 import ipaddress
 import socket
+import threading
 import time
 import tomllib
 import http.cookiejar
@@ -28,9 +30,10 @@ from urllib import request as urllib_request
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
+import httpx
 from fastapi import Body, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 from app.generated_artifacts import GeneratedArtifactService
 from app.platform_services import (
@@ -39,6 +42,12 @@ from app.platform_services import (
     PostgresStateStore,
     RedisMemoryStore,
 )
+
+try:
+    from cryptography.fernet import Fernet, InvalidToken
+except Exception:  # pragma: no cover - optional dependency in some local test paths
+    Fernet = None
+    InvalidToken = Exception
 from app.request_security import (
     RouteAccessCategory,
     RouteAccessRule,
@@ -445,6 +454,23 @@ class RuntimeProviderStatus(BaseModel):
     configured: bool
     model: str
     mode: Literal["live", "simulated"]
+
+
+class UserRuntimeProviderConfigPayload(BaseModel):
+    model: str = Field(min_length=1, max_length=160)
+    api_key: str = Field(min_length=8, max_length=4096)
+    base_url: str = Field(default="", max_length=512)
+    preferred: bool = False
+
+
+class StoredUserRuntimeProviderConfig(BaseModel):
+    provider: Literal["openai", "anthropic", "gemini", "openai-compatible"]
+    model: str
+    base_url: str = ""
+    api_key_encrypted: str
+    preferred: bool = False
+    created_at: str
+    updated_at: str
 
 
 class PasswordLoginRequest(BaseModel):
@@ -3199,6 +3225,152 @@ def _simulate_tool_execution_payload(
     }
 
 
+def _integration_auth_headers(integration: IntegrationDefinition) -> dict[str, str]:
+    auth = (
+        integration.metadata_json.get("auth") if isinstance(integration.metadata_json, dict) else {}
+    )
+    auth = auth if isinstance(auth, dict) else {}
+    secret_value = _resolve_secret_ref_value(integration.secret_ref)
+    if integration.auth_type == "api_key" and secret_value:
+        key_name = str(auth.get("key_name") or "x-api-key")
+        location = str(auth.get("location") or "header")
+        if location == "header":
+            return {key_name: secret_value}
+    if integration.auth_type == "bearer" and secret_value:
+        prefix = str(auth.get("prefix") or "Bearer").strip() or "Bearer"
+        return {"Authorization": f"{prefix} {secret_value}"}
+    if integration.auth_type == "basic" and secret_value:
+        username = str(auth.get("username") or "").strip()
+        token = base64.b64encode(f"{username}:{secret_value}".encode("utf-8")).decode("utf-8")
+        return {"Authorization": f"Basic {token}"}
+    return {}
+
+
+def _execute_native_tool_call(
+    *,
+    tool_id: str,
+    tool_config: dict[str, Any],
+    request_payload: Any,
+    context_payload: Any,
+    call_index: int,
+    endpoint_url: str,
+    method: str,
+) -> dict[str, Any]:
+    integration_id = str(
+        tool_config.get("integration_id") or tool_config.get("tool_id") or ""
+    ).strip()
+    integration = store.integrations.get(integration_id)
+    resolved_url = endpoint_url or (integration.base_url if integration is not None else "")
+    if not resolved_url:
+        return {
+            "ok": False,
+            "tool_id": tool_id,
+            "call_index": call_index,
+            "rejected": True,
+            "message": "Tool call requires endpoint_url or integration_id with base_url.",
+        }
+
+    headers = {"Content-Type": "application/json"}
+    params: dict[str, Any] = {}
+    if integration is not None:
+        headers.update(_integration_auth_headers(integration))
+        auth = (
+            integration.metadata_json.get("auth")
+            if isinstance(integration.metadata_json, dict)
+            else {}
+        )
+        auth = auth if isinstance(auth, dict) else {}
+        if integration.auth_type == "api_key":
+            location = str(auth.get("location") or "header")
+            key_name = str(auth.get("key_name") or "x-api-key")
+            secret_value = _resolve_secret_ref_value(integration.secret_ref)
+            if location == "query" and secret_value:
+                params[key_name] = secret_value
+
+    json_payload = (
+        request_payload if isinstance(request_payload, (dict, list)) else {"input": request_payload}
+    )
+    with httpx.Client(timeout=httpx.Timeout(20.0, connect=5.0)) as client:
+        response = client.request(
+            method.upper(),
+            resolved_url,
+            headers=headers,
+            params=params,
+            json=json_payload,
+        )
+        response.raise_for_status()
+        content_type = str(response.headers.get("content-type") or "").lower()
+        if "application/json" in content_type:
+            response_payload: Any = response.json()
+        else:
+            response_payload = response.text
+
+    return {
+        "ok": True,
+        "tool_id": tool_id,
+        "call_index": call_index,
+        "request": json_payload,
+        "context": context_payload,
+        "endpoint_url": _sanitize_base_url(resolved_url),
+        "method": method.upper(),
+        "response": response_payload,
+        "integration_id": integration.id if integration is not None else "",
+    }
+
+
+def _native_retrieval_documents(
+    *,
+    query_payload: Any,
+    source_id: str,
+    source_url: str,
+    top_k: int,
+    execution_state: dict[str, Any],
+) -> tuple[list[dict[str, Any]], str]:
+    query_text = _safe_json(query_payload)[:1000]
+    docs: list[dict[str, Any]] = []
+
+    session_bucket = str(execution_state.get("session_id") or execution_state.get("run_id") or "")
+    if source_id.startswith("kb://") or source_id.startswith("session:"):
+        short_term = _memory_get_short_term_entries(session_bucket, limit=top_k)
+        long_term = _memory_load_long_term_entries(
+            session_bucket,
+            memory_scope="session",
+            query_text=query_text,
+            limit=top_k,
+        )
+        merged = _merge_memory_entries(short_term, long_term, limit=top_k)
+        for index, entry in enumerate(merged, start=1):
+            docs.append(
+                {
+                    "id": str(entry.get("id") or f"mem-{index}"),
+                    "score": round(1 - ((index - 1) * 0.05), 2),
+                    "source": source_id,
+                    "text": str(entry.get("content") or entry.get("summary") or entry)[:1200],
+                }
+            )
+    elif source_url:
+        with httpx.Client(timeout=httpx.Timeout(10.0, connect=5.0)) as client:
+            response = client.get(source_url)
+            response.raise_for_status()
+            body = response.text
+        snippet = body[:4000]
+        docs.append(
+            {
+                "id": "doc-1",
+                "score": 0.99,
+                "source": _sanitize_base_url(source_url),
+                "text": snippet,
+            }
+        )
+
+    grounding_context = (
+        f"Retrieved {len(docs)} live context document(s)."
+        if docs
+        else "No live context documents matched the query."
+    )
+    return docs[:top_k], grounding_context
+
+
 def _run_framework_retrieval(
     *,
     engine: str,
@@ -3908,6 +4080,410 @@ def _get_presidio_analyzer() -> Any | None:
     return _PRESIDIO_ANALYZER
 
 
+def _default_anthropic_model() -> str:
+    return os.getenv("ANTHROPIC_MODEL", "claude-3-7-sonnet-latest")
+
+
+def _default_gemini_model() -> str:
+    return os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
+
+
+def _default_provider_model(provider: str) -> str:
+    if provider == "anthropic":
+        return _default_anthropic_model()
+    if provider == "gemini":
+        return _default_gemini_model()
+    return _default_openai_model()
+
+
+def _env_provider_runtime(provider: str) -> dict[str, Any] | None:
+    if provider in {"openai", "openai-compatible"}:
+        api_key = str(os.getenv("OPENAI_API_KEY", "") or "").strip()
+        if not api_key:
+            return None
+        return {
+            "provider": provider,
+            "model": _default_openai_model(),
+            "base_url": _normalize_provider_base_url(provider, os.getenv("OPENAI_BASE_URL", "")),
+            "api_key": api_key,
+            "preferred": provider == "openai",
+            "source": "environment",
+        }
+    if provider == "anthropic":
+        api_key = str(os.getenv("ANTHROPIC_API_KEY", "") or "").strip()
+        if not api_key:
+            return None
+        return {
+            "provider": provider,
+            "model": _default_anthropic_model(),
+            "base_url": _normalize_provider_base_url(provider, os.getenv("ANTHROPIC_BASE_URL", "")),
+            "api_key": api_key,
+            "preferred": False,
+            "source": "environment",
+        }
+    if provider == "gemini":
+        api_key = str(
+            os.getenv("GEMINI_API_KEY", "") or os.getenv("GOOGLE_API_KEY", "") or ""
+        ).strip()
+        if not api_key:
+            return None
+        return {
+            "provider": provider,
+            "model": _default_gemini_model(),
+            "base_url": _normalize_provider_base_url(provider, os.getenv("GEMINI_BASE_URL", "")),
+            "api_key": api_key,
+            "preferred": False,
+            "source": "environment",
+        }
+    return None
+
+
+def _resolve_request_chat_runtime(
+    *,
+    request: Request | None,
+    actor: str,
+    payload: dict[str, Any] | None,
+    agent_definition: AgentDefinition | None,
+    fallback_model: str,
+) -> dict[str, Any]:
+    principal = _resolve_auth_context_principal(request, actor)
+    runtime_payload = (
+        payload.get("runtime")
+        if isinstance(payload, dict) and isinstance(payload.get("runtime"), dict)
+        else {}
+    )
+    agent_model_defaults = (
+        agent_definition.config_json.get("model_defaults")
+        if agent_definition is not None
+        and isinstance(agent_definition.config_json, dict)
+        and isinstance(agent_definition.config_json.get("model_defaults"), dict)
+        else {}
+    )
+    requested_provider = (
+        runtime_payload.get("provider")
+        or (payload.get("provider") if isinstance(payload, dict) else "")
+        or agent_model_defaults.get("provider")
+        or ""
+    )
+    preferred = _preferred_user_provider(principal["principal_id"])
+    resolved_provider = _normalize_chat_provider(
+        str(requested_provider or (preferred.provider if preferred else "openai"))
+    )
+
+    provider_configs = _user_provider_configs(principal["principal_id"])
+    stored_provider = provider_configs.get(resolved_provider)
+    if stored_provider is not None:
+        return {
+            "provider": resolved_provider,
+            "model": str(
+                runtime_payload.get("model") or payload.get("model")
+                if isinstance(payload, dict)
+                else ""
+                or agent_model_defaults.get("model")
+                or stored_provider.model
+                or fallback_model
+            ).strip()
+            or _default_provider_model(resolved_provider),
+            "base_url": _normalize_provider_base_url(
+                resolved_provider,
+                str(
+                    runtime_payload.get("base_url")
+                    or agent_model_defaults.get("base_url")
+                    or stored_provider.base_url
+                ),
+            ),
+            "api_key": _decrypt_provider_secret(stored_provider.api_key_encrypted),
+            "preferred": stored_provider.preferred,
+            "source": "user_config",
+            "principal_id": principal["principal_id"],
+        }
+
+    env_provider = _env_provider_runtime(resolved_provider)
+    if env_provider is not None:
+        env_provider["model"] = str(
+            runtime_payload.get("model")
+            or (payload.get("model") if isinstance(payload, dict) else "")
+            or agent_model_defaults.get("model")
+            or env_provider.get("model")
+            or fallback_model
+        ).strip() or _default_provider_model(resolved_provider)
+        env_provider["principal_id"] = principal["principal_id"]
+        return env_provider
+
+    raise HTTPException(
+        status_code=412,
+        detail=f"No configured runtime provider credentials found for '{resolved_provider}'. Configure user runtime providers or environment credentials.",
+    )
+
+
+def _openai_messages_payload(
+    *, system_prompt: str, user_prompt: str, messages: list[dict[str, str]] | None = None
+) -> list[dict[str, str]]:
+    if messages is not None:
+        return messages
+    composed: list[dict[str, str]] = []
+    if system_prompt.strip():
+        composed.append({"role": "system", "content": system_prompt})
+    composed.append({"role": "user", "content": user_prompt})
+    return composed
+
+
+def _stream_openai_compatible_chat(
+    *,
+    runtime: dict[str, Any],
+    messages: list[dict[str, str]],
+    temperature: float,
+    on_chunk: Callable[[str], None] | None = None,
+) -> tuple[list[str], dict[str, Any]]:
+    headers = {
+        "Authorization": f"Bearer {runtime['api_key']}",
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "model": runtime["model"],
+        "messages": messages,
+        "temperature": temperature,
+        "stream": True,
+    }
+    chunks: list[str] = []
+    with httpx.Client(timeout=httpx.Timeout(60.0, connect=10.0)) as client:
+        with client.stream(
+            "POST",
+            f"{str(runtime['base_url']).rstrip('/')}/chat/completions",
+            headers=headers,
+            json=payload,
+        ) as response:
+            response.raise_for_status()
+            for line in response.iter_lines():
+                if not line:
+                    continue
+                if not line.startswith("data:"):
+                    continue
+                data = line[5:].strip()
+                if data == "[DONE]":
+                    break
+                try:
+                    event = json.loads(data)
+                except Exception:  # noqa: BLE001
+                    continue
+                delta = ""
+                choices = event.get("choices") if isinstance(event, dict) else None
+                if isinstance(choices, list) and choices:
+                    choice0 = choices[0] if isinstance(choices[0], dict) else {}
+                    delta_payload = (
+                        choice0.get("delta") if isinstance(choice0.get("delta"), dict) else {}
+                    )
+                    delta = str(delta_payload.get("content") or "")
+                if delta:
+                    chunks.append(delta)
+                    if on_chunk is not None:
+                        on_chunk(delta)
+    return chunks, {
+        "provider": runtime["provider"],
+        "model": runtime["model"],
+        "mode": "live",
+        "source": runtime.get("source") or "environment",
+        "transport": "sse",
+    }
+
+
+def _stream_anthropic_chat(
+    *,
+    runtime: dict[str, Any],
+    system_prompt: str,
+    user_prompt: str,
+    temperature: float,
+    on_chunk: Callable[[str], None] | None = None,
+) -> tuple[list[str], dict[str, Any]]:
+    headers = {
+        "x-api-key": runtime["api_key"],
+        "anthropic-version": "2023-06-01",
+        "content-type": "application/json",
+    }
+    payload = {
+        "model": runtime["model"],
+        "max_tokens": 2048,
+        "temperature": temperature,
+        "system": system_prompt,
+        "messages": [{"role": "user", "content": user_prompt}],
+        "stream": True,
+    }
+    chunks: list[str] = []
+    with httpx.Client(timeout=httpx.Timeout(60.0, connect=10.0)) as client:
+        with client.stream(
+            "POST",
+            f"{str(runtime['base_url']).rstrip('/')}/messages",
+            headers=headers,
+            json=payload,
+        ) as response:
+            response.raise_for_status()
+            current_event = ""
+            for line in response.iter_lines():
+                if not line:
+                    continue
+                if line.startswith("event:"):
+                    current_event = line.split(":", 1)[1].strip()
+                    continue
+                if not line.startswith("data:"):
+                    continue
+                data = line[5:].strip()
+                if data == "[DONE]":
+                    break
+                try:
+                    event = json.loads(data)
+                except Exception:  # noqa: BLE001
+                    continue
+                if current_event == "content_block_delta":
+                    delta = (
+                        event.get("delta")
+                        if isinstance(event, dict) and isinstance(event.get("delta"), dict)
+                        else {}
+                    )
+                    text = str(delta.get("text") or "")
+                    if text:
+                        chunks.append(text)
+                        if on_chunk is not None:
+                            on_chunk(text)
+    return chunks, {
+        "provider": "anthropic",
+        "model": runtime["model"],
+        "mode": "live",
+        "source": runtime.get("source") or "environment",
+        "transport": "sse",
+    }
+
+
+def _stream_gemini_chat(
+    *,
+    runtime: dict[str, Any],
+    system_prompt: str,
+    user_prompt: str,
+    temperature: float,
+    on_chunk: Callable[[str], None] | None = None,
+) -> tuple[list[str], dict[str, Any]]:
+    endpoint = (
+        f"{str(runtime['base_url']).rstrip('/')}/models/{runtime['model']}:streamGenerateContent"
+    )
+    payload = {
+        "systemInstruction": {"parts": [{"text": system_prompt}]}
+        if system_prompt.strip()
+        else None,
+        "contents": [{"role": "user", "parts": [{"text": user_prompt}]}],
+        "generationConfig": {"temperature": temperature},
+    }
+    chunks: list[str] = []
+    with httpx.Client(timeout=httpx.Timeout(60.0, connect=10.0)) as client:
+        with client.stream(
+            "POST",
+            endpoint,
+            params={"alt": "sse", "key": runtime["api_key"]},
+            json={key: value for key, value in payload.items() if value is not None},
+        ) as response:
+            response.raise_for_status()
+            for line in response.iter_lines():
+                if not line or not line.startswith("data:"):
+                    continue
+                data = line[5:].strip()
+                try:
+                    event = json.loads(data)
+                except Exception:  # noqa: BLE001
+                    continue
+                candidates = event.get("candidates") if isinstance(event, dict) else None
+                if not isinstance(candidates, list) or not candidates:
+                    continue
+                candidate = candidates[0] if isinstance(candidates[0], dict) else {}
+                content = (
+                    candidate.get("content") if isinstance(candidate.get("content"), dict) else {}
+                )
+                parts = content.get("parts") if isinstance(content.get("parts"), list) else []
+                text = "".join(
+                    str(part.get("text") or "") for part in parts if isinstance(part, dict)
+                )
+                if text:
+                    chunks.append(text)
+    collapsed: list[str] = []
+    previous = ""
+    for chunk in chunks:
+        if chunk.startswith(previous):
+            collapsed.append(chunk[len(previous) :])
+            previous = chunk
+        else:
+            collapsed.append(chunk)
+            previous += chunk
+    if on_chunk is not None and collapsed != chunks:
+        # Gemini streams cumulative payloads; replay the deduplicated deltas to subscribers.
+        for chunk in collapsed:
+            if chunk:
+                on_chunk(chunk)
+    return collapsed, {
+        "provider": "gemini",
+        "model": runtime["model"],
+        "mode": "live",
+        "source": runtime.get("source") or "environment",
+        "transport": "sse",
+    }
+
+
+def _collect_chat_response_chunks(
+    *,
+    system_prompt: str,
+    user_prompt: str,
+    model: str,
+    temperature: float,
+    messages: list[dict[str, str]] | None = None,
+    runtime: dict[str, Any] | None = None,
+    on_chunk: Callable[[str], None] | None = None,
+) -> tuple[list[str], dict[str, Any]]:
+    resolved_runtime = runtime or _env_provider_runtime("openai")
+    if resolved_runtime is None:
+        return (
+            [],
+            {
+                "provider": "openai",
+                "model": str(model or "").strip() or _default_openai_model(),
+                "mode": "simulated",
+                "reason": "No live provider credentials available",
+            },
+        )
+
+    resolved_runtime = {
+        **resolved_runtime,
+        "model": str(
+            model
+            or resolved_runtime.get("model")
+            or _default_provider_model(str(resolved_runtime.get("provider") or "openai"))
+        ).strip(),
+    }
+    prepared_messages = _openai_messages_payload(
+        system_prompt=system_prompt,
+        user_prompt=user_prompt,
+        messages=messages,
+    )
+    provider = _normalize_chat_provider(str(resolved_runtime.get("provider") or "openai"))
+    if provider in {"openai", "openai-compatible"}:
+        return _stream_openai_compatible_chat(
+            runtime=resolved_runtime,
+            messages=prepared_messages,
+            temperature=temperature,
+            on_chunk=on_chunk,
+        )
+    if provider == "anthropic":
+        return _stream_anthropic_chat(
+            runtime=resolved_runtime,
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            temperature=temperature,
+            on_chunk=on_chunk,
+        )
+    return _stream_gemini_chat(
+        runtime=resolved_runtime,
+        system_prompt=system_prompt,
+        user_prompt=user_prompt,
+        temperature=temperature,
+        on_chunk=on_chunk,
+    )
+
+
 def _run_openai_chat(
     *,
     system_prompt: str,
@@ -3915,113 +4491,30 @@ def _run_openai_chat(
     model: str,
     temperature: float,
     messages: list[dict[str, str]] | None = None,
+    runtime: dict[str, Any] | None = None,
 ) -> tuple[str, dict[str, Any]]:
-    client = _get_openai_client()
-    if client is None:
+    try:
+        chunks, meta = _collect_chat_response_chunks(
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            model=model,
+            temperature=temperature,
+            messages=messages,
+            runtime=runtime,
+        )
+        return ("".join(chunks).strip(), meta)
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001
         return (
-            f"[simulated:{model}] {user_prompt[:280]}",
+            "",
             {
-                "provider": "openai",
-                "model": model,
+                "provider": str((runtime or {}).get("provider") or "openai"),
+                "model": str((runtime or {}).get("model") or model or ""),
                 "mode": "simulated",
-                "reason": "OPENAI_API_KEY missing/placeholder or OpenAI SDK unavailable",
+                "reason": f"Provider call failed: {str(exc)[:180]}",
             },
         )
-
-    if messages is None:
-        messages = []
-        if system_prompt.strip():
-            messages.append({"role": "system", "content": system_prompt})
-        messages.append({"role": "user", "content": user_prompt})
-
-    attempt_models: list[str] = []
-    primary_model = str(model or "").strip() or _default_openai_model()
-    secondary_model = _fallback_openai_model().strip()
-    if not secondary_model:
-        secondary_model = "gpt-5.1"
-
-    candidate_models = [primary_model]
-    if secondary_model and secondary_model not in candidate_models:
-        candidate_models.append(secondary_model)
-
-    last_error = ""
-    for candidate_model in candidate_models:
-        attempt_models.append(candidate_model)
-        response_api_error = ""
-
-        responses_client = getattr(client, "responses", None)
-        if responses_client is not None and hasattr(responses_client, "create"):
-            try:
-                response_api = responses_client.create(
-                    model=candidate_model,
-                    input=messages,
-                    reasoning={"summary": "auto"},
-                    temperature=temperature,
-                )
-                text, reasoning_summaries = _extract_openai_responses_payload(response_api)
-                if text:
-                    return (
-                        text,
-                        {
-                            "provider": "openai",
-                            "model": candidate_model,
-                            "requested_model": primary_model,
-                            "attempted_models": attempt_models,
-                            "fallback_used": candidate_model != primary_model,
-                            "mode": "live",
-                            "response_api": "responses",
-                            "reasoning": {
-                                "summary_mode": "auto",
-                                "available": len(reasoning_summaries) > 0,
-                                "summaries": reasoning_summaries,
-                            },
-                        },
-                    )
-            except Exception as exc:  # noqa: BLE001
-                response_api_error = str(exc)
-
-        try:
-            response = client.chat.completions.create(
-                model=candidate_model,
-                temperature=temperature,
-                messages=messages,
-            )
-            text = (response.choices[0].message.content or "").strip()
-            return (
-                text,
-                {
-                    "provider": "openai",
-                    "model": candidate_model,
-                    "requested_model": primary_model,
-                    "attempted_models": attempt_models,
-                    "fallback_used": candidate_model != primary_model,
-                    "mode": "live",
-                    "response_api": "chat.completions",
-                    "reasoning": {
-                        "summary_mode": "auto",
-                        "available": False,
-                        "summaries": [],
-                    },
-                },
-            )
-        except Exception as exc:  # noqa: BLE001
-            completion_error = str(exc)
-            if response_api_error:
-                last_error = f"responses.create failed: {response_api_error[:120]} ; chat.completions failed: {completion_error[:120]}"
-            else:
-                last_error = completion_error
-            continue
-
-    return (
-        f"[fallback:{primary_model}] {user_prompt[:280]}",
-        {
-            "provider": "openai",
-            "model": primary_model,
-            "attempted_models": attempt_models,
-            "mode": "simulated",
-            "reason": f"OpenAI call failed: {last_error[:180]}",
-        },
-    )
 
 
 def _configured_agent_assets_root(repo_root: Path) -> Path | None:
@@ -5106,6 +5599,124 @@ def _mask_secret_ref(secret_ref: str) -> str:
     if len(clean) <= 6:
         return "***"
     return f"{clean[:3]}***{clean[-2:]}"
+
+
+def _mask_api_key(api_key: str) -> str:
+    clean = str(api_key or "").strip()
+    if not clean:
+        return ""
+    if len(clean) <= 8:
+        return "*" * len(clean)
+    return f"{clean[:4]}***{clean[-4:]}"
+
+
+def _secret_ref_to_env_var(secret_ref: str) -> str:
+    normalized = re.sub(r"[^a-zA-Z0-9]+", "_", str(secret_ref or "").strip()).strip("_")
+    return normalized.upper()
+
+
+def _resolve_secret_ref_value(secret_ref: str) -> str:
+    clean = str(secret_ref or "").strip()
+    if not clean:
+        return ""
+    env_var = _secret_ref_to_env_var(clean)
+    return str(os.getenv(env_var, "") or "").strip()
+
+
+def _provider_key_seed() -> bytes:
+    explicit = str(os.getenv("FRONTIER_SECRETS_ENCRYPTION_KEY") or "").strip()
+    if explicit:
+        return explicit.encode("utf-8")
+    fallback = str(os.getenv("A2A_JWT_SECRET") or os.getenv("FRONTIER_APP_SECRET") or "").strip()
+    if fallback:
+        return fallback.encode("utf-8")
+    raise HTTPException(
+        status_code=500,
+        detail="FRONTIER_SECRETS_ENCRYPTION_KEY or A2A_JWT_SECRET is required for encrypted provider credentials",
+    )
+
+
+def _provider_cipher() -> Fernet:
+    if Fernet is None:
+        raise HTTPException(
+            status_code=500, detail="cryptography dependency unavailable for secret encryption"
+        )
+    digest = hashlib.sha256(_provider_key_seed()).digest()
+    return Fernet(base64.urlsafe_b64encode(digest))
+
+
+def _encrypt_provider_secret(secret_value: str) -> str:
+    return _provider_cipher().encrypt(str(secret_value).strip().encode("utf-8")).decode("utf-8")
+
+
+def _decrypt_provider_secret(ciphertext: str) -> str:
+    try:
+        return _provider_cipher().decrypt(str(ciphertext).encode("utf-8")).decode("utf-8")
+    except InvalidToken as exc:  # pragma: no cover - crypto failure path
+        raise HTTPException(
+            status_code=500, detail="Stored provider credentials could not be decrypted"
+        ) from exc
+
+
+def _normalize_chat_provider(provider: str) -> str:
+    normalized = str(provider or "").strip().lower()
+    aliases = {
+        "openai-compatible": "openai-compatible",
+        "openai_compatible": "openai-compatible",
+        "openai": "openai",
+        "anthropic": "anthropic",
+        "claude": "anthropic",
+        "gemini": "gemini",
+        "google": "gemini",
+    }
+    resolved = aliases.get(normalized, normalized)
+    if resolved not in {"openai", "openai-compatible", "anthropic", "gemini"}:
+        raise HTTPException(status_code=400, detail=f"Unsupported chat provider '{provider}'")
+    return resolved
+
+
+def _normalize_provider_base_url(provider: str, base_url: str) -> str:
+    clean = str(base_url or "").strip()
+    if not clean:
+        defaults = {
+            "openai": "https://api.openai.com/v1",
+            "openai-compatible": "https://api.openai.com/v1",
+            "anthropic": "https://api.anthropic.com/v1",
+            "gemini": "https://generativelanguage.googleapis.com/v1beta",
+        }
+        return defaults[provider]
+    return _normalize_absolute_http_url(clean, setting_name="provider_base_url")
+
+
+def _build_user_provider_config_payload(
+    principal_id: str, provider: str, config: StoredUserRuntimeProviderConfig
+) -> dict[str, Any]:
+    api_key = _decrypt_provider_secret(config.api_key_encrypted)
+    return {
+        "principal_id": principal_id,
+        "provider": provider,
+        "configured": True,
+        "model": config.model,
+        "base_url": _sanitize_base_url(config.base_url),
+        "api_key_masked": _mask_api_key(api_key),
+        "preferred": config.preferred,
+        "created_at": config.created_at,
+        "updated_at": config.updated_at,
+    }
+
+
+def _user_provider_configs(principal_id: str) -> dict[str, StoredUserRuntimeProviderConfig]:
+    return store.user_runtime_provider_configs.get(str(principal_id), {})
+
+
+def _preferred_user_provider(principal_id: str) -> StoredUserRuntimeProviderConfig | None:
+    configs = _user_provider_configs(principal_id)
+    for config in configs.values():
+        if config.preferred:
+            return config
+    for config in configs.values():
+        return config
+    return None
 
 
 def _sanitize_base_url(base_url: str) -> str:
@@ -6377,14 +6988,26 @@ def _execute_node(
             if isinstance(delegated_meta, dict):
                 tool_result_payload["framework_meta"] = delegated_meta
         else:
-            tool_result_payload = _simulate_tool_execution_payload(
-                tool_id=tool_id,
-                request_payload=request_payload,
-                context_payload=context_payload,
-                call_index=tool_calls,
-                endpoint_url=endpoint_url,
-                method=str(tool_config.get("method") or "POST"),
-            )
+            try:
+                tool_result_payload = _execute_native_tool_call(
+                    tool_id=tool_id,
+                    tool_config=tool_config,
+                    request_payload=request_payload,
+                    context_payload=context_payload,
+                    call_index=tool_calls,
+                    endpoint_url=endpoint_url,
+                    method=str(tool_config.get("method") or "POST"),
+                )
+            except Exception as exc:  # noqa: BLE001
+                tool_result_payload = {
+                    "ok": False,
+                    "rejected": True,
+                    "message": f"Tool call failed: {exc}",
+                    "tool_id": tool_id,
+                    "call_index": tool_calls,
+                    "endpoint_url": _sanitize_base_url(endpoint_url),
+                    "method": str(tool_config.get("method") or "POST"),
+                }
             tool_result_payload["framework"] = "native"
             tool_result_payload["executed_engine"] = "native"
             tool_result_payload["runtime_mode"] = "native"
@@ -6524,11 +7147,13 @@ def _execute_node(
             if not isinstance(docs, list):
                 docs = []
         else:
-            docs = [
-                {"id": f"doc-{i}", "score": round(0.95 - (i * 0.04), 2), "source": source_id}
-                for i in range(1, doc_count + 1)
-            ]
-            grounding_context = f"Retrieved {len(docs)} context documents from trusted source."
+            docs, grounding_context = _native_retrieval_documents(
+                query_payload=query_payload,
+                source_id=source_id,
+                source_url=source_url,
+                top_k=doc_count,
+                execution_state=execution_state,
+            )
             retrieval_meta = {"framework": "native", "mode": "live"}
 
         return {
@@ -6999,6 +7624,10 @@ class InMemoryStore:
                 },
             }
         }
+        self.run_streams: dict[str, list[dict[str, Any]]] = {
+            "11111111-1111-4111-8111-111111111111": []
+        }
+        self.run_stream_complete: dict[str, bool] = {"11111111-1111-4111-8111-111111111111": False}
 
         self.artifacts: list[ArtifactSummary] = [
             ArtifactSummary(
@@ -7026,6 +7655,9 @@ class InMemoryStore:
             )
         ]
         self.memory_by_session: dict[str, list[dict[str, Any]]] = defaultdict(list)
+        self.user_runtime_provider_configs: dict[
+            str, dict[str, StoredUserRuntimeProviderConfig]
+        ] = {}
 
         self.integrations: dict[str, IntegrationDefinition] = {
             "int-http-001": IntegrationDefinition(
@@ -10122,6 +10754,12 @@ def _serialize_store_state() -> dict[str, Any]:
         "artifacts": [item.model_dump() for item in store.artifacts],
         "inbox": [item.model_dump() for item in store.inbox],
         "memory_by_session": dict(store.memory_by_session),
+        "user_runtime_provider_configs": {
+            principal_id: {
+                provider: config.model_dump() for provider, config in provider_configs.items()
+            }
+            for principal_id, provider_configs in store.user_runtime_provider_configs.items()
+        },
         "platform_settings": store.platform_settings.model_dump(),
         "integrations": [item.model_dump() for item in store.integrations.values()],
         "agent_templates": [item.model_dump() for item in store.agent_templates.values()],
@@ -10307,6 +10945,22 @@ def _apply_store_state(payload: dict[str, Any]) -> None:
             if isinstance(entries, list):
                 store.memory_by_session[str(session_id)] = entries
 
+    user_provider_payload = payload.get("user_runtime_provider_configs")
+    if isinstance(user_provider_payload, dict):
+        store.user_runtime_provider_configs = {}
+        for principal_id, provider_configs in user_provider_payload.items():
+            if not isinstance(provider_configs, dict):
+                continue
+            hydrated_configs: dict[str, StoredUserRuntimeProviderConfig] = {}
+            for provider, config_payload in provider_configs.items():
+                try:
+                    hydrated = StoredUserRuntimeProviderConfig.model_validate(config_payload)
+                except Exception:  # noqa: BLE001
+                    continue
+                hydrated_configs[str(provider)] = hydrated
+            if hydrated_configs:
+                store.user_runtime_provider_configs[str(principal_id)] = hydrated_configs
+
     platform_settings_payload = payload.get("platform_settings")
     if isinstance(platform_settings_payload, dict):
         try:
@@ -10380,6 +11034,23 @@ def _persist_store_state() -> None:
         _POSTGRES_STATE.save_state(_serialize_store_state())
     except Exception:  # noqa: BLE001
         return
+
+
+def _append_run_stream_event(run_id: str, event_type: str, payload: dict[str, Any]) -> None:
+    stream = store.run_streams.setdefault(run_id, [])
+    stream.append(
+        {
+            "id": f"stream-{uuid4()}",
+            "type": event_type,
+            "createdAt": _now_iso(),
+            "payload": payload,
+        }
+    )
+
+
+def _mark_run_stream_complete(run_id: str) -> None:
+    store.run_stream_complete[run_id] = True
+    _append_run_stream_event(run_id, "complete", {"run_id": run_id})
 
 
 def _merge_missing_bootstrap_content() -> None:
@@ -12081,16 +12752,109 @@ def get_federation_status(request: Request) -> dict[str, Any]:
 def get_runtime_providers(request: Request) -> dict[str, Any]:
     actor = _enforce_request_authn(request, action="runtime.providers.read")
     _append_audit_event("runtime.providers.read", actor, "allowed")
+    principal = _resolve_auth_context_principal(request, actor)
     status = _openai_status()
+    providers = [status.model_dump()]
+    for provider_name, provider_config in sorted(
+        _user_provider_configs(principal["principal_id"]).items()
+    ):
+        providers.append(
+            {
+                "provider": provider_name,
+                "configured": True,
+                "model": provider_config.model,
+                "mode": "live",
+                "preferred": provider_config.preferred,
+                "base_url": _sanitize_base_url(provider_config.base_url),
+            }
+        )
     framework_adapters = {
         engine: _framework_runtime_probe(engine)
         for engine in sorted(_SUPPORTED_RUNTIME_ENGINES)
         if engine != "native"
     }
     return {
-        "providers": [status.model_dump()],
+        "providers": providers,
         "framework_adapters": framework_adapters,
     }
+
+
+@app.get("/runtime/user-providers")
+def get_user_runtime_providers(request: Request) -> dict[str, Any]:
+    actor = _enforce_request_authn(request, action="runtime.user_providers.read")
+    principal = _resolve_auth_context_principal(request, actor)
+    configs = _user_provider_configs(principal["principal_id"])
+    return {
+        "principal_id": principal["principal_id"],
+        "providers": [
+            _build_user_provider_config_payload(principal["principal_id"], provider_name, config)
+            for provider_name, config in sorted(configs.items())
+        ],
+    }
+
+
+@app.put("/runtime/user-providers/{provider}")
+def save_user_runtime_provider(
+    provider: str, payload: UserRuntimeProviderConfigPayload, request: Request
+) -> dict[str, Any]:
+    actor = _enforce_request_authn(request, action="runtime.user_providers.write")
+    principal = _resolve_auth_context_principal(request, actor)
+    normalized_provider = _normalize_chat_provider(provider)
+    model = str(payload.model or "").strip()
+    if not model:
+        raise HTTPException(status_code=400, detail="model is required")
+
+    provider_configs = dict(_user_provider_configs(principal["principal_id"]))
+    if payload.preferred:
+        provider_configs = {
+            key: value.model_copy(update={"preferred": False})
+            for key, value in provider_configs.items()
+        }
+
+    now = _now_iso()
+    existing = provider_configs.get(normalized_provider)
+    stored = StoredUserRuntimeProviderConfig(
+        provider=normalized_provider,
+        model=model,
+        base_url=_normalize_provider_base_url(normalized_provider, payload.base_url),
+        api_key_encrypted=_encrypt_provider_secret(payload.api_key),
+        preferred=bool(payload.preferred),
+        created_at=existing.created_at if existing else now,
+        updated_at=now,
+    )
+    provider_configs[normalized_provider] = stored
+    store.user_runtime_provider_configs[principal["principal_id"]] = provider_configs
+    _persist_store_state()
+    _append_audit_event(
+        "runtime.user_providers.write",
+        actor,
+        "allowed",
+        {"principal_id": principal["principal_id"], "provider": normalized_provider},
+    )
+    return _build_user_provider_config_payload(
+        principal["principal_id"], normalized_provider, stored
+    )
+
+
+@app.delete("/runtime/user-providers/{provider}")
+def delete_user_runtime_provider(provider: str, request: Request) -> dict[str, bool]:
+    actor = _enforce_request_authn(request, action="runtime.user_providers.delete")
+    principal = _resolve_auth_context_principal(request, actor)
+    normalized_provider = _normalize_chat_provider(provider)
+    provider_configs = dict(_user_provider_configs(principal["principal_id"]))
+    provider_configs.pop(normalized_provider, None)
+    if provider_configs:
+        store.user_runtime_provider_configs[principal["principal_id"]] = provider_configs
+    else:
+        store.user_runtime_provider_configs.pop(principal["principal_id"], None)
+    _persist_store_state()
+    _append_audit_event(
+        "runtime.user_providers.delete",
+        actor,
+        "allowed",
+        {"principal_id": principal["principal_id"], "provider": normalized_provider},
+    )
+    return {"ok": True}
 
 
 @app.get("/runtime/l3-parity-report")
@@ -12580,168 +13344,7 @@ def create_workflow_run(
         )
         return {"id": run_id, "status": "blocked"}
 
-    system_prompt, system_prompt_source = _resolve_agent_system_prompt(
-        selected_agent_definition,
-        requested_token=selected_agent_token or _DEFAULT_CHAT_AGENT_SOURCE_ID,
-    )
-
-    selected_model = _resolve_agent_chat_model(selected_agent_definition)
-    request_prompt = _with_architecture_contract(
-        model_prompt or "Execute the requested workflow task.",
-        enabled=_should_enforce_architecture_contract(
-            selected_agent=selected_agent_definition, prompt_text=model_prompt
-        ),
-    )
-
-    response_text, model_meta = _run_openai_chat(
-        system_prompt=system_prompt,
-        user_prompt=request_prompt,
-        model=selected_model,
-        temperature=0.2,
-    )
-
-    if str(model_meta.get("mode") or "") != "live":
-        reason = str(model_meta.get("reason") or "Agent execution provider is not available.")
-        failure_artifact = ArtifactSummary(
-            id=str(uuid4()),
-            name="Agent Execution Failure Report",
-            status="Blocked",
-            version=1,
-        )
-        _upsert_artifact_summary(failure_artifact)
-        store.runs[run_id] = WorkflowRunSummary(
-            id=run_id,
-            title=title,
-            status="Failed",
-            updatedAt="just now",
-            progressLabel="Provider configuration error",
-        )
-        store.run_events[run_id] = [
-            WorkflowRunEvent(
-                id=f"evt-{uuid4()}",
-                type="error",
-                title="Agent execution failed",
-                summary=reason,
-                createdAt=_now_iso(),
-                metadata={
-                    "selected_agent_id": selected_agent_id,
-                    "selected_agent_name": selected_agent,
-                    "model": model_meta,
-                    "system_prompt_source": system_prompt_source,
-                },
-            ),
-            WorkflowRunEvent(
-                id=f"evt-{uuid4()}",
-                type="artifact_created",
-                title="Failure artifact created",
-                summary="Captured provider/auth configuration failure details.",
-                createdAt=_now_iso(),
-                metadata={
-                    "artifact_id": failure_artifact.id,
-                    "artifact_name": failure_artifact.name,
-                },
-            ),
-        ]
-        store.run_details[run_id] = {
-            "artifacts": [failure_artifact.model_dump()],
-            "status": "Failed",
-            "graph": {
-                "nodes": [
-                    {"id": "n-trigger", "title": "Trigger", "type": "trigger", "x": 80, "y": 110},
-                    {
-                        "id": "n-agent",
-                        "title": selected_agent,
-                        "type": "agent",
-                        "x": 360,
-                        "y": 110,
-                        "config": {"agent_id": selected_agent_id},
-                    },
-                    {"id": "n-output", "title": "Output", "type": "output", "x": 660, "y": 110},
-                ],
-                "links": [
-                    {"from": "n-trigger", "to": "n-agent", "from_port": "output", "to_port": "in"},
-                    {"from": "n-agent", "to": "n-output", "from_port": "out", "to_port": "in"},
-                ],
-            },
-            "agent_traces": [
-                {
-                    "agent": selected_agent,
-                    "reasoningSummary": "Execution halted due to provider authentication/configuration error.",
-                    "actions": [
-                        "Parsed kickoff prompt",
-                        "Resolved agent prompt",
-                        "Failed provider auth/config check",
-                    ],
-                    "output": reason,
-                }
-            ],
-            "response_text": reason,
-            "approvals": {
-                "required": False,
-                "pending": False,
-            },
-            "access": _build_run_access_context(request, actor),
-        }
-        _persist_store_state()
-        _append_audit_event(
-            "workflow.run.create",
-            actor,
-            "error",
-            {"run_id": run_id, "status": "failed_provider"},
-        )
-        return {"id": run_id, "status": "failed"}
-
-    guardrail_output_triggered = False
-    guardrail_output_summary = ""
-    if chat_guardrail_config:
-        output_guardrail = _evaluate_guardrail(
-            response_text,
-            {
-                **chat_guardrail_config,
-                "stage": "output",
-                "tripwire_action": str(
-                    chat_guardrail_config.get("tripwire_action") or "reject_content"
-                ),
-            },
-            stage="output",
-        )
-        if output_guardrail.get("tripwire_triggered"):
-            guardrail_output_triggered = True
-            behavior = str(output_guardrail.get("behavior") or "reject_content")
-            if behavior in {"reject_content", "raise_exception"}:
-                response_text = str(
-                    chat_guardrail_config.get("reject_message")
-                    or "Response blocked by guardrail policy."
-                )
-            first_issue = next(
-                iter(output_guardrail.get("output_info", {}).get("issues", [])), None
-            )
-            if isinstance(first_issue, dict):
-                guardrail_output_summary = str(
-                    first_issue.get("message") or "Output blocked by guardrail."
-                )
-            else:
-                guardrail_output_summary = "Output blocked by guardrail."
-
-    approval_required = store.platform_settings.require_human_approval or any(
-        tag in {"need-review", "approval", "needs-approval"} for tag in requested_tags
-    )
-    artifact_id = str(uuid4())
-    artifact_status: Literal["Draft", "Needs Review", "Approved", "Blocked"] = (
-        "Blocked"
-        if guardrail_output_triggered
-        else ("Needs Review" if approval_required else "Draft")
-    )
-    artifacts = [
-        ArtifactSummary(
-            id=artifact_id,
-            name="Task Response",
-            status=artifact_status,
-            version=1,
-        )
-    ]
-    _upsert_artifact_summary(artifacts[0])
-
+    access_context = _build_run_access_context(request, actor)
     graph_nodes = [
         {"id": "n-trigger", "title": "Trigger", "type": "trigger", "x": 80, "y": 110},
         {
@@ -12759,39 +13362,13 @@ def create_workflow_run(
         {"from": "n-agent", "to": "n-output", "from_port": "output", "to_port": "in"},
     ]
 
-    run_status: Literal["Running", "Blocked", "Needs Review", "Done", "Failed"] = (
-        "Blocked"
-        if guardrail_output_triggered
-        else ("Needs Review" if approval_required else "Running")
-    )
-
     store.runs[run_id] = WorkflowRunSummary(
         id=run_id,
         title=title,
-        status=run_status,
+        status="Running",
         updatedAt="just now",
-        progressLabel="Step 2/3",
+        progressLabel="Queued",
     )
-    event_response_text = response_text
-    if store.platform_settings.mask_secrets_in_events:
-        event_response_text = _redact_sensitive_text(event_response_text)
-    event_response_summary, event_response_meta = _truncate_text_with_metadata(event_response_text)
-
-    reasoning_meta = (
-        model_meta.get("reasoning") if isinstance(model_meta.get("reasoning"), dict) else {}
-    )
-    reasoning_summaries = (
-        reasoning_meta.get("summaries") if isinstance(reasoning_meta.get("summaries"), list) else []
-    )
-    reasoning_summary_text = ""
-    for item in reasoning_summaries:
-        candidate = str(item or "").strip()
-        if candidate:
-            reasoning_summary_text = candidate
-            break
-    if not reasoning_summary_text:
-        reasoning_summary_text = "Processed the task prompt and generated a response."
-
     store.run_events[run_id] = [
         WorkflowRunEvent(
             id=f"evt-{uuid4()}",
@@ -12809,127 +13386,395 @@ def create_workflow_run(
             createdAt=_now_iso(),
             metadata={"tokens": tokens_raw},
         ),
-        WorkflowRunEvent(
-            id=f"evt-{uuid4()}",
-            type="agent_message",
-            title=f"{selected_agent} response",
-            summary=event_response_summary,
-            createdAt=_now_iso(),
-            metadata={
-                "model": model_meta,
-                "selected_agent_id": selected_agent_id,
-                "selected_agent_name": selected_agent,
-                "system_prompt_source": system_prompt_source,
-                "summary_truncated": bool(event_response_meta["truncated"]),
-                "summary_original_length": int(event_response_meta["original_length"]),
-                "summary_max_chars": int(event_response_meta["max_chars"]),
-                "summary_truncated_chars": int(event_response_meta["truncated_chars"]),
-            },
-        ),
-        WorkflowRunEvent(
-            id=f"evt-{uuid4()}",
-            type="artifact_created",
-            title="Artifact created",
-            summary="Task response artifact generated.",
-            createdAt=_now_iso(),
-            metadata={"artifact_id": artifact_id},
-        ),
     ]
-
-    if guardrail_output_triggered:
-        store.run_events[run_id].append(
-            WorkflowRunEvent(
-                id=f"evt-{uuid4()}",
-                type="guardrail_result",
-                title="Output blocked",
-                summary=guardrail_output_summary or "Output blocked by guardrail.",
-                createdAt=_now_iso(),
-                metadata={
-                    "selected_agent_id": selected_agent_id,
-                    "selected_agent_name": selected_agent,
-                },
-            )
-        )
-
-    if approval_required and not guardrail_output_triggered:
-        store.run_events[run_id].append(
-            WorkflowRunEvent(
-                id=f"evt-{uuid4()}",
-                type="approval_required",
-                title="Approval required",
-                summary="Run requires human approval before completion.",
-                createdAt=_now_iso(),
-                metadata={"artifact_id": artifact_id, "version": 1},
-            )
-        )
-
     store.run_details[run_id] = {
-        "artifacts": [artifact.model_dump() for artifact in artifacts],
-        "status": run_status,
-        "graph": {
-            "nodes": graph_nodes,
-            "links": graph_links,
-        },
+        "artifacts": [],
+        "status": "Running",
+        "graph": {"nodes": graph_nodes, "links": graph_links},
         "agent_traces": [
             {
                 "agent": selected_agent,
-                "reasoningSummary": reasoning_summary_text,
-                "actions": [
-                    "Parsed kickoff prompt",
-                    "Executed default chat agent"
-                    if selected_agent_token is None
-                    else "Executed selected agent",
-                    "Emitted response artifact",
-                ],
-                "output": response_text,
+                "reasoningSummary": "Queued for live model execution.",
+                "actions": ["Parsed kickoff prompt", "Queued agent execution"],
+                "output": "",
             }
         ],
-        "approvals": {
-            "required": approval_required and not guardrail_output_triggered,
-            "pending": approval_required and not guardrail_output_triggered,
-            "artifact_id": artifact_id,
-            "version": 1,
-            "scope": "final send/export",
-        },
-        "runtime": model_meta,
-        "response_text": response_text,
-        "access": _build_run_access_context(request, actor),
+        "approvals": {"required": False, "pending": False},
+        "runtime": {"mode": "live", "state": "queued"},
+        "response_text": "",
+        "access": access_context,
     }
-
-    _record_task_learning(
-        run_id=run_id,
-        actor=actor,
-        prompt_text=prompt_text,
-        response_text=response_text,
-        selected_agent_id=selected_agent_id,
-        selected_agent_name=selected_agent,
-        requested_workflows=requested_workflows,
-        requested_tags=requested_tags,
-    )
-
-    if approval_required:
-        store.inbox.insert(
-            0,
-            InboxItem(
-                id=str(uuid4()),
-                runId=run_id,
-                runName=title,
-                artifactType="Task Response",
-                reason="Approval required before task completion.",
-                queue="Needs Approval",
-            ),
-        )
-
-    _NEO4J_GRAPH.record_run(
-        run_id=run_id,
-        title=title,
-        agent=selected_agent,
-        workflow=requested_workflows[0] if requested_workflows else None,
-    )
-    _append_audit_event(
-        "workflow.run.create", actor, "allowed", {"run_id": run_id, "status": "started"}
-    )
+    store.run_streams[run_id] = []
+    store.run_stream_complete[run_id] = False
+    _append_run_stream_event(run_id, "status", {"status": "queued"})
     _persist_store_state()
+
+    def _complete_run() -> None:
+        try:
+            system_prompt, system_prompt_source = _resolve_agent_system_prompt(
+                selected_agent_definition,
+                requested_token=selected_agent_token or _DEFAULT_CHAT_AGENT_SOURCE_ID,
+            )
+            selected_model = _resolve_agent_chat_model(selected_agent_definition)
+            request_prompt = _with_architecture_contract(
+                model_prompt or "Execute the requested workflow task.",
+                enabled=_should_enforce_architecture_contract(
+                    selected_agent=selected_agent_definition, prompt_text=model_prompt
+                ),
+            )
+
+            response_buffer: list[str] = []
+
+            def _on_chunk(chunk: str) -> None:
+                if not chunk:
+                    return
+                response_buffer.append(chunk)
+                detail = store.run_details.get(run_id)
+                if isinstance(detail, dict):
+                    detail["response_text"] = "".join(response_buffer)
+                    store.run_details[run_id] = detail
+                _append_run_stream_event(run_id, "delta", {"text": chunk})
+
+            chunks, model_meta = _collect_chat_response_chunks(
+                system_prompt=system_prompt,
+                user_prompt=request_prompt,
+                model=selected_model,
+                temperature=0.2,
+                on_chunk=_on_chunk,
+            )
+            response_text = "".join(chunks).strip()
+
+            if str(model_meta.get("mode") or "") != "live":
+                reason = str(
+                    model_meta.get("reason") or "Agent execution provider is not available."
+                )
+                failure_artifact = ArtifactSummary(
+                    id=str(uuid4()),
+                    name="Agent Execution Failure Report",
+                    status="Blocked",
+                    version=1,
+                )
+                _upsert_artifact_summary(failure_artifact)
+                store.runs[run_id] = WorkflowRunSummary(
+                    id=run_id,
+                    title=title,
+                    status="Failed",
+                    updatedAt="just now",
+                    progressLabel="Provider configuration error",
+                )
+                store.run_events[run_id].extend(
+                    [
+                        WorkflowRunEvent(
+                            id=f"evt-{uuid4()}",
+                            type="error",
+                            title="Agent execution failed",
+                            summary=reason,
+                            createdAt=_now_iso(),
+                            metadata={
+                                "selected_agent_id": selected_agent_id,
+                                "selected_agent_name": selected_agent,
+                                "model": model_meta,
+                                "system_prompt_source": system_prompt_source,
+                            },
+                        ),
+                        WorkflowRunEvent(
+                            id=f"evt-{uuid4()}",
+                            type="artifact_created",
+                            title="Failure artifact created",
+                            summary="Captured provider/auth configuration failure details.",
+                            createdAt=_now_iso(),
+                            metadata={
+                                "artifact_id": failure_artifact.id,
+                                "artifact_name": failure_artifact.name,
+                            },
+                        ),
+                    ]
+                )
+                store.run_details[run_id] = {
+                    "artifacts": [failure_artifact.model_dump()],
+                    "status": "Failed",
+                    "graph": {"nodes": graph_nodes, "links": graph_links},
+                    "agent_traces": [
+                        {
+                            "agent": selected_agent,
+                            "reasoningSummary": "Execution halted due to provider authentication/configuration error.",
+                            "actions": [
+                                "Parsed kickoff prompt",
+                                "Resolved agent prompt",
+                                "Failed provider auth/config check",
+                            ],
+                            "output": reason,
+                        }
+                    ],
+                    "response_text": reason,
+                    "approvals": {"required": False, "pending": False},
+                    "runtime": model_meta,
+                    "access": access_context,
+                }
+                _append_run_stream_event(run_id, "error", {"message": reason})
+                _append_audit_event(
+                    "workflow.run.create",
+                    actor,
+                    "error",
+                    {"run_id": run_id, "status": "failed_provider"},
+                )
+                _persist_store_state()
+                _mark_run_stream_complete(run_id)
+                return
+
+            guardrail_output_triggered = False
+            guardrail_output_summary = ""
+            if chat_guardrail_config:
+                output_guardrail = _evaluate_guardrail(
+                    response_text,
+                    {
+                        **chat_guardrail_config,
+                        "stage": "output",
+                        "tripwire_action": str(
+                            chat_guardrail_config.get("tripwire_action") or "reject_content"
+                        ),
+                    },
+                    stage="output",
+                )
+                if output_guardrail.get("tripwire_triggered"):
+                    guardrail_output_triggered = True
+                    behavior = str(output_guardrail.get("behavior") or "reject_content")
+                    if behavior in {"reject_content", "raise_exception"}:
+                        response_text = str(
+                            chat_guardrail_config.get("reject_message")
+                            or "Response blocked by guardrail policy."
+                        )
+                    first_issue = next(
+                        iter(output_guardrail.get("output_info", {}).get("issues", [])), None
+                    )
+                    if isinstance(first_issue, dict):
+                        guardrail_output_summary = str(
+                            first_issue.get("message") or "Output blocked by guardrail."
+                        )
+                    else:
+                        guardrail_output_summary = "Output blocked by guardrail."
+
+            approval_required = store.platform_settings.require_human_approval or any(
+                tag in {"need-review", "approval", "needs-approval"} for tag in requested_tags
+            )
+            artifact_id = str(uuid4())
+            artifact_status: Literal["Draft", "Needs Review", "Approved", "Blocked"] = (
+                "Blocked"
+                if guardrail_output_triggered
+                else ("Needs Review" if approval_required else "Draft")
+            )
+            artifacts = [
+                ArtifactSummary(
+                    id=artifact_id,
+                    name="Task Response",
+                    status=artifact_status,
+                    version=1,
+                )
+            ]
+            _upsert_artifact_summary(artifacts[0])
+
+            run_status: Literal["Running", "Blocked", "Needs Review", "Done", "Failed"] = (
+                "Blocked"
+                if guardrail_output_triggered
+                else ("Needs Review" if approval_required else "Running")
+            )
+
+            store.runs[run_id] = WorkflowRunSummary(
+                id=run_id,
+                title=title,
+                status=run_status,
+                updatedAt="just now",
+                progressLabel="Step 2/3",
+            )
+            event_response_text = response_text
+            if store.platform_settings.mask_secrets_in_events:
+                event_response_text = _redact_sensitive_text(event_response_text)
+            event_response_summary, event_response_meta = _truncate_text_with_metadata(
+                event_response_text
+            )
+
+            reasoning_meta = (
+                model_meta.get("reasoning") if isinstance(model_meta.get("reasoning"), dict) else {}
+            )
+            reasoning_summaries = (
+                reasoning_meta.get("summaries")
+                if isinstance(reasoning_meta.get("summaries"), list)
+                else []
+            )
+            reasoning_summary_text = ""
+            for item in reasoning_summaries:
+                candidate = str(item or "").strip()
+                if candidate:
+                    reasoning_summary_text = candidate
+                    break
+            if not reasoning_summary_text:
+                reasoning_summary_text = "Processed the task prompt and generated a response."
+
+            store.run_events[run_id].extend(
+                [
+                    WorkflowRunEvent(
+                        id=f"evt-{uuid4()}",
+                        type="agent_message",
+                        title=f"{selected_agent} response",
+                        summary=event_response_summary,
+                        createdAt=_now_iso(),
+                        metadata={
+                            "model": model_meta,
+                            "selected_agent_id": selected_agent_id,
+                            "selected_agent_name": selected_agent,
+                            "system_prompt_source": system_prompt_source,
+                            "summary_truncated": bool(event_response_meta["truncated"]),
+                            "summary_original_length": int(event_response_meta["original_length"]),
+                            "summary_max_chars": int(event_response_meta["max_chars"]),
+                            "summary_truncated_chars": int(event_response_meta["truncated_chars"]),
+                        },
+                    ),
+                    WorkflowRunEvent(
+                        id=f"evt-{uuid4()}",
+                        type="artifact_created",
+                        title="Artifact created",
+                        summary="Task response artifact generated.",
+                        createdAt=_now_iso(),
+                        metadata={"artifact_id": artifact_id},
+                    ),
+                ]
+            )
+
+            if guardrail_output_triggered:
+                store.run_events[run_id].append(
+                    WorkflowRunEvent(
+                        id=f"evt-{uuid4()}",
+                        type="guardrail_result",
+                        title="Output blocked",
+                        summary=guardrail_output_summary or "Output blocked by guardrail.",
+                        createdAt=_now_iso(),
+                        metadata={
+                            "selected_agent_id": selected_agent_id,
+                            "selected_agent_name": selected_agent,
+                        },
+                    )
+                )
+
+            if approval_required and not guardrail_output_triggered:
+                store.run_events[run_id].append(
+                    WorkflowRunEvent(
+                        id=f"evt-{uuid4()}",
+                        type="approval_required",
+                        title="Approval required",
+                        summary="Run requires human approval before completion.",
+                        createdAt=_now_iso(),
+                        metadata={"artifact_id": artifact_id, "version": 1},
+                    )
+                )
+
+            store.run_details[run_id] = {
+                "artifacts": [artifact.model_dump() for artifact in artifacts],
+                "status": run_status,
+                "graph": {"nodes": graph_nodes, "links": graph_links},
+                "agent_traces": [
+                    {
+                        "agent": selected_agent,
+                        "reasoningSummary": reasoning_summary_text,
+                        "actions": [
+                            "Parsed kickoff prompt",
+                            "Executed default chat agent"
+                            if selected_agent_token is None
+                            else "Executed selected agent",
+                            "Emitted response artifact",
+                        ],
+                        "output": response_text,
+                    }
+                ],
+                "approvals": {
+                    "required": approval_required and not guardrail_output_triggered,
+                    "pending": approval_required and not guardrail_output_triggered,
+                    "artifact_id": artifact_id,
+                    "version": 1,
+                    "scope": "final send/export",
+                },
+                "runtime": model_meta,
+                "response_text": response_text,
+                "access": access_context,
+            }
+
+            _record_task_learning(
+                run_id=run_id,
+                actor=actor,
+                prompt_text=prompt_text,
+                response_text=response_text,
+                selected_agent_id=selected_agent_id,
+                selected_agent_name=selected_agent,
+                requested_workflows=requested_workflows,
+                requested_tags=requested_tags,
+            )
+
+            if approval_required:
+                store.inbox.insert(
+                    0,
+                    InboxItem(
+                        id=str(uuid4()),
+                        runId=run_id,
+                        runName=title,
+                        artifactType="Task Response",
+                        reason="Approval required before task completion.",
+                        queue="Needs Approval",
+                    ),
+                )
+
+            _NEO4J_GRAPH.record_run(
+                run_id=run_id,
+                title=title,
+                agent=selected_agent,
+                workflow=requested_workflows[0] if requested_workflows else None,
+            )
+            _append_run_stream_event(run_id, "final", {"text": response_text, "model": model_meta})
+            _append_audit_event(
+                "workflow.run.create",
+                actor,
+                "allowed",
+                {"run_id": run_id, "status": "started"},
+            )
+            _persist_store_state()
+            _mark_run_stream_complete(run_id)
+        except Exception as exc:  # noqa: BLE001
+            message = _sanitize_runtime_error_message(exc)
+            store.runs[run_id] = WorkflowRunSummary(
+                id=run_id,
+                title=title,
+                status="Failed",
+                updatedAt="just now",
+                progressLabel="Execution failed",
+            )
+            store.run_events.setdefault(run_id, []).append(
+                WorkflowRunEvent(
+                    id=f"evt-{uuid4()}",
+                    type="error",
+                    title="Run failed",
+                    summary=message,
+                    createdAt=_now_iso(),
+                    metadata={"selected_agent_id": selected_agent_id},
+                )
+            )
+            detail = (
+                store.run_details.get(run_id)
+                if isinstance(store.run_details.get(run_id), dict)
+                else {}
+            )
+            detail["status"] = "Failed"
+            detail["response_text"] = str(detail.get("response_text") or "")
+            detail["access"] = access_context
+            store.run_details[run_id] = detail
+            _append_run_stream_event(run_id, "error", {"message": message})
+            _append_audit_event(
+                "workflow.run.create",
+                actor,
+                "error",
+                {"run_id": run_id, "status": "failed_runtime", "message": message},
+            )
+            _persist_store_state()
+            _mark_run_stream_complete(run_id)
+
+    threading.Thread(target=_complete_run, daemon=True).start()
     return {"id": run_id, "status": "started"}
 
 
@@ -13159,6 +14004,42 @@ def get_workflow_run_events(run_id: str, request: Request) -> list[dict[str, Any
     actor = _enforce_request_authn(request, action="workflow.run.events.read")
     _enforce_run_access(request, actor, run_id, action="workflow.run.events.read")
     return [event.model_dump() for event in store.run_events.get(run_id, [])]
+
+
+@app.get("/workflow-runs/{run_id}/stream")
+def stream_workflow_run(run_id: str, request: Request) -> StreamingResponse:
+    actor = _enforce_request_authn(request, action="workflow.run.events.read")
+    _enforce_run_access(request, actor, run_id, action="workflow.run.events.read")
+
+    def event_stream() -> Any:
+        last_index = 0
+        keepalive_every = 15.0
+        last_keepalive = time.monotonic()
+        while True:
+            stream_items = store.run_streams.get(run_id, [])
+            while last_index < len(stream_items):
+                item = stream_items[last_index]
+                last_index += 1
+                yield f"data: {json.dumps(item)}\n\n"
+
+            if store.run_stream_complete.get(run_id):
+                break
+
+            now = time.monotonic()
+            if now - last_keepalive >= keepalive_every:
+                yield ": keepalive\n\n"
+                last_keepalive = now
+            time.sleep(0.25)
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @app.post("/workflow-runs/{run_id}/archive")
@@ -13418,6 +14299,21 @@ def test_integration(integration_id: str, request: Request) -> dict[str, Any]:
         and checks.get("no_embedded_credentials")
         and (not checks.get("secret_required") or checks.get("has_secret_ref"))
     )
+    connectivity_message = "Integration test failed one or more policy checks"
+    connectivity_warnings = list(diagnostics.get("warnings", []))
+    if is_valid and integration.base_url.strip():
+        try:
+            headers = _integration_auth_headers(integration)
+            with httpx.Client(
+                timeout=httpx.Timeout(10.0, connect=5.0), follow_redirects=True
+            ) as client:
+                response = client.request("GET", integration.base_url, headers=headers)
+                response.raise_for_status()
+            connectivity_message = f"Connectivity check succeeded ({response.status_code})"
+        except Exception as exc:  # noqa: BLE001
+            is_valid = False
+            connectivity_message = f"Connectivity check failed: {str(exc)[:180]}"
+            connectivity_warnings.append("Remote endpoint probe failed")
     if store.platform_settings.enforce_integration_policies and not bool(policy.get("ok", True)):
         is_valid = False
 
@@ -13425,7 +14321,7 @@ def test_integration(integration_id: str, request: Request) -> dict[str, Any]:
     metadata["last_test"] = {
         "at": _now_iso(),
         "ok": is_valid,
-        "warnings": diagnostics.get("warnings", []),
+        "warnings": connectivity_warnings,
         "checks": checks,
     }
     integration.metadata_json = metadata
@@ -13443,9 +14339,7 @@ def test_integration(integration_id: str, request: Request) -> dict[str, Any]:
         "ok": is_valid,
         "id": integration_id,
         "status": integration.status,
-        "message": "Connectivity check simulated successfully"
-        if is_valid
-        else "Integration test failed one or more policy checks",
+        "message": connectivity_message,
         "diagnostics": diagnostics,
     }
 

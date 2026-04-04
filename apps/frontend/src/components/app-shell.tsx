@@ -1,11 +1,12 @@
 "use client";
 
 import Link from "next/link";
-import { usePathname, useRouter } from "next/navigation";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { ApiStatusBanner } from "@/components/api-status-banner";
 import { ModeSwitch } from "@/components/mode-switch";
 import { LeftNav } from "@/components/navigation/left-nav";
+import { UserConsoleSidebar } from "@/components/navigation/user-console-sidebar";
 import { getOperatorSession, getPlatformVersionStatus, logoutOperator } from "@/lib/api";
 import type { AppMode, OperatorSession, PlatformVersionStatus } from "@/types/frontier";
 
@@ -37,8 +38,43 @@ function resolveOperatorInitials(session: OperatorSession | null): string {
   return label.slice(0, 2).toUpperCase();
 }
 
+function readLocalStorage(key: string): string | null {
+  if (typeof window === "undefined") {
+    return null;
+  }
+
+  const storage = window.localStorage;
+  if (!storage || typeof storage.getItem !== "function") {
+    return null;
+  }
+
+  try {
+    return storage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+
+function writeLocalStorage(key: string, value: string): void {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  const storage = window.localStorage;
+  if (!storage || typeof storage.setItem !== "function") {
+    return;
+  }
+
+  try {
+    storage.setItem(key, value);
+  } catch {
+    // Ignore storage write failures and continue with in-memory theme state.
+  }
+}
+
 export function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
+  const searchParams = useSearchParams();
   const router = useRouter();
   const isPublicAuthRoute = pathname.startsWith("/auth");
   const isProtectedRoute = !isPublicAuthRoute;
@@ -69,7 +105,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       return "dark";
     }
 
-    const stored = window.localStorage.getItem("frontier-theme");
+    const stored = readLocalStorage("frontier-theme");
     return stored === "light" ? "light" : "dark";
   });
   const [menuOpen, setMenuOpen] = useState(false);
@@ -92,7 +128,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     const html = document.documentElement;
     html.classList.remove("theme-light", "theme-dark");
     html.classList.add(`theme-${theme}`);
-    window.localStorage.setItem("frontier-theme", theme);
+    writeLocalStorage("frontier-theme", theme);
   }, [theme]);
 
   useEffect(() => {
@@ -178,6 +214,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const canBuilder = operatorSession?.capabilities.can_builder ?? false;
   const canAdmin = operatorSession?.capabilities.can_admin ?? false;
   const activeMode: AppMode = requestedMode === "builder" && canBuilder ? "builder" : "user";
+  const selectedSessionId = searchParams.get("session");
 
   if (isPublicAuthRoute) {
     return (
@@ -390,13 +427,22 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             borderRightWidth: sidebarExpanded ? "1px" : "0px",
           }}
         >
-          <LeftNav
-            mode={activeMode}
-            pathname={pathname}
-            inAdmin={inAdmin && canAdmin}
-            expanded={sidebarExpanded}
-            platformVersion={platformVersion}
-          />
+          {activeMode === "user" ? (
+            <UserConsoleSidebar
+              pathname={pathname}
+              selectedSessionId={selectedSessionId}
+              expanded={sidebarExpanded}
+              platformVersion={platformVersion}
+            />
+          ) : (
+            <LeftNav
+              mode={activeMode}
+              pathname={pathname}
+              inAdmin={inAdmin && canAdmin}
+              expanded={sidebarExpanded}
+              platformVersion={platformVersion}
+            />
+          )}
         </aside>
 
         <main

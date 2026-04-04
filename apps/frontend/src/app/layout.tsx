@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { Inter, Space_Mono } from "next/font/google";
+import { Suspense } from "react";
 import { AppShell } from "@/components/app-shell";
 import { ToastProvider } from "@/components/toast";
 import "./globals.css";
@@ -31,7 +32,9 @@ export default function RootLayout({
         className={`${inter.variable} ${spaceMono.variable} antialiased`}
       >
         <ToastProvider>
-          <AppShell>{children}</AppShell>
+          <Suspense fallback={<div className="min-h-screen bg-[hsl(var(--background))]" />}>
+            <AppShell>{children}</AppShell>
+          </Suspense>
         </ToastProvider>
       </body>
     </html>
