@@ -11,6 +11,12 @@ import {
   GuardrailRuleSet,
   InboxItem,
   IntegrationDefinition,
+  MCPConnectionDefinition,
+  MCPConnectionValidationResponse,
+  MCPStarterTemplate,
+  IntegrationOAuthConnectResponse,
+  IntegrationOAuthStatus,
+  IntegrationStarterTemplate,
   ObservabilityRunTrace,
   OperatorSession,
   PlatformHealthDetails,
@@ -246,6 +252,12 @@ export type UserRuntimeProviderConfig = {
 export type UserRuntimeProvidersResponse = {
   principal_id: string;
   providers: UserRuntimeProviderConfig[];
+};
+
+export type UserSkillsResponse = {
+  principal_id: string;
+  skills: string[];
+  updated_at?: string;
 };
 
 export type RuntimeEngineName = "native" | "langgraph" | "langchain" | "semantic-kernel" | "autogen";
@@ -898,6 +910,21 @@ export async function getUserRuntimeProviders(): Promise<UserRuntimeProviderConf
   return response.providers ?? [];
 }
 
+export async function getUserSkills(): Promise<UserSkillsResponse> {
+  return safeFetch<UserSkillsResponse>("/skills/user", {
+    principal_id: "anonymous",
+    skills: [],
+    updated_at: "",
+  });
+}
+
+export async function saveUserSkills(payload: { skills: string[] }): Promise<UserSkillsResponse> {
+  return strictFetch<UserSkillsResponse>("/skills/user", {
+    method: "PUT",
+    body: JSON.stringify(payload),
+  });
+}
+
 export async function saveUserRuntimeProvider(
   provider: string,
   payload: { api_key?: string; model?: string; available_models?: string[]; base_url?: string; preferred?: boolean },
@@ -964,6 +991,7 @@ export async function getPlatformSettings(): Promise<PlatformSettings> {
     a2a_replay_protection: true,
     default_guardrail_ruleset_id: null,
     global_blocked_keywords: [],
+    tenant_scoped_skills: [],
     collaboration_max_agents: 8,
     max_tool_calls_per_run: 8,
     max_retrieval_items: 8,
@@ -1342,6 +1370,37 @@ export async function getIntegrations(): Promise<IntegrationDefinition[]> {
   return safeFetch<IntegrationDefinition[]>("/integrations", []);
 }
 
+export async function getIntegrationStarterTemplates(): Promise<IntegrationStarterTemplate[]> {
+  return safeFetch<IntegrationStarterTemplate[]>("/integrations/starters", []);
+}
+
+export async function getMcpConnections(): Promise<MCPConnectionDefinition[]> {
+  return safeFetch<MCPConnectionDefinition[]>("/integrations/mcp", []);
+}
+
+export async function getMcpStarterTemplates(): Promise<MCPStarterTemplate[]> {
+  return safeFetch<MCPStarterTemplate[]>("/integrations/mcp/starters", []);
+}
+
+export async function saveMcpConnection(payload: Json): Promise<{ ok: boolean; id: string; status: MCPConnectionDefinition["status"] }> {
+  return strictFetch<{ ok: boolean; id: string; status: MCPConnectionDefinition["status"] }>("/integrations/mcp", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function validateMcpConnection(id: string): Promise<MCPConnectionValidationResponse> {
+  return strictFetch<MCPConnectionValidationResponse>(`/integrations/mcp/${id}/validate`, {
+    method: "POST",
+  });
+}
+
+export async function approveMcpConnection(id: string): Promise<{ ok: boolean; id: string; status: MCPConnectionDefinition["status"] }> {
+  return strictFetch<{ ok: boolean; id: string; status: MCPConnectionDefinition["status"] }>(`/integrations/mcp/${id}/approve`, {
+    method: "POST",
+  });
+}
+
 export async function saveIntegration(payload: Json): Promise<{ ok: boolean; id: string }> {
   return strictFetch<{ ok: boolean; id: string }>("/integrations", {
     method: "POST",
@@ -1355,4 +1414,34 @@ export async function testIntegration(id: string): Promise<IntegrationTestRespon
 
 export async function deleteIntegration(id: string): Promise<{ ok: boolean }> {
   return strictFetch<{ ok: boolean }>(`/integrations/${id}`, { method: "DELETE" });
+}
+
+export async function getIntegrationOAuthStatus(id: string): Promise<IntegrationOAuthStatus> {
+  return strictFetch<IntegrationOAuthStatus>(`/integrations/${id}/oauth/status`);
+}
+
+export async function connectIntegrationOAuth(
+  id: string,
+  payload?: { return_to?: string },
+): Promise<IntegrationOAuthConnectResponse> {
+  return strictFetch<IntegrationOAuthConnectResponse>(`/integrations/${id}/oauth/connect`, {
+    method: "POST",
+    body: JSON.stringify(payload ?? {}),
+  });
+}
+
+export async function refreshIntegrationOAuth(
+  id: string,
+): Promise<{ ok: boolean; status: IntegrationOAuthStatus }> {
+  return strictFetch<{ ok: boolean; status: IntegrationOAuthStatus }>(`/integrations/${id}/oauth/refresh`, {
+    method: "POST",
+  });
+}
+
+export async function disconnectIntegrationOAuth(
+  id: string,
+): Promise<{ ok: boolean; status: IntegrationOAuthStatus }> {
+  return strictFetch<{ ok: boolean; status: IntegrationOAuthStatus }>(`/integrations/${id}/oauth/disconnect`, {
+    method: "POST",
+  });
 }

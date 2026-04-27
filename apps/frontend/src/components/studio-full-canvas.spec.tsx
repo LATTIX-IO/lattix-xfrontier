@@ -7,8 +7,68 @@ import { StudioFullCanvas } from "@/components/studio-full-canvas";
 const reactFlowCanvasSpy = vi.fn();
 const autoLayoutSpy = vi.fn();
 const routerPushSpy = vi.fn();
-const { getNodeDefinitionsMock, runGraphMock } = vi.hoisted(() => ({
+const { getIntegrationsMock, getMcpConnectionsMock, getNodeDefinitionsMock, getUserSkillsMock, runGraphMock } = vi.hoisted(() => ({
+  getIntegrationsMock: vi.fn(async () => ([
+    {
+      id: "int-incident",
+      name: "Incident Connector",
+      type: "http",
+      status: "configured",
+      base_url: "https://incident.example.com",
+      auth_type: "none",
+      secret_ref: "",
+      capabilities: ["/incident-triage", "ops"],
+    },
+    {
+      id: "int-oncall",
+      name: "Oncall Connector",
+      type: "http",
+      status: "draft",
+      base_url: "https://oncall.example.com",
+      auth_type: "none",
+      secret_ref: "",
+      capabilities: ["tenant-oncall"],
+    },
+    {
+      id: "int-billing",
+      name: "Billing Connector",
+      type: "http",
+      status: "configured",
+      base_url: "https://billing.example.com",
+      auth_type: "none",
+      secret_ref: "",
+      capabilities: ["finance"],
+    },
+  ])),
+  getMcpConnectionsMock: vi.fn(async () => ([
+    {
+      id: "mcp-github-approved",
+      starter_id: "github",
+      wave: 1,
+      name: "GitHub MCP",
+      status: "approved",
+      server_url: "http://localhost:7071/mcp/github",
+      transport: "streamable_http",
+      auth_type: "bearer",
+      secret_ref: "secret/integrations/mcp/github/token",
+    },
+    {
+      id: "mcp-github-draft",
+      starter_id: "github",
+      wave: 1,
+      name: "Draft GitHub MCP",
+      status: "draft",
+      server_url: "http://localhost:7071/mcp/github-draft",
+      transport: "streamable_http",
+      auth_type: "bearer",
+      secret_ref: "secret/integrations/mcp/github/token",
+    },
+  ])),
   getNodeDefinitionsMock: vi.fn(async () => []),
+  getUserSkillsMock: vi.fn(async () => ({
+    principal_id: "user-1",
+    skills: ["/personal-research", "/incident-triage"],
+  })),
   runGraphMock: vi.fn(async () => ({
     run_id: "r1",
     status: "completed",
@@ -36,6 +96,8 @@ vi.mock("next/navigation", () => ({
 }));
 
 vi.mock("@/lib/api", () => ({
+  getIntegrations: getIntegrationsMock,
+  getMcpConnections: getMcpConnectionsMock,
   getNodeDefinitions: getNodeDefinitionsMock,
   getCollaborationSession: vi.fn(async () => ({
     id: "collab-1",
@@ -73,6 +135,7 @@ vi.mock("@/lib/api", () => ({
     require_human_approval: false,
     default_guardrail_ruleset_id: null,
     global_blocked_keywords: [],
+    tenant_scoped_skills: ["/tenant-oncall", "/incident-triage"],
     collaboration_max_agents: 8,
     default_runtime_engine: "native",
     default_runtime_strategy: "single",
@@ -87,6 +150,7 @@ vi.mock("@/lib/api", () => ({
     allow_runtime_engine_override: true,
     enforce_runtime_engine_allowlist: true,
   })),
+  getUserSkills: getUserSkillsMock,
   getMemorySession: vi.fn(async () => ({ session_id: "s", count: 0, entries: [] })),
   clearMemorySession: vi.fn(async () => ({ ok: true, session_id: "s" })),
   joinCollaborationSession: vi.fn(async () => ({
@@ -134,9 +198,57 @@ describe("StudioFullCanvas", () => {
   beforeEach(() => {
     reactFlowCanvasSpy.mockClear();
     autoLayoutSpy.mockClear();
+    getIntegrationsMock.mockClear();
+    getMcpConnectionsMock.mockClear();
     getNodeDefinitionsMock.mockClear();
+    getUserSkillsMock.mockClear();
     runGraphMock.mockClear();
     routerPushSpy.mockClear();
+  });
+
+  it("merges user and tenant skill suggestions into agent widget overrides", async () => {
+    await renderStudioFullCanvas({
+      entityType: "agent",
+      entityId: "agent-1",
+      entityName: "Agent One",
+      description: "desc",
+      initialNodes: [],
+      initialLinks: [],
+      externalWidgetOptionOverrides: { agent: { agent_id: ["agent-1"] } },
+      onSave: async () => {},
+      onPublish: async () => {},
+    });
+
+    await waitFor(() => expect(getUserSkillsMock).toHaveBeenCalledTimes(1));
+
+    const lastCall = reactFlowCanvasSpy.mock.calls[reactFlowCanvasSpy.mock.calls.length - 1]?.[0] as {
+      widgetOptionOverrides?: Record<string, Record<string, string[]>>;
+    };
+
+    expect(lastCall.widgetOptionOverrides?.agent?.agent_id).toEqual(["agent-1"]);
+    expect(lastCall.widgetOptionOverrides?.agent?.skills).toEqual([
+      "/personal-research",
+      "/incident-triage",
+      "/tenant-oncall",
+    ]);
+    expect(lastCall.widgetOptionOverrides?.["tool-call"]?.tool_id).toEqual([
+      "int-incident",
+      "int-oncall",
+      "tool/unspecified",
+      "tool/search",
+      "tool/http",
+      "tool/retrieval",
+      "tool/code",
+      "tool/sql",
+      "tool/file",
+      "tool/email",
+      "tool/slack",
+      "tool/mcp",
+      "int-billing",
+    ]);
+    expect(lastCall.widgetOptionOverrides?.["tool-call"]?.mcp_connection_id).toEqual([
+      "mcp-github-approved",
+    ]);
   });
 
   it("hides internal runtime controls in standard mode", async () => {

@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { SettingsRailCard, SettingsShell } from "@/components/settings-shell";
-import { getAtfAlignmentReport, getPlatformSettings, savePlatformSettings } from "@/lib/api";
+import { getAtfAlignmentReport, getPlatformSettings, getUserSkills, savePlatformSettings, saveUserSkills } from "@/lib/api";
 import type { AtfAlignmentReport } from "@/types/frontier";
 
 function normalizeHexColor(value: string, fallback: string): string {
@@ -10,11 +10,19 @@ function normalizeHexColor(value: string, fallback: string): string {
   return /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/.test(trimmed) ? trimmed : fallback;
 }
 
+function parseSkillList(value: string): string[] {
+  return value
+    .split(/\r?\n|,/)
+    .map((item) => item.trim())
+    .filter((item) => item.length > 0);
+}
+
 const sectionNav = [
   { id: "section-brand", label: "Brand & Identity", description: "Identity and support metadata exposed across the console." },
   { id: "section-security", label: "Security & Governance", description: "Default controls for approvals, secrets, and emergency posture." },
   { id: "section-runtime", label: "Runtime Policy", description: "Shared engine strategy and hybrid routing defaults." },
   { id: "section-user-defaults", label: "User Defaults", description: "Kickoff and review preferences applied to new work." },
+  { id: "section-user-skills", label: "Personal /skills", description: "User-scoped slash skills available only to your operator profile." },
 ] as const;
 
 export default function SettingsPage() {
@@ -55,6 +63,9 @@ export default function SettingsPage() {
   const [defaultGuardrailRulesetId, setDefaultGuardrailRulesetId] = useState("");
   const [globalBlockedKeywords, setGlobalBlockedKeywords] = useState("");
   const [collaborationMaxAgents, setCollaborationMaxAgents] = useState("8");
+  const [userScopedSkills, setUserScopedSkills] = useState("");
+  const [userSkillsSaveState, setUserSkillsSaveState] = useState<"idle" | "saving" | "saved" | "error">("idle");
+  const [userSkillsSaveError, setUserSkillsSaveError] = useState<string | null>(null);
   const [defaultRuntimeStrategy, setDefaultRuntimeStrategy] = useState<"single" | "hybrid">("single");
   const [defaultHybridRouting, setDefaultHybridRouting] = useState<{
     default: string;
@@ -73,7 +84,7 @@ export default function SettingsPage() {
   useEffect(() => {
     let cancelled = false;
     async function loadSettings() {
-      const [settings, report] = await Promise.all([getPlatformSettings(), getAtfAlignmentReport()]);
+      const [settings, report, userSkills] = await Promise.all([getPlatformSettings(), getAtfAlignmentReport(), getUserSkills()]);
       if (cancelled) {
         return;
       }
@@ -101,6 +112,7 @@ export default function SettingsPage() {
       setDefaultGuardrailRulesetId(settings.default_guardrail_ruleset_id ?? "");
       setGlobalBlockedKeywords(settings.global_blocked_keywords.join(", "));
       setCollaborationMaxAgents(String(settings.collaboration_max_agents));
+      setUserScopedSkills((userSkills.skills ?? []).join("\n"));
       setDefaultRuntimeStrategy((settings.default_runtime_strategy ?? "single") as "single" | "hybrid");
       setDefaultHybridRouting({
         default: settings.default_hybrid_runtime_routing?.default ?? settings.default_runtime_engine ?? "native",
@@ -119,6 +131,26 @@ export default function SettingsPage() {
       cancelled = true;
     };
   }, []);
+
+  async function handleSaveUserSkills() {
+    setUserSkillsSaveState("saving");
+    setUserSkillsSaveError(null);
+    try {
+      const response = await saveUserSkills({
+        skills: parseSkillList(userScopedSkills),
+      });
+      setUserScopedSkills((response.skills ?? []).join("\n"));
+      setUserSkillsSaveState("saved");
+      setTimeout(() => setUserSkillsSaveState("idle"), 2500);
+    } catch (error) {
+      setUserSkillsSaveState("error");
+      setUserSkillsSaveError(error instanceof Error ? error.message : "Could not save personal skills.");
+      setTimeout(() => {
+        setUserSkillsSaveState("idle");
+        setUserSkillsSaveError(null);
+      }, 4000);
+    }
+  }
 
   async function handleSavePlatformSettings() {
     setSaveState("saving");
@@ -570,6 +602,37 @@ export default function SettingsPage() {
                 </select>
               </label>
             </div>
+          </article>
+
+          <article id="section-user-skills" className="fx-panel p-3 scroll-mt-32">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <h2 className="text-sm font-semibold">Personal /skills</h2>
+                <p className="fx-muted text-xs">Define user-scoped slash skills that only apply to your operator profile.</p>
+              </div>
+              <div className="flex items-center gap-2">
+                {userSkillsSaveState === "error" ? <p className="text-xs text-red-300">{userSkillsSaveError ?? "Could not save personal skills."}</p> : null}
+                <button
+                  type="button"
+                  className="fx-btn-secondary px-3 py-2 text-sm"
+                  onClick={handleSaveUserSkills}
+                  disabled={!loaded || userSkillsSaveState === "saving"}
+                >
+                  {userSkillsSaveState === "saving" ? "Saving..." : userSkillsSaveState === "saved" ? "Saved" : "Save /skills"}
+                </button>
+              </div>
+            </div>
+
+            <label className="mt-3 block text-xs">
+              Personal /skills
+              <textarea
+                className="fx-field mt-1 min-h-28 w-full px-2 py-2 text-sm"
+                value={userScopedSkills}
+                onChange={(event) => setUserScopedSkills(event.target.value)}
+                placeholder="/incident-triage&#10;/research-brief&#10;/customer-followup"
+              />
+              <span className="mt-2 block fx-muted">Enter one skill per line. A leading slash is optional and will be normalized on save.</span>
+            </label>
           </article>
     </SettingsShell>
   );

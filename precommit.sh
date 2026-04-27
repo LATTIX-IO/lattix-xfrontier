@@ -210,7 +210,7 @@ run_gitleaks() {
 }
 
 run_trivy() {
-  trivy fs --scanners vuln,misconfig --severity HIGH,CRITICAL --exit-code 1 --skip-dirs .venv,.next,node_modules,dist .
+  trivy fs --scanners vuln,misconfig --severity HIGH,CRITICAL --exit-code 1 --skip-dirs .venv,.next,node_modules,dist,.claude/worktrees .
 }
 
 run_syft_sbom() {

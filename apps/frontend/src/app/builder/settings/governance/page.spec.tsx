@@ -56,6 +56,7 @@ const { getOperatorSessionMock, getPlatformSettingsMock, getPlatformSecurityPoli
     require_a2a_runtime_headers: true,
     a2a_require_signed_messages: true,
     a2a_replay_protection: true,
+    tenant_scoped_skills: ["/tenant-oncall"],
     enable_foss_guardrail_signals: true,
     foss_guardrail_signal_enforcement: "block_high",
   })),
@@ -107,6 +108,7 @@ describe("BuilderGovernanceSettingsPage", () => {
 
     fireEvent.click(screen.getByLabelText(/emergency read-only mode/i));
     fireEvent.click(screen.getByLabelText(/show console classification banner/i));
+    fireEvent.change(screen.getByLabelText(/tenant-scoped \/skills/i), { target: { value: "/tenant-oncall\n/tenant-research" } });
     fireEvent.change(screen.getByLabelText(/console banner text/i), { target: { value: "Restricted • Incident Console" } });
     fireEvent.change(screen.getByLabelText(/banner background color/i), { target: { value: "#1d4ed8" } });
     fireEvent.change(screen.getByLabelText(/banner text color/i), { target: { value: "#eff6ff" } });
@@ -120,6 +122,7 @@ describe("BuilderGovernanceSettingsPage", () => {
       console_classification_banner_text: "Restricted • Incident Console",
       console_classification_banner_background_color: "#1d4ed8",
       console_classification_banner_text_color: "#eff6ff",
+      tenant_scoped_skills: ["/tenant-oncall", "/tenant-research"],
     }));
     await waitFor(() => expect(addToastMock).toHaveBeenCalledWith("success", "Builder security settings saved."));
   });

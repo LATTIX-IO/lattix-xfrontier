@@ -165,9 +165,20 @@ function toListString(values?: string[]): string {
   return (values ?? []).join(", ");
 }
 
+function toLineListString(values?: string[]): string {
+  return (values ?? []).join("\n");
+}
+
 function parseList(value: string): string[] {
   return value
     .split(",")
+    .map((item) => item.trim())
+    .filter((item) => item.length > 0);
+}
+
+function parseSkillList(value: string): string[] {
+  return value
+    .split(/\r?\n|,/)
     .map((item) => item.trim())
     .filter((item) => item.length > 0);
 }
@@ -261,6 +272,7 @@ export function BuilderSettingsWorkspace({ view }: BuilderSettingsWorkspaceProps
   const [allowedMcpServers, setAllowedMcpServers] = useState("");
   const [allowedRuntimeEngines, setAllowedRuntimeEngines] = useState("");
   const [highRiskToolPatterns, setHighRiskToolPatterns] = useState("");
+  const [tenantScopedSkills, setTenantScopedSkills] = useState("");
   const [maxToolCalls, setMaxToolCalls] = useState("8");
   const [maxRetrievalItems, setMaxRetrievalItems] = useState("8");
   const [maxCollaborationAgents, setMaxCollaborationAgents] = useState("8");
@@ -289,6 +301,7 @@ export function BuilderSettingsWorkspace({ view }: BuilderSettingsWorkspaceProps
         setAllowedMcpServers(toListString(settingsResponse.allowed_mcp_server_urls));
         setAllowedRuntimeEngines(toListString(settingsResponse.allowed_runtime_engines));
         setHighRiskToolPatterns(toListString(settingsResponse.high_risk_tool_patterns));
+        setTenantScopedSkills(toLineListString(settingsResponse.tenant_scoped_skills));
         setMaxToolCalls(String(settingsResponse.max_tool_calls_per_run ?? 8));
         setMaxRetrievalItems(String(settingsResponse.max_retrieval_items ?? 8));
         setMaxCollaborationAgents(String(settingsResponse.collaboration_max_agents ?? 8));
@@ -524,6 +537,7 @@ export function BuilderSettingsWorkspace({ view }: BuilderSettingsWorkspaceProps
       const payload = {
         default_guardrail_ruleset_id: guardrailRulesetId.trim() || null,
         global_blocked_keywords: parseList(blockedKeywords),
+        tenant_scoped_skills: parseSkillList(tenantScopedSkills),
         allowed_egress_hosts: parseList(allowedEgressHosts),
         allowed_retrieval_sources: parseList(allowedRetrievalSources),
         allowed_mcp_server_urls: parseList(allowedMcpServers),
@@ -1173,6 +1187,13 @@ export function BuilderSettingsWorkspace({ view }: BuilderSettingsWorkspaceProps
             </div>
 
             <div className="mt-3 grid gap-3 lg:grid-cols-3">
+              <ListField
+                label="Tenant-scoped /skills"
+                description="Slash skills inherited across the authenticated tenant scope. Enter one skill per line."
+                value={tenantScopedSkills}
+                onChange={setTenantScopedSkills}
+                placeholder="/tenant-oncall\n/tenant-research\n/tenant-support"
+              />
               <label className="block text-xs lg:col-span-3">
                 <span className="font-medium text-[var(--foreground)]">Console banner text</span>
                 <span className="mt-1 block fx-muted">Message displayed in the remaining top banner after the soft-launch strip is removed.</span>

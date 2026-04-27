@@ -1,8 +1,8 @@
 export type WidgetSpec = {
   key: string;
   label: string;
-  kind: "text" | "number" | "combo" | "toggle";
-  defaultValue: string | number | boolean;
+  kind: "text" | "number" | "combo" | "toggle" | "list";
+  defaultValue: string | number | boolean | string[];
   options?: string[];
   multiline?: boolean;
   help?: string;
@@ -248,6 +248,7 @@ const SCHEMAS: Record<string, NodeSchema> = {
       timeout_ms: 45000,
       execution_mode: "sync",
       system_prompt: "",
+      skills: [],
     },
     widgets: [
       { key: "agent_id", label: "agent_id", kind: "text", defaultValue: "", help: "Target agent identity to execute. Usually maps to seeded agent definitions." },
@@ -258,6 +259,7 @@ const SCHEMAS: Record<string, NodeSchema> = {
       { key: "timeout_ms", label: "timeout_ms", kind: "number", defaultValue: 45000, help: "Execution timeout per node run in milliseconds. Increase for long-running tasks." },
       { key: "execution_mode", label: "execution_mode", kind: "combo", defaultValue: "sync", options: ["sync", "async"], help: "sync waits for completion in-line; async is intended for background/deferred execution semantics." },
       { key: "system_prompt", label: "system_prompt", kind: "text", defaultValue: "", multiline: true, help: "Inline prompt fallback. If a prompt node is connected, connected prompt typically takes precedence depending on runtime composition order." },
+      { key: "skills", label: "skills", kind: "list", defaultValue: [], options: [], help: "Optional slash skills to attach to this agent node. Enter one skill per line or use the scoped suggestions below." },
     ],
     outputAliases: { output: "out", tool_api: "tool_request", query: "retrieval_query", request: "tool_request" },
   },
@@ -306,6 +308,7 @@ const SCHEMAS: Record<string, NodeSchema> = {
       { key: "auth_type", label: "auth_type", kind: "combo", defaultValue: "none", options: ["none", "api_key", "bearer", "oauth2", "basic", "mcp_token"], help: "Authentication strategy to apply for outbound call auth context." },
       { key: "auth_secret_ref", label: "auth_secret_ref", kind: "text", defaultValue: "", help: "Secret reference (not raw secret) used to resolve credentials at runtime." },
       { key: "input_schema", label: "input_schema", kind: "text", defaultValue: "", multiline: true, help: "Optional JSON schema or contract notes for expected input payload shape." },
+      { key: "mcp_connection_id", label: "mcp_connection_id", kind: "combo", defaultValue: "", options: [], help: "Approved staged MCP connection to resolve at runtime instead of hand-entering a server URL." },
       { key: "mcp_server_url", label: "mcp_server_url", kind: "text", defaultValue: "", help: "MCP endpoint URL. Must be approved by platform allowed_mcp_server_urls." },
       { key: "mcp_tool_name", label: "mcp_tool_name", kind: "text", defaultValue: "", help: "Tool/function name exposed by the MCP server." },
       { key: "timeout_ms", label: "timeout_ms", kind: "number", defaultValue: 30000, help: "Max tool execution time in milliseconds." },

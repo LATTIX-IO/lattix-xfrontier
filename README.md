@@ -50,6 +50,8 @@ Lattix xFrontier is built around four layers:
 └──────────────────────────────────────────────────────────┘
 ```
 
+The cortical column runtime follows the same zero-trust control-plane model. Column messages, assembly definitions, runtime steps, commitments, and causal graph projections are treated as untrusted until the backend admits them through signed-message verification, tenant ownership checks, column capability policy, assembly/runtime policy gates, replay/idempotency controls, redaction, and deployment-profile validation. The detailed architecture and runbook are in `docs/ARCHITECTURE.md`, `docs/SECURITY.md`, and `THREAT-MODEL.md`.
+
 ## Quick start
 
 1. Run the public bootstrap installer.
@@ -116,6 +118,8 @@ Supported runtime profiles are now explicit:
 - `hosted` — non-local profile that requires authenticated operator access and signed A2A runtime headers
 
 Set `FRONTIER_RUNTIME_PROFILE` when you need to pin the backend/runtime security posture explicitly. Legacy flags like `FRONTIER_SECURE_LOCAL_MODE` and `FRONTIER_REQUIRE_AUTHENTICATED_REQUESTS` still exist for compatibility, but the named profile is the canonical contract.
+
+Hosted deployments also require signed runtime messages, replay protection, egress allowlists, and MCP local-server policy unless remote MCP servers are explicitly confirmed with `FRONTIER_CONFIRM_REMOTE_MCP_SERVERS=true`. Operators can verify the active posture through authenticated `/healthz/details` and `/platform/settings`; both expose the `secure_profile` report used by startup/profile validation.
 
 Secure local installs now default to OIDC-backed operator authentication and disable unsigned header-only actor trust. The installer ships with a Casdoor preset by default, but can also emit generic OIDC settings for another IAM provider when you want to connect Frontier to an external identity plane.
 The frontend includes a generic `/auth` portal that points users to the configured provider-hosted sign-in and sign-up URLs, so the same console entry flow works with Casdoor or another OIDC-compliant IAM.
@@ -223,6 +227,17 @@ Windows PowerShell equivalents:
 .\scripts\frontier.ps1 test
 ```
 
+For the cortical column zero-trust MVP slice, use the focused verification suite below before merging or promoting behavior changes:
+
+```text
+python -m pytest tests/unit/test_cognition.py tests/unit/test_assembly_runner.py tests/unit/test_causal_state_persistence.py tests/unit/test_cognitive_transport.py
+python -m pytest apps/backend/tests/test_cortical_assembly_endpoint.py
+python -m pytest apps/backend/tests/test_generated_artifacts.py -k "secure_profile or runtime_profile or projection or tenant_allowed_runtime or tenant_denied_runtime"
+python -m py_compile apps/backend/app/main.py apps/backend/app/request_security.py frontier_runtime/cognition.py frontier_runtime/assembly_runner.py frontier_runtime/events.py frontier_runtime/envelope.py frontier_runtime/persistence.py
+```
+
+Expected coverage includes signed cognitive message admission, replay/idempotency hardening, column capability policy, assembly admission, shared runtime policy gates, commitment validation, sensitive-data redaction, audit event emission, projection safety, secure profile deployment checks, and local-development usability. No separate runtime test is required for documentation-only updates, but behavior-changing slices should update these docs with the applicable commands and expected suites.
+
 ## Deployment
 
 Default local deployment uses the secure full Compose stack in `docker-compose.yml`:
@@ -271,6 +286,8 @@ helm install lattix ./helm/lattix-frontier -f helm/lattix-frontier/values-prod.y
 
 The Helm chart is now pinned to the `hosted` runtime profile by default. It deploys the control-plane workloads shown in the chart (`lattix-api`, `lattix-orchestrator`, `lattix-envoy`, `lattix-opa`, `lattix-vault`, `lattix-nats`, `lattix-postgres`, `lattix-jaeger`) and wires `A2A_JWT_SECRET` into the API/orchestrator paths so hosted clusters require the same signed runtime-header contract as the backend profile tests. Replace the placeholder secret before applying the chart.
 
+For rollback, preserve persistent causal state, replay markers, audit/event-chain artifacts, database volumes, and the A2A signing configuration unless the incident is a signing-key compromise. Roll back application image/configuration first, then rerun the focused zero-trust suite and confirm `/healthz/details` plus `/platform/settings` report an acceptable `secure_profile.status` before reopening write traffic.
+
 ## Documentation
 
 - `THREAT-MODEL.md`
@@ -286,4 +303,3 @@ The Helm chart is now pinned to the `hosted` runtime profile by default. It depl
 ## Notes
 
 The public repository intentionally excludes proprietary Lattix agent definitions. Private agent assets are no longer expected inside this repository; open-source development should rely on `examples/agents/` or an explicit external `FRONTIER_AGENT_ASSETS_ROOT`.
-

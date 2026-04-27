@@ -5,16 +5,20 @@ import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ReactFlowCanvas, type GraphLink, type GraphNode } from "@/components/reactflow-canvas";
 import { normalizeNodeTypeForSchema, resolveNodePortAlias } from "@/lib/frontier-node-schema";
+import type { IntegrationDefinition } from "@/types/frontier";
 import {
   clearMemorySession,
   getCollaborationSession,
   getGuardrailRulesets,
+  getIntegrations,
+  getMcpConnections,
   getMemorySession,
   getNodeDefinitions,
   getObservabilityDashboard,
   getObservabilityRunTrace,
   getPlatformSettings,
   getRuntimeProviders,
+  getUserSkills,
   joinCollaborationSession,
   runGraph,
   syncCollaborationSession,
@@ -110,6 +114,97 @@ function writeLocalStorage(key: string, value: string): void {
     // Ignore storage write failures and continue with in-memory state.
   }
 }
+
+function mergeUniqueOptions(...groups: Array<string[] | undefined>): string[] {
+  const seen = new Set<string>();
+  const merged: string[] = [];
+
+  for (const group of groups) {
+    for (const entry of group ?? []) {
+      const normalized = String(entry ?? "").trim();
+      if (!normalized || seen.has(normalized)) {
+        continue;
+      }
+      seen.add(normalized);
+      merged.push(normalized);
+    }
+  }
+
+  return merged;
+}
+
+function toMatchTokens(values: string[] | undefined): Set<string> {
+  const tokens = new Set<string>();
+
+  for (const value of values ?? []) {
+    const normalized = String(value ?? "").trim().toLowerCase();
+    if (!normalized) {
+      continue;
+    }
+
+    for (const candidate of [normalized, normalized.replace(/^\/+/, "")]) {
+      if (!candidate) {
+        continue;
+      }
+      tokens.add(candidate);
+      for (const part of candidate.split(/[^a-z0-9]+/)) {
+        if (part.length >= 2) {
+          tokens.add(part);
+        }
+      }
+    }
+  }
+
+  return tokens;
+}
+
+function rankIntegrationSkillMatches(
+  integrations: IntegrationDefinition[],
+  scopedSkills: string[],
+): string[] {
+  const skillTokens = toMatchTokens(scopedSkills);
+
+  return integrations
+    .filter((integration) => integration.status !== "archived")
+    .map((integration) => {
+      const capabilityTokens = toMatchTokens(integration.capabilities);
+      let score = 0;
+      let matched = false;
+
+      for (const token of skillTokens) {
+        if (capabilityTokens.has(token)) {
+          matched = true;
+          score += token.includes("/") ? 6 : 2;
+        }
+      }
+
+      if (matched && integration.status === "configured") {
+        score += 1;
+      }
+
+      return {
+        id: integration.id,
+        name: integration.name,
+        score,
+      };
+    })
+    .filter((item) => item.score > 0)
+    .sort((left, right) => right.score - left.score || left.name.localeCompare(right.name) || left.id.localeCompare(right.id))
+    .map((item) => item.id);
+}
+
+const defaultToolIdOptions = [
+  "tool/unspecified",
+  "tool/search",
+  "tool/http",
+  "tool/retrieval",
+  "tool/code",
+  "tool/sql",
+  "tool/file",
+  "tool/email",
+  "tool/slack",
+  "tool/mcp",
+];
 
 export function StudioFullCanvas({
   entityType,
@@ -586,14 +681,68 @@ export function StudioFullCanvas({
         .filter((item) => item.status === "published")
         .map((item) => item.id);
 
-      setWidgetOptionOverrides({
+      setWidgetOptionOverrides((current) => ({
+        ...current,
         guardrail: {
+          ...(current.guardrail ?? {}),
           ruleset_id: publishedRuleSetIds,
         },
-      });
+      }));
     }
 
     void loadGuardrailOptions();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadSkillScopedOptions() {
+      try {
+        const [platformSettings, userSkillsResponse, integrations, mcpConnections] = await Promise.all([
+          getPlatformSettings(),
+          getUserSkills(),
+          getIntegrations(),
+          getMcpConnections(),
+        ]);
+        if (cancelled) {
+          return;
+        }
+
+        const skillOptions = mergeUniqueOptions(userSkillsResponse.skills, platformSettings.tenant_scoped_skills);
+        const likelyIntegrationIds = rankIntegrationSkillMatches(integrations, skillOptions);
+        const approvedMcpConnectionIds = mcpConnections
+          .filter((connection) => connection.status === "approved")
+          .sort((left, right) => left.name.localeCompare(right.name) || left.id.localeCompare(right.id))
+          .map((connection) => connection.id);
+        const remainingIntegrationIds = integrations
+          .filter((integration) => integration.status !== "archived")
+          .map((integration) => integration.id)
+          .filter((integrationId) => !likelyIntegrationIds.includes(integrationId))
+          .sort((left, right) => left.localeCompare(right));
+        setWidgetOptionOverrides((current) => ({
+          ...current,
+          agent: {
+            ...(current.agent ?? {}),
+            skills: skillOptions,
+          },
+          "tool-call": {
+            ...(current["tool-call"] ?? {}),
+            tool_id: [...likelyIntegrationIds, ...defaultToolIdOptions, ...remainingIntegrationIds],
+            mcp_connection_id: approvedMcpConnectionIds,
+          },
+        }));
+      } catch {
+        if (cancelled) {
+          return;
+        }
+      }
+    }
+
+    void loadSkillScopedOptions();
 
     return () => {
       cancelled = true;
@@ -967,7 +1116,6 @@ export function StudioFullCanvas({
               onClick={handleValidate}
               className="fx-btn-secondary px-3 py-1.5 text-xs font-medium"
               disabled={validateState === "validating"}
-              aria-busy={validateState === "validating"}
             >
               {validateState === "validating" ? "Validating..." : "Validate"}
             </button>
@@ -975,7 +1123,6 @@ export function StudioFullCanvas({
               onClick={handleRunTest}
               className="fx-btn-secondary px-3 py-1.5 text-xs font-medium"
               disabled={runState === "running"}
-              aria-busy={runState === "running"}
             >
               {runState === "running" ? "Running..." : "Run Test"}
             </button>
@@ -983,7 +1130,6 @@ export function StudioFullCanvas({
               onClick={handleSaveDraft}
               className="fx-btn-secondary px-3 py-1.5 text-xs font-medium"
               disabled={saveState === "saving" || isReadOnly}
-              aria-busy={saveState === "saving"}
             >
               {saveState === "saving" ? "Saving..." : "Save Draft"}
             </button>
@@ -992,7 +1138,6 @@ export function StudioFullCanvas({
                 onClick={handleSaveAndReturn}
                 className="fx-btn-secondary px-3 py-1.5 text-xs font-medium"
                 disabled={saveState === "saving" || isReadOnly}
-                aria-busy={saveState === "saving"}
               >
                 {saveState === "saving" ? "Saving..." : returnAction.label}
               </button>
@@ -1002,7 +1147,6 @@ export function StudioFullCanvas({
                 onClick={handlePublish}
                 className="fx-btn-primary px-3 py-1.5 text-xs font-medium"
                 disabled={publishState === "publishing" || isReadOnly}
-                aria-busy={publishState === "publishing"}
               >
                 {publishState === "publishing" ? "Publishing..." : "Publish"}
               </button>
@@ -1306,7 +1450,6 @@ export function StudioFullCanvas({
                     onClick={handleRefreshMemory}
                     className="fx-btn-secondary px-2 py-0.5 text-[10px]"
                     disabled={memoryBusy}
-                    aria-busy={memoryBusy}
                   >
                     Refresh
                   </button>
@@ -1314,7 +1457,6 @@ export function StudioFullCanvas({
                     onClick={handleClearMemory}
                     className="fx-btn-warning px-2 py-0.5 text-[10px]"
                     disabled={memoryBusy}
-                    aria-busy={memoryBusy}
                   >
                     Clear
                   </button>

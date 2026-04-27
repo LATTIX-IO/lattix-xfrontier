@@ -126,7 +126,9 @@ def test_compose_env_generation_repairs_blank_a2a_secret(tmp_path: Path, monkeyp
     assert "A2A_JWT_SECRET=\n" not in secure_text
 
 
-def test_compose_env_generation_persists_provider_encryption_key_for_existing_secure_env(tmp_path: Path) -> None:
+def test_compose_env_generation_persists_provider_encryption_key_for_existing_secure_env(
+    tmp_path: Path,
+) -> None:
     (tmp_path / ".installer").mkdir(parents=True, exist_ok=True)
     (tmp_path / ".installer" / "local-secure.env").write_text(
         "A2A_JWT_SECRET=stable-a2a-secret\nFRONTIER_SECRETS_ENCRYPTION_KEY=\n",

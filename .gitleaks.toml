@@ -4,9 +4,10 @@ title = "lattix-xfrontier gitleaks config"
 useDefault = true
 
 [[allowlists]]
-description = "Ignore generated local installer state and build artifacts"
+description = "Ignore generated local installer state, build artifacts, and internal worktree copies"
 paths = [
   '''^\.artifacts/''',
   '''^\.installer/''',
+  '''^\.claude/worktrees/''',
   '''^apps/frontend/\.next/''',
 ]

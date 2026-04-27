@@ -95,6 +95,27 @@ def test_graph_validate_reports_invalid_prompt_node_configuration() -> None:
     assert any(issue["code"] == "PROMPT_TEXT_REQUIRED" for issue in body["issues"])
 
 
+def test_graph_validate_reports_invalid_agent_skill_configuration() -> None:
+    invalid_graph = _sample_graph()
+    agent_node = next(node for node in invalid_graph["nodes"] if node["type"] == "agent")
+    agent_node["config"]["skills"] = ["/incident-triage", {"bad": "shape"}]
+
+    response = client.post(
+        "/graph/validate",
+        json={
+            "schema_version": "frontier-graph/1.0",
+            "nodes": invalid_graph["nodes"],
+            "links": invalid_graph["links"],
+        },
+        headers=AUTH_HEADERS,
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["valid"] is False
+    assert any(issue["code"] == "AGENT_SKILL_TYPE_INVALID" for issue in body["issues"])
+
+
 def test_graph_validate_reports_missing_transform_source_input() -> None:
     invalid_graph = {
         "nodes": [
@@ -108,7 +129,10 @@ def test_graph_validate_reports_missing_transform_source_input() -> None:
                 "id": "transform",
                 "title": "Transform",
                 "type": "frontier/transform",
-                "config": {"transform_mode": "map", "mapping_json": '{"priority":"{{var.source.priority}}"}'},
+                "config": {
+                    "transform_mode": "map",
+                    "mapping_json": '{"priority":"{{var.source.priority}}"}',
+                },
             },
             {
                 "id": "output",
@@ -302,6 +326,632 @@ def test_data_store_node_upserts_and_reads_record() -> None:
     assert read_result["result"] == {"id": "ticket-1", "status": "open"}
 
 
+def test_agent_node_threads_skills_into_runtime_request_payload(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    def _fake_run_openai_chat(
+        *,
+        system_prompt: str,
+        user_prompt: str,
+        model: str,
+        temperature: float,
+        messages: list[dict[str, str]] | None = None,
+        runtime: dict[str, object] | None = None,
+    ) -> tuple[str, dict[str, object]]:
+        captured["system_prompt"] = system_prompt
+        captured["user_prompt"] = user_prompt
+        captured["model"] = model
+        captured["temperature"] = temperature
+        captured["messages"] = messages
+        captured["runtime"] = runtime
+        return (
+            "Investigate the incident with /incident-triage first.",
+            {"provider": "openai", "model": model, "mode": "simulated"},
+        )
+
+    monkeypatch.setattr(main_module, "_run_openai_chat", _fake_run_openai_chat)
+
+    node = main_module.GraphNode(
+        id="agent-1",
+        type="frontier/agent",
+        title="Incident Agent",
+        config={
+            "agent_id": "incident-agent",
+            "model": "gpt-5.4",
+            "temperature": 0.4,
+            "system_prompt": "Be precise.",
+            "skills": ["incident-triage", "/tenant-oncall", "incident-triage"],
+        },
+    )
+
+    result = main_module._execute_node(
+        node=node,
+        incoming=[],
+        incoming_by_port=None,
+        run_input={"message": "Investigate the outage"},
+        execution_state={"runtime": {"use_memory": False}},
+        mem_store={},
+    )
+
+    assert "Activated skills" in str(captured["user_prompt"])
+    assert "/incident-triage" in str(captured["user_prompt"])
+    assert "/tenant-oncall" in str(captured["user_prompt"])
+    assert result["tool_request"]["request"] == {
+        "agent_id": "incident-agent",
+        "message": "Investigate the incident with /incident-triage first.",
+        "skills": ["/incident-triage", "/tenant-oncall"],
+    }
+    assert result["state_delta"]["skills"] == ["/incident-triage", "/tenant-oncall"]
+
+
+def test_tool_call_node_routes_unspecified_tool_via_request_skills(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+    integration_id = "int-skill-incident"
+    original_integration = store.integrations.get(integration_id)
+    original_enforce_egress = store.platform_settings.enforce_egress_allowlist
+
+    def _fake_execute_native_tool_call(
+        *,
+        tool_id: str,
+        tool_config: dict[str, object],
+        request_payload: object,
+        context_payload: object,
+        skill_hints: list[str],
+        call_index: int,
+        endpoint_url: str,
+        method: str,
+    ) -> dict[str, object]:
+        captured["tool_id"] = tool_id
+        captured["request_payload"] = request_payload
+        captured["context_payload"] = context_payload
+        captured["skill_hints"] = list(skill_hints)
+        captured["endpoint_url"] = endpoint_url
+        captured["method"] = method
+        return {
+            "ok": True,
+            "tool_id": tool_id,
+            "request": request_payload,
+            "context": context_payload,
+            "skill_hints": list(skill_hints),
+            "integration_id": tool_id,
+        }
+
+    monkeypatch.setattr(main_module, "_execute_native_tool_call", _fake_execute_native_tool_call)
+    store.integrations[integration_id] = main_module.IntegrationDefinition(
+        id=integration_id,
+        name="Incident Triage Webhook",
+        type="http",
+        status="configured",
+        base_url="http://localhost:9101/incident-triage",
+        capabilities=["incident-triage", "ops"],
+    )
+    store.platform_settings.enforce_egress_allowlist = False
+
+    try:
+        node = main_module.GraphNode(
+            id="tool-1",
+            type="frontier/tool-call",
+            title="Skill Routed Tool",
+            config={"tool_id": "tool/unspecified", "method": "POST"},
+        )
+
+        result = main_module._execute_node(
+            node=node,
+            incoming=[{"message": "Triaging the incident", "skills": ["incident-triage"]}],
+            incoming_by_port={
+                "request": [{"message": "Triaging the incident", "skills": ["incident-triage"]}]
+            },
+            run_input={"message": "fallback"},
+            execution_state={
+                "assembly_policy": {
+                    "allowed_integrations": [integration_id],
+                    "allowed_network_hosts": ["localhost"],
+                    "allowed_tool_column_kinds": ["tool"],
+                }
+            },
+            mem_store={},
+        )
+
+        assert captured["tool_id"] == integration_id
+        assert captured["skill_hints"] == ["/incident-triage"]
+        assert captured["endpoint_url"] == "http://localhost:9101/incident-triage"
+        assert captured["request_payload"] == {
+            "message": "Triaging the incident",
+            "skills": ["/incident-triage"],
+        }
+        assert result["policy"]["tool_selection"]["selected_integration_id"] == integration_id
+    finally:
+        store.platform_settings.enforce_egress_allowlist = original_enforce_egress
+        if original_integration is None:
+            store.integrations.pop(integration_id, None)
+        else:
+            store.integrations[integration_id] = original_integration
+
+
+def test_tool_call_node_falls_back_to_model_request_skills_for_routing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+    integration_id = "int-skill-oncall"
+    original_integration = store.integrations.get(integration_id)
+    original_enforce_egress = store.platform_settings.enforce_egress_allowlist
+
+    def _fake_execute_native_tool_call(
+        *,
+        tool_id: str,
+        tool_config: dict[str, object],
+        request_payload: object,
+        context_payload: object,
+        skill_hints: list[str],
+        call_index: int,
+        endpoint_url: str,
+        method: str,
+    ) -> dict[str, object]:
+        captured["tool_id"] = tool_id
+        captured["request_payload"] = request_payload
+        captured["context_payload"] = context_payload
+        captured["skill_hints"] = list(skill_hints)
+        return {
+            "ok": True,
+            "tool_id": tool_id,
+            "request": request_payload,
+            "context": context_payload,
+            "skill_hints": list(skill_hints),
+            "integration_id": tool_id,
+        }
+
+    monkeypatch.setattr(main_module, "_execute_native_tool_call", _fake_execute_native_tool_call)
+    store.integrations[integration_id] = main_module.IntegrationDefinition(
+        id=integration_id,
+        name="Tenant Oncall Hook",
+        type="http",
+        status="configured",
+        base_url="http://localhost:9102/oncall",
+        capabilities=["tenant-oncall"],
+    )
+    store.platform_settings.enforce_egress_allowlist = False
+
+    try:
+        node = main_module.GraphNode(
+            id="tool-2",
+            type="frontier/tool-call",
+            title="Context Routed Tool",
+            config={"tool_id": "tool/unspecified", "method": "POST"},
+        )
+
+        result = main_module._execute_node(
+            node=node,
+            incoming=[{"message": "Notify the tenant on-call team"}],
+            incoming_by_port={
+                "request": [{"message": "Notify the tenant on-call team"}],
+                "context": [{"model": {"request": {"skills": ["tenant-oncall"]}}}],
+            },
+            run_input={"message": "fallback"},
+            execution_state={
+                "assembly_policy": {
+                    "allowed_integrations": [integration_id],
+                    "allowed_network_hosts": ["localhost"],
+                    "allowed_tool_column_kinds": ["tool"],
+                }
+            },
+            mem_store={},
+        )
+
+        assert captured["tool_id"] == integration_id
+        assert captured["skill_hints"] == ["/tenant-oncall"]
+        assert captured["request_payload"] == {
+            "message": "Notify the tenant on-call team",
+            "skills": ["/tenant-oncall"],
+        }
+        assert result["policy"]["tool_selection"]["skills"] == ["/tenant-oncall"]
+    finally:
+        store.platform_settings.enforce_egress_allowlist = original_enforce_egress
+        if original_integration is None:
+            store.integrations.pop(integration_id, None)
+        else:
+            store.integrations[integration_id] = original_integration
+
+
+def test_evidence_column_can_retrieve_approved_source() -> None:
+    node = main_module.GraphNode(
+        id="retrieval-1",
+        type="frontier/retrieval",
+        title="Evidence Retrieval",
+        config={"column_kind": "evidence", "source_id": "kb://default", "top_k": 1},
+    )
+
+    result = main_module._execute_node(
+        node=node,
+        incoming=[{"query": "known context"}],
+        incoming_by_port={"query": [{"query": "known context"}]},
+        run_input={"message": "fallback"},
+        execution_state={
+            "session_id": "session:slice-8-retrieval",
+            "assembly_policy": {"allowed_retrieval_sources": ["kb://default"]},
+        },
+        mem_store={},
+    )
+
+    assert result["out"]["state"] == "completed"
+    assert result["policy"]["source_id"] == "kb://default"
+
+
+def test_retrieval_source_url_requires_explicit_policy_grant() -> None:
+    node = main_module.GraphNode(
+        id="retrieval-url-1",
+        type="frontier/retrieval",
+        title="Evidence URL Retrieval",
+        config={
+            "column_kind": "evidence",
+            "source_id": "kb://default",
+            "source_url": "http://localhost:9301/context.txt",
+            "top_k": 1,
+        },
+    )
+
+    result = main_module._execute_node(
+        node=node,
+        incoming=[{"query": "known context"}],
+        incoming_by_port={"query": [{"query": "known context"}]},
+        run_input={"message": "fallback"},
+        execution_state={"assembly_policy": {"allowed_retrieval_sources": ["kb://default"]}},
+        mem_store={},
+    )
+
+    assert result["status"]["state"] == "policy_rejected"
+    assert result["policy"]["control"] == "assembly_allowed_retrieval_source_urls"
+
+
+def test_evidence_column_cannot_call_arbitrary_tool() -> None:
+    node = main_module.GraphNode(
+        id="tool-evidence-1",
+        type="frontier/tool-call",
+        title="Evidence Tool Attempt",
+        config={
+            "column_kind": "evidence",
+            "tool_id": "tool/arbitrary",
+            "endpoint_url": "http://localhost:9103/tool",
+        },
+    )
+
+    result = main_module._execute_node(
+        node=node,
+        incoming=[{"message": "try tool"}],
+        incoming_by_port={"request": [{"message": "try tool"}]},
+        run_input={"message": "fallback"},
+        execution_state={
+            "assembly_policy": {
+                "allowed_tools": ["tool/arbitrary"],
+                "allowed_network_hosts": ["localhost"],
+                "allowed_tool_column_kinds": ["tool"],
+            }
+        },
+        mem_store={},
+    )
+
+    assert result["status"]["state"] == "policy_rejected"
+    assert result["policy"]["control"] == "column_kind_tool_permission"
+
+
+def test_tool_column_can_call_approved_integration_only(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: list[str] = []
+    approved_id = "int-approved-tool"
+    denied_id = "int-denied-tool"
+    original_approved = store.integrations.get(approved_id)
+    original_denied = store.integrations.get(denied_id)
+    original_enforce_egress = store.platform_settings.enforce_egress_allowlist
+
+    def _fake_execute_native_tool_call(**kwargs: object) -> dict[str, object]:
+        captured.append(str(kwargs["tool_id"]))
+        return {"ok": True, "integration_id": kwargs["tool_id"]}
+
+    monkeypatch.setattr(main_module, "_execute_native_tool_call", _fake_execute_native_tool_call)
+    store.platform_settings.enforce_egress_allowlist = False
+    store.integrations[approved_id] = main_module.IntegrationDefinition(
+        id=approved_id,
+        name="Approved Tool",
+        type="http",
+        status="configured",
+        base_url="http://localhost:9201/approved",
+    )
+    store.integrations[denied_id] = main_module.IntegrationDefinition(
+        id=denied_id,
+        name="Denied Tool",
+        type="http",
+        status="configured",
+        base_url="http://localhost:9202/denied",
+    )
+    execution_state = {
+        "assembly_policy": {
+            "allowed_integrations": [approved_id],
+            "allowed_network_hosts": ["localhost"],
+            "allowed_tool_column_kinds": ["tool"],
+        }
+    }
+
+    try:
+        approved = main_module._execute_node(
+            node=main_module.GraphNode(
+                id="tool-approved",
+                type="frontier/tool-call",
+                title="Approved Tool",
+                config={"column_kind": "tool", "integration_id": approved_id},
+            ),
+            incoming=[{"message": "call approved"}],
+            incoming_by_port={"request": [{"message": "call approved"}]},
+            run_input={"message": "fallback"},
+            execution_state=dict(execution_state),
+            mem_store={},
+        )
+        denied = main_module._execute_node(
+            node=main_module.GraphNode(
+                id="tool-denied",
+                type="frontier/tool-call",
+                title="Denied Tool",
+                config={"column_kind": "tool", "integration_id": denied_id},
+            ),
+            incoming=[{"message": "call denied"}],
+            incoming_by_port={"request": [{"message": "call denied"}]},
+            run_input={"message": "fallback"},
+            execution_state=dict(execution_state),
+            mem_store={},
+        )
+
+        assert approved["status"]["state"] == "completed"
+        assert captured == [approved_id]
+        assert denied["status"]["state"] == "policy_rejected"
+        assert denied["policy"]["control"] == "assembly_allowed_integrations"
+    finally:
+        store.platform_settings.enforce_egress_allowlist = original_enforce_egress
+        if original_approved is None:
+            store.integrations.pop(approved_id, None)
+        else:
+            store.integrations[approved_id] = original_approved
+        if original_denied is None:
+            store.integrations.pop(denied_id, None)
+        else:
+            store.integrations[denied_id] = original_denied
+
+
+def test_skill_routed_integration_still_respects_tenant_and_egress_policies() -> None:
+    integration_id = "int-skill-egress"
+    original_integration = store.integrations.get(integration_id)
+    original_enforce_egress = store.platform_settings.enforce_egress_allowlist
+    original_allowed_hosts = list(store.platform_settings.allowed_egress_hosts)
+
+    store.integrations[integration_id] = main_module.IntegrationDefinition(
+        id=integration_id,
+        name="Tenant Search Hook",
+        type="http",
+        status="configured",
+        base_url="http://blocked.example.com/search",
+        capabilities=["tenant-search"],
+        egress_allowlist=["blocked.example.com"],
+    )
+    store.platform_settings.enforce_egress_allowlist = True
+    store.platform_settings.allowed_egress_hosts = ["localhost"]
+
+    try:
+        result = main_module._execute_node(
+            node=main_module.GraphNode(
+                id="tool-skill-egress",
+                type="frontier/tool-call",
+                title="Skill Routed Egress",
+                config={"column_kind": "tool", "tool_id": "tool/unspecified"},
+            ),
+            incoming=[{"message": "search", "skills": ["tenant-search"]}],
+            incoming_by_port={"request": [{"message": "search", "skills": ["tenant-search"]}]},
+            run_input={"message": "fallback"},
+            execution_state={
+                "assembly_policy": {
+                    "allowed_integrations": [integration_id],
+                    "allowed_network_hosts": ["blocked.example.com"],
+                    "allowed_tool_column_kinds": ["tool"],
+                }
+            },
+            mem_store={},
+        )
+
+        assert result["status"]["state"] == "policy_rejected"
+        assert result["policy"]["control"] == "egress_allowlist"
+    finally:
+        store.platform_settings.enforce_egress_allowlist = original_enforce_egress
+        store.platform_settings.allowed_egress_hosts = original_allowed_hosts
+        if original_integration is None:
+            store.integrations.pop(integration_id, None)
+        else:
+            store.integrations[integration_id] = original_integration
+
+
+def test_tool_call_resolves_approved_mcp_connection_id(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, object] = {}
+    connection_id = "mcp-approved-1"
+    original_connection = store.mcp_connections.get(connection_id)
+    original_enforce_egress = store.platform_settings.enforce_egress_allowlist
+    original_allowed_urls = list(store.platform_settings.allowed_mcp_server_urls)
+    original_require_local = store.platform_settings.mcp_require_local_server
+
+    def _fake_execute_native_tool_call(**kwargs: object) -> dict[str, object]:
+        captured.update(kwargs)
+        return {
+            "ok": True,
+            "tool_id": kwargs["tool_id"],
+            "endpoint_url": kwargs["endpoint_url"],
+            "mcp_connection_id": (kwargs["tool_config"] or {}).get("mcp_connection_id"),
+        }
+
+    monkeypatch.setattr(main_module, "_execute_native_tool_call", _fake_execute_native_tool_call)
+    store.platform_settings.enforce_egress_allowlist = False
+    store.platform_settings.allowed_mcp_server_urls = ["http://localhost:7071/mcp/github"]
+    store.platform_settings.mcp_require_local_server = True
+    store.mcp_connections[connection_id] = main_module.MCPConnectionDefinition(
+        id=connection_id,
+        starter_id="github",
+        wave=1,
+        name="Approved GitHub MCP",
+        status="approved",
+        server_url="http://localhost:7071/mcp/github",
+        transport="streamable_http",
+        auth_type="bearer",
+        secret_ref="secret/integrations/mcp/github/token",
+        capabilities=["/repo-read"],
+        permission_scopes=["repo:read"],
+        data_access=["source-code-metadata"],
+        egress_allowlist=["localhost"],
+        execution_mode="local",
+    )
+
+    try:
+        result = main_module._execute_node(
+            node=main_module.GraphNode(
+                id="tool-mcp-approved",
+                type="frontier/tool-call",
+                title="Approved MCP Tool",
+                config={
+                    "column_kind": "tool",
+                    "tool_id": "tool/unspecified",
+                    "mcp_connection_id": connection_id,
+                },
+            ),
+            incoming=[{"message": "call staged mcp"}],
+            incoming_by_port={"request": [{"message": "call staged mcp"}]},
+            run_input={"message": "fallback"},
+            execution_state={
+                "assembly_policy": {
+                    "allowed_mcp_server_urls": ["http://localhost:7071/mcp/github"],
+                    "allowed_network_hosts": ["localhost"],
+                    "allowed_tool_column_kinds": ["tool"],
+                }
+            },
+            mem_store={},
+        )
+
+        assert result["status"]["state"] == "completed"
+        assert captured["tool_id"] == "tool/mcp"
+        assert captured["endpoint_url"] == "http://localhost:7071/mcp/github"
+        assert result["tool_output"]["mcp_connection_id"] == connection_id
+        assert result["policy"]["mcp_connection_id"] == connection_id
+    finally:
+        store.platform_settings.enforce_egress_allowlist = original_enforce_egress
+        store.platform_settings.allowed_mcp_server_urls = original_allowed_urls
+        store.platform_settings.mcp_require_local_server = original_require_local
+        if original_connection is None:
+            store.mcp_connections.pop(connection_id, None)
+        else:
+            store.mcp_connections[connection_id] = original_connection
+
+
+def test_tool_call_rejects_unapproved_mcp_connection_id() -> None:
+    connection_id = "mcp-draft-1"
+    original_connection = store.mcp_connections.get(connection_id)
+
+    store.mcp_connections[connection_id] = main_module.MCPConnectionDefinition(
+        id=connection_id,
+        starter_id="github",
+        wave=1,
+        name="Draft GitHub MCP",
+        status="draft",
+        server_url="http://localhost:7071/mcp/github",
+        transport="streamable_http",
+        auth_type="bearer",
+        secret_ref="secret/integrations/mcp/github/token",
+    )
+
+    try:
+        result = main_module._execute_node(
+            node=main_module.GraphNode(
+                id="tool-mcp-draft",
+                type="frontier/tool-call",
+                title="Draft MCP Tool",
+                config={
+                    "column_kind": "tool",
+                    "tool_id": "tool/unspecified",
+                    "mcp_connection_id": connection_id,
+                },
+            ),
+            incoming=[{"message": "call staged mcp"}],
+            incoming_by_port={"request": [{"message": "call staged mcp"}]},
+            run_input={"message": "fallback"},
+            execution_state={
+                "assembly_policy": {
+                    "allowed_mcp_server_urls": ["http://localhost:7071/mcp/github"],
+                    "allowed_network_hosts": ["localhost"],
+                    "allowed_tool_column_kinds": ["tool"],
+                }
+            },
+            mem_store={},
+        )
+
+        assert result["status"]["state"] == "policy_rejected"
+        assert result["policy"]["control"] == "mcp_connection_approval_required"
+        assert result["policy"]["requested_connection_id"] == connection_id
+    finally:
+        if original_connection is None:
+            store.mcp_connections.pop(connection_id, None)
+        else:
+            store.mcp_connections[connection_id] = original_connection
+
+
+def test_gemini_stream_publishes_delta_chunks_to_subscribers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _FakeStreamResponse:
+        def __enter__(self) -> "_FakeStreamResponse":
+            return self
+
+        def __exit__(self, *_: object) -> None:
+            return None
+
+        def raise_for_status(self) -> None:
+            return None
+
+        def iter_lines(self) -> list[str]:
+            return [
+                'data: {"candidates":[{"content":{"parts":[{"text":"hello "}]}}]}',
+                'data: {"candidates":[{"content":{"parts":[{"text":"world"}]}}]}',
+            ]
+
+    class _FakeClient:
+        def __init__(self, *_: object, **__: object) -> None:
+            return None
+
+        def __enter__(self) -> "_FakeClient":
+            return self
+
+        def __exit__(self, *_: object) -> None:
+            return None
+
+        def stream(self, *_: object, **__: object) -> _FakeStreamResponse:
+            return _FakeStreamResponse()
+
+    observed_chunks: list[str] = []
+
+    monkeypatch.setattr(main_module.httpx, "Client", _FakeClient)
+
+    chunks, metadata = main_module._stream_gemini_chat(
+        runtime={
+            "provider": "gemini",
+            "model": "gemini-2.0-flash",
+            "base_url": "https://generativelanguage.googleapis.com/v1beta",
+            "api_key": "test-key",
+            "source": "test",
+        },
+        system_prompt="Be helpful.",
+        user_prompt="Say hello.",
+        temperature=0.2,
+        on_chunk=observed_chunks.append,
+    )
+
+    assert chunks == ["hello ", "world"]
+    assert observed_chunks == ["hello ", "world"]
+    assert metadata["provider"] == "gemini"
+    assert metadata["transport"] == "sse"
+
+
 def test_error_handler_node_recovers_failed_payload() -> None:
     node = main_module.GraphNode(
         id="error-handler-1",
@@ -370,7 +1020,14 @@ def test_graph_run_skips_inactive_router_branches() -> None:
                     "route_match_b": "standard",
                     "default_route": "default",
                     "rules_json": json.dumps(
-                        [{"route": "priority", "key": "message", "operator": "contains", "value": "urgent"}]
+                        [
+                            {
+                                "route": "priority",
+                                "key": "message",
+                                "operator": "contains",
+                                "value": "urgent",
+                            }
+                        ]
                     ),
                 },
             },
@@ -380,7 +1037,9 @@ def test_graph_run_skips_inactive_router_branches() -> None:
                 "type": "frontier/transform",
                 "config": {
                     "transform_mode": "map",
-                    "mapping_json": json.dumps({"lane": "priority", "message": "{{var.source.message}}"}),
+                    "mapping_json": json.dumps(
+                        {"lane": "priority", "message": "{{var.source.message}}"}
+                    ),
                 },
             },
             {
@@ -389,7 +1048,9 @@ def test_graph_run_skips_inactive_router_branches() -> None:
                 "type": "frontier/transform",
                 "config": {
                     "transform_mode": "map",
-                    "mapping_json": json.dumps({"lane": "default", "message": "{{var.source.message}}"}),
+                    "mapping_json": json.dumps(
+                        {"lane": "default", "message": "{{var.source.message}}"}
+                    ),
                 },
             },
             {
@@ -403,13 +1064,33 @@ def test_graph_run_skips_inactive_router_branches() -> None:
             {"from": "trigger", "to": "router", "from_port": "out", "to_port": "in"},
             {"from": "trigger", "to": "router", "from_port": "payload", "to_port": "candidate"},
             {"from": "router", "to": "priority-transform", "from_port": "match_a", "to_port": "in"},
-            {"from": "router", "to": "priority-transform", "from_port": "matched_payload", "to_port": "source"},
+            {
+                "from": "router",
+                "to": "priority-transform",
+                "from_port": "matched_payload",
+                "to_port": "source",
+            },
             {"from": "router", "to": "default-transform", "from_port": "default", "to_port": "in"},
-            {"from": "router", "to": "default-transform", "from_port": "matched_payload", "to_port": "source"},
+            {
+                "from": "router",
+                "to": "default-transform",
+                "from_port": "matched_payload",
+                "to_port": "source",
+            },
             {"from": "priority-transform", "to": "output", "from_port": "out", "to_port": "in"},
-            {"from": "priority-transform", "to": "output", "from_port": "result", "to_port": "result"},
+            {
+                "from": "priority-transform",
+                "to": "output",
+                "from_port": "result",
+                "to_port": "result",
+            },
             {"from": "default-transform", "to": "output", "from_port": "out", "to_port": "in"},
-            {"from": "default-transform", "to": "output", "from_port": "result", "to_port": "result"},
+            {
+                "from": "default-transform",
+                "to": "output",
+                "from_port": "result",
+                "to_port": "result",
+            },
         ],
         "input": {"message": "urgent incident"},
     }
@@ -500,7 +1181,12 @@ def test_observability_trace_requires_builder_access_and_reports_saved_run_metri
         assert body["duration_ms"] > 0
         assert body["token_estimate"] > 0
         assert body["cost_estimate_usd"] > 0
-        assert set(body["latency_by_stage_ms"].keys()) == {"ingest", "model", "guardrail", "artifact"}
+        assert set(body["latency_by_stage_ms"].keys()) == {
+            "ingest",
+            "model",
+            "guardrail",
+            "artifact",
+        }
     finally:
         store.platform_settings.require_authenticated_requests = original_require_auth
         store.runs.pop(run_id, None)
@@ -523,7 +1209,11 @@ def test_workflow_run_stream_returns_events_in_order() -> None:
         payloads = _stream_payloads(run_id, headers=AUTH_HEADERS)
 
         assert [payload["sequence"] for payload in payloads] == [1, 2, 3]
-        assert [payload["event"] for payload in payloads] == ["started", "agent_message", "completed"]
+        assert [payload["event"] for payload in payloads] == [
+            "started",
+            "agent_message",
+            "completed",
+        ]
     finally:
         _clear_streamable_run(run_id)
 

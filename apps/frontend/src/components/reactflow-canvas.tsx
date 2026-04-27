@@ -78,8 +78,8 @@ type Props = {
 type WidgetSpec = {
   key: string;
   label: string;
-  kind: "text" | "number" | "combo" | "toggle";
-  defaultValue: string | number | boolean;
+  kind: "text" | "number" | "combo" | "toggle" | "list";
+  defaultValue: string | number | boolean | string[];
   options?: string[];
   multiline?: boolean;
   help?: string;
@@ -115,6 +115,14 @@ type FrontierNodeData = {
 };
 
 function formatWidgetValue(field: WidgetSpec, value: unknown): string {
+  if (field.kind === "list") {
+    if (Array.isArray(value)) {
+      return value.join("\n");
+    }
+    if (typeof value === "string") {
+      return value;
+    }
+  }
   if (field.kind === "toggle") {
     return Boolean(value) ? "true" : "false";
   }
@@ -125,6 +133,26 @@ function formatWidgetValue(field: WidgetSpec, value: unknown): string {
     return "";
   }
   return String(value);
+}
+
+function parseListWidgetValue(value: unknown): string[] {
+  const rawItems = Array.isArray(value) ? value : String(value ?? "").split(/\r?\n|,/);
+  const seen = new Set<string>();
+  const normalized: string[] = [];
+
+  for (const item of rawItems) {
+    const next = String(item ?? "").trim();
+    if (!next) {
+      continue;
+    }
+    if (seen.has(next)) {
+      continue;
+    }
+    seen.add(next);
+    normalized.push(next);
+  }
+
+  return normalized;
 }
 
 function resolveInputPortType(node: Node<FrontierNodeData>, handleId: string | null | undefined): string | null {
@@ -194,7 +222,8 @@ function estimateNodeHeight(node: Node<FrontierNodeData>): number {
   const measuredHeight = typeof node.height === "number" && Number.isFinite(node.height) ? node.height : null;
   const portRows = Math.max(node.data.inputs.length, node.data.outputs.length, 1);
   const multilineWidgets = node.data.widgets.filter((widget) => widget.multiline).length;
-  const singleLineWidgets = Math.max(0, node.data.widgets.length - multilineWidgets);
+  const listWidgets = node.data.widgets.filter((widget) => widget.kind === "list").length;
+  const singleLineWidgets = Math.max(0, node.data.widgets.length - multilineWidgets - listWidgets);
 
   const estimated =
     40 + // header + outer paddings
@@ -203,6 +232,7 @@ function estimateNodeHeight(node: Node<FrontierNodeData>): number {
     20 + // ports panel paddings/margins
     singleLineWidgets * 28 +
     multilineWidgets * 96 +
+    listWidgets * 124 +
     20;
 
   if (measuredHeight && measuredHeight > 0) {
@@ -257,7 +287,7 @@ function widgetSpecsForNodeType(type: string, widgetOptionOverrides?: Record<str
   const overrides = widgetOptionOverrides[normalizedType] ?? widgetOptionOverrides[type] ?? {};
 
   return widgets.map((widget) => {
-    if (widget.kind !== "combo") {
+    if (widget.kind !== "combo" && widget.kind !== "list") {
       return widget;
     }
     const overrideOptions = overrides[widget.key];
@@ -345,6 +375,7 @@ function FrontierNodeView({ id, data }: NodeProps<FrontierNodeData>) {
                   <>
                     <input
                       className="nodrag fx-field w-full px-1 py-0.5 text-[10px]"
+                      aria-label={field.label}
                       type="text"
                       list={`combo-${id}-${field.key}`}
                       value={String(value)}
@@ -364,6 +395,7 @@ function FrontierNodeView({ id, data }: NodeProps<FrontierNodeData>) {
                 ) : (
                   <input
                     className="nodrag fx-field w-full px-1 py-0.5 text-[10px]"
+                    aria-label={field.label}
                     type="number"
                     value={Number(value)}
                     onChange={(event) => data.onConfigChange(id, field.key, Number(event.target.value))}
@@ -375,10 +407,50 @@ function FrontierNodeView({ id, data }: NodeProps<FrontierNodeData>) {
                 ) : (
                   <input
                     className="nodrag"
+                    aria-label={field.label}
                     type="checkbox"
                     checked={Boolean(value)}
                     onChange={(event) => data.onConfigChange(id, field.key, event.target.checked)}
                   />
+                )
+              ) : field.kind === "list" ? (
+                data.readOnly ? (
+                  <pre className="max-h-24 overflow-auto whitespace-pre-wrap rounded-[0.8rem] border border-[var(--fx-border)] bg-[var(--fx-input)] px-2 py-1 text-[10px] text-[var(--fx-input-text)]">
+                    {formatWidgetValue(field, value) || "(empty)"}
+                  </pre>
+                ) : (
+                  <div className="space-y-1.5">
+                    <textarea
+                      className="nodrag fx-field min-h-20 w-full px-2 py-1 text-[10px]"
+                      aria-label={field.label}
+                      value={formatWidgetValue(field, value)}
+                      onChange={(event) => data.onConfigChange(id, field.key, parseListWidgetValue(event.target.value))}
+                      placeholder={field.placeholder ?? "One value per line or comma-separated"}
+                    />
+                    {field.options && field.options.length > 0 ? (
+                      <div className="flex flex-wrap gap-1">
+                        {field.options.map((option) => {
+                          const activeValues = parseListWidgetValue(value);
+                          const isSelected = activeValues.includes(option);
+                          return (
+                            <button
+                              key={option}
+                              type="button"
+                              className={`nodrag rounded-full border px-1.5 py-0.5 text-[9px] ${isSelected ? "border-[var(--fx-primary)] bg-[var(--fx-primary-soft)] text-[var(--fx-primary)]" : "border-[var(--fx-border)] bg-[var(--fx-surface-elevated)] text-[var(--fx-muted)]"}`}
+                              onClick={() => {
+                                const nextValues = isSelected
+                                  ? activeValues.filter((item) => item !== option)
+                                  : [...activeValues, option];
+                                data.onConfigChange(id, field.key, nextValues);
+                              }}
+                            >
+                              {option}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    ) : null}
+                  </div>
                 )
               ) : field.multiline ? (
                 data.readOnly ? (
@@ -388,6 +460,7 @@ function FrontierNodeView({ id, data }: NodeProps<FrontierNodeData>) {
                 ) : (
                   <textarea
                     className="nodrag fx-field min-h-20 w-full px-2 py-1 text-[10px]"
+                    aria-label={field.label}
                     value={String(value)}
                     onChange={(event) => data.onConfigChange(id, field.key, event.target.value)}
                     placeholder="Type value (supports var.currentUser / {{var.currentUser}})"
@@ -399,6 +472,7 @@ function FrontierNodeView({ id, data }: NodeProps<FrontierNodeData>) {
                 ) : (
                   <input
                     className="nodrag fx-field w-full px-1 py-0.5 text-[10px]"
+                    aria-label={field.label}
                     type="text"
                     value={String(value)}
                     onChange={(event) => data.onConfigChange(id, field.key, event.target.value)}

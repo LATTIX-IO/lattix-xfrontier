@@ -335,6 +335,7 @@ Selected required per-node fields:
 - `frontier/prompt`: `system_prompt_text`
 - `frontier/agent`: `agent_id`, `model`
 - `frontier/tool-call`: `tool_id`
+  For staged MCP usage, `mcp_connection_id` is an optional companion field that resolves an approved MCP connection record at runtime. When this is present, the runtime fills `mcp_server_url` from the approved staged record instead of depending on a hand-entered endpoint alone.
 - `frontier/retrieval`: `source_type`
 - `frontier/memory`: `action`, `scope`
 - `frontier/guardrail`: `tripwire_action`

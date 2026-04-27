@@ -304,6 +304,7 @@ export type PlatformSettings = {
   a2a_replay_protection?: boolean;
   default_guardrail_ruleset_id: string | null;
   global_blocked_keywords: string[];
+  tenant_scoped_skills?: string[];
   collaboration_max_agents: number;
   max_tool_calls_per_run?: number;
   max_retrieval_items?: number;
@@ -354,6 +355,106 @@ export type IntegrationDefinition = {
   execution_mode?: "local" | "sandboxed";
   signature_verified?: boolean;
   approved_for_marketplace?: boolean;
+  oauth_status?: IntegrationOAuthStatus;
+};
+
+export type IntegrationStarterTemplate = {
+  id: string;
+  wave: 1 | 2 | 3;
+  name: string;
+  summary: string;
+  type: "http" | "database" | "queue" | "vector" | "custom";
+  base_url: string;
+  auth_type: "none" | "api_key" | "bearer" | "oauth2" | "basic";
+  secret_ref: string;
+  metadata_json?: Record<string, unknown>;
+  capabilities?: string[];
+  permission_scopes?: string[];
+  data_access?: string[];
+  egress_allowlist?: string[];
+  publisher?: "first_party" | "third_party" | "custom";
+  execution_mode?: "local" | "sandboxed";
+  signature_verified?: boolean;
+  approved_for_marketplace?: boolean;
+};
+
+export type MCPStarterTemplate = {
+  id: string;
+  wave: 1 | 2 | 3;
+  name: string;
+  summary: string;
+  transport: "streamable_http" | "sse" | "custom";
+  auth_type: "none" | "api_key" | "bearer" | "oauth2" | "basic" | "mcp_token";
+  secret_ref: string;
+  capabilities?: string[];
+  permission_scopes?: string[];
+  data_access?: string[];
+  egress_allowlist?: string[];
+  publisher?: "first_party" | "third_party" | "custom";
+  execution_mode?: "local" | "sandboxed";
+};
+
+export type MCPConnectionDefinition = {
+  id: string;
+  starter_id: string;
+  wave: 1 | 2 | 3;
+  name: string;
+  status: "draft" | "validated" | "validation_failed" | "approved" | "rejected" | "disabled";
+  server_url: string;
+  transport: "streamable_http" | "sse" | "custom";
+  auth_type: "none" | "api_key" | "bearer" | "oauth2" | "basic" | "mcp_token";
+  secret_ref: string;
+  secret_configured?: boolean;
+  metadata_json?: Record<string, unknown>;
+  capabilities?: string[];
+  permission_scopes?: string[];
+  data_access?: string[];
+  egress_allowlist?: string[];
+  publisher?: "first_party" | "third_party" | "custom";
+  execution_mode?: "local" | "sandboxed";
+  approved_by?: string;
+  approved_at?: string;
+  last_validated_at?: string;
+  last_validation_error?: string;
+};
+
+export type MCPConnectionValidationResponse = {
+  ok: boolean;
+  id: string;
+  status: MCPConnectionDefinition["status"];
+  validation: {
+    ok: boolean;
+    errors: string[];
+    warnings: string[];
+    checked_server_url: string;
+  };
+};
+
+export type IntegrationOAuthStatus = {
+  id: string;
+  provider: string;
+  grant_type: string;
+  connected: boolean;
+  pending: boolean;
+  scopes: string[];
+  authorize_url: string;
+  token_url: string;
+  client_id: string;
+  redirect_uri: string;
+  account_label: string;
+  expires_at?: string | null;
+  has_client_secret: boolean;
+  has_refresh_token: boolean;
+  has_access_token: boolean;
+  last_error: string;
+};
+
+export type IntegrationOAuthConnectResponse = {
+  ok: boolean;
+  mode: "authorization_code" | "client_credentials";
+  connect_url?: string;
+  redirect_uri?: string;
+  status: IntegrationOAuthStatus;
 };
 
 export type AgentTemplate = {

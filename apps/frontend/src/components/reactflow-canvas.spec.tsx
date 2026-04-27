@@ -298,6 +298,38 @@ describe("ReactFlowCanvas", () => {
     expect(screen.getByTestId("rf-controls")).toHaveStyle({ transform: "scale(0.7)", transformOrigin: "bottom left" });
   });
 
+  it("serializes agent skills as a structured string array", async () => {
+    const onGraphChange = vi.fn();
+    const nodes: GraphNode[] = [
+      { id: "agent-1", title: "Agent", type: "frontier/agent", x: 120, y: 90, config: { agent_id: "agent-1", system_prompt: "Respond precisely." } },
+    ];
+
+    render(
+      <ReactFlowCanvas
+        nodes={nodes}
+        links={[]}
+        onGraphChange={onGraphChange}
+        widgetOptionOverrides={{ agent: { skills: ["/personal-research", "/tenant-oncall"] } }}
+      />,
+    );
+
+    fireEvent.change(screen.getByLabelText("skills"), {
+      target: { value: "/incident-triage\n/personal-research" },
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "/tenant-oncall" }));
+
+    await waitFor(() => {
+      expect(onGraphChange).toHaveBeenCalled();
+      const latestGraph = onGraphChange.mock.calls.at(-1)?.[0] as { nodes: GraphNode[] };
+      expect(latestGraph.nodes[0]?.config?.skills).toEqual([
+        "/incident-triage",
+        "/personal-research",
+        "/tenant-oncall",
+      ]);
+    });
+  });
+
   it("updates rendered nodes when read-only graph props change", async () => {
     const initialNodes: GraphNode[] = [
       { id: "run-trigger", title: "Run Trigger", type: "frontier/trigger", x: 80, y: 120 },

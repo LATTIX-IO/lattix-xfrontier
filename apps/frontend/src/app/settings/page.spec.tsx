@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import SettingsPage from "@/app/settings/page";
 
-const { getPlatformSettingsMock, savePlatformSettingsMock, getAtfAlignmentReportMock } = vi.hoisted(() => ({
+const { getPlatformSettingsMock, savePlatformSettingsMock, getAtfAlignmentReportMock, getUserSkillsMock, saveUserSkillsMock } = vi.hoisted(() => ({
   getPlatformSettingsMock: vi.fn(async () => ({
     console_classification_banner_enabled: true,
     console_classification_banner_text: "Internal • Operational Console",
@@ -14,6 +14,7 @@ const { getPlatformSettingsMock, savePlatformSettingsMock, getAtfAlignmentReport
     require_human_approval: false,
     default_guardrail_ruleset_id: null,
     global_blocked_keywords: [],
+    tenant_scoped_skills: [],
     collaboration_max_agents: 8,
     default_runtime_engine: "native",
     default_runtime_strategy: "single",
@@ -50,13 +51,25 @@ const { getPlatformSettingsMock, savePlatformSettingsMock, getAtfAlignmentReport
       run_count_total: 6,
     },
   })),
+  getUserSkillsMock: vi.fn(async () => ({
+    principal_id: "user-1",
+    skills: [],
+    updated_at: new Date().toISOString(),
+  })),
+  saveUserSkillsMock: vi.fn(async (payload: { skills: string[] }) => ({
+    principal_id: "user-1",
+    skills: payload.skills,
+    updated_at: new Date().toISOString(),
+  })),
   savePlatformSettingsMock: vi.fn<(payload: Record<string, unknown>) => Promise<{ ok: boolean }>>(async () => ({ ok: true })),
 }));
 
 vi.mock("@/lib/api", () => ({
   getPlatformSettings: getPlatformSettingsMock,
   getAtfAlignmentReport: getAtfAlignmentReportMock,
+  getUserSkills: getUserSkillsMock,
   savePlatformSettings: savePlatformSettingsMock,
+  saveUserSkills: saveUserSkillsMock,
 }));
 
 describe("SettingsPage", () => {
@@ -157,5 +170,23 @@ describe("SettingsPage", () => {
     fireEvent.click(screen.getByRole("button", { name: /save preferences/i }));
 
     expect(await screen.findByText("503 backend unavailable")).toBeInTheDocument();
+  });
+
+  it("saves personal slash skills independently from platform settings", async () => {
+    saveUserSkillsMock.mockClear();
+
+    render(<SettingsPage />);
+
+    await screen.findByRole("button", { name: /save \/skills/i });
+
+    fireEvent.change(screen.getByLabelText(/personal \/skills/i), {
+      target: { value: "/incident-triage\nresearch-brief" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /save \/skills/i }));
+
+    await waitFor(() => expect(saveUserSkillsMock).toHaveBeenCalledTimes(1));
+    expect(saveUserSkillsMock.mock.calls.at(0)?.[0]).toEqual({
+      skills: ["/incident-triage", "research-brief"],
+    });
   });
 });
