@@ -79,6 +79,29 @@ function sortReleaseItems<T extends ReleaseItem>(items: T[]): T[] {
   return [...items].sort((left, right) => left.name.localeCompare(right.name));
 }
 
+function resolvePublishedRevisionIdAtRevision(
+  revisions: DefinitionRevisionSummary[],
+  revisionId: string,
+): string | null {
+  const orderedRevisions = [...revisions].sort((left, right) => left.revision - right.revision);
+  const targetRevision = orderedRevisions.find((revision) => revision.id === revisionId);
+  if (!targetRevision) {
+    return null;
+  }
+
+  let publishedRevisionId: string | null = null;
+  for (const revision of orderedRevisions) {
+    if (revision.revision > targetRevision.revision) {
+      break;
+    }
+    if (revision.status === "published") {
+      publishedRevisionId = revision.id;
+    }
+  }
+
+  return publishedRevisionId;
+}
+
 function StatusBadge({ label, tone }: { label: string; tone: "default" | "success" | "info" }) {
   const className = tone === "success"
     ? "border-[color-mix(in_srgb,var(--fx-success)_42%,var(--ui-border))] bg-[color-mix(in_srgb,var(--fx-success)_14%,transparent)]"
@@ -106,6 +129,17 @@ function ReleaseSection({
   const [versionsByKey, setVersionsByKey] = useState<Record<string, DefinitionRevisionSummary[]>>({});
   const [loadingKey, setLoadingKey] = useState<string | null>(null);
   const [actionKey, setActionKey] = useState<string | null>(null);
+  const [itemOverridesByKey, setItemOverridesByKey] = useState<Record<string, Partial<ReleaseItem>>>({});
+
+  function updateLocalItem(key: string, update: Partial<ReleaseItem>) {
+    setItemOverridesByKey((current) => ({
+      ...current,
+      [key]: {
+        ...current[key],
+        ...update,
+      },
+    }));
+  }
 
   async function loadVersions(item: ReleaseItem, options?: { toggle?: boolean }) {
     const key = entityKey(entityType, item.id);
@@ -127,15 +161,19 @@ function ReleaseSection({
 
   async function activateRevision(item: ReleaseItem, revisionId?: string) {
     const key = entityKey(entityType, item.id);
-    setActionKey(`${key}:activate:${revisionId ?? item.published_revision_id ?? "published"}`);
+    const targetRevisionId = revisionId ?? item.published_revision_id ?? null;
+    setActionKey(`${key}:activate:${targetRevisionId ?? "published"}`);
     try {
-      await activationActions[entityType](item.id, revisionId ? { revision_id: revisionId } : {});
+      const response = await activationActions[entityType](item.id, revisionId ? { revision_id: revisionId } : {});
+      updateLocalItem(key, {
+        active_revision_id: response.active_revision.id ?? targetRevisionId,
+      });
       addToast("success", `${entityLabels[entityType]} runtime revision activated.`);
       await loadVersions(item, { toggle: false });
+      setActionKey(null);
       router.refresh();
     } catch (error) {
       addToast("error", error instanceof Error ? error.message : `Unable to activate ${entityLabels[entityType].toLowerCase()} revision.`);
-    } finally {
       setActionKey(null);
     }
   }
@@ -144,13 +182,20 @@ function ReleaseSection({
     const key = entityKey(entityType, item.id);
     setActionKey(`${key}:rollback:${revisionId}`);
     try {
-      await rollbackActions[entityType](item.id, { revision_id: revisionId });
+      const response = await rollbackActions[entityType](item.id, { revision_id: revisionId });
+      updateLocalItem(key, {
+        version: response.version,
+        status: response.status,
+        published_revision_id:
+          resolvePublishedRevisionIdAtRevision(versionsByKey[key] ?? [], revisionId)
+          ?? (response.status === "published" ? response.restored_from.id : null),
+      });
       addToast("success", `${entityLabels[entityType]} restored from the selected revision.`);
       await loadVersions(item, { toggle: false });
+      setActionKey(null);
       router.refresh();
     } catch (error) {
       addToast("error", error instanceof Error ? error.message : `Unable to restore ${entityLabels[entityType].toLowerCase()} revision.`);
-    } finally {
       setActionKey(null);
     }
   }
@@ -174,9 +219,10 @@ function ReleaseSection({
           {items.map((item) => {
             const key = entityKey(entityType, item.id);
             const versions = versionsByKey[key] ?? [];
+            const currentItem = itemOverridesByKey[key] ? { ...item, ...itemOverridesByKey[key] } : item;
             const expanded = expandedKey === key;
-            const publishedRevisionId = item.published_revision_id ?? null;
-            const activeRevisionId = item.active_revision_id ?? null;
+            const publishedRevisionId = currentItem.published_revision_id ?? null;
+            const activeRevisionId = currentItem.active_revision_id ?? null;
             const canActivatePublished = Boolean(publishedRevisionId);
 
             return (
@@ -184,9 +230,9 @@ function ReleaseSection({
                 <div className="flex flex-wrap items-start justify-between gap-3">
                   <div className="min-w-0">
                     <div className="flex flex-wrap items-center gap-2">
-                      <p className="truncate text-sm font-semibold text-[var(--foreground)]">{item.name}</p>
-                      <StatusBadge label={`v${item.version}`} tone="default" />
-                      <StatusBadge label={item.status} tone="info" />
+                      <p className="truncate text-sm font-semibold text-[var(--foreground)]">{currentItem.name}</p>
+                      <StatusBadge label={`v${currentItem.version}`} tone="default" />
+                      <StatusBadge label={currentItem.status} tone="info" />
                       {activeRevisionId ? <StatusBadge label="Runtime active" tone="success" /> : null}
                     </div>
                     <p className="mt-2 font-mono text-[11px] text-[var(--fx-muted)]">{item.id}</p>

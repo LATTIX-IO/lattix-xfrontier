@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ReleasesWorkspace } from "@/components/releases-workspace";
@@ -221,6 +221,36 @@ describe("ReleasesWorkspace", () => {
         metadata: {},
       },
     });
+    rollbackWorkflowDefinitionMock.mockResolvedValue({
+      ok: true,
+      id: "wf-1",
+      version: 4,
+      status: "draft",
+      restored_from: {
+        id: "wf-rev-1",
+        entity_type: "workflow_definition",
+        entity_id: "wf-1",
+        revision: 1,
+        action: "save",
+        version: 2,
+        status: "draft",
+        created_at: "2026-04-06T00:00:00Z",
+        actor: "builder",
+        metadata: {},
+      },
+      revision: {
+        id: "wf-rev-4",
+        entity_type: "workflow_definition",
+        entity_id: "wf-1",
+        revision: 4,
+        action: "rollback",
+        version: 4,
+        status: "draft",
+        created_at: "2026-04-07T00:02:00Z",
+        actor: "builder",
+        metadata: {},
+      },
+    });
   });
 
   it("loads revisions and promotes a published workflow revision", async () => {
@@ -254,6 +284,7 @@ describe("ReleasesWorkspace", () => {
     await waitFor(() => {
       expect(activateWorkflowDefinitionMock).toHaveBeenCalledWith("wf-1", {});
     });
+    expect(screen.getByText("active: wf-rev-2")).toBeInTheDocument();
     expect(refreshMock).toHaveBeenCalled();
     expect(addToastMock).toHaveBeenCalledWith("success", "Workflow runtime revision activated.");
   });
@@ -316,5 +347,43 @@ describe("ReleasesWorkspace", () => {
     });
     expect(refreshMock).toHaveBeenCalled();
     expect(addToastMock).toHaveBeenCalledWith("success", "Guardrail restored from the selected revision.");
+  });
+
+  it("updates workflow release badges and actions immediately after rollback", async () => {
+    render(
+      <ReleasesWorkspace
+        workflows={[
+          {
+            id: "wf-1",
+            name: "Incident Workflow",
+            description: "",
+            version: 3,
+            status: "published",
+            published_revision_id: "wf-rev-2",
+            active_revision_id: "wf-rev-2",
+          },
+        ]}
+        agents={[]}
+        guardrails={[]}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /show revisions/i }));
+
+    await waitFor(() => {
+      expect(getWorkflowDefinitionVersionsMock).toHaveBeenCalledWith("wf-1");
+    });
+
+    const draftRow = screen.getByText("r1").closest("tr");
+    expect(draftRow).not.toBeNull();
+    fireEvent.click(within(draftRow as HTMLTableRowElement).getByRole("button", { name: /^restore$/i }));
+
+    await waitFor(() => {
+      expect(rollbackWorkflowDefinitionMock).toHaveBeenCalledWith("wf-1", { revision_id: "wf-rev-1" });
+    });
+
+    expect(screen.getByText("published: none")).toBeInTheDocument();
+    expect(screen.getByText("v4")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^promote$/i })).toBeDisabled();
   });
 });
