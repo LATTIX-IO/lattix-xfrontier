@@ -62,6 +62,7 @@ type Props = {
   }>;
   onGraphChange?: (graph: { nodes: GraphNode[]; links: GraphLink[] }) => void;
   onNodeSelected?: (node: GraphNode | null) => void;
+  onEditAgent?: (agentId: string) => void;
   widgetOptionOverrides?: Record<string, Record<string, string[]>>;
   edgeType?: "default" | "straight" | "step" | "smoothstep" | "simplebezier";
   edgeAnimated?: boolean;
@@ -90,6 +91,8 @@ type PortSpec = {
   type: string;
 };
 
+type PortDirection = "input" | "output";
+
 type NodeDefinition = {
   key: `frontier/${string}`;
   type: string;
@@ -108,6 +111,7 @@ type FrontierNodeData = {
   inputs: PortSpec[];
   outputs: PortSpec[];
   onConfigChange: (nodeId: string, key: string, value: unknown) => void;
+  onEditAgent?: (agentId: string) => void;
 };
 
 function formatWidgetValue(field: WidgetSpec, value: unknown): string {
@@ -141,6 +145,40 @@ function arePortTypesCompatible(sourceType: string | null, targetType: string | 
   }
 
   return sourceType === targetType;
+}
+
+function isBranchOnlyFlowPort(port: PortSpec, direction: PortDirection): boolean {
+  return direction === "output" && port.type === "flow" && port.name !== "out";
+}
+
+function describePortKind(port: PortSpec, direction: PortDirection): string {
+  if (isBranchOnlyFlowPort(port, direction)) {
+    return "control-flow branch";
+  }
+  if (port.type === "flow") {
+    return "control flow";
+  }
+  return "data";
+}
+
+function portBadgeTone(port: PortSpec, direction: PortDirection): string {
+  if (isBranchOnlyFlowPort(port, direction)) {
+    return "border-[#9a6700] bg-[#f3d9a4] text-[#533102]";
+  }
+  if (port.type === "flow") {
+    return "border-[#165f43] bg-[#cfeee0] text-[#124531]";
+  }
+  return "border-[#1d4ed8] bg-[#dbeafe] text-[#1e3a8a]";
+}
+
+function handleColor(port: PortSpec, direction: PortDirection): string {
+  if (isBranchOnlyFlowPort(port, direction)) {
+    return "#d89b00";
+  }
+  if (port.type === "data") {
+    return "#74a8ff";
+  }
+  return direction === "input" ? "#9aa0a6" : "#54d499";
 }
 
 const HEADER_HEIGHT_PX = 24;
@@ -236,15 +274,17 @@ function widgetSpecsForNodeType(type: string, widgetOptionOverrides?: Record<str
 function FrontierNodeView({ id, data }: NodeProps<FrontierNodeData>) {
   const titleColor = headerTitleTextColor(data.color);
   const portRows = Math.max(data.inputs.length, data.outputs.length, 1);
+  const boundAgentId = typeof data.config.agent_id === "string" ? data.config.agent_id.trim() : "";
+  const canEditAgent = (data.type === "agent" || data.type === "frontier/agent") && Boolean(boundAgentId) && Boolean(data.onEditAgent);
 
   return (
-    <div className="min-w-[300px] border border-[var(--fx-border)] bg-[var(--fx-surface)] text-[var(--foreground)] shadow-[0_8px_20px_rgba(0,0,0,0.35)]">
-      <div className="px-2 py-1 text-[11px] font-semibold" style={{ background: data.color, color: titleColor }}>
+    <div className="min-w-[300px] overflow-hidden rounded-[1.2rem] border border-[var(--fx-border)] bg-[var(--fx-surface)] text-[var(--foreground)] shadow-[0_16px_36px_rgba(15,23,42,0.08)]">
+      <div className="px-3 py-2 text-[11px] font-semibold tracking-[0.01em]" style={{ background: data.color, color: titleColor }}>
         {data.title}
       </div>
-      <div className="space-y-1 p-2">
-        <div className="mb-2 border border-[var(--fx-border)] bg-[var(--fx-surface-elevated)] p-2">
-          <div className="mb-1 grid grid-cols-2 text-[9px] uppercase tracking-[0.08em] fx-muted">
+      <div className="space-y-2 p-3">
+        <div className="mb-2 rounded-[0.95rem] border border-[var(--fx-border)] bg-[var(--fx-surface-elevated)] p-2.5 shadow-[inset_0_1px_0_rgba(255,255,255,0.38)]">
+          <div className="mb-1 grid grid-cols-2 text-[9px] font-medium fx-muted">
             <span>Inputs</span>
             <span className="text-right">Outputs</span>
           </div>
@@ -255,11 +295,25 @@ function FrontierNodeView({ id, data }: NodeProps<FrontierNodeData>) {
 
               return (
                 <div key={`port-row-${index}`} className="grid min-h-[18px] grid-cols-2 items-center gap-2 text-[10px]">
-                  <span className="truncate text-[var(--foreground)]" title={input ? `${input.name} (${input.type})` : ""}>
-                    {input ? `${input.name} · ${input.type}` : "—"}
+                  <span className="truncate text-[var(--foreground)]" title={input ? `${input.name} (${describePortKind(input, "input")})` : ""}>
+                    {input ? (
+                      <span className="inline-flex max-w-full items-center gap-1 align-middle">
+                        <span className="truncate">{input.name}</span>
+                        <span className={`inline-flex shrink-0 rounded-full border px-1.5 py-[1px] text-[8px] font-semibold ${portBadgeTone(input, "input")}`}>
+                          {describePortKind(input, "input")}
+                        </span>
+                      </span>
+                    ) : "—"}
                   </span>
-                  <span className="truncate text-right text-[var(--foreground)]" title={output ? `${output.name} (${output.type})` : ""}>
-                    {output ? `${output.name} · ${output.type}` : "—"}
+                  <span className="truncate text-right text-[var(--foreground)]" title={output ? `${output.name} (${describePortKind(output, "output")})` : ""}>
+                    {output ? (
+                      <span className="inline-flex max-w-full items-center justify-end gap-1 align-middle">
+                        <span className={`inline-flex shrink-0 rounded-full border px-1.5 py-[1px] text-[8px] font-semibold ${portBadgeTone(output, "output")}`}>
+                          {describePortKind(output, "output")}
+                        </span>
+                        <span className="truncate">{output.name}</span>
+                      </span>
+                    ) : "—"}
                   </span>
                 </div>
               );
@@ -286,7 +340,7 @@ function FrontierNodeView({ id, data }: NodeProps<FrontierNodeData>) {
               </div>
               {field.kind === "combo" ? (
                 data.readOnly ? (
-                  <div className="border border-[var(--fx-border)] bg-[var(--fx-input)] px-1 py-0.5 text-[10px] text-[var(--fx-input-text)]">{formatWidgetValue(field, value)}</div>
+                  <div className="rounded-[0.8rem] border border-[var(--fx-border)] bg-[var(--fx-input)] px-2 py-1 text-[10px] text-[var(--fx-input-text)]">{formatWidgetValue(field, value)}</div>
                 ) : (
                   <>
                     <input
@@ -306,7 +360,7 @@ function FrontierNodeView({ id, data }: NodeProps<FrontierNodeData>) {
                 )
               ) : field.kind === "number" ? (
                 data.readOnly ? (
-                  <div className="border border-[var(--fx-border)] bg-[var(--fx-input)] px-1 py-0.5 text-[10px] text-[var(--fx-input-text)]">{formatWidgetValue(field, value)}</div>
+                  <div className="rounded-[0.8rem] border border-[var(--fx-border)] bg-[var(--fx-input)] px-2 py-1 text-[10px] text-[var(--fx-input-text)]">{formatWidgetValue(field, value)}</div>
                 ) : (
                   <input
                     className="nodrag fx-field w-full px-1 py-0.5 text-[10px]"
@@ -317,7 +371,7 @@ function FrontierNodeView({ id, data }: NodeProps<FrontierNodeData>) {
                 )
               ) : field.kind === "toggle" ? (
                 data.readOnly ? (
-                  <div className="border border-[var(--fx-border)] bg-[var(--fx-input)] px-1 py-0.5 text-[10px] text-[var(--fx-input-text)]">{formatWidgetValue(field, value)}</div>
+                  <div className="rounded-[0.8rem] border border-[var(--fx-border)] bg-[var(--fx-input)] px-2 py-1 text-[10px] text-[var(--fx-input-text)]">{formatWidgetValue(field, value)}</div>
                 ) : (
                   <input
                     className="nodrag"
@@ -328,7 +382,7 @@ function FrontierNodeView({ id, data }: NodeProps<FrontierNodeData>) {
                 )
               ) : field.multiline ? (
                 data.readOnly ? (
-                  <pre className="max-h-24 overflow-auto whitespace-pre-wrap border border-[var(--fx-border)] bg-[var(--fx-input)] px-2 py-1 text-[10px] text-[var(--fx-input-text)]">
+                  <pre className="max-h-24 overflow-auto whitespace-pre-wrap rounded-[0.8rem] border border-[var(--fx-border)] bg-[var(--fx-input)] px-2 py-1 text-[10px] text-[var(--fx-input-text)]">
                     {formatWidgetValue(field, value) || "(empty)"}
                   </pre>
                 ) : (
@@ -341,7 +395,7 @@ function FrontierNodeView({ id, data }: NodeProps<FrontierNodeData>) {
                 )
               ) : (
                 data.readOnly ? (
-                  <div className="border border-[var(--fx-border)] bg-[var(--fx-input)] px-1 py-0.5 text-[10px] text-[var(--fx-input-text)]">{formatWidgetValue(field, value)}</div>
+                  <div className="rounded-[0.8rem] border border-[var(--fx-border)] bg-[var(--fx-input)] px-2 py-1 text-[10px] text-[var(--fx-input-text)]">{formatWidgetValue(field, value)}</div>
                 ) : (
                   <input
                     className="nodrag fx-field w-full px-1 py-0.5 text-[10px]"
@@ -355,6 +409,16 @@ function FrontierNodeView({ id, data }: NodeProps<FrontierNodeData>) {
             </label>
           );
         })}
+
+        {canEditAgent ? (
+          <button
+            type="button"
+            onClick={() => data.onEditAgent?.(boundAgentId)}
+            className="nodrag fx-btn-secondary w-full px-2 py-1 text-[10px] font-medium"
+          >
+            Edit Linked Agent
+          </button>
+        ) : null}
       </div>
 
       {data.inputs.map((input, index) => (
@@ -367,7 +431,7 @@ function FrontierNodeView({ id, data }: NodeProps<FrontierNodeData>) {
             top: HEADER_HEIGHT_PX + PORT_SECTION_OFFSET_PX + PORT_ROW_CENTER_OFFSET_PX + index * PORT_ROW_HEIGHT_PX,
             width: 8,
             height: 8,
-            background: "#9aa0a6",
+            background: handleColor(input, "input"),
           }}
         />
       ))}
@@ -382,7 +446,7 @@ function FrontierNodeView({ id, data }: NodeProps<FrontierNodeData>) {
             top: HEADER_HEIGHT_PX + PORT_SECTION_OFFSET_PX + PORT_ROW_CENTER_OFFSET_PX + index * PORT_ROW_HEIGHT_PX,
             width: 8,
             height: 8,
-            background: "#54d499",
+            background: handleColor(output, "output"),
           }}
         />
       ))}
@@ -401,6 +465,7 @@ function ReactFlowCanvasImpl({
   extraNodeDefinitions,
   onGraphChange,
   onNodeSelected,
+  onEditAgent,
   widgetOptionOverrides,
   edgeType = "smoothstep",
   edgeAnimated = false,
@@ -411,16 +476,14 @@ function ReactFlowCanvasImpl({
   const [menu, setMenu] = useState<{ x: number; y: number; clientX: number; clientY: number } | null>(null);
 
   const definitions = useMemo<NodeDefinition[]>(() => {
-    const extraDefinitions = extraNodeDefinitions ?? [];
-    const source = extraDefinitions.length > 0
-      ? extraDefinitions.map((item) => ({
-          key: item.key,
-          type: item.key.replace("frontier/", ""),
-          title: item.title,
-          color: item.color ?? "#54d499",
-          description: item.description,
-        }))
-      : frontierCanvasNodes;
+    const extraDefinitions = (extraNodeDefinitions ?? []).map((item) => ({
+      key: item.key,
+      type: item.key.replace("frontier/", ""),
+      title: item.title,
+      color: item.color ?? "#54d499",
+      description: item.description,
+    }));
+    const source = [...frontierCanvasNodes, ...extraDefinitions];
 
     return source.reduce<NodeDefinition[]>((acc, item) => {
       if (!acc.some((existing) => existing.key === item.key)) {
@@ -461,19 +524,20 @@ function ReactFlowCanvasImpl({
         position: { x: graphNode.x, y: graphNode.y },
         data: {
           title: graphNode.title,
-          color: ensureReadableHeaderColor(definition?.color ?? defaultNodeColorByType[graphNode.type] ?? "#4f5966"),
           type: graphNode.type,
           readOnly,
           config,
           widgets: widgetSpecsForNodeType(graphNode.type, widgetOptionOverrides),
+          color: ensureReadableHeaderColor(definition?.color ?? defaultNodeColorByType[graphNode.type] ?? "#4f5966"),
           ...portsForNodeType(graphNode.type),
+          onEditAgent,
           onConfigChange: () => {
             // wired after initial node creation
           },
         },
       };
     },
-    [definitionByType, readOnly, widgetOptionOverrides],
+    [definitionByType, onEditAgent, readOnly, widgetOptionOverrides],
   );
 
   const buildCanvasEdges = useCallback((graphNodes: Node<FrontierNodeData>[], graphLinks: GraphLink[]): Edge[] => {
@@ -510,8 +574,21 @@ function ReactFlowCanvasImpl({
     }, []);
   }, [edgeAnimated, edgeVisualStyle, normalizedEdgeType]);
 
+  const readonlyNodes = useMemo(() => nodes.map(toCanvasNode), [nodes, toCanvasNode]);
+  const readonlyEdges = useMemo(() => buildCanvasEdges(readonlyNodes, links), [buildCanvasEdges, links, readonlyNodes]);
+
   const [rfNodes, setRfNodes] = useState<Node<FrontierNodeData>[]>(() => nodes.map(toCanvasNode));
   const [rfEdges, setRfEdges] = useState<Edge[]>(() => buildCanvasEdges(nodes.map(toCanvasNode), links));
+
+  useEffect(() => {
+    if (!readOnly) {
+      return;
+    }
+
+    requestAnimationFrame(() => {
+      flowRef.current?.fitView({ duration: 220, padding: 0.18 });
+    });
+  }, [readOnly, readonlyEdges, readonlyNodes]);
 
   const autoLayout = useCallback((options?: { fitView?: boolean }) => {
     setRfNodes((previous) => {
@@ -640,17 +717,20 @@ function ReactFlowCanvasImpl({
 
   const renderedEdges = useMemo(
     () =>
-      rfEdges.map((edge) => ({
+      (readOnly ? readonlyEdges : rfEdges).map((edge) => ({
         ...edge,
         type: normalizedEdgeType,
         animated: edgeAnimated,
         style: edgeVisualStyle,
       })),
-    [edgeAnimated, edgeVisualStyle, normalizedEdgeType, rfEdges],
+    [edgeAnimated, edgeVisualStyle, normalizedEdgeType, readOnly, readonlyEdges, rfEdges],
   );
 
+  const activeRfNodes = readOnly ? readonlyNodes : rfNodes;
+  const activeRfEdges = readOnly ? readonlyEdges : rfEdges;
+
   const serializeGraph = useCallback((): { nodes: GraphNode[]; links: GraphLink[] } => {
-    const graphNodes: GraphNode[] = rfNodes.map((node) => ({
+    const graphNodes: GraphNode[] = activeRfNodes.map((node) => ({
       id: node.id,
       title: node.data.title,
       type: node.data.type,
@@ -659,7 +739,7 @@ function ReactFlowCanvasImpl({
       config: node.data.config,
     }));
 
-    const graphLinks: GraphLink[] = rfEdges.map((edge) => ({
+    const graphLinks: GraphLink[] = activeRfEdges.map((edge) => ({
       from: edge.source,
       to: edge.target,
       from_port: edge.sourceHandle ?? undefined,
@@ -667,7 +747,7 @@ function ReactFlowCanvasImpl({
     }));
 
     return { nodes: graphNodes, links: graphLinks };
-  }, [rfEdges, rfNodes]);
+  }, [activeRfEdges, activeRfNodes]);
 
   useEffect(() => {
     onGraphChange?.(serializeGraph());
@@ -695,19 +775,20 @@ function ReactFlowCanvasImpl({
 
   const hydratedNodes = useMemo(
     () =>
-      rfNodes.map((node) => ({
+      activeRfNodes.map((node) => ({
         ...node,
         data: {
           ...node.data,
           readOnly,
+          onEditAgent,
           onConfigChange: updateNodeConfig,
         },
       })),
-    [rfNodes, readOnly, updateNodeConfig],
+    [activeRfNodes, onEditAgent, readOnly, updateNodeConfig],
   );
 
   const onNodesChange = useCallback((changes: NodeChange[]) => {
-    const allowedChanges = readOnly ? changes.filter((change) => change.type === "position" || change.type === "select") : changes;
+    const allowedChanges = readOnly ? changes.filter((change) => change.type === "select") : changes;
     setRfNodes((previous) => applyNodeChanges(allowedChanges, previous));
   }, [readOnly]);
 
@@ -731,8 +812,8 @@ function ReactFlowCanvasImpl({
         return false;
       }
 
-      const sourceNode = rfNodes.find((node) => node.id === sourceId);
-      const targetNode = rfNodes.find((node) => node.id === targetId);
+      const sourceNode = activeRfNodes.find((node) => node.id === sourceId);
+      const targetNode = activeRfNodes.find((node) => node.id === targetId);
       if (!sourceNode || !targetNode) {
         return false;
       }
@@ -742,7 +823,7 @@ function ReactFlowCanvasImpl({
 
       return arePortTypesCompatible(sourceType, targetType);
     },
-    [readOnly, rfNodes],
+    [activeRfNodes, readOnly],
   );
 
   const onConnect = useCallback((connection: Connection) => {
@@ -850,12 +931,13 @@ function ReactFlowCanvasImpl({
   }, [addNode, autoLayout, buildCanvasEdges, onReady, serializeGraph, toCanvasNode]);
 
   return (
-    <div ref={containerRef} className={`fx-panel relative overflow-hidden ${className ?? ""}`} style={{ height: height ? `${height}px` : "100%" }}>
+    <div ref={containerRef} className={`fx-panel relative overflow-hidden rounded-[1.6rem] shadow-[0_24px_60px_rgba(15,23,42,0.08)] ${className ?? ""}`} style={{ height: height ? `${height}px` : "100%" }}>
       <ReactFlow
         nodes={hydratedNodes}
         edges={renderedEdges}
         nodeTypes={nodeTypes}
         isValidConnection={isConnectionValid}
+        nodesDraggable={!readOnly}
         nodesConnectable={!readOnly}
         edgesUpdatable={!readOnly}
         connectOnClick={!readOnly}
@@ -895,24 +977,34 @@ function ReactFlowCanvasImpl({
         style={{ background: "var(--background)" }}
       >
         <Background color="var(--fx-border)" gap={20} size={1} />
-        <MiniMap position="bottom-left" pannable zoomable nodeColor="var(--fx-muted)" maskColor="rgba(0,0,0,0.35)" />
-        <Controls showInteractive={false} />
+        <MiniMap
+          position="bottom-left"
+          pannable
+          zoomable
+          nodeColor="var(--fx-muted)"
+          maskColor="rgba(15,23,42,0.22)"
+          style={{ width: 140, height: 105, borderRadius: 16, overflow: "hidden" }}
+        />
+        <Controls
+          showInteractive={false}
+          style={{ transform: "scale(0.7)", transformOrigin: "bottom left" }}
+        />
       </ReactFlow>
 
       {menu && (
         <div
-          className="fx-panel absolute z-40 max-h-80 w-72 overflow-auto p-1 shadow-[0_10px_30px_rgba(0,0,0,0.5)]"
+          className="fx-panel absolute z-40 max-h-80 w-72 overflow-auto rounded-[1.25rem] p-2 shadow-[0_24px_60px_rgba(15,23,42,0.12)]"
           style={{ left: menu.x, top: menu.y }}
         >
-          <div className="mb-1 px-1 text-[10px] uppercase tracking-[0.08em] fx-muted">Add Node • frontier</div>
+          <div className="mb-2 px-1 text-[10px] font-medium fx-muted">Add Node • frontier</div>
           {definitions.map((definition) => (
             <button
               key={definition.key}
-              className="mb-0.5 flex w-full items-center justify-between border border-transparent px-2 py-1 text-left text-[11px] text-[var(--foreground)] hover:border-[var(--fx-border)] hover:bg-[var(--fx-nav-hover)]"
+              className="mb-1 flex w-full items-center justify-between rounded-[0.9rem] border border-transparent px-3 py-2 text-left text-[11px] text-[var(--foreground)] hover:border-[var(--fx-border)] hover:bg-[var(--fx-nav-hover)]"
               onClick={() => addNode(definition.type, definition.title, undefined, menu.clientX, menu.clientY)}
             >
               <span>{definition.title}</span>
-              <span className="h-2 w-2 rounded-full" style={{ background: definition.color }} />
+              <span className="h-2.5 w-2.5 rounded-full" style={{ background: definition.color }} />
             </button>
           ))}
         </div>

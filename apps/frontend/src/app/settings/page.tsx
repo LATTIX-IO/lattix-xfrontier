@@ -1,14 +1,20 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
+import { SettingsRailCard, SettingsShell } from "@/components/settings-shell";
 import { getAtfAlignmentReport, getPlatformSettings, savePlatformSettings } from "@/lib/api";
 import type { AtfAlignmentReport } from "@/types/frontier";
 
+function normalizeHexColor(value: string, fallback: string): string {
+  const trimmed = value.trim();
+  return /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/.test(trimmed) ? trimmed : fallback;
+}
+
 const sectionNav = [
-  { id: "section-brand", label: "Brand & Identity" },
-  { id: "section-security", label: "Security & Governance" },
-  { id: "section-runtime", label: "Runtime Policy" },
-  { id: "section-user-defaults", label: "User Defaults" },
+  { id: "section-brand", label: "Brand & Identity", description: "Identity and support metadata exposed across the console." },
+  { id: "section-security", label: "Security & Governance", description: "Default controls for approvals, secrets, and emergency posture." },
+  { id: "section-runtime", label: "Runtime Policy", description: "Shared engine strategy and hybrid routing defaults." },
+  { id: "section-user-defaults", label: "User Defaults", description: "Kickoff and review preferences applied to new work." },
 ] as const;
 
 export default function SettingsPage() {
@@ -20,16 +26,19 @@ export default function SettingsPage() {
     tooling: "semantic-kernel",
     collaboration: "autogen",
   } as const;
-  const [activeSection, setActiveSection] = useState<string>(sectionNav[0].id);
-  const observerRef = useRef<IntersectionObserver | null>(null);
   const [loaded, setLoaded] = useState(false);
   const [saveState, setSaveState] = useState<"idle" | "saving" | "saved" | "error">("idle");
+  const [saveErrorMessage, setSaveErrorMessage] = useState<string | null>(null);
   const [atfReport, setAtfReport] = useState<AtfAlignmentReport | null>(null);
   const [atfLoading, setAtfLoading] = useState(true);
   const [orgName, setOrgName] = useState("Lattix xFrontier");
   const [orgSlug, setOrgSlug] = useState("lattix-frontier");
   const [supportEmail, setSupportEmail] = useState("support@lattix.io");
   const [website, setWebsite] = useState("https://lattix.io");
+  const [classificationBannerEnabled, setClassificationBannerEnabled] = useState(true);
+  const [classificationBannerText, setClassificationBannerText] = useState("Internal • Operational Console");
+  const [classificationBannerBackgroundColor, setClassificationBannerBackgroundColor] = useState("#2e2a28");
+  const [classificationBannerTextColor, setClassificationBannerTextColor] = useState("#e7dcc0");
   const [defaultKickoffWorkflow, setDefaultKickoffWorkflow] = useState("Auto-select from intent");
   const [preferredReviewDepth, setPreferredReviewDepth] = useState("Standard");
   const [idleTimeout, setIdleTimeout] = useState("30 minutes");
@@ -72,6 +81,10 @@ export default function SettingsPage() {
       if (settings.org_slug) setOrgSlug(settings.org_slug);
       if (settings.support_email) setSupportEmail(settings.support_email);
       if (settings.website) setWebsite(settings.website);
+      setClassificationBannerEnabled(settings.console_classification_banner_enabled ?? true);
+      setClassificationBannerText(settings.console_classification_banner_text ?? "Internal • Operational Console");
+      setClassificationBannerBackgroundColor(normalizeHexColor(settings.console_classification_banner_background_color ?? "#2e2a28", "#2e2a28"));
+      setClassificationBannerTextColor(normalizeHexColor(settings.console_classification_banner_text_color ?? "#e7dcc0", "#e7dcc0"));
       if (settings.default_kickoff_workflow) setDefaultKickoffWorkflow(settings.default_kickoff_workflow);
       if (settings.preferred_review_depth) setPreferredReviewDepth(settings.preferred_review_depth);
       if (settings.idle_timeout) setIdleTimeout(settings.idle_timeout);
@@ -107,27 +120,9 @@ export default function SettingsPage() {
     };
   }, []);
 
-  useEffect(() => {
-    observerRef.current = new IntersectionObserver(
-      (entries) => {
-        for (const entry of entries) {
-          if (entry.isIntersecting) {
-            setActiveSection(entry.target.id);
-            break;
-          }
-        }
-      },
-      { rootMargin: "-30% 0px -60% 0px", threshold: 0 },
-    );
-    for (const { id } of sectionNav) {
-      const el = document.getElementById(id);
-      if (el) observerRef.current.observe(el);
-    }
-    return () => observerRef.current?.disconnect();
-  }, []);
-
   async function handleSavePlatformSettings() {
     setSaveState("saving");
+    setSaveErrorMessage(null);
     try {
       const maxAgents = Number(collaborationMaxAgents);
       await savePlatformSettings({
@@ -135,6 +130,10 @@ export default function SettingsPage() {
         org_slug: orgSlug,
         support_email: supportEmail,
         website: website,
+        console_classification_banner_enabled: classificationBannerEnabled,
+        console_classification_banner_text: classificationBannerText.trim() || "Internal • Operational Console",
+        console_classification_banner_background_color: normalizeHexColor(classificationBannerBackgroundColor, "#2e2a28"),
+        console_classification_banner_text_color: normalizeHexColor(classificationBannerTextColor, "#e7dcc0"),
         default_kickoff_workflow: defaultKickoffWorkflow,
         preferred_review_depth: preferredReviewDepth,
         idle_timeout: idleTimeout,
@@ -165,9 +164,13 @@ export default function SettingsPage() {
       });
       setSaveState("saved");
       setTimeout(() => setSaveState("idle"), 2500);
-    } catch {
+    } catch (error) {
       setSaveState("error");
-      setTimeout(() => setSaveState("idle"), 4000);
+      setSaveErrorMessage(error instanceof Error ? error.message : "Could not save platform settings.");
+      setTimeout(() => {
+        setSaveState("idle");
+        setSaveErrorMessage(null);
+      }, 4000);
     }
   }
 
@@ -190,17 +193,22 @@ export default function SettingsPage() {
     : [];
 
   const maturityLabel = atfReport?.maturity_estimate ? atfReport.maturity_estimate.toUpperCase() : "UNKNOWN";
+  const postureSummary = [
+    localOnlyMode ? "Local-only network posture enabled" : "External network posture permitted",
+    requireHumanApproval ? "Every workflow requires review" : "Approval gate applies selectively",
+    `${defaultRuntimeStrategy === "hybrid" ? "Hybrid" : "Single-engine"} runtime strategy is the default`,
+  ];
 
   return (
-    <section className="space-y-3">
-      <div className="flex items-center justify-between border-b border-[var(--ui-border)] pb-2">
-        <div>
-          <p className="text-[11px] uppercase tracking-wide fx-muted">Console / Settings</p>
-          <h1 className="text-xl font-semibold">Organization Settings</h1>
-          <p className="fx-muted text-sm">Manage platform identity, runtime policy defaults, and operational safety baselines.</p>
-        </div>
+    <SettingsShell
+      eyebrow="Console / Settings"
+      title="Organization Settings"
+      description="Manage platform identity, runtime defaults, and operational safety baselines with the same lighter settings frame used across the console."
+      sections={sectionNav}
+      navLabel="Organization settings"
+      action={
         <div className="flex items-center gap-2">
-          {saveState === "error" ? <p className="text-xs text-red-300">Could not save platform settings.</p> : null}
+          {saveState === "error" ? <p className="text-xs text-red-300">{saveErrorMessage ?? "Could not save platform settings."}</p> : null}
           <button
             className="fx-btn-primary px-3 py-2 text-sm"
             onClick={handleSavePlatformSettings}
@@ -210,72 +218,49 @@ export default function SettingsPage() {
             {saveState === "saving" ? "Saving..." : saveState === "saved" ? "Saved" : "Save changes"}
           </button>
         </div>
-      </div>
+      }
+      rightRail={
+        <>
+          <SettingsRailCard
+            title="ATF posture snapshot"
+            description="Live alignment estimate from trust controls and recent audit evidence."
+            badge={atfLoading ? "Loading" : `${atfReport?.coverage_percent ?? 0}% • ${maturityLabel}`}
+          >
+            <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-1">
+              <div className="rounded-[1rem] border border-[var(--fx-border)] bg-[hsl(var(--card)/0.82)] px-3 py-2 text-xs">
+                <p className="fx-muted">Audit events (24h)</p>
+                <p className="mt-1 text-base font-semibold text-[var(--foreground)]">{atfReport?.evidence.audit_event_count_24h ?? 0}</p>
+              </div>
+              <div className="rounded-[1rem] border border-[var(--fx-border)] bg-[hsl(var(--card)/0.82)] px-3 py-2 text-xs">
+                <p className="fx-muted">Allowed vs blocked</p>
+                <p className="mt-1 text-base font-semibold text-[var(--foreground)]">
+                  {atfReport?.evidence.audit_allowed_24h ?? 0} / {atfReport?.evidence.audit_blocked_24h ?? 0}
+                </p>
+              </div>
+              <div className="rounded-[1rem] border border-[var(--fx-border)] bg-[hsl(var(--card)/0.82)] px-3 py-2 text-xs">
+                <p className="fx-muted">Errors (24h)</p>
+                <p className="mt-1 text-base font-semibold text-[var(--foreground)]">{atfReport?.evidence.audit_error_24h ?? 0}</p>
+              </div>
+            </div>
+            {topGaps.length > 0 ? (
+              <ul className="mt-3 space-y-2 text-xs text-[var(--foreground)]">
+                {topGaps.map((gap) => (
+                  <li key={gap} className="rounded-[1rem] border border-[var(--fx-border)] bg-[hsl(var(--card)/0.82)] px-3 py-2">{gap}</li>
+                ))}
+              </ul>
+            ) : null}
+          </SettingsRailCard>
 
-      <article className="fx-panel p-3" aria-live="polite">
-        <div className="flex flex-wrap items-start justify-between gap-2">
-          <div>
-            <h2 className="text-sm font-semibold">ATF posture snapshot</h2>
-            <p className="fx-muted text-xs">Live alignment estimate from trust controls and recent audit evidence.</p>
-          </div>
-          <div className="rounded border border-[var(--ui-border)] bg-[hsl(var(--card))] px-2 py-1 text-xs font-medium text-[var(--foreground)]">
-            {atfLoading ? "Loading…" : `${atfReport?.coverage_percent ?? 0}% • ${maturityLabel}`}
-          </div>
-        </div>
-
-        <div className="mt-3 grid gap-2 md:grid-cols-4">
-          <div className="rounded border border-[var(--fx-border)] px-2 py-2 text-xs">
-            <p className="fx-muted">Audit events (24h)</p>
-            <p className="mt-1 text-base font-semibold text-[var(--foreground)]">{atfReport?.evidence.audit_event_count_24h ?? 0}</p>
-          </div>
-          <div className="rounded border border-[var(--fx-border)] px-2 py-2 text-xs">
-            <p className="fx-muted">Allowed (24h)</p>
-            <p className="mt-1 text-base font-semibold text-[var(--foreground)]">{atfReport?.evidence.audit_allowed_24h ?? 0}</p>
-          </div>
-          <div className="rounded border border-[var(--fx-border)] px-2 py-2 text-xs">
-            <p className="fx-muted">Blocked (24h)</p>
-            <p className="mt-1 text-base font-semibold text-[var(--foreground)]">{atfReport?.evidence.audit_blocked_24h ?? 0}</p>
-          </div>
-          <div className="rounded border border-[var(--fx-border)] px-2 py-2 text-xs">
-            <p className="fx-muted">Errors (24h)</p>
-            <p className="mt-1 text-base font-semibold text-[var(--foreground)]">{atfReport?.evidence.audit_error_24h ?? 0}</p>
-          </div>
-        </div>
-
-        {topGaps.length > 0 ? (
-          <div className="mt-3 rounded border border-[var(--fx-border)] bg-[hsl(var(--card))] px-2 py-2 text-xs">
-            <p className="font-medium text-[var(--foreground)]">Top ATF gaps</p>
-            <ul className="mt-1 list-disc space-y-1 pl-4 text-[var(--foreground)]">
-              {topGaps.map((gap) => (
-                <li key={gap}>{gap}</li>
+          <SettingsRailCard title="Current posture" description="The short version of what new work inherits today.">
+            <ul className="space-y-2 text-xs text-[var(--foreground)]">
+              {postureSummary.map((item) => (
+                <li key={item} className="rounded-[1rem] border border-[var(--fx-border)] bg-[hsl(var(--card)/0.82)] px-3 py-2">{item}</li>
               ))}
             </ul>
-          </div>
-        ) : null}
-      </article>
-
-      <div className="grid gap-3 xl:grid-cols-[220px_minmax(0,1fr)]">
-        <aside className="fx-panel h-fit p-2">
-          <div className="px-2 pb-2 text-[11px] uppercase tracking-wide fx-muted">Settings</div>
-          <nav className="space-y-1 text-xs">
-            {sectionNav.map((item) => (
-              <button
-                key={item.id}
-                type="button"
-                onClick={() => document.getElementById(item.id)?.scrollIntoView({ behavior: "smooth", block: "start" })}
-                className={`block w-full rounded px-2 py-1.5 text-left transition ${
-                  activeSection === item.id
-                    ? "bg-[var(--fx-nav-hover)] font-semibold text-[hsl(var(--foreground))]"
-                    : "text-[var(--fx-muted)] hover:bg-[var(--fx-nav-hover)] hover:text-[var(--foreground)]"
-                }`}
-              >
-                {item.label}
-              </button>
-            ))}
-          </nav>
-        </aside>
-
-        <div className="space-y-3">
+          </SettingsRailCard>
+        </>
+      }
+    >
           <article id="section-brand" className="fx-panel p-3 scroll-mt-32">
             <h2 className="text-sm font-semibold">Brand and identity</h2>
             <p className="fx-muted text-xs">Operational details visible across collaboration, approvals, and audit exports.</p>
@@ -296,6 +281,56 @@ export default function SettingsPage() {
                 Website
                 <input className="fx-field mt-1 w-full px-2 py-2 text-sm" value={website} onChange={(e) => setWebsite(e.target.value)} />
               </label>
+              <label className="flex items-center justify-between gap-3 border border-[var(--fx-border)] px-2 py-2 text-xs md:col-span-2">
+                <span>Show console classification banner</span>
+                <input
+                  aria-label="Show console classification banner"
+                  type="checkbox"
+                  checked={classificationBannerEnabled}
+                  onChange={(event) => setClassificationBannerEnabled(event.target.checked)}
+                />
+              </label>
+              <label className="block text-xs md:col-span-2">
+                Console banner text
+                <input
+                  aria-label="Console banner text"
+                  className="fx-field mt-1 w-full px-2 py-2 text-sm"
+                  value={classificationBannerText}
+                  onChange={(e) => setClassificationBannerText(e.target.value)}
+                />
+              </label>
+              <label className="block text-xs">
+                Banner background color
+                <input
+                  aria-label="Banner background color"
+                  type="color"
+                  className="fx-field mt-1 h-10 w-full px-2 py-1"
+                  value={normalizeHexColor(classificationBannerBackgroundColor, "#2e2a28")}
+                  onChange={(e) => setClassificationBannerBackgroundColor(e.target.value)}
+                />
+              </label>
+              <label className="block text-xs">
+                Banner text color
+                <input
+                  aria-label="Banner text color"
+                  type="color"
+                  className="fx-field mt-1 h-10 w-full px-2 py-1"
+                  value={normalizeHexColor(classificationBannerTextColor, "#e7dcc0")}
+                  onChange={(e) => setClassificationBannerTextColor(e.target.value)}
+                />
+              </label>
+              <div className="border border-[var(--fx-border)] bg-[hsl(var(--card)/0.82)] px-3 py-3 text-xs md:col-span-2">
+                <p className="font-medium text-[var(--foreground)]">Banner preview</p>
+                <div
+                  className="mt-2 border border-[var(--ui-border)] px-3 py-2 text-[11px] font-semibold uppercase tracking-[0.08em]"
+                  style={{
+                    background: normalizeHexColor(classificationBannerBackgroundColor, "#2e2a28"),
+                    color: normalizeHexColor(classificationBannerTextColor, "#e7dcc0"),
+                  }}
+                >
+                  {classificationBannerText.trim() || "Internal • Operational Console"}
+                </div>
+              </div>
             </div>
           </article>
 
@@ -536,8 +571,6 @@ export default function SettingsPage() {
               </label>
             </div>
           </article>
-        </div>
-      </div>
-    </section>
+    </SettingsShell>
   );
 }

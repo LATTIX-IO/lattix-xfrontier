@@ -90,6 +90,7 @@ def test_compose_env_generation_uses_mode_specific_files_and_profiles(tmp_path: 
     assert "FRONTIER_RUNTIME_PROFILE=local-secure" in secure_text
     assert "NEXT_PUBLIC_API_BASE_URL=/api" in secure_text
     assert "A2A_JWT_AUD=frontier-runtime" in secure_text
+    assert "FRONTIER_SECRETS_ENCRYPTION_KEY=" in secure_text
     assert "LOCAL_STACK_HOST=xfrontier.local" in secure_text
     assert "FRONTEND_ORIGIN=http://xfrontier.local" in secure_text
     assert "FRONTIER_LOCAL_BOOTSTRAP_AUTHENTICATED_OPERATOR=true" in secure_text
@@ -123,6 +124,20 @@ def test_compose_env_generation_repairs_blank_a2a_secret(tmp_path: Path, monkeyp
 
     assert "A2A_JWT_SECRET=" in secure_text
     assert "A2A_JWT_SECRET=\n" not in secure_text
+
+
+def test_compose_env_generation_persists_provider_encryption_key_for_existing_secure_env(tmp_path: Path) -> None:
+    (tmp_path / ".installer").mkdir(parents=True, exist_ok=True)
+    (tmp_path / ".installer" / "local-secure.env").write_text(
+        "A2A_JWT_SECRET=stable-a2a-secret\nFRONTIER_SECRETS_ENCRYPTION_KEY=\n",
+        encoding="utf-8",
+    )
+
+    secure_env = ensure_compose_env_file(local_profile=False, root=tmp_path)
+    secure_text = secure_env.read_text(encoding="utf-8")
+
+    assert "A2A_JWT_SECRET=stable-a2a-secret" in secure_text
+    assert "FRONTIER_SECRETS_ENCRYPTION_KEY=stable-a2a-secret" in secure_text
 
 
 def test_tooling_and_docs_remove_dev_alias_but_keep_local_stack() -> None:

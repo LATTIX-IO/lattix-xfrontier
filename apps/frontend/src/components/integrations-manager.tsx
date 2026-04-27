@@ -12,7 +12,7 @@ type LastTestMetadata = {
 };
 
 type ApiKeyLocation = "header" | "query";
-type OauthGrantType = "client_credentials" | "authorization_code";
+type SupportedAuthType = Exclude<IntegrationDefinition["auth_type"], "oauth2">;
 
 function readLastTest(metadata: Record<string, unknown> | undefined): LastTestMetadata | null {
   if (!metadata || typeof metadata !== "object") {
@@ -62,23 +62,28 @@ function authSummary(item: IntegrationDefinition): string {
   return item.auth_type;
 }
 
+function integrationStatusTone(status: string): string {
+  if (/configured|active|healthy|connected/i.test(status)) {
+    return "border-[color-mix(in_srgb,var(--fx-success)_36%,var(--ui-border))] bg-[color-mix(in_srgb,var(--fx-success)_12%,transparent)] text-[var(--foreground)]";
+  }
+  if (/failed|error|blocked/i.test(status)) {
+    return "border-[color-mix(in_srgb,var(--fx-danger)_36%,var(--ui-border))] bg-[color-mix(in_srgb,var(--fx-danger)_10%,transparent)] text-[var(--foreground)]";
+  }
+  return "border-[var(--ui-border)] bg-[hsl(var(--card))] text-[var(--foreground)]";
+}
+
 export function IntegrationsManager() {
   const [items, setItems] = useState<IntegrationDefinition[]>([]);
   const [loading, setLoading] = useState(true);
   const [name, setName] = useState("");
   const [type, setType] = useState<IntegrationDefinition["type"]>("http");
   const [baseUrl, setBaseUrl] = useState("");
-  const [authType, setAuthType] = useState<IntegrationDefinition["auth_type"]>("none");
+  const [authType, setAuthType] = useState<SupportedAuthType>("none");
   const [secretRef, setSecretRef] = useState("");
   const [apiKeyLocation, setApiKeyLocation] = useState<ApiKeyLocation>("header");
   const [apiKeyName, setApiKeyName] = useState("x-api-key");
   const [bearerPrefix, setBearerPrefix] = useState("Bearer");
   const [basicUsername, setBasicUsername] = useState("");
-  const [oauthTokenUrl, setOauthTokenUrl] = useState("");
-  const [oauthClientId, setOauthClientId] = useState("");
-  const [oauthGrantType, setOauthGrantType] = useState<OauthGrantType>("client_credentials");
-  const [oauthScopes, setOauthScopes] = useState("");
-  const [oauthAudience, setOauthAudience] = useState("");
   const [statusMessage, setStatusMessage] = useState("");
   const [testingId, setTestingId] = useState<string | null>(null);
 
@@ -125,17 +130,7 @@ export function IntegrationsManager() {
         username: basicUsername.trim(),
       };
     }
-    return {
-      method: "oauth2",
-      grant_type: oauthGrantType,
-      token_url: oauthTokenUrl.trim(),
-      client_id: oauthClientId.trim(),
-      scopes: oauthScopes
-        .split(/[\s,]+/)
-        .map((value) => value.trim())
-        .filter(Boolean),
-      audience: oauthAudience.trim(),
-    };
+    return { method: "none" };
   }
 
   function resetForm() {
@@ -148,11 +143,6 @@ export function IntegrationsManager() {
     setApiKeyName("x-api-key");
     setBearerPrefix("Bearer");
     setBasicUsername("");
-    setOauthTokenUrl("");
-    setOauthClientId("");
-    setOauthGrantType("client_credentials");
-    setOauthScopes("");
-    setOauthAudience("");
   }
 
   async function handleCreate() {
@@ -160,19 +150,22 @@ export function IntegrationsManager() {
     const metadata_json: Record<string, unknown> = {
       auth: buildAuthMetadata(),
     };
-
-    await saveIntegration({
-      name: name.trim() || "Untitled Integration",
-      type,
-      base_url: baseUrl,
-      auth_type: authType,
-      secret_ref: authType === "none" ? "" : secretRef.trim(),
-      status: "draft",
-      metadata_json,
-    });
-    resetForm();
-    await refresh();
-    setStatusMessage("Integration saved.");
+    try {
+      await saveIntegration({
+        name: name.trim() || "Untitled Integration",
+        type,
+        base_url: baseUrl,
+        auth_type: authType,
+        secret_ref: authType === "none" ? "" : secretRef.trim(),
+        status: "draft",
+        metadata_json,
+      });
+      resetForm();
+      await refresh();
+      setStatusMessage("Integration saved.");
+    } catch (error) {
+      setStatusMessage(error instanceof Error ? error.message : "Unable to save integration.");
+    }
   }
 
   async function handleTest(id: string) {
@@ -183,33 +176,59 @@ export function IntegrationsManager() {
       const warningSuffix = warnings.length > 0 ? ` • warnings: ${warnings.join("; ")}` : "";
       setStatusMessage(`${result.message}${warningSuffix}`);
       await refresh();
+    } catch (error) {
+      setStatusMessage(error instanceof Error ? error.message : "Unable to test integration.");
     } finally {
       setTestingId(null);
     }
   }
 
   async function handleDelete(id: string) {
-    await deleteIntegration(id);
-    await refresh();
-    setStatusMessage("Integration removed.");
+    try {
+      await deleteIntegration(id);
+      await refresh();
+      setStatusMessage("Integration removed.");
+    } catch (error) {
+      setStatusMessage(error instanceof Error ? error.message : "Unable to remove integration.");
+    }
   }
 
   return (
-    <section className="space-y-4">
-      <header>
-        <h1 className="text-2xl font-semibold">Integration Manager</h1>
-        <p className="fx-muted">Configure local connectors for tools, data stores, queues, and APIs.</p>
+    <section className="space-y-5">
+      <header className="flex flex-wrap items-start justify-between gap-4 rounded-[1.7rem] border border-[var(--ui-border)] bg-[color-mix(in_srgb,hsl(var(--card))_97%,hsl(var(--background))_3%)] px-5 py-4 shadow-[0_22px_56px_rgba(15,23,42,0.06)]">
+        <div className="max-w-2xl">
+          <p className="text-[0.68rem] font-semibold uppercase tracking-[0.12em] text-[var(--fx-muted)]">Builder workspace</p>
+          <h1 className="mt-2 text-[1.5rem] font-semibold tracking-[-0.03em] text-[var(--foreground)]">Integration Manager</h1>
+          <p className="mt-2 text-sm leading-6 text-[var(--fx-muted)]">Configure local connectors for tools, data stores, queues, and APIs without losing the runtime posture or secret-handling rules attached to them.</p>
+        </div>
+        <div className="grid min-w-[220px] gap-2 sm:grid-cols-2">
+          <div className="rounded-[1rem] border border-[var(--fx-border)] bg-[hsl(var(--card)/0.8)] px-3 py-2.5">
+            <p className="text-[0.72rem] font-medium text-[var(--fx-muted)]">Configured</p>
+            <p className="mt-1 text-lg font-semibold text-[var(--foreground)]">{items.length}</p>
+          </div>
+          <div className="rounded-[1rem] border border-[var(--fx-border)] bg-[hsl(var(--card)/0.8)] px-3 py-2.5">
+            <p className="text-[0.72rem] font-medium text-[var(--fx-muted)]">Auth modes</p>
+            <p className="mt-1 text-lg font-semibold text-[var(--foreground)]">4</p>
+          </div>
+        </div>
       </header>
 
-      <div className="fx-panel p-4">
-        <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide">Add integration</h2>
+      <div className="fx-panel rounded-[1.6rem] p-5 shadow-[0_20px_48px_rgba(15,23,42,0.05)]">
+        <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <p className="text-[0.68rem] font-semibold uppercase tracking-[0.12em] text-[var(--fx-muted)]">New connector</p>
+            <h2 className="mt-2 text-[1.1rem] font-semibold tracking-[-0.02em] text-[var(--foreground)]">Add integration</h2>
+            <p className="mt-1 text-sm leading-6 text-[var(--fx-muted)]">Register the endpoint, choose the auth shape the runtime can actually exercise, and keep credentials behind a secret reference.</p>
+          </div>
+          <div className="fx-pill px-3 py-1.5 text-[0.72rem] font-medium text-[var(--fx-muted)]">Secrets stay server-side</div>
+        </div>
         <div className="grid gap-3 md:grid-cols-2">
-          <label className="block text-sm">
-            Name
+          <label className="block text-sm text-[var(--foreground)]">
+            <span className="font-medium">Name</span>
             <input className="fx-field mt-1 w-full px-2 py-2 text-sm" value={name} onChange={(event) => setName(event.target.value)} placeholder="Salesforce API" />
           </label>
-          <label className="block text-sm">
-            Type
+          <label className="block text-sm text-[var(--foreground)]">
+            <span className="font-medium">Type</span>
             <select className="fx-field mt-1 w-full px-2 py-2 text-sm" value={type} onChange={(event) => setType(event.target.value as IntegrationDefinition["type"])}>
               <option value="http">HTTP API</option>
               <option value="database">Database</option>
@@ -218,38 +237,40 @@ export function IntegrationsManager() {
               <option value="custom">Custom</option>
             </select>
           </label>
-          <label className="block text-sm md:col-span-2">
-            Base URL / DSN
+          <label className="block text-sm text-[var(--foreground)] md:col-span-2">
+            <span className="font-medium">Base URL / DSN</span>
             <input className="fx-field mt-1 w-full px-2 py-2 text-sm" value={baseUrl} onChange={(event) => setBaseUrl(event.target.value)} placeholder="https://api.example.com/v1 or postgresql://..." />
           </label>
-          <label className="block text-sm">
-            Auth type
-            <select className="fx-field mt-1 w-full px-2 py-2 text-sm" value={authType} onChange={(event) => setAuthType(event.target.value as IntegrationDefinition["auth_type"])}>
+          <label className="block text-sm text-[var(--foreground)]">
+            <span className="font-medium">Auth type</span>
+            <select className="fx-field mt-1 w-full px-2 py-2 text-sm" value={authType} onChange={(event) => setAuthType(event.target.value as SupportedAuthType)}>
               <option value="none">None</option>
               <option value="api_key">API key</option>
               <option value="bearer">Bearer token</option>
-              <option value="oauth2">OAuth2</option>
               <option value="basic">Basic</option>
             </select>
+            <span className="mt-1 block text-[11px] fx-muted">
+              Interactive OAuth2 is not wired through the backend test/send path yet, so new integrations are limited to auth modes the runtime can actually exercise.
+            </span>
           </label>
 
           {authType === "none" ? (
-            <div className="md:col-span-2 rounded-md border border-[var(--fx-border)] bg-[var(--fx-surface-elevated)] p-3 text-xs text-[var(--foreground)]">
+            <div className="md:col-span-2 rounded-[1rem] border border-[var(--fx-border)] bg-[var(--fx-surface-elevated)] p-3 text-xs text-[var(--foreground)]">
               No authentication selected. Secret fields are hidden.
             </div>
           ) : null}
 
           {authType === "api_key" ? (
             <>
-              <label className="block text-sm">
-                API key location
+              <label className="block text-sm text-[var(--foreground)]">
+                <span className="font-medium">API key location</span>
                 <select className="fx-field mt-1 w-full px-2 py-2 text-sm" value={apiKeyLocation} onChange={(event) => setApiKeyLocation(event.target.value as ApiKeyLocation)}>
                   <option value="header">HTTP Header</option>
                   <option value="query">Query string</option>
                 </select>
               </label>
-              <label className="block text-sm">
-                API key field name
+              <label className="block text-sm text-[var(--foreground)]">
+                <span className="font-medium">API key field name</span>
                 <input
                   className="fx-field mt-1 w-full px-2 py-2 text-sm"
                   value={apiKeyName}
@@ -261,8 +282,8 @@ export function IntegrationsManager() {
           ) : null}
 
           {authType === "bearer" ? (
-            <label className="block text-sm">
-              Token prefix
+            <label className="block text-sm text-[var(--foreground)]">
+              <span className="font-medium">Token prefix</span>
               <input
                 className="fx-field mt-1 w-full px-2 py-2 text-sm"
                 value={bearerPrefix}
@@ -273,8 +294,8 @@ export function IntegrationsManager() {
           ) : null}
 
           {authType === "basic" ? (
-            <label className="block text-sm">
-              Username
+            <label className="block text-sm text-[var(--foreground)]">
+              <span className="font-medium">Username</span>
               <input
                 className="fx-field mt-1 w-full px-2 py-2 text-sm"
                 value={basicUsername}
@@ -284,65 +305,15 @@ export function IntegrationsManager() {
             </label>
           ) : null}
 
-          {authType === "oauth2" ? (
-            <>
-              <label className="block text-sm md:col-span-2">
-                Token URL
-                <input
-                  className="fx-field mt-1 w-full px-2 py-2 text-sm"
-                  value={oauthTokenUrl}
-                  onChange={(event) => setOauthTokenUrl(event.target.value)}
-                  placeholder="https://login.example.com/oauth2/token"
-                />
-              </label>
-              <label className="block text-sm">
-                Client ID
-                <input
-                  className="fx-field mt-1 w-full px-2 py-2 text-sm"
-                  value={oauthClientId}
-                  onChange={(event) => setOauthClientId(event.target.value)}
-                  placeholder="frontier-client"
-                />
-              </label>
-              <label className="block text-sm">
-                Grant type
-                <select className="fx-field mt-1 w-full px-2 py-2 text-sm" value={oauthGrantType} onChange={(event) => setOauthGrantType(event.target.value as OauthGrantType)}>
-                  <option value="client_credentials">Client credentials</option>
-                  <option value="authorization_code">Authorization code</option>
-                </select>
-              </label>
-              <label className="block text-sm">
-                Scopes
-                <input
-                  className="fx-field mt-1 w-full px-2 py-2 text-sm"
-                  value={oauthScopes}
-                  onChange={(event) => setOauthScopes(event.target.value)}
-                  placeholder="read write admin"
-                />
-              </label>
-              <label className="block text-sm">
-                Audience (optional)
-                <input
-                  className="fx-field mt-1 w-full px-2 py-2 text-sm"
-                  value={oauthAudience}
-                  onChange={(event) => setOauthAudience(event.target.value)}
-                  placeholder="https://api.example.com"
-                />
-              </label>
-            </>
-          ) : null}
-
           {authType !== "none" ? (
-            <label className="block text-sm md:col-span-2">
-              Secret reference
+            <label className="block text-sm text-[var(--foreground)] md:col-span-2">
+              <span className="font-medium">Secret reference</span>
               <input
                 className="fx-field mt-1 w-full px-2 py-2 text-sm"
                 value={secretRef}
                 onChange={(event) => setSecretRef(event.target.value)}
                 placeholder={
-                  authType === "oauth2"
-                    ? "secret/oauth/client-secret"
-                    : authType === "basic"
+                  authType === "basic"
                       ? "secret/db/password"
                       : "secret/integrations/service-token"
                 }
@@ -361,7 +332,14 @@ export function IntegrationsManager() {
         </div>
       </div>
 
-      <div className="fx-panel overflow-hidden">
+      <div className="fx-panel overflow-hidden rounded-[1.6rem] shadow-[0_20px_48px_rgba(15,23,42,0.05)]">
+        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[var(--ui-border)] px-4 py-4">
+          <div>
+            <p className="text-[0.68rem] font-semibold uppercase tracking-[0.12em] text-[var(--fx-muted)]">Inventory</p>
+            <h2 className="mt-2 text-[1.05rem] font-semibold tracking-[-0.02em] text-[var(--foreground)]">Saved integrations</h2>
+          </div>
+          <div className="fx-pill px-3 py-1.5 text-[0.72rem] font-medium text-[var(--fx-muted)]">Test before promoting to live traffic</div>
+        </div>
         <table className="w-full text-sm">
           <thead className="fx-table-head">
             <tr>
@@ -386,12 +364,20 @@ export function IntegrationsManager() {
               </tr>
             ) : (
               items.map((item) => (
-                <tr key={item.id} className="border-t border-[var(--fx-border)] align-top">
-                  <td className="px-3 py-2">{item.name}</td>
-                  <td className="px-3 py-2">{item.type}</td>
-                  <td className="px-3 py-2">{item.status}</td>
+                <tr key={item.id} className="border-t border-[var(--fx-border)] align-top hover:bg-[hsl(var(--muted)/0.16)]">
+                  <td className="px-3 py-3 font-medium text-[var(--foreground)]">{item.name}</td>
+                  <td className="px-3 py-3">
+                    <span className="fx-pill px-2.5 py-1 text-[0.72rem] font-medium text-[var(--foreground)]">{item.type}</span>
+                  </td>
+                  <td className="px-3 py-3">
+                    <span className={`inline-flex rounded-full border px-2.5 py-1 text-[0.72rem] font-medium ${integrationStatusTone(item.status)}`}>
+                      {item.status}
+                    </span>
+                  </td>
                   <td className="px-3 py-2">
-                    <div>{item.auth_type}</div>
+                    <div>
+                      <span className="fx-pill px-2.5 py-1 text-[0.72rem] font-medium text-[var(--foreground)]">{item.auth_type}</span>
+                    </div>
                     <div className="fx-muted text-[11px]">{authSummary(item)}</div>
                   </td>
                   <td className="px-3 py-2 font-mono text-xs">{item.secret_ref || "(none)"}</td>
@@ -403,7 +389,7 @@ export function IntegrationsManager() {
                       }
                       return (
                         <div className="space-y-0.5">
-                          <p className={lastTest.ok ? "text-emerald-300" : "text-rose-300"}>{lastTest.ok ? "OK" : "Failed"}</p>
+                          <p className={lastTest.ok ? "text-[var(--fx-success)]" : "text-[var(--fx-danger)]"}>{lastTest.ok ? "OK" : "Failed"}</p>
                           {Array.isArray(lastTest.warnings) && lastTest.warnings.length > 0 ? (
                             <p className="fx-muted">{lastTest.warnings.length} warning(s)</p>
                           ) : null}
@@ -414,10 +400,10 @@ export function IntegrationsManager() {
                   <td className="px-3 py-2 font-mono text-xs">{item.base_url || "(unset)"}</td>
                   <td className="px-3 py-2">
                     <div className="flex justify-end gap-2">
-                      <button onClick={() => handleTest(item.id)} className="fx-btn-secondary px-2 py-1 text-xs" disabled={testingId === item.id}>
+                      <button onClick={() => handleTest(item.id)} className="fx-btn-secondary px-2.5 py-1.5 text-xs" disabled={testingId === item.id}>
                         {testingId === item.id ? "Testing..." : "Test"}
                       </button>
-                      <button onClick={() => handleDelete(item.id)} className="fx-btn-warning px-2 py-1 text-xs">Delete</button>
+                      <button onClick={() => handleDelete(item.id)} className="fx-btn-warning px-2.5 py-1.5 text-xs">Delete</button>
                     </div>
                   </td>
                 </tr>
@@ -427,7 +413,7 @@ export function IntegrationsManager() {
         </table>
       </div>
 
-      {statusMessage ? <p className="text-xs text-[var(--foreground)]">{statusMessage}</p> : null}
+      {statusMessage ? <p className="rounded-[1rem] border border-[var(--fx-border)] bg-[hsl(var(--card)/0.84)] px-3 py-2 text-xs text-[var(--foreground)]">{statusMessage}</p> : null}
     </section>
   );
 }

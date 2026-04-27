@@ -6,11 +6,14 @@ import {
   AtfAlignmentReport,
   AuditEvent,
   CollaborationSession,
+  DefinitionRevisionHistory,
+  DefinitionRevisionSummary,
   GuardrailRuleSet,
   InboxItem,
   IntegrationDefinition,
   ObservabilityRunTrace,
   OperatorSession,
+  PlatformHealthDetails,
   PlaybookDefinition,
   PlatformVersionStatus,
   PlatformSettings,
@@ -18,6 +21,7 @@ import {
   TemplateCatalogItem,
   WorkflowDefinition,
   WorkflowRunEvent,
+  WorkflowRunKind,
   WorkflowRunSummary,
 } from "@/types/frontier";
 export type { ObservabilityRunTrace } from "@/types/frontier";
@@ -40,6 +44,32 @@ function getRequestIdentityHeaders(): Record<string, string> {
   if (actor) {
     headers["x-frontier-actor"] = actor;
   }
+  return headers;
+}
+
+async function getRequestAuthHeaders(): Promise<Record<string, string>> {
+  const headers = getRequestIdentityHeaders();
+
+  if (typeof window !== "undefined") {
+    return headers;
+  }
+
+  try {
+    const nextHeadersModule = await import("next/headers");
+    const requestHeaders = await nextHeadersModule.headers();
+    const cookieHeader = requestHeaders.get("cookie")?.trim();
+    const authorizationHeader = requestHeaders.get("authorization")?.trim();
+
+    if (cookieHeader) {
+      headers.cookie = cookieHeader;
+    }
+    if (authorizationHeader) {
+      headers.authorization = authorizationHeader;
+    }
+  } catch {
+    // Outside a Next request context there may be no incoming headers to forward.
+  }
+
   return headers;
 }
 
@@ -106,19 +136,11 @@ type CacheEntry<T> = {
 
 const responseCache = new Map<string, CacheEntry<unknown>>();
 const EMPTY_WORKFLOWS: WorkflowDefinition[] = [];
-const EMPTY_RUNS: WorkflowRunSummary[] = [];
-const EMPTY_EVENTS: WorkflowRunEvent[] = [];
-const EMPTY_INBOX: InboxItem[] = [];
 const EMPTY_ARTIFACTS: ArtifactSummary[] = [];
 const EMPTY_AGENTS: AgentDefinition[] = [];
 const EMPTY_GUARDRAILS: GuardrailRuleSet[] = [];
-const DEFAULT_RUN_DETAIL: WorkflowRunDetail = {
-  artifacts: [],
-  status: "Running",
-  graph: { nodes: [], links: [] },
-  agent_traces: [],
-  approvals: { required: false, pending: false },
-};
+export const PLATFORM_SETTINGS_UPDATED_EVENT = "frontier:platform-settings-updated";
+export const WORKFLOW_RUN_UPDATED_EVENT = "frontier:workflow-run-updated";
 
 function readCachedValue<T>(cacheKey: string): T | null {
   const cached = responseCache.get(cacheKey);
@@ -135,6 +157,43 @@ function readCachedValue<T>(cacheKey: string): T | null {
 function writeCachedValue<T>(cacheKey: string, value: T, ttlMs: number): T {
   responseCache.set(cacheKey, { value, expiresAt: Date.now() + ttlMs });
   return value;
+}
+
+function deleteCachedValue(cacheKey: string): void {
+  responseCache.delete(cacheKey);
+}
+
+function invalidateWorkflowRunCaches(id: string): void {
+  deleteCachedValue(`workflow-run:${id}`);
+  deleteCachedValue(`workflow-run-events:${id}`);
+  deleteCachedValue("inbox");
+  for (const key of Array.from(responseCache.keys())) {
+    if (key.startsWith("workflow-runs:")) {
+      deleteCachedValue(key);
+    }
+  }
+}
+
+function invalidateOperatorSessionCache(): void {
+  deleteCachedValue("operator-session");
+}
+
+function publishWorkflowRunUpdate(run: WorkflowRunSummary): void {
+  if (typeof window === "undefined") {
+    return;
+  }
+  window.dispatchEvent(new CustomEvent<WorkflowRunSummary>(WORKFLOW_RUN_UPDATED_EVENT, { detail: run }));
+}
+
+function isJsonRecord(value: Json): value is Record<string, unknown> {
+  return !Array.isArray(value) && typeof value === "object" && value !== null;
+}
+
+function publishPlatformSettingsUpdate(settings: PlatformSettings): void {
+  if (typeof window === "undefined") {
+    return;
+  }
+  window.dispatchEvent(new CustomEvent<PlatformSettings>(PLATFORM_SETTINGS_UPDATED_EVENT, { detail: settings }));
 }
 
 const FRONTIER_GRAPH_SCHEMA_VERSION = "frontier-graph/1.0";
@@ -175,10 +234,18 @@ export type UserRuntimeProviderConfig = {
   provider: string;
   configured: boolean;
   model: string;
+  available_models?: string[];
   base_url: string;
   api_key_masked: string;
+  preferred?: boolean;
+  created_at?: string;
   updated_at: string;
   source: "user" | "environment";
+};
+
+export type UserRuntimeProvidersResponse = {
+  principal_id: string;
+  providers: UserRuntimeProviderConfig[];
 };
 
 export type RuntimeEngineName = "native" | "langgraph" | "langchain" | "semantic-kernel" | "autogen";
@@ -280,8 +347,17 @@ export type ObservabilityDashboardResponse = {
 };
 
 export type WorkflowRunDetail = {
+  title?: string;
+  title_source?: "system" | "generated" | "user";
   artifacts: ArtifactSummary[];
   status: string;
+  runtime?: {
+    provider?: string;
+    model?: string;
+    mode?: string;
+    source?: string;
+    state?: string;
+  };
   graph?: {
     nodes: Array<{ id: string; title: string; type: string; x: number; y: number; config?: Record<string, unknown> }>;
     links: Array<{ from: string; to: string; from_port?: string; to_port?: string }>;
@@ -303,16 +379,18 @@ export type WorkflowRunDetail = {
 
 async function safeFetch<T>(path: string, fallback: T, init?: RequestInit): Promise<T> {
   try {
+    const requestHeaders = await getRequestAuthHeaders();
     const res = await fetchWithRetry(
       `${getApiBase()}${path}`,
       {
         ...init,
         headers: {
           "Content-Type": "application/json",
-          ...getRequestIdentityHeaders(),
+          ...requestHeaders,
           ...(init?.headers ?? {}),
         },
         cache: "no-store",
+        credentials: "include",
       },
     );
 
@@ -330,18 +408,26 @@ async function safeFetch<T>(path: string, fallback: T, init?: RequestInit): Prom
 }
 
 async function strictFetch<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetchWithRetry(
-    `${getApiBase()}${path}`,
-    {
-      ...init,
-      headers: {
-        "Content-Type": "application/json",
-        ...getRequestIdentityHeaders(),
-        ...(init?.headers ?? {}),
+  let res: Response;
+  try {
+    const requestHeaders = await getRequestAuthHeaders();
+    res = await fetchWithRetry(
+      `${getApiBase()}${path}`,
+      {
+        ...init,
+        headers: {
+          "Content-Type": "application/json",
+          ...requestHeaders,
+          ...(init?.headers ?? {}),
+        },
+        cache: "no-store",
+        credentials: "include",
       },
-      cache: "no-store",
-    },
-  );
+    );
+  } catch (error) {
+    setApiConnected(false);
+    throw error;
+  }
 
   setApiConnected(true);
 
@@ -356,6 +442,17 @@ async function strictFetch<T>(path: string, init?: RequestInit): Promise<T> {
   }
 
   return (await res.json()) as T;
+}
+
+function normalizeWorkflowRunSummary(run: WorkflowRunSummary): WorkflowRunSummary {
+  const candidate = typeof run.kind === "string" ? run.kind.toLowerCase() : "";
+  const kind: WorkflowRunKind = ["workflow", "chat", "playbook", "task"].includes(candidate)
+    ? candidate as WorkflowRunKind
+    : "workflow";
+  return {
+    ...run,
+    kind,
+  };
 }
 
 export async function getPublishedWorkflows(): Promise<WorkflowDefinition[]> {
@@ -376,18 +473,21 @@ export async function createWorkflowRun(
   options?.signal?.addEventListener("abort", abortForwarder, { once: true });
 
   try {
+    const requestHeaders = await getRequestAuthHeaders();
     const res = await fetch(`${getApiBase()}/workflow-runs`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        ...getRequestIdentityHeaders(),
+        ...requestHeaders,
       },
       body: JSON.stringify(payload),
       cache: "no-store",
+      credentials: "include",
       signal: timeoutController.signal,
     });
 
     if (!res.ok) {
+      setApiConnected(true);
       let details = "";
       try {
         details = await res.text();
@@ -397,8 +497,10 @@ export async function createWorkflowRun(
       throw new Error(`Failed to create run (${res.status})${details ? `: ${details}` : ""}`);
     }
 
+    setApiConnected(true);
     return (await res.json()) as { id: string; status: string };
   } catch (error) {
+    setApiConnected(false);
     if (error instanceof DOMException && error.name === "AbortError") {
       throw new Error(`Run creation timed out after ${Math.round(timeoutMs / 1000)}s. The model/backend may still be processing; please retry in a moment.`);
     }
@@ -419,7 +521,8 @@ export async function getWorkflowRuns(status?: string): Promise<WorkflowRunSumma
   if (cached) {
     return cached;
   }
-  const value = await safeFetch<WorkflowRunSummary[]>(`/workflow-runs${suffix}`, EMPTY_RUNS);
+  const response = await strictFetch<WorkflowRunSummary[]>(`/workflow-runs${suffix}`);
+  const value = response.map((run) => normalizeWorkflowRunSummary(run));
   return writeCachedValue(cacheKey, value, 5000);
 }
 
@@ -429,8 +532,22 @@ export async function getWorkflowRun(_id: string): Promise<WorkflowRunDetail> {
   if (cached) {
     return cached;
   }
-  const value = await safeFetch<WorkflowRunDetail>(`/workflow-runs/${_id}`, DEFAULT_RUN_DETAIL);
+  const value = await strictFetch<WorkflowRunDetail>(`/workflow-runs/${_id}`);
   return writeCachedValue(cacheKey, value, 1500);
+}
+
+export async function updateWorkflowRunTitle(id: string, title: string): Promise<WorkflowRunSummary> {
+  const updated = normalizeWorkflowRunSummary(
+    await strictFetch<WorkflowRunSummary>(`/workflow-runs/${encodeURIComponent(id)}`, {
+      method: "PATCH",
+      body: JSON.stringify({ title }),
+    }),
+  );
+
+  invalidateWorkflowRunCaches(id);
+
+  publishWorkflowRunUpdate(updated);
+  return updated;
 }
 
 export async function getWorkflowRunEvents(id: string): Promise<WorkflowRunEvent[]> {
@@ -439,7 +556,7 @@ export async function getWorkflowRunEvents(id: string): Promise<WorkflowRunEvent
   if (cached) {
     return cached;
   }
-  const value = await safeFetch<WorkflowRunEvent[]>(`/workflow-runs/${id}/events`, EMPTY_EVENTS);
+  const value = await strictFetch<WorkflowRunEvent[]>(`/workflow-runs/${id}/events`);
   return writeCachedValue(cacheKey, value, 1500);
 }
 
@@ -453,12 +570,14 @@ export function streamWorkflowRun(
   const controller = new AbortController();
   void (async () => {
     try {
+      const requestHeaders = await getRequestAuthHeaders();
       const res = await fetch(`${getApiBase()}/workflow-runs/${encodeURIComponent(id)}/stream`, {
         method: "GET",
         headers: {
-          ...getRequestIdentityHeaders(),
+          ...requestHeaders,
         },
         cache: "no-store",
+        credentials: "include",
         signal: controller.signal,
       });
       if (!res.ok || !res.body) {
@@ -510,7 +629,9 @@ export function streamWorkflowRun(
 }
 
 export async function archiveWorkflowRun(id: string): Promise<{ ok: boolean }> {
-  return strictFetch<{ ok: boolean }>(`/workflow-runs/${id}/archive`, { method: "POST" });
+  const result = await strictFetch<{ ok: boolean }>(`/workflow-runs/${id}/archive`, { method: "POST" });
+  invalidateWorkflowRunCaches(id);
+  return result;
 }
 
 export async function createArtifactVersion(
@@ -535,7 +656,7 @@ export async function getInbox(): Promise<InboxItem[]> {
   if (cached) {
     return cached;
   }
-  const value = await safeFetch<InboxItem[]>("/inbox", EMPTY_INBOX);
+  const value = await strictFetch<InboxItem[]>("/inbox");
   return writeCachedValue("inbox", value, 5000);
 }
 
@@ -552,6 +673,14 @@ export async function getWorkflowDefinitions(): Promise<WorkflowDefinition[]> {
   return safeFetch<WorkflowDefinition[]>("/workflow-definitions", EMPTY_WORKFLOWS);
 }
 
+export async function getWorkflowDefinition(id: string): Promise<WorkflowDefinition | null> {
+  return safeFetch<WorkflowDefinition | null>(`/workflow-definitions/${id}`, null);
+}
+
+export async function getWorkflowDefinitionVersions(id: string): Promise<DefinitionRevisionHistory> {
+  return strictFetch<DefinitionRevisionHistory>(`/workflow-definitions/${id}/versions`);
+}
+
 export async function saveWorkflowDefinition(payload: Json): Promise<{ ok: boolean }> {
   return strictFetch<{ ok: boolean }>("/workflow-definitions", {
     method: "POST",
@@ -563,6 +692,10 @@ export async function publishWorkflowDefinition(id: string): Promise<{ ok: boole
   return strictFetch<{ ok: boolean }>(`/workflow-definitions/${id}/publish`, { method: "POST" });
 }
 
+export async function unpublishWorkflowDefinition(id: string): Promise<{ ok: boolean }> {
+  return strictFetch<{ ok: boolean }>(`/workflow-definitions/${id}/unpublish`, { method: "POST" });
+}
+
 export async function archiveWorkflowDefinition(id: string): Promise<{ ok: boolean }> {
   return strictFetch<{ ok: boolean }>(`/workflow-definitions/${id}/archive`, { method: "POST" });
 }
@@ -571,12 +704,36 @@ export async function deleteWorkflowDefinition(id: string): Promise<{ ok: boolea
   return strictFetch<{ ok: boolean }>(`/workflow-definitions/${id}`, { method: "DELETE" });
 }
 
+export async function rollbackWorkflowDefinition(
+  id: string,
+  payload: { revision_id?: string; revision?: number; version?: number },
+): Promise<{ ok: boolean; id: string; version: number; status: string; restored_from: DefinitionRevisionSummary; revision: DefinitionRevisionSummary }> {
+  return strictFetch(`/workflow-definitions/${id}/rollback`, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function activateWorkflowDefinition(
+  id: string,
+  payload: { revision_id?: string; revision?: number; version?: number } = {},
+): Promise<{ ok: boolean; id: string; active_revision: DefinitionRevisionSummary; activation_revision: DefinitionRevisionSummary }> {
+  return strictFetch(`/workflow-definitions/${id}/activate`, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
 export async function getAgentDefinitions(): Promise<AgentDefinition[]> {
   return safeFetch<AgentDefinition[]>("/agent-definitions", EMPTY_AGENTS);
 }
 
 export async function getAgentDefinition(id: string): Promise<AgentDefinition | null> {
   return safeFetch<AgentDefinition | null>(`/agent-definitions/${id}`, null);
+}
+
+export async function getAgentDefinitionVersions(id: string): Promise<DefinitionRevisionHistory> {
+  return strictFetch<DefinitionRevisionHistory>(`/agent-definitions/${id}/versions`);
 }
 
 export async function saveAgentDefinition(payload: Json): Promise<{ ok: boolean }> {
@@ -590,8 +747,36 @@ export async function publishAgentDefinition(id: string): Promise<{ ok: boolean 
   return strictFetch<{ ok: boolean }>(`/agent-definitions/${id}/publish`, { method: "POST" });
 }
 
+export async function unpublishAgentDefinition(id: string): Promise<{ ok: boolean }> {
+  return strictFetch<{ ok: boolean }>(`/agent-definitions/${id}/unpublish`, { method: "POST" });
+}
+
+export async function archiveAgentDefinition(id: string): Promise<{ ok: boolean }> {
+  return strictFetch<{ ok: boolean }>(`/agent-definitions/${id}/archive`, { method: "POST" });
+}
+
 export async function deleteAgentDefinition(id: string): Promise<{ ok: boolean }> {
   return strictFetch<{ ok: boolean }>(`/agent-definitions/${id}`, { method: "DELETE" });
+}
+
+export async function rollbackAgentDefinition(
+  id: string,
+  payload: { revision_id?: string; revision?: number; version?: number },
+): Promise<{ ok: boolean; id: string; version: number; status: string; restored_from: DefinitionRevisionSummary; revision: DefinitionRevisionSummary }> {
+  return strictFetch(`/agent-definitions/${id}/rollback`, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function activateAgentDefinition(
+  id: string,
+  payload: { revision_id?: string; revision?: number; version?: number } = {},
+): Promise<{ ok: boolean; id: string; active_revision: DefinitionRevisionSummary; activation_revision: DefinitionRevisionSummary }> {
+  return strictFetch(`/agent-definitions/${id}/activate`, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
 }
 
 export async function getNodeDefinitions(options?: { includeInternal?: boolean }): Promise<Array<{ type_key: string; title?: string; description: string; category?: string; color?: string }>> {
@@ -605,12 +790,23 @@ export async function getNodeDefinitions(options?: { includeInternal?: boolean }
     { type_key: "frontier/guardrail", title: "Guardrail", description: "Checks content against guardrail rules", category: "Control", color: "#9f3550" },
     { type_key: "frontier/human-review", title: "Human Review", description: "Requires human approval before next step", category: "Control", color: "#8d5c1a" },
     { type_key: "frontier/manifold", title: "Manifold", description: "Consolidates multiple inbound flows via AND/OR logic", category: "Logic", color: "#7863d3" },
+    { type_key: "frontier/router", title: "Router", description: "Makes deterministic routing decisions from rules, thresholds, or keyword classifiers", category: "Logic", color: "#3158a4" },
+    { type_key: "frontier/iterator", title: "Iterator", description: "Processes lists, batches, and paginated payloads with loop and done branches", category: "Logic", color: "#5670d9" },
+    { type_key: "frontier/transform", title: "Transform", description: "Deterministically shapes payloads without an LLM or external tool hop", category: "Logic", color: "#1e8a72" },
+    { type_key: "frontier/event", title: "Event", description: "Publishes or consumes workflow events with structured envelopes and receipts", category: "Integration", color: "#0f8c8c" },
+    { type_key: "frontier/data-store", title: "Data Store", description: "Creates, reads, updates, appends, or deletes business records inside a scoped data store", category: "Integration", color: "#6e7c2d" },
+    { type_key: "frontier/error-handler", title: "Error Handler", description: "Normalizes failures and emits fallback payloads and recovery status", category: "Control", color: "#aa5a2f" },
+    { type_key: "frontier/wait", title: "Wait", description: "Delays, times out, or resumes execution windows with explicit branches", category: "Control", color: "#8c6a13" },
     { type_key: "frontier/output", title: "Output", description: "Final output emission", category: "Core", color: "#69a3ff" },
   ]);
 }
 
 export async function getGuardrailRulesets(): Promise<GuardrailRuleSet[]> {
   return safeFetch<GuardrailRuleSet[]>("/guardrail-rulesets", EMPTY_GUARDRAILS);
+}
+
+export async function getGuardrailRulesetVersions(id: string): Promise<DefinitionRevisionHistory> {
+  return strictFetch<DefinitionRevisionHistory>(`/guardrail-rulesets/${id}/versions`);
 }
 
 export async function getWorkflowSecurityPolicy(workflowId: string): Promise<SecurityPolicyResponse> {
@@ -633,23 +829,43 @@ export async function getAgentSecurityPolicy(agentId: string): Promise<SecurityP
   });
 }
 
-export async function saveGuardrailRuleset(payload: Json): Promise<{ ok: boolean }> {
-  return safeFetch<{ ok: boolean }>("/guardrail-rulesets", { ok: true }, {
+export async function saveGuardrailRuleset(payload: Json): Promise<{ ok: boolean; id: string }> {
+  return strictFetch<{ ok: boolean; id: string }>("/guardrail-rulesets", {
     method: "POST",
     body: JSON.stringify(payload),
   });
 }
 
 export async function publishGuardrailRuleset(id: string): Promise<{ ok: boolean }> {
-  return safeFetch<{ ok: boolean }>(`/guardrail-rulesets/${id}/publish`, { ok: true }, { method: "POST" });
+  return strictFetch<{ ok: boolean }>(`/guardrail-rulesets/${id}/publish`, { method: "POST" });
 }
 
 export async function deleteGuardrailRuleset(id: string): Promise<{ ok: boolean }> {
-  return safeFetch<{ ok: boolean }>(`/guardrail-rulesets/${id}`, { ok: true }, { method: "DELETE" });
+  return strictFetch<{ ok: boolean }>(`/guardrail-rulesets/${id}`, { method: "DELETE" });
 }
 
 export async function deleteNodeDefinition(id: string): Promise<{ ok: boolean }> {
-  return safeFetch<{ ok: boolean }>(`/node-definitions/${id}`, { ok: true }, { method: "DELETE" });
+  return strictFetch<{ ok: boolean }>(`/node-definitions/${id}`, { method: "DELETE" });
+}
+
+export async function rollbackGuardrailRuleset(
+  id: string,
+  payload: { revision_id?: string; revision?: number; version?: number },
+): Promise<{ ok: boolean; id: string; version: number; status: string; restored_from: DefinitionRevisionSummary; revision: DefinitionRevisionSummary }> {
+  return strictFetch(`/guardrail-rulesets/${id}/rollback`, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function activateGuardrailRuleset(
+  id: string,
+  payload: { revision_id?: string; revision?: number; version?: number } = {},
+): Promise<{ ok: boolean; id: string; active_revision: DefinitionRevisionSummary; activation_revision: DefinitionRevisionSummary }> {
+  return strictFetch(`/guardrail-rulesets/${id}/activate`, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
 }
 
 export async function validateGraph(payload: GraphCanvasPayload): Promise<GraphValidationResponse> {
@@ -664,57 +880,27 @@ export async function validateGraph(payload: GraphCanvasPayload): Promise<GraphV
 }
 
 export async function runGraph(payload: GraphCanvasPayload): Promise<GraphRunResponse> {
-  return safeFetch<GraphRunResponse>(
-    "/graph/runs",
-    {
-      run_id: "local-fallback-run",
-      status: "completed",
-      execution_order: payload.nodes.map((node) => node.id),
-      node_results: {},
-      events: [],
-      validation: { valid: true, issues: [] },
-      runtime: {
-        requested_engine: "native",
-        selected_engine: "native",
-        executed_engine: "native",
-        mode: "native",
-        allow_override: false,
-        allowed_engines: ["native"],
-      },
-    },
-    {
-      method: "POST",
-      body: JSON.stringify(withGraphSchemaVersion(payload)),
-    },
-  );
-}
-
-export async function getRuntimeProviders(): Promise<RuntimeProvidersResponse> {
-  return safeFetch<RuntimeProvidersResponse>("/runtime/providers", {
-    providers: [
-      {
-        provider: "openai",
-        configured: false,
-        model: "gpt-5.2",
-        mode: "simulated",
-      },
-    ],
-    framework_adapters: {
-      langgraph: { engine: "langgraph", available: false, missing_modules: ["langgraph", "langchain_openai"] },
-      langchain: { engine: "langchain", available: false, missing_modules: ["langchain_core", "langchain_openai"] },
-      "semantic-kernel": { engine: "semantic-kernel", available: false, missing_modules: ["semantic_kernel"] },
-      autogen: { engine: "autogen", available: false, missing_modules: ["autogen_agentchat|autogen"] },
-    },
+  return strictFetch<GraphRunResponse>("/graph/runs", {
+    method: "POST",
+    body: JSON.stringify(withGraphSchemaVersion(payload)),
   });
 }
 
+export async function getRuntimeProviders(): Promise<RuntimeProvidersResponse> {
+  return strictFetch<RuntimeProvidersResponse>("/runtime/providers");
+}
+
 export async function getUserRuntimeProviders(): Promise<UserRuntimeProviderConfig[]> {
-  return safeFetch<UserRuntimeProviderConfig[]>("/runtime/user-providers", []);
+  const response = await safeFetch<UserRuntimeProvidersResponse>("/runtime/user-providers", {
+    principal_id: "anonymous",
+    providers: [],
+  });
+  return response.providers ?? [];
 }
 
 export async function saveUserRuntimeProvider(
   provider: string,
-  payload: { api_key?: string; model?: string; base_url?: string },
+  payload: { api_key?: string; model?: string; available_models?: string[]; base_url?: string; preferred?: boolean },
 ): Promise<UserRuntimeProviderConfig> {
   return strictFetch<UserRuntimeProviderConfig>(
     `/runtime/user-providers/${encodeURIComponent(provider)}`,
@@ -756,6 +942,10 @@ export async function getPlatformSettings(): Promise<PlatformSettings> {
     org_slug: "lattix-frontier",
     support_email: "support@lattix.io",
     website: "https://lattix.io",
+    console_classification_banner_enabled: true,
+    console_classification_banner_text: "Internal • Operational Console",
+    console_classification_banner_background_color: "#2e2a28",
+    console_classification_banner_text_color: "#e7dcc0",
     default_kickoff_workflow: "Auto-select from intent",
     preferred_review_depth: "Standard",
     idle_timeout: "30 minutes",
@@ -792,7 +982,7 @@ export async function getPlatformSettings(): Promise<PlatformSettings> {
     enforce_egress_allowlist: false,
     allowed_egress_hosts: [],
     enforce_local_network_only: true,
-    allow_local_network_hostnames: true,
+    allow_local_network_hostnames: ["localhost", ".local"],
     allowed_retrieval_sources: [],
     retrieval_require_local_source_url: true,
     allowed_mcp_server_urls: [],
@@ -833,6 +1023,8 @@ export async function getOperatorSession(): Promise<OperatorSession> {
       audience: "",
       provider: "",
       validation_error: "",
+      browser_flow_configured: false,
+      browser_flow_error: "",
     },
   });
   return writeCachedValue("operator-session", value, 15000);
@@ -842,10 +1034,12 @@ export async function loginWithLocalPassword(payload: {
   username: string;
   password: string;
 }): Promise<{ ok: boolean; authenticated: boolean; provider: string; mode: string }> {
-  return strictFetch<{ ok: boolean; authenticated: boolean; provider: string; mode: string }>("/auth/login", {
+  const response = await strictFetch<{ ok: boolean; authenticated: boolean; provider: string; mode: string }>("/auth/login", {
     method: "POST",
     body: JSON.stringify(payload),
   });
+  invalidateOperatorSessionCache();
+  return response;
 }
 
 export async function registerWithLocalPassword(payload: {
@@ -854,17 +1048,21 @@ export async function registerWithLocalPassword(payload: {
   display_name: string;
   password: string;
 }): Promise<{ ok: boolean; authenticated: boolean; provider: string; mode: string; created: boolean }> {
-  return strictFetch<{ ok: boolean; authenticated: boolean; provider: string; mode: string; created: boolean }>("/auth/register", {
+  const response = await strictFetch<{ ok: boolean; authenticated: boolean; provider: string; mode: string; created: boolean }>("/auth/register", {
     method: "POST",
     body: JSON.stringify(payload),
   });
+  invalidateOperatorSessionCache();
+  return response;
 }
 
 export async function logoutOperator(): Promise<{ ok: boolean }> {
-  return strictFetch<{ ok: boolean }>("/auth/logout", {
+  const response = await strictFetch<{ ok: boolean }>("/auth/logout", {
     method: "POST",
     body: JSON.stringify({}),
   });
+  invalidateOperatorSessionCache();
+  return response;
 }
 
 export async function getPlatformVersionStatus(): Promise<PlatformVersionStatus> {
@@ -885,6 +1083,20 @@ export async function getPlatformVersionStatus(): Promise<PlatformVersionStatus>
     summary: "Version metadata is unavailable right now.",
   });
   return writeCachedValue("platform-version", value, 30000);
+}
+
+export async function getPlatformHealthDetails(): Promise<PlatformHealthDetails | null> {
+  const cached = readCachedValue<PlatformHealthDetails>("platform-health-details");
+  if (cached) {
+    return cached;
+  }
+
+  const value = await safeFetch<PlatformHealthDetails | null>("/healthz/details", null);
+  if (!value) {
+    return null;
+  }
+
+  return writeCachedValue("platform-health-details", value, 30000);
 }
 
 export async function getPlatformSecurityPolicy(): Promise<SecurityPolicyResponse> {
@@ -945,10 +1157,27 @@ export async function getPlatformSecurityPolicy(): Promise<SecurityPolicyRespons
 }
 
 export async function savePlatformSettings(payload: Json): Promise<{ ok: boolean }> {
-  return safeFetch<{ ok: boolean }>("/platform/settings", { ok: true }, {
+  const result = await strictFetch<{ ok: boolean }>("/platform/settings", {
     method: "POST",
     body: JSON.stringify(payload),
   });
+
+  if (isJsonRecord(payload)) {
+    const cached = readCachedValue<PlatformSettings>("platform-settings");
+    const nextSettings = writeCachedValue(
+      "platform-settings",
+      {
+        ...(cached ?? {}),
+        ...payload,
+      } as PlatformSettings,
+      30000,
+    );
+    publishPlatformSettingsUpdate(nextSettings);
+  } else {
+    deleteCachedValue("platform-settings");
+  }
+
+  return result;
 }
 
 export async function getAgentTemplates(): Promise<AgentTemplate[]> {
@@ -979,6 +1208,25 @@ export async function getPlaybooks(): Promise<PlaybookDefinition[]> {
 
 export async function getPlaybook(id: string): Promise<PlaybookDefinition | null> {
   return safeFetch<PlaybookDefinition | null>(`/playbooks/${id}`, null);
+}
+
+export async function savePlaybook(payload: Json): Promise<{ ok: boolean; id: string }> {
+  return strictFetch<{ ok: boolean; id: string }>("/playbooks", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function publishPlaybook(id: string): Promise<{ ok: boolean }> {
+  return strictFetch<{ ok: boolean }>(`/playbooks/${id}/publish`, { method: "POST" });
+}
+
+export async function unpublishPlaybook(id: string): Promise<{ ok: boolean }> {
+  return strictFetch<{ ok: boolean }>(`/playbooks/${id}/unpublish`, { method: "POST" });
+}
+
+export async function archivePlaybook(id: string): Promise<{ ok: boolean }> {
+  return strictFetch<{ ok: boolean }>(`/playbooks/${id}/archive`, { method: "POST" });
 }
 
 export async function instantiatePlaybook(playbookId: string, payload: Json): Promise<{ ok: boolean; id: string }> {
@@ -1039,7 +1287,7 @@ export async function getAtfAlignmentReport(): Promise<AtfAlignmentReport> {
 }
 
 export async function joinCollaborationSession(payload: {
-  entity_type: "agent" | "workflow";
+  entity_type: "agent" | "workflow" | "playbook";
   entity_id: string;
   user_id?: string;
   principal_id?: string;
@@ -1095,20 +1343,16 @@ export async function getIntegrations(): Promise<IntegrationDefinition[]> {
 }
 
 export async function saveIntegration(payload: Json): Promise<{ ok: boolean; id: string }> {
-  return safeFetch<{ ok: boolean; id: string }>("/integrations", { ok: true, id: "" }, {
+  return strictFetch<{ ok: boolean; id: string }>("/integrations", {
     method: "POST",
     body: JSON.stringify(payload),
   });
 }
 
 export async function testIntegration(id: string): Promise<IntegrationTestResponse> {
-  return safeFetch<IntegrationTestResponse>(
-    `/integrations/${id}/test`,
-    { ok: false, id, status: "error", message: "Unable to test integration", diagnostics: { warnings: ["Backend unavailable"] } },
-    { method: "POST" },
-  );
+  return strictFetch<IntegrationTestResponse>(`/integrations/${id}/test`, { method: "POST" });
 }
 
 export async function deleteIntegration(id: string): Promise<{ ok: boolean }> {
-  return safeFetch<{ ok: boolean }>(`/integrations/${id}`, { ok: true }, { method: "DELETE" });
+  return strictFetch<{ ok: boolean }>(`/integrations/${id}`, { method: "DELETE" });
 }

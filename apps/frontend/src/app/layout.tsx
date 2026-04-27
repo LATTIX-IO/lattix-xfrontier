@@ -1,17 +1,17 @@
 import type { Metadata } from "next";
-import { Inter, Space_Mono } from "next/font/google";
+import { Geist, IBM_Plex_Mono } from "next/font/google";
 import { Suspense } from "react";
 import { AppShell } from "@/components/app-shell";
 import { ToastProvider } from "@/components/toast";
 import "./globals.css";
 
-const inter = Inter({
-  variable: "--font-inter",
+const geist = Geist({
+  variable: "--font-geist-sans",
   subsets: ["latin"],
 });
 
-const spaceMono = Space_Mono({
-  variable: "--font-space-mono",
+const ibmPlexMono = IBM_Plex_Mono({
+  variable: "--font-ibm-plex-mono",
   weight: ["400", "700"],
   subsets: ["latin"],
 });
@@ -29,7 +29,7 @@ export default function RootLayout({
   return (
     <html lang="en">
       <body
-        className={`${inter.variable} ${spaceMono.variable} antialiased`}
+        className={`${geist.variable} ${ibmPlexMono.variable} antialiased`}
       >
         <ToastProvider>
           <Suspense fallback={<div className="min-h-screen bg-[hsl(var(--background))]" />}>

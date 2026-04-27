@@ -3,7 +3,7 @@
 import { FormEvent, KeyboardEvent, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { createWorkflowRun, getAgentDefinitions, getPublishedWorkflows } from "@/lib/api";
+import { createWorkflowRun, getAgentDefinitions, getPublishedWorkflows, getRuntimeProviders, getUserRuntimeProviders } from "@/lib/api";
 import type { AgentDefinition, WorkflowDefinition } from "@/types/frontier";
 
 type TokenKind = "data" | "tag" | "workflow" | "agent";
@@ -17,6 +17,51 @@ type MentionSuggestion = {
   trigger: "@" | "/";
   value: string;
   label: string;
+};
+
+type ComposerRuntimeOption = {
+  provider: string;
+  label: string;
+  model: string;
+  models: string[];
+  source: "user" | "environment";
+  preferred: boolean;
+};
+
+type ComposerModelOption = {
+  value: string;
+  provider: string;
+  providerLabel: string;
+  model: string;
+  label: string;
+};
+
+type ComposerCommandOption = {
+  id: string;
+  token: string;
+  label: string;
+  typeLabel: string;
+};
+
+export type FollowupComposerStatus = {
+  state: "idle" | "submitting" | "success" | "error";
+  message: string | null;
+  createdRunId: string | null;
+  provider: string;
+  model: string;
+  source: string | null;
+};
+
+type RuntimeSeed = {
+  provider?: string;
+  model?: string;
+};
+
+const PROVIDER_LABELS: Record<string, string> = {
+  openai: "OpenAI",
+  anthropic: "Anthropic",
+  gemini: "Gemini",
+  "openai-compatible": "Local / OpenAI Compatible",
 };
 
 function parseTokens(text: string): ParsedToken[] {
@@ -73,11 +118,83 @@ function getActiveMentionToken(text: string, cursor: number): { trigger: "@" | "
 type Props = {
   runId: string;
   recentContext: string;
+  initialRuntime?: RuntimeSeed;
+  onStatusChange?: (status: FollowupComposerStatus) => void;
 };
 
-export function RunFollowupComposer({ runId, recentContext }: Props) {
+const COMPOSER_MIN_HEIGHT = 44;
+const COMPOSER_MAX_HEIGHT = 240;
+
+function providerLabel(provider: string): string {
+  return PROVIDER_LABELS[provider] ?? provider;
+}
+
+function buildRuntimeOptions(
+  userProviders: Array<{
+    provider: string;
+    configured: boolean;
+    model: string;
+    available_models?: string[];
+    preferred?: boolean;
+    source: "user" | "environment";
+  }>,
+  runtimeProviders: Array<{ provider: string; configured: boolean; model: string }>,
+): ComposerRuntimeOption[] {
+  const options = new Map<string, ComposerRuntimeOption>();
+
+  for (const provider of userProviders) {
+    if (!provider.configured) {
+      continue;
+    }
+    const models = [...new Set([provider.model, ...(provider.available_models ?? [])].filter((item) => item.trim().length > 0))];
+    options.set(provider.provider, {
+      provider: provider.provider,
+      label: providerLabel(provider.provider),
+      model: provider.model,
+      models: models.length > 0 ? models : [provider.model],
+      source: provider.source,
+      preferred: Boolean(provider.preferred),
+    });
+  }
+
+  for (const provider of runtimeProviders) {
+    if (!provider.configured || options.has(provider.provider)) {
+      continue;
+    }
+    options.set(provider.provider, {
+      provider: provider.provider,
+      label: providerLabel(provider.provider),
+      model: provider.model,
+      models: [provider.model].filter(Boolean),
+      source: "environment",
+      preferred: false,
+    });
+  }
+
+  return [...options.values()].sort((left, right) => {
+    if (left.preferred !== right.preferred) {
+      return left.preferred ? -1 : 1;
+    }
+    return left.label.localeCompare(right.label);
+  });
+}
+
+function buildModelOptions(runtimeOptions: ComposerRuntimeOption[]): ComposerModelOption[] {
+  return runtimeOptions.flatMap((option) =>
+    option.models.map((model) => ({
+      value: `${option.provider}::${model}`,
+      provider: option.provider,
+      providerLabel: option.label,
+      model,
+      label: `${option.label} · ${model}`,
+    })),
+  );
+}
+
+export function RunFollowupComposer({ runId, recentContext, initialRuntime, onStatusChange }: Props) {
   const router = useRouter();
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const controlsMenuRef = useRef<HTMLDivElement | null>(null);
   const [draft, setDraft] = useState("");
   const [cursorPosition, setCursorPosition] = useState(0);
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -87,25 +204,106 @@ export function RunFollowupComposer({ runId, recentContext }: Props) {
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [submitInfo, setSubmitInfo] = useState<string | null>(null);
   const [createdRunId, setCreatedRunId] = useState<string | null>(null);
+  const [composerCollapsed, setComposerCollapsed] = useState(false);
+  const [composerCanCollapse, setComposerCanCollapse] = useState(false);
+  const [runtimeOptions, setRuntimeOptions] = useState<ComposerRuntimeOption[]>([]);
+  const [selectedProvider, setSelectedProvider] = useState(initialRuntime?.provider ?? "");
+  const [selectedModel, setSelectedModel] = useState(initialRuntime?.model ?? "");
+  const [controlsOpen, setControlsOpen] = useState(false);
+  const [runtimeLoadError, setRuntimeLoadError] = useState<string | null>(null);
+  const [commandQuery, setCommandQuery] = useState("");
 
   useEffect(() => {
     let cancelled = false;
 
-    async function loadMentions() {
-      const [agentDefs, workflowDefs] = await Promise.all([getAgentDefinitions(), getPublishedWorkflows()]);
+    async function loadComposerData() {
+      const [agentDefs, workflowDefs, userProviders, runtimeProviders] = await Promise.allSettled([
+        getAgentDefinitions(),
+        getPublishedWorkflows(),
+        getUserRuntimeProviders(),
+        getRuntimeProviders(),
+      ]);
       if (cancelled) {
         return;
       }
-      setPublishedAgents(agentDefs.filter((agent) => agent.status === "published"));
-      setPublishedWorkflows(workflowDefs.filter((workflow) => workflow.status === "published"));
+
+      if (agentDefs.status === "fulfilled") {
+        setPublishedAgents(agentDefs.value.filter((agent) => agent.status === "published"));
+      }
+      if (workflowDefs.status === "fulfilled") {
+        setPublishedWorkflows(workflowDefs.value.filter((workflow) => workflow.status === "published"));
+      }
+
+      if (userProviders.status === "fulfilled" || runtimeProviders.status === "fulfilled") {
+        const nextRuntimeOptions = buildRuntimeOptions(
+          userProviders.status === "fulfilled" ? userProviders.value : [],
+          runtimeProviders.status === "fulfilled" ? runtimeProviders.value.providers : [],
+        );
+        setRuntimeOptions(nextRuntimeOptions);
+        setRuntimeLoadError(null);
+      } else {
+        setRuntimeOptions([]);
+        setRuntimeLoadError("Runtime settings are unavailable right now.");
+      }
     }
 
-    void loadMentions();
+    void loadComposerData();
 
     return () => {
       cancelled = true;
     };
   }, []);
+
+  useEffect(() => {
+    if (runtimeOptions.length === 0) {
+      return;
+    }
+
+    setSelectedProvider((current) => {
+      if (current && runtimeOptions.some((option) => option.provider === current)) {
+        return current;
+      }
+      if (initialRuntime?.provider && runtimeOptions.some((option) => option.provider === initialRuntime.provider)) {
+        return initialRuntime.provider;
+      }
+      return runtimeOptions[0]?.provider ?? current;
+    });
+  }, [initialRuntime?.provider, runtimeOptions]);
+
+  const activeRuntimeOption = useMemo(
+    () => runtimeOptions.find((option) => option.provider === selectedProvider) ?? runtimeOptions[0] ?? null,
+    [runtimeOptions, selectedProvider],
+  );
+
+  const modelOptions = useMemo(() => buildModelOptions(runtimeOptions), [runtimeOptions]);
+
+  useEffect(() => {
+    if (!activeRuntimeOption) {
+      return;
+    }
+
+    setSelectedModel((current) => {
+      if (current && activeRuntimeOption.models.includes(current)) {
+        return current;
+      }
+      if (
+        initialRuntime?.provider === activeRuntimeOption.provider
+        && initialRuntime.model
+        && activeRuntimeOption.models.includes(initialRuntime.model)
+      ) {
+        return initialRuntime.model;
+      }
+      return activeRuntimeOption.model;
+    });
+  }, [activeRuntimeOption, initialRuntime?.model, initialRuntime?.provider]);
+
+  const selectedModelValue = activeRuntimeOption && selectedModel
+    ? `${activeRuntimeOption.provider}::${selectedModel}`
+    : "";
+
+  const currentModelLabel = activeRuntimeOption
+    ? `${activeRuntimeOption.label} · ${selectedModel || activeRuntimeOption.model}`
+    : "Default model";
 
   const activeMention = useMemo(() => getActiveMentionToken(draft, cursorPosition), [draft, cursorPosition]);
 
@@ -143,6 +341,86 @@ export function RunFollowupComposer({ runId, recentContext }: Props) {
     setActiveSuggestionIndex(0);
   }, [activeMention?.trigger, activeMention?.query]);
 
+  useEffect(() => {
+    const textarea = textareaRef.current;
+    if (!textarea) {
+      return;
+    }
+
+    textarea.style.height = "0px";
+    const naturalHeight = Math.max(textarea.scrollHeight, COMPOSER_MIN_HEIGHT);
+    const canCollapse = naturalHeight > COMPOSER_MIN_HEIGHT + 6 || draft.includes("\n");
+    const collapsed = composerCollapsed && canCollapse;
+
+    setComposerCanCollapse(canCollapse);
+    textarea.style.height = `${collapsed ? COMPOSER_MIN_HEIGHT : Math.min(naturalHeight, COMPOSER_MAX_HEIGHT)}px`;
+    textarea.style.overflowY = !collapsed && naturalHeight > COMPOSER_MAX_HEIGHT ? "auto" : "hidden";
+
+    if (!draft.trim() && composerCollapsed) {
+      setComposerCollapsed(false);
+    }
+  }, [composerCollapsed, draft]);
+
+  useEffect(() => {
+    onStatusChange?.({
+      state: submitError ? "error" : isSubmitting ? "submitting" : submitInfo ? "success" : "idle",
+      message: submitError ?? submitInfo,
+      createdRunId,
+      provider: activeRuntimeOption?.provider ?? selectedProvider,
+      model: selectedModel || activeRuntimeOption?.model || "",
+      source: activeRuntimeOption?.source ?? null,
+    });
+  }, [activeRuntimeOption?.model, activeRuntimeOption?.provider, activeRuntimeOption?.source, createdRunId, isSubmitting, onStatusChange, selectedModel, selectedProvider, submitError, submitInfo]);
+
+  const commandOptions = useMemo<ComposerCommandOption[]>(() => {
+    const agentOptions = publishedAgents.map((agent) => ({
+      id: `agent:${agent.id}`,
+      token: `@${slugify(agent.name) || slugify(agent.id)}`,
+      label: `${agent.name} (v${agent.version})`,
+      typeLabel: "Agent",
+    }));
+    const workflowOptions = publishedWorkflows.map((workflow) => ({
+      id: `workflow:${workflow.id}`,
+      token: `/${slugify(workflow.name) || slugify(workflow.id)}`,
+      label: `${workflow.name} (v${workflow.version})`,
+      typeLabel: "Workflow",
+    }));
+    const query = commandQuery.trim().toLowerCase();
+    return [...agentOptions, ...workflowOptions]
+      .filter((option) => !query || option.token.toLowerCase().includes(query) || option.label.toLowerCase().includes(query))
+      .slice(0, 8);
+  }, [commandQuery, publishedAgents, publishedWorkflows]);
+
+  useEffect(() => {
+    if (!controlsOpen) {
+      return;
+    }
+
+    function handlePointerDown(event: MouseEvent) {
+      const target = event.target;
+      if (!(target instanceof Node)) {
+        return;
+      }
+      if (controlsMenuRef.current?.contains(target)) {
+        return;
+      }
+      setControlsOpen(false);
+    }
+
+    function handleEscape(event: globalThis.KeyboardEvent) {
+      if (event.key === "Escape") {
+        setControlsOpen(false);
+      }
+    }
+
+    document.addEventListener("mousedown", handlePointerDown);
+    document.addEventListener("keydown", handleEscape);
+    return () => {
+      document.removeEventListener("mousedown", handlePointerDown);
+      document.removeEventListener("keydown", handleEscape);
+    };
+  }, [controlsOpen]);
+
   function applyMentionSuggestion(suggestion: MentionSuggestion) {
     if (!activeMention) {
       return;
@@ -161,7 +439,41 @@ export function RunFollowupComposer({ runId, recentContext }: Props) {
     });
   }
 
+
+  function insertShortcutToken(token: string) {
+    const base = draft.trimEnd();
+    const nextDraft = base ? `${base}${base.endsWith(" ") ? "" : " "}${token} ` : `${token} `;
+    const nextCursor = nextDraft.length;
+    setDraft(nextDraft);
+    setCursorPosition(nextCursor);
+
+    requestAnimationFrame(() => {
+      if (textareaRef.current) {
+        textareaRef.current.focus();
+        textareaRef.current.setSelectionRange(nextCursor, nextCursor);
+      }
+    });
+    setControlsOpen(false);
+  }
+
+  function handleModelSelection(value: string) {
+    const [provider, model] = value.split("::");
+    if (!provider || !model) {
+      return;
+    }
+    setSelectedProvider(provider);
+    setSelectedModel(model);
+  }
+
   function handleTextareaKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
+    if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
+      event.preventDefault();
+      if (!isSubmitting && draft.trim()) {
+        event.currentTarget.form?.requestSubmit();
+      }
+      return;
+    }
+
     if (!activeMention || mentionSuggestions.length === 0) {
       return;
     }
@@ -216,23 +528,26 @@ export function RunFollowupComposer({ runId, recentContext }: Props) {
       }
       return true;
     });
-
-    const contextualPrompt = recentContext
-      ? `Previous run context (${runId}):\n${recentContext}\n\nFollow-up request:\n${message}`
-      : message;
-
-    const titleSnippet = message.length > 64 ? `${message.slice(0, 61)}...` : message;
+    const runtimePayload = activeRuntimeOption && selectedModel
+      ? {
+          provider: activeRuntimeOption.provider,
+          model: selectedModel,
+        }
+      : undefined;
 
     try {
       setIsSubmitting(true);
       const nextRun = await createWorkflowRun({
-        title: `Follow-up: ${titleSnippet}`,
-        prompt: contextualPrompt,
+        session_kind: "chat",
+        prompt: message,
         tokens: filteredTokens,
         context: {
           source_run_id: runId,
           mode: "follow_up",
+          recent_context: recentContext,
         },
+        runtime: runtimePayload,
+        ...(runtimePayload ? runtimePayload : {}),
         source_run_id: runId,
         follow_up_to_run_id: runId,
       }, {
@@ -249,6 +564,7 @@ export function RunFollowupComposer({ runId, recentContext }: Props) {
         router.refresh();
       }
       setDraft("");
+      setComposerCollapsed(false);
     } catch (error) {
       const messageText = error instanceof Error ? error.message : "Unable to start follow-up run.";
       setSubmitError(`${messageText} If the run is still processing, wait a few seconds and try again.`);
@@ -258,30 +574,140 @@ export function RunFollowupComposer({ runId, recentContext }: Props) {
   }
 
   return (
-    <form onSubmit={handleSubmit} className="space-y-2">
+    <form onSubmit={handleSubmit} className="relative space-y-1.5">
       <label htmlFor="continue-message" className="sr-only">
         Message this run
       </label>
-      <textarea
-        ref={textareaRef}
-        id="continue-message"
-        name="message"
-        required
-        value={draft}
-        onChange={(event) => {
-          setDraft(event.target.value);
-          setCursorPosition(event.target.selectionStart ?? event.target.value.length);
-        }}
-        onClick={(event) => setCursorPosition((event.target as HTMLTextAreaElement).selectionStart ?? draft.length)}
-        onKeyUp={(event) => setCursorPosition((event.target as HTMLTextAreaElement).selectionStart ?? draft.length)}
-        onKeyDown={handleTextareaKeyDown}
-        placeholder="Message this run… (use @agent or /workflow)"
-        className="fx-field min-h-24 w-full rounded-2xl border-[var(--ui-border)] bg-[hsl(var(--card))] p-3 text-sm leading-relaxed"
-      />
+      <div className="relative flex items-end gap-2 rounded-[16px] border border-[var(--ui-border)] bg-[hsl(var(--card))] px-3.5 py-2.5 shadow-[var(--fx-shadow-soft)]">
+        <textarea
+          ref={textareaRef}
+          id="continue-message"
+          name="message"
+          required
+          rows={1}
+          value={draft}
+          onChange={(event) => {
+            setDraft(event.target.value);
+            setCursorPosition(event.target.selectionStart ?? event.target.value.length);
+          }}
+          onClick={(event) => setCursorPosition((event.target as HTMLTextAreaElement).selectionStart ?? draft.length)}
+          onKeyUp={(event) => setCursorPosition((event.target as HTMLTextAreaElement).selectionStart ?? draft.length)}
+          onKeyDown={handleTextareaKeyDown}
+          placeholder="Message this run... (use @agent or /workflow)"
+          className="w-full resize-none bg-transparent py-[0.65rem] text-[0.82rem] leading-6 text-[hsl(var(--foreground))] outline-none placeholder:text-[var(--fx-muted)]"
+        />
+
+        <div className="flex items-center gap-2 self-end pb-0.5">
+          <button
+            type="button"
+            onClick={() => setControlsOpen((current) => !current)}
+            aria-label="Current follow-up model"
+            className="hidden max-w-[11rem] items-center truncate rounded-[10px] border border-[var(--ui-border)] px-2.5 py-1.5 text-[11px] font-medium text-[var(--fx-muted)] transition hover:bg-[var(--fx-nav-hover)] md:inline-flex"
+          >
+            <span className="truncate">{currentModelLabel}</span>
+          </button>
+          <button
+            type="button"
+            aria-label={controlsOpen ? "Hide follow-up controls" : "Show follow-up controls"}
+            onClick={() => setControlsOpen((current) => !current)}
+            className="fx-btn-secondary h-9 w-9 px-0 text-base"
+          >
+            +
+          </button>
+
+          {composerCanCollapse || composerCollapsed ? (
+            <button
+              type="button"
+              aria-label={composerCollapsed ? "Expand message composer" : "Collapse message composer"}
+              onClick={() => setComposerCollapsed((current) => !current)}
+              className="fx-btn-secondary h-9 w-9 px-0 text-xs"
+            >
+              <svg viewBox="0 0 16 16" className={`mx-auto h-3.5 w-3.5 ${composerCollapsed ? "rotate-180" : ""}`} fill="none" stroke="currentColor" strokeWidth="1.6">
+                <path d="M3.5 6 8 10.5 12.5 6" strokeLinecap="square" strokeLinejoin="miter" />
+              </svg>
+            </button>
+          ) : null}
+
+          <button type="submit" disabled={isSubmitting} className="fx-btn-primary h-9 px-3.5 text-xs font-medium disabled:opacity-60">
+            {isSubmitting ? "Sending..." : "Send"}
+          </button>
+        </div>
+      </div>
+
+      {controlsOpen ? (
+        <div
+          ref={controlsMenuRef}
+          className="absolute bottom-full right-0 z-30 mb-2 w-[min(20rem,calc(100vw-3rem))] overflow-hidden rounded-[16px] border border-[var(--ui-border)] bg-[hsl(var(--card))] shadow-[var(--fx-shadow-panel)]"
+          role="menu"
+          aria-label="Follow-up controls menu"
+        >
+          <div className="border-b border-[color-mix(in_srgb,var(--ui-border)_72%,transparent)] px-3 py-2">
+            <p className="text-[11px] font-medium tracking-[0.04em] text-[var(--fx-muted)]">Composer Tools</p>
+            <p className="mt-1 text-[11px] text-[var(--fx-muted)]">
+              {currentModelLabel}
+            </p>
+          </div>
+
+          <div className="space-y-3 px-3 py-3">
+            <label className="block text-[11px] text-[var(--fx-muted)]">
+              Current model
+              <select
+                aria-label="Follow-up current model"
+                className="fx-field mt-1 w-full px-2 py-1.5 text-[11px]"
+                value={selectedModelValue}
+                onChange={(event) => handleModelSelection(event.target.value)}
+                disabled={modelOptions.length === 0}
+              >
+                {modelOptions.length === 0 ? <option value="">No configured runtimes</option> : null}
+                {modelOptions.map((option) => (
+                  <option key={option.value} value={option.value}>{option.label}</option>
+                ))}
+              </select>
+            </label>
+
+            {runtimeLoadError ? <p className="text-[11px] text-[var(--fx-danger)]">{runtimeLoadError}</p> : null}
+
+            <div className="space-y-2">
+              <p className="text-[11px] font-medium tracking-[0.04em] text-[var(--fx-muted)]">Command Insert</p>
+              <input
+                type="text"
+                aria-label="Search follow-up commands"
+                value={commandQuery}
+                onChange={(event) => setCommandQuery(event.target.value)}
+                placeholder="Search @agents or /workflows"
+                className="fx-field w-full px-2 py-1.5 text-[11px]"
+              />
+              <div className="overflow-hidden rounded-[12px] border border-[color-mix(in_srgb,var(--ui-border)_72%,transparent)] bg-[hsl(var(--card)/0.72)]">
+                {commandOptions.length > 0 ? (
+                  <ul className="max-h-44 overflow-auto">
+                    {commandOptions.map((option) => (
+                      <li key={option.id}>
+                        <button
+                          type="button"
+                          onClick={() => insertShortcutToken(option.token)}
+                          className="flex w-full items-center justify-between gap-3 px-3 py-2 text-left hover:bg-[var(--fx-nav-hover)]"
+                        >
+                          <span className="min-w-0">
+                            <span className="block font-mono text-[11px] text-[hsl(var(--foreground))]">{option.token}</span>
+                            <span className="block truncate text-[11px] text-[var(--fx-muted)]">{option.label}</span>
+                          </span>
+                          <span className="shrink-0 text-[10px] font-medium tracking-[0.03em] text-[var(--fx-muted)]">{option.typeLabel}</span>
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                ) : (
+                  <p className="px-3 py-2 text-[11px] text-[var(--fx-muted)]">No matching published agents or workflows.</p>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       {activeMention && mentionSuggestions.length > 0 ? (
-        <div className="overflow-hidden rounded-lg border border-[var(--ui-border)] bg-[hsl(var(--card))] shadow-lg">
-          <div className="px-2 py-1 text-[10px] uppercase tracking-wide text-[var(--fx-muted)]">
+        <div className="overflow-hidden rounded-[14px] border border-[var(--ui-border)] bg-[hsl(var(--card))] shadow-[var(--fx-shadow-panel)]">
+          <div className="px-2.5 py-1.5 text-[10px] font-medium tracking-[0.04em] text-[var(--fx-muted)]">
             {activeMention.trigger === "@" ? "Published Agents" : "Published Workflows"}
           </div>
           <ul className="max-h-40 overflow-auto text-xs">
@@ -312,18 +738,15 @@ export function RunFollowupComposer({ runId, recentContext }: Props) {
         <p className="fx-muted text-[11px]">
           Published @agents and /workflows are supported. Without either, this routes through the default chat agent.
         </p>
-        <button type="submit" disabled={isSubmitting} className="fx-btn-primary rounded-xl px-3 py-2 text-xs font-medium disabled:opacity-60">
-          {isSubmitting ? "Sending…" : "Send"}
-        </button>
       </div>
 
-      {submitInfo ? <p className="text-xs text-[hsl(var(--state-success))]">{submitInfo}</p> : null}
-      {createdRunId ? (
+      {!onStatusChange && submitInfo ? <p className="text-xs text-[hsl(var(--state-success))]">{submitInfo}</p> : null}
+      {!onStatusChange && createdRunId ? (
         <p className="text-xs text-[var(--foreground)]">
           Run created: <Link href={`/inbox?session=${encodeURIComponent(createdRunId)}`} className="underline decoration-dotted underline-offset-2">{createdRunId}</Link>
         </p>
       ) : null}
-      {submitError ? <p className="text-xs text-[var(--fx-danger)]">{submitError}</p> : null}
+      {!onStatusChange && submitError ? <p className="text-xs text-[var(--fx-danger)]">{submitError}</p> : null}
     </form>
   );
 }

@@ -24,6 +24,8 @@ export type OperatorSession = {
     audience: string;
     provider: string;
     validation_error?: string;
+    browser_flow_configured?: boolean;
+    browser_flow_error?: string;
   };
 };
 
@@ -40,19 +42,38 @@ export type PlatformVersionStatus = {
   summary: string;
 };
 
+export type PlatformHealthDetails = {
+  status: string;
+  timestamp: string;
+  postgres: string;
+  postgres_reason?: string;
+  redis: string;
+  long_term_memory: string;
+  long_term_memory_reason?: string;
+  memory_consolidation: string;
+  memory_hybrid_retrieval: string;
+  memory_world_graph: string;
+  neo4j: string;
+};
+
 export type RunStatus =
   | "Running"
   | "Blocked"
   | "Needs Review"
   | "Done"
-  | "Failed";
+  | "Failed"
+  | "Archived";
+
+export type WorkflowRunKind = "workflow" | "chat" | "playbook" | "task";
 
 export type WorkflowRunSummary = {
   id: string;
   title: string;
+  title_source?: "system" | "generated" | "user";
   status: RunStatus;
   updatedAt: string;
   progressLabel: string;
+  kind: WorkflowRunKind;
 };
 
 export type WorkflowRunEvent = {
@@ -69,6 +90,7 @@ export type WorkflowRunEvent = {
     | "error";
   title: string;
   summary: string;
+  content?: string;
   createdAt: string;
   metadata?: Record<string, unknown>;
 };
@@ -113,7 +135,16 @@ export type WorkflowDefinition = {
   description: string;
   version: number;
   status: "draft" | "published" | "archived";
+  published_revision_id?: string | null;
+  published_at?: string | null;
+  active_revision_id?: string | null;
+  active_at?: string | null;
+  graph_json?: {
+    nodes?: Array<{ id: string; title: string; type: string; x: number; y: number; config?: Record<string, unknown> }>;
+    links?: Array<{ from: string; to: string; from_port?: string; to_port?: string }>;
+  };
   security_config?: SecurityScopeConfig;
+  generated_artifacts?: GeneratedCodeArtifact[];
 };
 
 export type SecurityClassification = "public" | "internal" | "confidential" | "restricted";
@@ -167,6 +198,10 @@ export type AgentDefinition = {
   name: string;
   version: number;
   status: "draft" | "published" | "archived";
+  published_revision_id?: string | null;
+  published_at?: string | null;
+  active_revision_id?: string | null;
+  active_at?: string | null;
   type: "form" | "graph";
   config_json?: {
     schema_version?: string;
@@ -217,7 +252,29 @@ export type GuardrailRuleSet = {
   name: string;
   version: number;
   status: "draft" | "published" | "archived";
+  published_revision_id?: string | null;
+  published_at?: string | null;
+  active_revision_id?: string | null;
+  active_at?: string | null;
   config_json?: Record<string, unknown>;
+};
+
+export type DefinitionRevisionSummary = {
+  id: string;
+  entity_type: "workflow_definition" | "agent_definition" | "guardrail_ruleset";
+  entity_id: string;
+  revision: number;
+  action: string;
+  version: number;
+  status: string;
+  created_at: string;
+  actor: string;
+  metadata?: Record<string, unknown>;
+};
+
+export type DefinitionRevisionHistory = {
+  count: number;
+  versions: DefinitionRevisionSummary[];
 };
 
 export type PlatformSettings = {
@@ -225,6 +282,10 @@ export type PlatformSettings = {
   org_slug?: string;
   support_email?: string;
   website?: string;
+  console_classification_banner_enabled?: boolean;
+  console_classification_banner_text?: string;
+  console_classification_banner_background_color?: string;
+  console_classification_banner_text_color?: string;
   default_kickoff_workflow?: string;
   preferred_review_depth?: string;
   idle_timeout?: string;
@@ -261,7 +322,7 @@ export type PlatformSettings = {
   enforce_egress_allowlist?: boolean;
   allowed_egress_hosts?: string[];
   enforce_local_network_only?: boolean;
-  allow_local_network_hostnames?: boolean;
+  allow_local_network_hostnames?: string[] | boolean;
   allowed_retrieval_sources?: string[];
   retrieval_require_local_source_url?: boolean;
   allowed_mcp_server_urls?: string[];
@@ -309,7 +370,7 @@ export type PlaybookDefinition = {
   name: string;
   description: string;
   category: "go_to_market" | "security" | "support" | "operations" | "other";
-  status: "active" | "deprecated";
+  status: "draft" | "published" | "archived";
   metadata_json?: Record<string, unknown>;
   graph_json?: {
     nodes?: Array<{ id: string; title: string; type: string; x: number; y: number; config?: Record<string, unknown> }>;
@@ -386,7 +447,7 @@ export type CollaborationParticipant = {
 
 export type CollaborationSession = {
   id: string;
-  entity_type: "agent" | "workflow";
+  entity_type: "agent" | "workflow" | "playbook";
   entity_id: string;
   graph_json: {
     nodes?: Array<{ id: string; title: string; type: string; x: number; y: number; config?: Record<string, unknown> }>;

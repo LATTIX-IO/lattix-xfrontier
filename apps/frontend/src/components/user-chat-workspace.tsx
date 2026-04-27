@@ -3,16 +3,19 @@
 import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
+import { MarkdownBlock } from "@/components/markdown-block";
 import { ReactFlowCanvas, type GraphLink, type GraphNode } from "@/components/reactflow-canvas";
 import { RunArchiveButton } from "@/components/run-archive-button";
-import { RunFollowupComposer } from "@/components/run-followup-composer";
+import { RunFollowupComposer, type FollowupComposerStatus } from "@/components/run-followup-composer";
 import { StatusChip } from "@/components/status-chip";
+import { TaskKickoffComposer } from "@/components/task-kickoff-composer";
 import {
   getAtfAlignmentReport,
   getWorkflowRun,
   getWorkflowRunEvents,
   streamWorkflowRun,
   submitApproval,
+  WORKFLOW_RUN_UPDATED_EVENT,
   type WorkflowRunDetail,
 } from "@/lib/api";
 import type { AtfAlignmentReport, InboxItem, WorkflowRunEvent, WorkflowRunSummary } from "@/types/frontier";
@@ -23,9 +26,19 @@ type UserChatWorkspaceProps = {
   initialSelectedRunId: string | null;
   initialDetailsOpen: boolean;
   initialTab: "chat" | "graph";
+  initialLoadError?: string | null;
 };
 
 type DrawerTab = "overview" | "artifacts" | "approvals" | "guardrails";
+
+const EMPTY_FOLLOWUP_STATUS: FollowupComposerStatus = {
+  state: "idle",
+  message: null,
+  createdRunId: null,
+  provider: "",
+  model: "",
+  source: null,
+};
 
 const STOP_WORDS = new Set([
   "about",
@@ -52,6 +65,27 @@ const STOP_WORDS = new Set([
   "with",
   "workflow",
 ]);
+
+const RETRIEVAL_KEYWORDS = /\b(retriev|search|evidence|document|knowledge|context|source|research|kb|memory)\b/i;
+
+function summarizeGraphText(value: string, maxLength = 88): string {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return "";
+  }
+  return trimmed.length > maxLength ? `${trimmed.slice(0, maxLength - 3)}...` : trimmed;
+}
+
+function buildGraphNode(
+  id: string,
+  title: string,
+  type: GraphNode["type"],
+  x: number,
+  y: number,
+  config?: Record<string, unknown>,
+): GraphNode {
+  return { id, title, type, x, y, config };
+}
 
 function inboxByRunId(items: InboxItem[]): Map<string, InboxItem[]> {
   const mapping = new Map<string, InboxItem[]>();
@@ -99,93 +133,192 @@ function buildExecutionGraph(
   run: WorkflowRunDetail | null,
   events: WorkflowRunEvent[],
 ): { nodes: GraphNode[]; links: GraphLink[] } {
-  const graphNodes = (run?.graph?.nodes ?? []).filter((node) => node?.id && node?.title && node?.type);
-  const graphLinks = (run?.graph?.links ?? []).filter((link) => link?.from && link?.to);
-
-  const baseNodes: GraphNode[] = graphNodes.length > 0
-    ? graphNodes.map((node, index) => ({
-        ...node,
-        x: Number.isFinite(node.x) ? node.x : 120 + index * 280,
-        y: Number.isFinite(node.y) ? node.y : 140,
-      }))
-    : [
-        { id: `${runId}-trigger`, title: "Session", type: "frontier/trigger", x: 120, y: 160 },
-        { id: `${runId}-chat`, title: runTitle, type: "frontier/agent", x: 420, y: 160 },
-        { id: `${runId}-output`, title: "Outcome", type: "frontier/output", x: 720, y: 160 },
-      ];
-
-  const baseLinks: GraphLink[] = graphLinks.length > 0
-    ? graphLinks
-    : [
-        { from: `${runId}-trigger`, to: `${runId}-chat` },
-        { from: `${runId}-chat`, to: `${runId}-output` },
-      ];
-
-  const maxX = Math.max(...baseNodes.map((node) => node.x), 120);
+  const orderedEvents = orderEvents(events);
   const topics = extractTopics(runTitle, events);
-  const memoryHighlights = events
-    .filter((event) => event.type !== "user_message")
+  const toolEvents = orderedEvents.filter((event) => event.type === "step_started" || event.type === "step_completed");
+  const retrievalEvents = toolEvents.filter((event) => RETRIEVAL_KEYWORDS.test(`${event.title} ${event.summary}`));
+  const memoryHighlights = orderedEvents
+    .filter((event) => event.type === "agent_message" || event.type === "guardrail_result" || event.type === "approval_required")
     .slice(-3)
-    .map((event) => event.title);
-  const toolCount = events.filter((event) => event.type === "step_started" || event.type === "step_completed").length;
+    .map((event) => summarizeGraphText(event.summary || event.title, 42))
+    .filter(Boolean);
+  const guardrailEvents = orderedEvents.filter((event) => event.type === "guardrail_result");
+  const approvalEvents = orderedEvents.filter((event) => event.type === "approval_required" || event.type === "approval_decision");
+  const artifactEvents = orderedEvents.filter((event) => event.type === "artifact_created");
+  const chatEvents = orderedEvents.filter((event) => event.type === "user_message" || event.type === "agent_message");
   const artifactCount = run?.artifacts?.length ?? 0;
+  const basePrompt = orderedEvents.find((event) => event.type === "user_message")?.summary ?? runTitle;
 
-  const overlayNodes: GraphNode[] = [
-    {
-      id: `${runId}-memory`,
-      title: `Memory · ${memoryHighlights.length}`,
-      type: "frontier/retrieval",
-      x: maxX + 320,
-      y: 40,
-      config: { summary: memoryHighlights.join(", ") || "Session memory" },
-    },
-    {
-      id: `${runId}-tools`,
-      title: `Tool Calls · ${toolCount}`,
-      type: "frontier/tool-call",
-      x: maxX + 320,
-      y: 180,
-      config: { summary: `${toolCount} execution stages observed` },
-    },
-    {
-      id: `${runId}-topics`,
-      title: topics.length > 0 ? `Topics · ${topics.slice(0, 2).join(" / ")}` : "Topics",
-      type: "frontier/prompt",
-      x: maxX + 320,
-      y: 320,
-      config: { summary: topics.join(", ") || runTitle },
-    },
-    {
-      id: `${runId}-artifacts`,
-      title: `Artifacts · ${artifactCount}`,
-      type: "frontier/output",
-      x: maxX + 320,
-      y: 460,
-      config: { summary: (run?.artifacts ?? []).map((artifact) => artifact.name).join(", ") || "No artifacts yet" },
-    },
+  const nodes: GraphNode[] = [
+    buildGraphNode(`${runId}-trigger`, "Run Trigger", "frontier/trigger", 120, 220, {
+      trigger_mode: "manual",
+      default_message: summarizeGraphText(runTitle, 60),
+      tags: topics,
+    }),
+    buildGraphNode(`${runId}-prompt`, "Prompt", "frontier/prompt", 430, 220, {
+      objective: chatEvents.length > 2 ? "planning" : "general_assistant",
+      audience: "operator",
+      system_prompt_text: summarizeGraphText(basePrompt, 180),
+    }),
+    buildGraphNode(`${runId}-agent`, `Agent · ${chatEvents.filter((event) => event.type === "agent_message").length || 1}`, "frontier/agent", 760, 220, {
+      role: run?.status === "Failed" ? "reviewer" : "executor",
+      agent_id: runId,
+      system_prompt: summarizeGraphText(
+        orderedEvents.filter((event) => event.type === "agent_message").slice(-1)[0]?.summary ?? runTitle,
+        200,
+      ),
+    }),
+    buildGraphNode(`${runId}-memory`, `Memory · ${memoryHighlights.length || chatEvents.length || 1}`, "frontier/memory", 760, 58, {
+      action: "read",
+      scope: "run",
+      session_id: runId,
+      dimension_key: memoryHighlights.join(" | ") || `${chatEvents.length} conversation turns`,
+    }),
   ];
 
-  const terminalNodeId = baseNodes[baseNodes.length - 1]?.id ?? `${runId}-chat`;
-  const overlayLinks: GraphLink[] = [
-    { from: terminalNodeId, to: `${runId}-memory` },
-    { from: `${runId}-memory`, to: `${runId}-tools` },
-    { from: `${runId}-tools`, to: `${runId}-topics` },
-    { from: `${runId}-topics`, to: `${runId}-artifacts` },
+  const links: GraphLink[] = [
+    { from: `${runId}-trigger`, to: `${runId}-prompt`, from_port: "out", to_port: "in" },
+    { from: `${runId}-prompt`, to: `${runId}-agent`, from_port: "prompt", to_port: "prompt" },
+    { from: `${runId}-prompt`, to: `${runId}-agent`, from_port: "out", to_port: "in" },
+    { from: `${runId}-memory`, to: `${runId}-agent`, from_port: "memory", to_port: "memory" },
   ];
+
+  if (topics.length > 0 || retrievalEvents.length > 0) {
+    nodes.push(
+      buildGraphNode(`${runId}-knowledge`, `Knowledge · ${Math.max(retrievalEvents.length, topics.length)}`, "frontier/retrieval", 760, 382, {
+        source_type: retrievalEvents.length > 0 ? "hybrid" : "graph",
+        source_id: retrievalEvents.length > 0 ? "history://retrieval" : "history://topics",
+        index_name: topics.join(", ") || "session-history",
+        top_k: Math.max(1, Math.min(5, retrievalEvents.length || topics.length)),
+      }),
+    );
+    links.push({ from: `${runId}-knowledge`, to: `${runId}-agent`, from_port: "documents", to_port: "retrieval" });
+  }
+
+  if (toolEvents.length > 0) {
+    nodes.push(
+      buildGraphNode(`${runId}-tools`, `Tools · ${toolEvents.length}`, "frontier/tool-call", 1110, 110, {
+        tool_id: summarizeGraphText(toolEvents.map((event) => event.title).join(" | "), 120) || "tool/unspecified",
+        input_schema: summarizeGraphText(toolEvents.map((event) => event.summary).join(" | "), 200),
+        retry_count: toolEvents.length,
+      }),
+    );
+    links.push(
+      { from: `${runId}-agent`, to: `${runId}-tools`, from_port: "tool_request", to_port: "request" },
+      { from: `${runId}-tools`, to: `${runId}-agent`, from_port: "result", to_port: "tool_result" },
+    );
+  }
+
+  const needsGuardrailNode = guardrailEvents.length > 0 || run?.status === "Failed";
+  if (needsGuardrailNode) {
+    nodes.push(
+      buildGraphNode(`${runId}-guardrail`, `Guardrails · ${Math.max(1, guardrailEvents.length)}`, "frontier/guardrail", 1110, 332, {
+        stage: run?.status === "Failed" ? "tool_output" : "output",
+        reject_message: summarizeGraphText(
+          guardrailEvents.map((event) => event.summary).join(" | ") || `Run status: ${run?.status ?? "unknown"}`,
+          200,
+        ),
+      }),
+    );
+    links.push({ from: `${runId}-agent`, to: `${runId}-guardrail`, from_port: "response", to_port: "candidate_output" });
+  }
+
+  const needsReviewNode = approvalEvents.length > 0 || Boolean(run?.approvals?.required);
+  if (needsReviewNode) {
+    nodes.push(
+      buildGraphNode(`${runId}-review`, `Review · ${approvalEvents.length || 1}`, "frontier/human-review", 1450, 220, {
+        reviewer_group: run?.approvals?.pending ? "ops" : "security",
+        required_approvals: run?.approvals?.required ? 1 : 0,
+        sla_minutes: 120,
+      }),
+    );
+    links.push(
+      needsGuardrailNode
+        ? { from: `${runId}-guardrail`, to: `${runId}-review`, from_port: "approved_output", to_port: "candidate" }
+        : { from: `${runId}-agent`, to: `${runId}-review`, from_port: "response", to_port: "candidate" },
+    );
+  }
+
+  nodes.push(
+    buildGraphNode(`${runId}-output`, artifactCount > 0 ? `Artifacts · ${artifactCount}` : `Outcome · ${run?.status ?? "Pending"}`, "frontier/output", 1780, 220, {
+      destination: artifactCount > 0 ? "artifact_store" : "webhook",
+      format: artifactCount > 0 ? "markdown" : "text",
+      result: summarizeGraphText(
+        artifactEvents.map((event) => event.summary).join(" | ") || (run?.artifacts ?? []).map((artifact) => artifact.name).join(", ") || run?.status || runTitle,
+        200,
+      ),
+    }),
+  );
+
+  links.push(
+    needsReviewNode
+      ? { from: `${runId}-review`, to: `${runId}-output`, from_port: "approved", to_port: "result" }
+      : needsGuardrailNode
+        ? { from: `${runId}-guardrail`, to: `${runId}-output`, from_port: "approved_output", to_port: "result" }
+        : { from: `${runId}-agent`, to: `${runId}-output`, from_port: "response", to_port: "result" },
+  );
 
   return {
-    nodes: [...baseNodes, ...overlayNodes],
-    links: [...baseLinks, ...overlayLinks],
+    nodes,
+    links,
   };
 }
 
+function getBackendGraph(run: WorkflowRunDetail | null): { nodes: GraphNode[]; links: GraphLink[] } | null {
+  const graph = run?.graph;
+  if (!graph) {
+    return null;
+  }
+
+  const nodes = Array.isArray(graph.nodes)
+    ? graph.nodes
+        .filter((node): node is GraphNode => Boolean(node && typeof node.id === "string" && typeof node.title === "string" && typeof node.type === "string"))
+        .map((node) => ({
+          id: node.id,
+          title: node.title,
+          type: node.type,
+          x: typeof node.x === "number" ? node.x : 0,
+          y: typeof node.y === "number" ? node.y : 0,
+          config: node.config,
+        }))
+    : [];
+
+  const links = Array.isArray(graph.links)
+    ? graph.links
+        .filter((link): link is GraphLink => Boolean(link && typeof link.from === "string" && typeof link.to === "string"))
+        .map((link) => ({
+          from: link.from,
+          to: link.to,
+          from_port: link.from_port,
+          to_port: link.to_port,
+        }))
+    : [];
+
+  if (nodes.length === 0 || links.length === 0) {
+    return null;
+  }
+
+  return { nodes, links };
+}
+
 function ChatBubble({ event }: { event: WorkflowRunEvent }) {
+  const content = String(event.content ?? event.summary ?? "").trim();
+  const metadata = event.metadata && typeof event.metadata === "object"
+    ? event.metadata as Record<string, unknown>
+    : null;
+  const agentName = typeof metadata?.selected_agent_name === "string"
+    ? metadata.selected_agent_name.trim()
+    : typeof event.title === "string" && /\sresponse$/i.test(event.title)
+      ? event.title.replace(/\s+response$/i, "").trim()
+      : "";
+  const agentLabel = agentName || "Assistant";
+
   if (event.type === "user_message") {
     return (
       <div className="flex justify-end">
-        <article className="max-w-[82%] rounded-[1.4rem] rounded-br-md bg-[var(--fx-primary)] px-4 py-3 text-[0.94rem] leading-7 text-[#211200] shadow-[0_18px_40px_rgba(215,145,20,0.18)]">
-          <p className="mb-1 text-[0.68rem] font-semibold uppercase tracking-[0.12em] text-[#5d3b03]">You</p>
-          <p className="whitespace-pre-wrap">{event.summary}</p>
+        <article className="max-w-[82%] min-w-0 border border-[color-mix(in_srgb,var(--fx-primary)_48%,var(--ui-border))] bg-[var(--fx-primary)] px-4 py-3 text-[0.86rem] leading-6 text-[#211200]">
+          <p className="mb-1 text-[0.68rem] font-medium tracking-[0.02em] text-[#5d3b03]">You</p>
+          <MarkdownBlock content={content} className="min-w-0 break-words [&_pre]:bg-[color-mix(in_srgb,hsl(var(--background))_22%,transparent)] [&_pre]:text-[#211200]" />
         </article>
       </div>
     );
@@ -194,9 +327,9 @@ function ChatBubble({ event }: { event: WorkflowRunEvent }) {
   if (event.type === "agent_message") {
     return (
       <div className="flex justify-start">
-        <article className="max-w-[82%] rounded-[1.4rem] rounded-bl-md border border-[var(--ui-border)] bg-[hsl(var(--card)/0.96)] px-4 py-3 text-[0.94rem] leading-7 text-[hsl(var(--foreground))] shadow-[0_18px_48px_rgba(0,0,0,0.12)]">
-          <p className="mb-1 text-[0.68rem] font-semibold uppercase tracking-[0.12em] text-[var(--fx-muted)]">Assistant</p>
-          <p className="whitespace-pre-wrap">{event.summary}</p>
+        <article className="max-w-[82%] min-w-0 border border-[var(--ui-border)] bg-[hsl(var(--card)/0.96)] px-4 py-3 text-[0.86rem] leading-6 text-[hsl(var(--foreground))]">
+          <p className="mb-1 text-[0.68rem] font-medium tracking-[0.02em] text-[var(--fx-muted)]">{agentLabel}</p>
+          <MarkdownBlock content={content} className="min-w-0 break-words" />
         </article>
       </div>
     );
@@ -204,7 +337,7 @@ function ChatBubble({ event }: { event: WorkflowRunEvent }) {
 
   return (
     <div className="flex justify-center">
-      <div className="max-w-[78%] rounded-full border border-[var(--ui-border)] bg-[hsl(var(--muted)/0.75)] px-3 py-1.5 text-[0.74rem] text-[var(--fx-muted)]">
+      <div className="max-w-[78%] rounded-full border border-[var(--ui-border)] bg-[color-mix(in_srgb,hsl(var(--card))_72%,hsl(var(--muted))_28%)] px-3.5 py-2 text-[0.72rem] font-medium tracking-[0.02em] text-[var(--fx-muted)] shadow-[var(--fx-shadow-soft)]">
         <span className="font-medium text-[hsl(var(--foreground))]">{event.title}</span>
         <span className="mx-1.5">·</span>
         <span>{event.summary}</span>
@@ -215,10 +348,48 @@ function ChatBubble({ event }: { event: WorkflowRunEvent }) {
 
 function DetailSection({ title, children }: { title: string; children: ReactNode }) {
   return (
-    <section className="space-y-2 rounded-[1.2rem] border border-[var(--ui-border)] bg-[hsl(var(--card)/0.94)] p-4 shadow-[0_12px_30px_rgba(0,0,0,0.12)]">
-      <h3 className="text-[0.78rem] font-semibold uppercase tracking-[0.14em] text-[var(--fx-muted)]">{title}</h3>
+    <section className="space-y-3 border-b border-[color-mix(in_srgb,var(--ui-border)_72%,transparent)] pb-4 last:border-b-0 last:pb-0">
+      <h3 className="text-[0.74rem] font-medium tracking-[0.04em] text-[var(--fx-muted)]">{title}</h3>
       {children}
     </section>
+  );
+}
+
+function DetailMetric({ label, value }: { label: string; value: ReactNode }) {
+  return (
+    <div className="rounded-[14px] border border-[color-mix(in_srgb,var(--ui-border)_78%,transparent)] bg-[hsl(var(--card)/0.9)] px-3 py-2.5 shadow-[var(--fx-shadow-soft)]">
+      <p className="text-[0.7rem] font-medium tracking-[0.03em] text-[var(--fx-muted)]">{label}</p>
+      <div className="mt-1 text-sm font-semibold text-[hsl(var(--foreground))]">{value}</div>
+    </div>
+  );
+}
+
+function DetailMessage({ children, tone = "default" }: { children: ReactNode; tone?: "default" | "muted" }) {
+  return (
+    <div className={tone === "muted"
+      ? "rounded-[14px] bg-[hsl(var(--muted)/0.45)] px-3.5 py-3 text-[0.8rem] leading-6 text-[var(--fx-muted)]"
+      : "rounded-[14px] border border-[color-mix(in_srgb,var(--ui-border)_72%,transparent)] bg-[hsl(var(--card)/0.9)] px-3.5 py-3 text-[0.8rem] leading-6 text-[hsl(var(--foreground))] shadow-[var(--fx-shadow-soft)]"}
+    >
+      {children}
+    </div>
+  );
+}
+
+function DetailList({ children }: { children: ReactNode }) {
+  return <div className="overflow-hidden rounded-[14px] border border-[color-mix(in_srgb,var(--ui-border)_78%,transparent)] bg-[hsl(var(--card)/0.9)] shadow-[var(--fx-shadow-soft)]">{children}</div>;
+}
+
+function DetailListItem({ title, subtitle, meta }: { title: ReactNode; subtitle?: ReactNode; meta?: ReactNode }) {
+  return (
+    <article className="border-b border-[color-mix(in_srgb,var(--ui-border)_70%,transparent)] px-3 py-3 last:border-b-0">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0 flex-1">
+          <div className="text-sm font-medium text-[hsl(var(--foreground))]">{title}</div>
+          {subtitle ? <div className="mt-1 text-[0.78rem] leading-6 text-[var(--fx-muted)]">{subtitle}</div> : null}
+        </div>
+        {meta ? <div className="shrink-0 text-[0.68rem] font-medium tracking-[0.01em] text-[var(--fx-muted)]">{meta}</div> : null}
+      </div>
+    </article>
   );
 }
 
@@ -228,10 +399,12 @@ export function UserChatWorkspace({
   initialSelectedRunId,
   initialDetailsOpen,
   initialTab,
+  initialLoadError = null,
 }: UserChatWorkspaceProps) {
   const router = useRouter();
+  const detailsPanelWidth = "clamp(20rem, 26vw, 30rem)";
   const timelineRef = useRef<HTMLDivElement | null>(null);
-  const [selectedRunId, setSelectedRunId] = useState<string | null>(initialSelectedRunId ?? initialRuns[0]?.id ?? null);
+  const [selectedRunId, setSelectedRunId] = useState<string | null>(initialSelectedRunId ?? null);
   const [selectedRun, setSelectedRun] = useState<WorkflowRunDetail | null>(null);
   const [events, setEvents] = useState<WorkflowRunEvent[]>([]);
   const [loading, setLoading] = useState(false);
@@ -241,20 +414,15 @@ export function UserChatWorkspace({
   const [approvalFeedback, setApprovalFeedback] = useState("");
   const [approvalBusy, setApprovalBusy] = useState<"approved" | "changes_requested" | null>(null);
   const [approvalMessage, setApprovalMessage] = useState<string | null>(null);
+  const [followupStatus, setFollowupStatus] = useState<FollowupComposerStatus>(EMPTY_FOLLOWUP_STATUS);
   const [atfReport, setAtfReport] = useState<AtfAlignmentReport | null>(null);
   const [streamedResponse, setStreamedResponse] = useState("");
+  const [runLoadError, setRunLoadError] = useState<string | null>(initialLoadError);
+  const [runRefreshNonce, setRunRefreshNonce] = useState(0);
 
   useEffect(() => {
-    if (initialSelectedRunId) {
-      setSelectedRunId(initialSelectedRunId);
-      return;
-    }
-    if (initialRuns[0]?.id) {
-      const nextRunId = initialRuns[0].id;
-      setSelectedRunId(nextRunId);
-      router.replace(`/inbox?session=${encodeURIComponent(nextRunId)}`, { scroll: false });
-    }
-  }, [initialRuns, initialSelectedRunId, router]);
+    setSelectedRunId(initialSelectedRunId ?? null);
+  }, [initialSelectedRunId]);
 
   useEffect(() => {
     if (!selectedRunId) {
@@ -267,6 +435,7 @@ export function UserChatWorkspace({
     let active = true;
     setLoading(true);
     setStreamedResponse("");
+    setRunLoadError(null);
 
     void Promise.all([getWorkflowRun(selectedRunId), getWorkflowRunEvents(selectedRunId)])
       .then(([runDetail, runEvents]) => {
@@ -276,12 +445,13 @@ export function UserChatWorkspace({
         setSelectedRun(runDetail);
         setEvents(runEvents);
       })
-      .catch(() => {
+      .catch((error) => {
         if (!active) {
           return;
         }
         setSelectedRun(null);
         setEvents([]);
+        setRunLoadError(error instanceof Error ? error.message : "Unable to load the selected session.");
       })
       .finally(() => {
         if (!active) {
@@ -293,7 +463,7 @@ export function UserChatWorkspace({
     return () => {
       active = false;
     };
-  }, [selectedRunId]);
+  }, [initialRuns, runRefreshNonce, selectedRunId]);
 
   useEffect(() => {
     if (!selectedRunId) {
@@ -315,6 +485,7 @@ export function UserChatWorkspace({
             ([runDetail, runEvents]) => {
               setSelectedRun(runDetail);
               setEvents(runEvents);
+              setRunLoadError(null);
             },
           );
           return;
@@ -331,7 +502,7 @@ export function UserChatWorkspace({
     return () => {
       stopStreaming();
     };
-  }, [selectedRunId]);
+  }, [initialRuns, runRefreshNonce, selectedRunId]);
 
   useEffect(() => {
     let active = true;
@@ -353,10 +524,34 @@ export function UserChatWorkspace({
     };
   }, []);
 
+  useEffect(() => {
+    if (!selectedRunId || typeof window === "undefined") {
+      return;
+    }
+
+    const handleRunUpdated = (event: Event) => {
+      const detail = (event as CustomEvent<WorkflowRunSummary>).detail;
+      if (!detail || detail.id !== selectedRunId) {
+        return;
+      }
+      setSelectedRun((current) => (current ? { ...current, title: detail.title, title_source: detail.title_source } : current));
+    };
+
+    window.addEventListener(WORKFLOW_RUN_UPDATED_EVENT, handleRunUpdated as EventListener);
+    return () => {
+      window.removeEventListener(WORKFLOW_RUN_UPDATED_EVENT, handleRunUpdated as EventListener);
+    };
+  }, [selectedRunId]);
+
+  useEffect(() => {
+    setFollowupStatus(EMPTY_FOLLOWUP_STATUS);
+  }, [selectedRunId]);
+
   const selectedRunSummary = useMemo(
-    () => initialRuns.find((run) => run.id === selectedRunId) ?? initialRuns[0] ?? null,
+    () => (selectedRunId ? initialRuns.find((run) => run.id === selectedRunId) ?? null : null),
     [initialRuns, selectedRunId],
   );
+  const displayedRunTitle = selectedRun?.title?.trim() || selectedRunSummary?.title || "Session";
   const relatedInboxItems = useMemo(() => {
     if (!selectedRunId) {
       return [];
@@ -384,6 +579,11 @@ export function UserChatWorkspace({
       streamingEvent,
     ];
   }, [events, streamedResponse]);
+  const transcriptEvents = useMemo(
+    () => ordered.filter(isChatEvent),
+    [ordered],
+  );
+  const visibleTimelineEvents = transcriptEvents.length > 0 ? transcriptEvents : ordered;
   const recentContext = useMemo(
     () => ordered.filter(isChatEvent).slice(-6).map((event: WorkflowRunEvent) => `${event.type === "user_message" ? "User" : "Agent"}: ${event.summary}`).join("\n"),
     [ordered],
@@ -392,14 +592,36 @@ export function UserChatWorkspace({
     chatTurns: ordered.filter(isChatEvent).length,
     systemEvents: ordered.filter((event: WorkflowRunEvent) => !isChatEvent(event)).length,
     blockers: ordered.filter((event: WorkflowRunEvent) => event.type === "error" || /blocked|reject|failed/i.test(`${event.title} ${event.summary}`)).length,
-    topics: extractTopics(selectedRunSummary?.title ?? "", ordered),
-  }), [ordered, selectedRunSummary?.title]);
-  const graph = useMemo(
-    () => buildExecutionGraph(selectedRunId ?? "session", selectedRunSummary?.title ?? "Session", selectedRun, ordered),
-    [ordered, selectedRun, selectedRunId, selectedRunSummary?.title],
-  );
+    topics: extractTopics(displayedRunTitle, ordered),
+  }), [displayedRunTitle, ordered]);
+  const graph = useMemo(() => {
+    const backendGraph = getBackendGraph(selectedRun);
+    if (backendGraph) {
+      return backendGraph;
+    }
+    return buildExecutionGraph(selectedRunId ?? "session", displayedRunTitle, selectedRun, ordered);
+  }, [displayedRunTitle, ordered, selectedRun, selectedRunId]);
   const approvals = selectedRun?.approvals ?? { required: false, pending: false };
   const guardrailEvents = ordered.filter((event: WorkflowRunEvent) => event.type === "guardrail_result");
+  const activeRuntimeProvider = followupStatus.provider || (typeof selectedRun?.runtime?.provider === "string" ? selectedRun.runtime.provider : "");
+  const activeRuntimeModel = followupStatus.model || (typeof selectedRun?.runtime?.model === "string" ? selectedRun.runtime.model : "");
+  const activeRuntimeSource = followupStatus.source || (typeof selectedRun?.runtime?.source === "string" ? selectedRun.runtime.source : null);
+  const selectedRunStatus = selectedRunSummary?.status ?? selectedRun?.status ?? (loading ? "Loading" : "Running");
+  const selectedRunUpdatedAt = selectedRunSummary?.updatedAt ?? (loading ? "loading" : "just now");
+  const selectedRunProgressLabel = selectedRunSummary?.progressLabel ?? (loading ? "Loading session" : selectedRun?.status ?? "Active");
+  const actionItems = useMemo(() => {
+    const items: string[] = [];
+    for (const inboxItem of relatedInboxItems) {
+      items.push(inboxItem.reason);
+    }
+    if (approvals.pending) {
+      items.push("Approval decision is still pending.");
+    }
+    for (const event of guardrailEvents) {
+      items.push(event.summary);
+    }
+    return [...new Set(items)].slice(0, 6);
+  }, [approvals.pending, guardrailEvents, relatedInboxItems]);
 
   useEffect(() => {
     const timeline = timelineRef.current;
@@ -437,126 +659,160 @@ export function UserChatWorkspace({
     }
   }
 
-  if (!selectedRunSummary) {
+  if (!selectedRunId) {
     return (
-      <section className="-m-6 flex min-h-[calc(100vh-130px)] items-center justify-center bg-[radial-gradient(circle_at_top,color-mix(in_srgb,var(--fx-primary)_12%,transparent),transparent_35%)] p-6">
-        <div className="max-w-xl text-center">
-          <p className="text-[0.72rem] font-semibold uppercase tracking-[0.18em] text-[var(--fx-muted)]">Workspace</p>
-          <h1 className="mt-4 text-3xl font-semibold text-[hsl(var(--foreground))]">No sessions yet</h1>
-          <p className="mt-3 text-[0.95rem] leading-7 text-[var(--fx-muted)]">Start a workflow to create the first conversation thread. Sessions will appear in the sidebar and open here as a chat-first view.</p>
-          <div className="mt-6 flex justify-center gap-3">
-            <Link href="/workflows/start" className="fx-btn-primary px-4 py-2 text-sm font-medium no-underline">Browse Workflows</Link>
-            <Link href="/artifacts" className="fx-btn-secondary px-4 py-2 text-sm font-medium no-underline">View Artifacts</Link>
+      <section className="-m-5 flex min-h-[calc(100vh-130px)] items-center justify-center bg-[linear-gradient(180deg,color-mix(in_srgb,var(--fx-primary)_6%,transparent),transparent_24%)] p-5">
+        <div className="w-full max-w-4xl">
+          <div className="mx-auto max-w-2xl text-center">
+            <p className="text-[0.72rem] font-medium tracking-[0.06em] text-[var(--fx-muted)]">Workspace</p>
+            <h1 className="mt-4 text-3xl font-semibold text-[hsl(var(--foreground))]">{initialLoadError ? "Inbox unavailable" : "Start a new chat or task"}</h1>
+            <p className="mt-3 text-[0.95rem] leading-7 text-[var(--fx-muted)]">
+              {initialLoadError
+                ? `The inbox could not be loaded from the backend. ${initialLoadError}`
+                : "New sign-ins now land here first. Kick off a fresh task from this blank workspace, or pick an existing session from the sidebar when you need to resume work."}
+            </p>
           </div>
+
+          {!initialLoadError ? (
+            <div className="mx-auto mt-8 max-w-2xl">
+              <TaskKickoffComposer />
+              <div className="mt-4 flex justify-center gap-3">
+                <Link href="/workflows/start" className="fx-btn-secondary px-4 py-2 text-sm font-medium no-underline">Browse Workflows</Link>
+                <Link href="/artifacts" className="fx-btn-secondary px-4 py-2 text-sm font-medium no-underline">View Artifacts</Link>
+              </div>
+            </div>
+          ) : null}
         </div>
       </section>
     );
   }
 
   return (
-    <section className="-m-6 min-h-[calc(100vh-96px)] bg-[linear-gradient(180deg,color-mix(in_srgb,var(--fx-primary)_8%,transparent),transparent_28%)] p-6">
-      <div className="relative flex min-h-[calc(100vh-120px)] flex-col overflow-hidden rounded-[1.8rem] border border-[var(--ui-border)] bg-[color-mix(in_srgb,hsl(var(--background))_82%,hsl(var(--card))_18%)] shadow-[0_30px_80px_rgba(0,0,0,0.12)]">
-        <div className="border-b border-[var(--ui-border)] px-5 py-4">
-          <div className="flex flex-wrap items-start justify-between gap-4">
-            <div className="min-w-0">
-              <div className="flex items-center gap-2">
-                <p className="truncate text-[1.1rem] font-semibold text-[hsl(var(--foreground))]">{selectedRunSummary.title}</p>
-                <StatusChip status={selectedRunSummary.status} />
+    <section
+      data-testid="session-workspace"
+            className="relative z-0 flex h-[calc(100vh-96px)] min-h-[calc(100vh-96px)] flex-col overflow-hidden rounded-[18px] border border-[var(--ui-border)] bg-[linear-gradient(180deg,color-mix(in_srgb,var(--fx-primary)_6%,white_94%),transparent_24%)] shadow-[var(--fx-shadow-panel)]"
+    >
+      <div className="relative isolate flex min-h-0 flex-1 flex-col overflow-hidden bg-[color-mix(in_srgb,hsl(var(--background))_62%,hsl(var(--card))_38%)]">
+        <div className="border-b border-[var(--ui-border)] bg-[color-mix(in_srgb,hsl(var(--card))_84%,transparent)] px-5 py-3 lg:px-6 xl:px-8">
+          <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
+            <div className="min-w-0 flex-1">
+              <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                <p className="truncate text-[1rem] font-semibold tracking-[-0.02em] text-[hsl(var(--foreground))]">{displayedRunTitle}</p>
+                <StatusChip status={selectedRunStatus} />
+                <p className="text-[0.75rem] text-[var(--fx-muted)]">Updated {selectedRunUpdatedAt} · {selectedRunProgressLabel}</p>
               </div>
-              <p className="mt-1 text-[0.82rem] text-[var(--fx-muted)]">Updated {selectedRunSummary.updatedAt} · {selectedRunSummary.progressLabel}</p>
             </div>
             <div className="flex flex-wrap items-center gap-2">
-              <div className="inline-flex rounded-full border border-[var(--ui-border)] bg-[hsl(var(--card)/0.92)] p-1">
+              <div className="inline-flex rounded-[12px] border border-[var(--ui-border)] bg-[hsl(var(--card)/0.92)] p-1 shadow-[var(--fx-shadow-soft)]">
                 <button
                   type="button"
                   onClick={() => setActiveTab("chat")}
-                  className={activeTab === "chat" ? "rounded-full bg-[var(--fx-primary)] px-3 py-1.5 text-[0.76rem] font-semibold text-[#2f1700]" : "rounded-full px-3 py-1.5 text-[0.76rem] font-medium text-[var(--fx-muted)]"}
+                  className={activeTab === "chat" ? "rounded-[10px] bg-[var(--fx-primary)] px-3 py-1.5 text-[0.72rem] font-semibold tracking-[0.02em] text-[var(--fx-primary-text)]" : "rounded-[10px] px-3 py-1.5 text-[0.72rem] font-medium tracking-[0.02em] text-[var(--fx-muted)]"}
                 >
                   Chat
                 </button>
                 <button
                   type="button"
                   onClick={() => setActiveTab("graph")}
-                  className={activeTab === "graph" ? "rounded-full bg-[var(--fx-primary)] px-3 py-1.5 text-[0.76rem] font-semibold text-[#2f1700]" : "rounded-full px-3 py-1.5 text-[0.76rem] font-medium text-[var(--fx-muted)]"}
+                  className={activeTab === "graph" ? "rounded-[10px] bg-[var(--fx-primary)] px-3 py-1.5 text-[0.72rem] font-semibold tracking-[0.02em] text-[var(--fx-primary-text)]" : "rounded-[10px] px-3 py-1.5 text-[0.72rem] font-medium tracking-[0.02em] text-[var(--fx-muted)]"}
                 >
                   Execution Graph
                 </button>
               </div>
-              <button type="button" onClick={() => setDetailsOpen((value) => !value)} className="fx-btn-secondary px-3 py-2 text-xs font-medium">
-                {detailsOpen ? "Hide details" : "Show details"}
+              <RunArchiveButton
+                runId={selectedRunId}
+                iconOnly
+                ariaLabel="Archive session"
+                buttonClassName="h-8 w-8 rounded-[10px] border border-[color-mix(in_srgb,var(--fx-danger)_32%,var(--ui-border))] bg-[color-mix(in_srgb,var(--fx-danger)_10%,transparent)] px-0 text-[var(--fx-danger)] transition hover:bg-[color-mix(in_srgb,var(--fx-danger)_18%,transparent)] disabled:opacity-60"
+              />
+                <button
+                  type="button"
+                  aria-label={detailsOpen ? "Hide details" : "Show details"}
+                  onClick={() => setDetailsOpen((value) => !value)}
+                  className="fx-btn-secondary relative z-10 h-8 w-8 shrink-0 px-0 text-xs"
+                >
+                  <svg viewBox="0 0 16 16" className="mx-auto h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth="1.4">
+                    <path d="M2.5 3.5h11v9h-11z" />
+                    <path d="M9.5 3.5v9" />
+                  </svg>
               </button>
-              <RunArchiveButton runId={selectedRunSummary.id} buttonClassName="fx-btn-secondary px-3 py-2 text-xs font-medium" />
             </div>
           </div>
         </div>
 
         <div className="relative flex-1 overflow-hidden">
-          <div className="h-full transition-[padding-right] duration-200" style={{ paddingRight: detailsOpen ? "24rem" : "0rem" }}>
+          <div className="h-full transition-[padding-right] duration-200" style={{ paddingRight: detailsOpen ? detailsPanelWidth : "0rem" }}>
             {activeTab === "chat" ? (
-              <div className="flex h-full flex-col">
-                <div className="grid gap-3 border-b border-[var(--ui-border)] px-5 py-4 md:grid-cols-4">
-                  <div className="rounded-[1.1rem] border border-[var(--ui-border)] bg-[hsl(var(--card)/0.9)] px-3 py-3">
-                    <p className="text-[0.72rem] uppercase tracking-[0.12em] text-[var(--fx-muted)]">Chat Turns</p>
-                    <p className="mt-2 text-2xl font-semibold text-[hsl(var(--foreground))]">{stats.chatTurns}</p>
-                  </div>
-                  <div className="rounded-[1.1rem] border border-[var(--ui-border)] bg-[hsl(var(--card)/0.9)] px-3 py-3">
-                    <p className="text-[0.72rem] uppercase tracking-[0.12em] text-[var(--fx-muted)]">System Events</p>
-                    <p className="mt-2 text-2xl font-semibold text-[hsl(var(--foreground))]">{stats.systemEvents}</p>
-                  </div>
-                  <div className="rounded-[1.1rem] border border-[var(--ui-border)] bg-[hsl(var(--card)/0.9)] px-3 py-3">
-                    <p className="text-[0.72rem] uppercase tracking-[0.12em] text-[var(--fx-muted)]">Inbox Flags</p>
-                    <p className="mt-2 text-2xl font-semibold text-[hsl(var(--foreground))]">{relatedInboxItems.length}</p>
-                  </div>
-                  <div className="rounded-[1.1rem] border border-[var(--ui-border)] bg-[hsl(var(--card)/0.9)] px-3 py-3">
-                    <p className="text-[0.72rem] uppercase tracking-[0.12em] text-[var(--fx-muted)]">Topics</p>
-                    <p className="mt-2 text-[0.92rem] font-medium text-[hsl(var(--foreground))]">{stats.topics.slice(0, 3).join(" · ") || "Waiting for signal"}</p>
+                <div className="flex h-full min-h-0 flex-col">
+                <div className="border-b border-[var(--ui-border)] bg-[color-mix(in_srgb,hsl(var(--card))_78%,transparent)] px-5 py-2 lg:px-6 xl:px-8">
+                  <div className="flex flex-wrap items-center gap-2 text-[0.72rem] text-[var(--fx-muted)]">
+                    <span className="rounded-full border border-[var(--ui-border)] bg-[hsl(var(--card)/0.92)] px-2.5 py-1 font-medium tracking-[0.02em]">{stats.chatTurns} chat turns</span>
+                    <span className="rounded-full border border-[var(--ui-border)] bg-[hsl(var(--card)/0.92)] px-2.5 py-1 font-medium tracking-[0.02em]">{stats.systemEvents} system events</span>
+                    <span className="rounded-full border border-[var(--ui-border)] bg-[hsl(var(--card)/0.92)] px-2.5 py-1 font-medium tracking-[0.02em]">{relatedInboxItems.length} action items</span>
+                    {stats.topics.slice(0, 2).map((topic) => (
+                      <span key={topic} className="rounded-full border border-[var(--ui-border)] bg-[hsl(var(--card)/0.92)] px-2.5 py-1 font-medium tracking-[0.02em]">{topic}</span>
+                    ))}
                   </div>
                 </div>
 
-                <div ref={timelineRef} className="flex-1 space-y-4 overflow-y-auto px-5 py-5">
+                {runLoadError ? (
+                  <div className="border-b border-[var(--ui-border)] bg-[color-mix(in_srgb,var(--fx-warning)_10%,transparent)] px-5 py-3 text-[0.8rem] text-[hsl(var(--foreground))] lg:px-6 xl:px-8">
+                    Unable to refresh this session from the backend. {runLoadError}
+                  </div>
+                ) : null}
+
+                <div ref={timelineRef} className="min-h-0 flex-1 space-y-4 overflow-y-auto px-5 py-5 lg:px-6 xl:px-8 2xl:px-10">
                   {loading ? (
                     <div className="space-y-3">
                       {[0, 1, 2].map((index) => (
-                        <div key={index} className="h-20 animate-pulse rounded-[1.4rem] bg-[hsl(var(--muted)/0.65)]" />
+                        <div key={index} className="h-20 animate-pulse rounded-[14px] border border-[var(--ui-border)] bg-[hsl(var(--muted)/0.65)]" />
                       ))}
                     </div>
-                  ) : ordered.length === 0 ? (
+                  ) : visibleTimelineEvents.length === 0 ? (
                     <div className="flex h-full min-h-80 items-center justify-center">
                       <div className="max-w-md text-center">
-                        <p className="text-[0.72rem] font-semibold uppercase tracking-[0.16em] text-[var(--fx-muted)]">No messages yet</p>
+                        <p className="text-[0.74rem] font-medium tracking-[0.05em] text-[var(--fx-muted)]">No messages yet</p>
                         <p className="mt-3 text-[0.95rem] leading-7 text-[var(--fx-muted)]">This session exists, but the timeline is still empty. Use the chat box below to continue the run.</p>
                       </div>
                     </div>
                   ) : (
-                    ordered.map((event) => <ChatBubble key={event.id} event={event} />)
+                    visibleTimelineEvents.map((event) => <ChatBubble key={event.id} event={event} />)
                   )}
                 </div>
 
-                <div className="border-t border-[var(--ui-border)] bg-[hsl(var(--card)/0.9)] px-5 py-4">
-                  <RunFollowupComposer runId={selectedRunSummary.id} recentContext={recentContext} />
+                <div
+                  data-testid="session-followup-dock"
+                  className="mt-auto shrink-0 border-t border-[var(--ui-border)] bg-[color-mix(in_srgb,hsl(var(--card))_94%,hsl(var(--background))_6%)] px-5 py-3 backdrop-blur-sm lg:px-6 xl:px-8 2xl:px-10"
+                >
+                  <RunFollowupComposer
+                    runId={selectedRunId}
+                    recentContext={recentContext}
+                    initialRuntime={{
+                      provider: typeof selectedRun?.runtime?.provider === "string" ? selectedRun.runtime.provider : undefined,
+                      model: typeof selectedRun?.runtime?.model === "string" ? selectedRun.runtime.model : undefined,
+                    }}
+                    onStatusChange={(status) => {
+                      setFollowupStatus(status);
+                      if (status.state === "submitting" || (status.state === "success" && status.createdRunId === selectedRunId)) {
+                        setRunRefreshNonce((current) => current + 1);
+                      }
+                      if (status.state !== "idle") {
+                        setDetailsOpen(true);
+                      }
+                    }}
+                  />
                 </div>
               </div>
             ) : (
-              <div className="flex h-full flex-col px-5 py-5">
-                <div className="grid gap-3 md:grid-cols-4">
-                  <div className="rounded-[1.1rem] border border-[var(--ui-border)] bg-[hsl(var(--card)/0.9)] px-3 py-3">
-                    <p className="text-[0.72rem] uppercase tracking-[0.12em] text-[var(--fx-muted)]">Memory</p>
-                    <p className="mt-2 text-[0.88rem] font-medium text-[hsl(var(--foreground))]">{ordered.filter((event) => event.type !== "user_message").slice(-3).map((event) => event.title).join(" · ") || "Session context"}</p>
-                  </div>
-                  <div className="rounded-[1.1rem] border border-[var(--ui-border)] bg-[hsl(var(--card)/0.9)] px-3 py-3">
-                    <p className="text-[0.72rem] uppercase tracking-[0.12em] text-[var(--fx-muted)]">Tool Calls</p>
-                    <p className="mt-2 text-2xl font-semibold text-[hsl(var(--foreground))]">{ordered.filter((event) => event.type === "step_started" || event.type === "step_completed").length}</p>
-                  </div>
-                  <div className="rounded-[1.1rem] border border-[var(--ui-border)] bg-[hsl(var(--card)/0.9)] px-3 py-3">
-                    <p className="text-[0.72rem] uppercase tracking-[0.12em] text-[var(--fx-muted)]">Topics</p>
-                    <p className="mt-2 text-[0.88rem] font-medium text-[hsl(var(--foreground))]">{stats.topics.slice(0, 3).join(" · ") || "No topics yet"}</p>
-                  </div>
-                  <div className="rounded-[1.1rem] border border-[var(--ui-border)] bg-[hsl(var(--card)/0.9)] px-3 py-3">
-                    <p className="text-[0.72rem] uppercase tracking-[0.12em] text-[var(--fx-muted)]">Artifacts</p>
-                    <p className="mt-2 text-2xl font-semibold text-[hsl(var(--foreground))]">{selectedRun?.artifacts.length ?? 0}</p>
-                  </div>
+              <div className="flex h-full flex-col px-5 py-5 lg:px-6 xl:px-8 2xl:px-10">
+                <div className="mb-3 flex flex-wrap items-center gap-2 text-[0.74rem] text-[var(--fx-muted)]">
+                  <span className="rounded-full border border-[var(--ui-border)] bg-[hsl(var(--card)/0.92)] px-2.5 py-1 font-medium tracking-[0.02em]">{ordered.filter((event) => event.type === "step_started" || event.type === "step_completed").length} tool calls</span>
+                  <span className="rounded-full border border-[var(--ui-border)] bg-[hsl(var(--card)/0.92)] px-2.5 py-1 font-medium tracking-[0.02em]">{selectedRun?.artifacts.length ?? 0} artifacts</span>
+                  {stats.topics.slice(0, 3).map((topic) => (
+                    <span key={topic} className="rounded-full border border-[var(--ui-border)] bg-[hsl(var(--card)/0.92)] px-2.5 py-1 font-medium tracking-[0.02em]">{topic}</span>
+                  ))}
                 </div>
-                <div className="mt-4 min-h-[560px] flex-1 overflow-hidden rounded-[1.4rem] border border-[var(--ui-border)] bg-[hsl(var(--card)/0.92)]">
+                <div className="min-h-[420px] flex-1 overflow-hidden rounded-[16px] border border-[var(--ui-border)] bg-[hsl(var(--card)/0.92)] shadow-[var(--fx-shadow-soft)] xl:min-h-[560px]">
                   <ReactFlowCanvas nodes={graph.nodes} links={graph.links} readOnly className="h-full" edgeAnimated />
                 </div>
               </div>
@@ -564,25 +820,27 @@ export function UserChatWorkspace({
           </div>
 
           <aside
-            className="absolute inset-y-0 right-0 w-[24rem] border-l border-[var(--ui-border)] bg-[color-mix(in_srgb,hsl(var(--card))_96%,hsl(var(--background))_4%)] shadow-[-18px_0_40px_rgba(0,0,0,0.12)] transition-transform duration-200"
-            style={{ transform: detailsOpen ? "translateX(0)" : "translateX(100%)" }}
+            data-testid="session-details-rail"
+            className="absolute inset-y-0 right-0 z-10 border-l border-[var(--ui-border)] bg-[color-mix(in_srgb,hsl(var(--card))_96%,hsl(var(--background))_4%)] transition-transform duration-200"
+            style={{ width: detailsPanelWidth, transform: detailsOpen ? "translateX(0)" : "translateX(100%)", pointerEvents: detailsOpen ? "auto" : "none" }}
           >
             <div className="flex h-full flex-col">
-              <div className="border-b border-[var(--ui-border)] px-4 py-4">
-                <div className="flex items-center justify-between gap-2">
-                  <div>
-                    <p className="text-[0.72rem] font-semibold uppercase tracking-[0.14em] text-[var(--fx-muted)]">Session Details</p>
-                    <p className="mt-1 text-sm font-semibold text-[hsl(var(--foreground))]">{selectedRunSummary.title}</p>
+              <div className="border-b border-[var(--ui-border)] bg-[color-mix(in_srgb,hsl(var(--card))_84%,transparent)] px-4 py-3">
+                <div className="flex items-start justify-between gap-2">
+                  <div className="min-w-0">
+                    <p className="text-[0.72rem] font-medium tracking-[0.04em] text-[var(--fx-muted)]">Session Details</p>
+                    <p className="mt-1 truncate text-[0.98rem] font-semibold tracking-[-0.02em] text-[hsl(var(--foreground))]">{displayedRunTitle}</p>
+                    <p className="mt-1 text-[0.75rem] text-[var(--fx-muted)]">{selectedRunStatus} · {selectedRunProgressLabel}</p>
                   </div>
-                  <button type="button" onClick={() => setDetailsOpen(false)} className="fx-btn-secondary h-8 w-8 px-0 text-xs">X</button>
+                  <button type="button" onClick={() => setDetailsOpen(false)} className="fx-btn-secondary relative z-10 h-8 w-8 shrink-0 px-0 text-xs">X</button>
                 </div>
-                <div className="mt-3 inline-flex rounded-full border border-[var(--ui-border)] bg-[hsl(var(--card)/0.96)] p-1">
+                <div className="mt-3 inline-flex rounded-[12px] border border-[var(--ui-border)] bg-[hsl(var(--card)/0.96)] p-1 shadow-[var(--fx-shadow-soft)]">
                   {(["overview", "artifacts", "approvals", "guardrails"] as DrawerTab[]).map((tab) => (
                     <button
                       key={tab}
                       type="button"
                       onClick={() => setDrawerTab(tab)}
-                      className={drawerTab === tab ? "rounded-full bg-[var(--fx-primary)] px-3 py-1 text-[0.7rem] font-semibold text-[#291500]" : "rounded-full px-3 py-1 text-[0.7rem] font-medium text-[var(--fx-muted)]"}
+                      className={drawerTab === tab ? "rounded-[10px] bg-[var(--fx-primary)] px-3 py-1.5 text-[0.72rem] font-semibold tracking-[0.02em] text-[var(--fx-primary-text)]" : "rounded-[10px] px-3 py-1.5 text-[0.72rem] font-medium tracking-[0.02em] text-[var(--fx-muted)]"}
                     >
                       {tab}
                     </button>
@@ -590,43 +848,69 @@ export function UserChatWorkspace({
                 </div>
               </div>
 
-              <div className="flex-1 space-y-4 overflow-y-auto px-4 py-4">
+              <div className="flex-1 space-y-5 overflow-y-auto px-4 py-4">
                 {drawerTab === "overview" ? (
                   <>
-                    <DetailSection title="Run Overview">
+                    <DetailSection title="Snapshot">
                       <div className="grid grid-cols-2 gap-2 text-sm">
-                        <div className="rounded-xl border border-[var(--ui-border)] bg-[hsl(var(--card)/0.92)] px-3 py-2">
-                          <p className="text-[0.72rem] text-[var(--fx-muted)]">Chat turns</p>
-                          <p className="mt-1 font-semibold text-[hsl(var(--foreground))]">{stats.chatTurns}</p>
-                        </div>
-                        <div className="rounded-xl border border-[var(--ui-border)] bg-[hsl(var(--card)/0.92)] px-3 py-2">
-                          <p className="text-[0.72rem] text-[var(--fx-muted)]">Blockers</p>
-                          <p className="mt-1 font-semibold text-[hsl(var(--foreground))]">{stats.blockers}</p>
-                        </div>
-                        <div className="rounded-xl border border-[var(--ui-border)] bg-[hsl(var(--card)/0.92)] px-3 py-2">
-                          <p className="text-[0.72rem] text-[var(--fx-muted)]">Inbox flags</p>
-                          <p className="mt-1 font-semibold text-[hsl(var(--foreground))]">{relatedInboxItems.length}</p>
-                        </div>
-                        <div className="rounded-xl border border-[var(--ui-border)] bg-[hsl(var(--card)/0.92)] px-3 py-2">
-                          <p className="text-[0.72rem] text-[var(--fx-muted)]">Artifacts</p>
-                          <p className="mt-1 font-semibold text-[hsl(var(--foreground))]">{selectedRun?.artifacts.length ?? 0}</p>
-                        </div>
+                        <DetailMetric label="Chat turns" value={stats.chatTurns} />
+                        <DetailMetric label="Blockers" value={stats.blockers} />
+                        <DetailMetric label="Inbox flags" value={relatedInboxItems.length} />
+                        <DetailMetric label="Artifacts" value={selectedRun?.artifacts.length ?? 0} />
                       </div>
+                    </DetailSection>
+
+                    <DetailSection title="Follow-up Activity">
+                      <div className="space-y-3 text-sm">
+                        <div className="grid grid-cols-2 gap-2">
+                          <DetailMetric label="Provider" value={activeRuntimeProvider || "Default"} />
+                          <DetailMetric label="Model" value={activeRuntimeModel || "Platform default"} />
+                        </div>
+                        <DetailMessage>
+                          <p className="text-[0.72rem] font-medium tracking-[0.04em] text-[var(--fx-muted)]">Status</p>
+                          <p className="mt-2 text-[0.8rem] leading-6 text-[hsl(var(--foreground))]">
+                            {followupStatus.message
+                              ? followupStatus.message
+                              : followupStatus.state === "submitting"
+                                ? "Sending follow-up…"
+                                : "Use the chat footer to choose a model and send the next follow-up."}
+                          </p>
+                          {followupStatus.createdRunId ? (
+                            <p className="mt-2 text-[0.78rem] text-[hsl(var(--foreground))]">
+                              Run created: <Link href={`/inbox?session=${encodeURIComponent(followupStatus.createdRunId)}`} className="underline decoration-dotted underline-offset-2">{followupStatus.createdRunId}</Link>
+                            </p>
+                          ) : null}
+                          <p className="mt-2 text-[0.72rem] font-medium tracking-[0.02em] text-[var(--fx-muted)]">
+                            Tools route through published `@agents` and `/workflows` from the chat footer.
+                          </p>
+                          {activeRuntimeSource ? (
+                            <p className="mt-1 text-[0.72rem] font-medium tracking-[0.02em] text-[var(--fx-muted)]">Runtime source: {activeRuntimeSource}</p>
+                          ) : null}
+                        </DetailMessage>
+                      </div>
+                    </DetailSection>
+
+                    <DetailSection title="Action Queue">
+                      {actionItems.length === 0 ? (
+                        <DetailMessage tone="muted">No open action items for this session.</DetailMessage>
+                      ) : (
+                        <DetailList>
+                          {actionItems.map((item) => (
+                            <DetailListItem key={item} title={item} />
+                          ))}
+                        </DetailList>
+                      )}
                     </DetailSection>
 
                     <DetailSection title="Inbox Context">
                       {relatedInboxItems.length === 0 ? (
-                        <p className="text-sm text-[var(--fx-muted)]">No outstanding inbox items tied to this session.</p>
+                        <DetailMessage tone="muted">No outstanding inbox items tied to this session.</DetailMessage>
                       ) : (
-                        <div className="space-y-2">
+                        <DetailList>
                           {relatedInboxItems.map((item) => (
-                            <div key={item.id} className="rounded-xl border border-[var(--ui-border)] bg-[hsl(var(--card)/0.92)] px-3 py-3">
-                              <p className="text-sm font-medium text-[hsl(var(--foreground))]">{item.artifactType}</p>
-                              <p className="mt-1 text-[0.78rem] text-[var(--fx-muted)]">{item.reason}</p>
-                              <p className="mt-2 text-[0.72rem] font-semibold uppercase tracking-[0.12em] text-[var(--fx-muted)]">{item.queue}</p>
-                            </div>
+                            <DetailListItem key={item.id} title={item.artifactType} subtitle={item.reason} meta={item.queue} />
                           ))}
-                        </div>
+                        </DetailList>
                       )}
                     </DetailSection>
 
@@ -634,26 +918,20 @@ export function UserChatWorkspace({
                       {atfReport ? (
                         <div className="space-y-3 text-sm">
                           <div className="grid grid-cols-2 gap-2">
-                            <div className="rounded-xl border border-[var(--ui-border)] bg-[hsl(var(--card)/0.92)] px-3 py-2">
-                              <p className="text-[0.72rem] text-[var(--fx-muted)]">Coverage</p>
-                              <p className="mt-1 font-semibold text-[hsl(var(--foreground))]">{Math.round(atfReport.coverage_percent)}%</p>
-                            </div>
-                            <div className="rounded-xl border border-[var(--ui-border)] bg-[hsl(var(--card)/0.92)] px-3 py-2">
-                              <p className="text-[0.72rem] text-[var(--fx-muted)]">Maturity</p>
-                              <p className="mt-1 font-semibold capitalize text-[hsl(var(--foreground))]">{atfReport.maturity_estimate}</p>
-                            </div>
+                            <DetailMetric label="Coverage" value={`${Math.round(atfReport.coverage_percent)}%`} />
+                            <DetailMetric label="Maturity" value={<span className="capitalize">{atfReport.maturity_estimate}</span>} />
                           </div>
-                          <div className="rounded-xl border border-[var(--ui-border)] bg-[hsl(var(--card)/0.92)] px-3 py-3">
-                            <p className="text-[0.72rem] font-semibold uppercase tracking-[0.12em] text-[var(--fx-muted)]">Gaps</p>
+                          <DetailMessage>
+                            <p className="text-[0.72rem] font-medium tracking-[0.02em] text-[var(--fx-muted)]">Gaps</p>
                             <div className="mt-2 flex flex-wrap gap-2">
                               {Object.values(atfReport.pillars).flatMap((pillar) => pillar.gaps).slice(0, 4).map((gap) => (
-                                <span key={gap} className="rounded-full border border-[var(--ui-border)] px-2 py-1 text-[0.72rem] text-[hsl(var(--foreground))]">{gap}</span>
+                                <span key={gap} className="rounded-full border border-[var(--ui-border)] px-2.5 py-1 text-[0.68rem] font-medium tracking-[0.01em] text-[hsl(var(--foreground))]">{gap}</span>
                               ))}
                             </div>
-                          </div>
+                          </DetailMessage>
                         </div>
                       ) : (
-                        <p className="text-sm text-[var(--fx-muted)]">ATF posture unavailable.</p>
+                        <DetailMessage tone="muted">ATF posture unavailable.</DetailMessage>
                       )}
                     </DetailSection>
                   </>
@@ -662,19 +940,13 @@ export function UserChatWorkspace({
                 {drawerTab === "artifacts" ? (
                   <DetailSection title="Artifacts">
                     {(selectedRun?.artifacts ?? []).length === 0 ? (
-                      <p className="text-sm text-[var(--fx-muted)]">No artifacts recorded yet.</p>
+                      <DetailMessage tone="muted">No artifacts recorded yet.</DetailMessage>
                     ) : (
-                      <div className="space-y-2">
+                      <DetailList>
                         {(selectedRun?.artifacts ?? []).map((artifact) => (
-                          <div key={artifact.id} className="rounded-xl border border-[var(--ui-border)] bg-[hsl(var(--card)/0.92)] px-3 py-3">
-                            <div className="flex items-center justify-between gap-2">
-                              <p className="text-sm font-medium text-[hsl(var(--foreground))]">{artifact.name}</p>
-                              <span className="text-[0.72rem] text-[var(--fx-muted)]">v{artifact.version}</span>
-                            </div>
-                            <p className="mt-1 text-[0.78rem] text-[var(--fx-muted)]">{artifact.status}</p>
-                          </div>
+                          <DetailListItem key={artifact.id} title={artifact.name} subtitle={artifact.status} meta={`v${artifact.version}`} />
                         ))}
-                      </div>
+                      </DetailList>
                     )}
                   </DetailSection>
                 ) : null}
@@ -683,9 +955,9 @@ export function UserChatWorkspace({
                   <DetailSection title="Approvals">
                     {approvals.required ? (
                       <div className="space-y-3">
-                        <p className="text-sm text-[var(--fx-muted)]">
+                        <DetailMessage tone="muted">
                           {approvals.pending ? "A human decision is required before the run can continue." : "No pending approval decision right now."}
-                        </p>
+                        </DetailMessage>
                         <textarea
                           value={approvalFeedback}
                           onChange={(event) => setApprovalFeedback(event.target.value)}
@@ -703,7 +975,7 @@ export function UserChatWorkspace({
                         {approvalMessage ? <p className="text-xs text-[var(--fx-muted)]">{approvalMessage}</p> : null}
                       </div>
                     ) : (
-                      <p className="text-sm text-[var(--fx-muted)]">This session does not currently require approval.</p>
+                      <DetailMessage tone="muted">This session does not currently require approval.</DetailMessage>
                     )}
                   </DetailSection>
                 ) : null}
@@ -711,16 +983,13 @@ export function UserChatWorkspace({
                 {drawerTab === "guardrails" ? (
                   <DetailSection title="Guardrails">
                     {guardrailEvents.length === 0 ? (
-                      <p className="text-sm text-[var(--fx-muted)]">No guardrail findings for this session.</p>
+                      <DetailMessage tone="muted">No guardrail findings for this session.</DetailMessage>
                     ) : (
-                      <div className="space-y-2">
+                      <DetailList>
                         {guardrailEvents.map((event) => (
-                          <div key={event.id} className="rounded-xl border border-[var(--ui-border)] bg-[hsl(var(--card)/0.92)] px-3 py-3">
-                            <p className="text-sm font-medium text-[hsl(var(--foreground))]">{event.title}</p>
-                            <p className="mt-1 text-[0.78rem] leading-6 text-[var(--fx-muted)]">{event.summary}</p>
-                          </div>
+                          <DetailListItem key={event.id} title={event.title} subtitle={event.summary} />
                         ))}
-                      </div>
+                      </DetailList>
                     )}
                   </DetailSection>
                 ) : null}

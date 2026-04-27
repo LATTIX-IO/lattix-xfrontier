@@ -2,17 +2,22 @@ from __future__ import annotations
 
 import json
 import os
+import logging
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator
 from uuid import uuid4
 
+LOGGER = logging.getLogger(__name__)
+PSYCOPG_IMPORT_ERROR: str | None = None
+
 try:
     import psycopg
     from psycopg import sql as psycopg_sql
-except Exception:  # pragma: no cover - optional dependency in some local test paths
+except Exception as exc:  # pragma: no cover - optional dependency in some local test paths
     psycopg = None
     psycopg_sql = None
+    PSYCOPG_IMPORT_ERROR = f"{type(exc).__name__}: {exc}"
 
 try:
     import redis
@@ -77,6 +82,7 @@ class _BasePostgresService:
         self.dsn = str(dsn or "").strip()
         self.enabled = bool(self.dsn) and psycopg is not None
         self._initialized = False
+        self.import_error = PSYCOPG_IMPORT_ERROR
 
     @contextmanager
     def _connect(self) -> Iterator[Any]:
@@ -97,6 +103,15 @@ class _BasePostgresService:
             return bool(row and row[0] == 1)
         except Exception:  # noqa: BLE001
             return False
+
+    def status(self) -> tuple[str, str]:
+        if not self.dsn:
+            return "disabled", "POSTGRES_DSN is not configured"
+        if psycopg is None:
+            return "degraded", self.import_error or "psycopg is unavailable"
+        if self.healthcheck():
+            return "connected", ""
+        return "degraded", "Postgres connection healthcheck failed"
 
 
 class PostgresStateStore(_BasePostgresService):

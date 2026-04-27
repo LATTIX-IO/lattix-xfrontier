@@ -27,13 +27,17 @@ class RouteAccessRule:
 _ROUTE_ACCESS_RULES: tuple[RouteAccessRule, ...] = (
     RouteAccessRule(("GET",), "/health", RouteAccessCategory.PUBLIC_MINIMAL),
     RouteAccessRule(("GET",), "/healthz", RouteAccessCategory.PUBLIC_MINIMAL),
+    RouteAccessRule(("GET",), "/auth/oidc/start", RouteAccessCategory.PUBLIC_MINIMAL, "auth.oidc.start"),
+    RouteAccessRule(
+        ("GET",), "/auth/oidc/callback", RouteAccessCategory.PUBLIC_MINIMAL, "auth.oidc.callback"
+    ),
     RouteAccessRule(("POST",), "/auth/login", RouteAccessCategory.PUBLIC_MINIMAL, "auth.login"),
     RouteAccessRule(
         ("POST",), "/auth/register", RouteAccessCategory.PUBLIC_MINIMAL, "auth.register"
     ),
     RouteAccessRule(("POST",), "/auth/logout", RouteAccessCategory.PUBLIC_MINIMAL, "auth.logout"),
     RouteAccessRule(
-        ("GET",), "/auth/session", RouteAccessCategory.AUTHENTICATED_READ, "auth.session.read"
+        ("GET",), "/auth/session", RouteAccessCategory.PUBLIC_MINIMAL, "auth.session.read"
     ),
     RouteAccessRule(("GET",), "/platform/version", RouteAccessCategory.PUBLIC_MINIMAL),
     RouteAccessRule(
@@ -163,6 +167,12 @@ _ROUTE_ACCESS_RULES: tuple[RouteAccessRule, ...] = (
         "workflow.run.archive",
     ),
     RouteAccessRule(
+        ("PATCH",),
+        "/workflow-runs/{run_id}",
+        RouteAccessCategory.AUTHENTICATED_MUTATE,
+        "workflow.run.update",
+    ),
+    RouteAccessRule(
         ("POST",),
         "/artifacts/{artifact_id}/versions",
         RouteAccessCategory.AUTHENTICATED_MUTATE,
@@ -221,10 +231,31 @@ _ROUTE_ACCESS_RULES: tuple[RouteAccessRule, ...] = (
         ("GET",), "/playbooks", RouteAccessCategory.AUTHENTICATED_READ, "playbook.list"
     ),
     RouteAccessRule(
+        ("POST",), "/playbooks", RouteAccessCategory.AUTHENTICATED_MUTATE, "playbook.save"
+    ),
+    RouteAccessRule(
         ("GET",),
         "/playbooks/{playbook_id}",
         RouteAccessCategory.AUTHENTICATED_READ,
         "playbook.read",
+    ),
+    RouteAccessRule(
+        ("POST",),
+        "/playbooks/{playbook_id}/publish",
+        RouteAccessCategory.AUTHENTICATED_MUTATE,
+        "playbook.publish",
+    ),
+    RouteAccessRule(
+        ("POST",),
+        "/playbooks/{playbook_id}/unpublish",
+        RouteAccessCategory.AUTHENTICATED_MUTATE,
+        "playbook.unpublish",
+    ),
+    RouteAccessRule(
+        ("POST",),
+        "/playbooks/{playbook_id}/archive",
+        RouteAccessCategory.AUTHENTICATED_MUTATE,
+        "playbook.archive",
     ),
     RouteAccessRule(
         ("POST",),
@@ -336,6 +367,12 @@ _ROUTE_ACCESS_RULES: tuple[RouteAccessRule, ...] = (
     ),
     RouteAccessRule(
         ("POST",),
+        "/workflow-definitions/{item_id}/unpublish",
+        RouteAccessCategory.AUTHENTICATED_MUTATE,
+        "workflow.definition.unpublish",
+    ),
+    RouteAccessRule(
+        ("POST",),
         "/workflow-definitions/{item_id}/archive",
         RouteAccessCategory.AUTHENTICATED_MUTATE,
         "workflow.definition.archive",
@@ -405,6 +442,18 @@ _ROUTE_ACCESS_RULES: tuple[RouteAccessRule, ...] = (
         "/agent-definitions/{item_id}/publish",
         RouteAccessCategory.AUTHENTICATED_MUTATE,
         "agent.definition.publish",
+    ),
+    RouteAccessRule(
+        ("POST",),
+        "/agent-definitions/{item_id}/unpublish",
+        RouteAccessCategory.AUTHENTICATED_MUTATE,
+        "agent.definition.unpublish",
+    ),
+    RouteAccessRule(
+        ("POST",),
+        "/agent-definitions/{item_id}/archive",
+        RouteAccessCategory.AUTHENTICATED_MUTATE,
+        "agent.definition.archive",
     ),
     RouteAccessRule(
         ("DELETE",),
