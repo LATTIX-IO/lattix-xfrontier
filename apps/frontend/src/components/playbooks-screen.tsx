@@ -50,7 +50,7 @@ function derivePlaybook(p: PlaybookDefinition, idx: number): DerivedPlaybook {
   const phases = 4 + (seed % 3);
   const workflows = 6 + (seed % 8);
   const totalAgents = 18 + (seed % 32);
-  const status: FxStatus = p.status === "deprecated" ? "paused" : idx === 0 ? "running" : "active";
+  const status: FxStatus = p.status === "archived" ? "paused" : idx === 0 ? "running" : "active";
   const isLive = status === "running";
   return {
     id: p.id,
