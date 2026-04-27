@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { FxSectionHeader } from "@/components/fx-ui";
 import { TypedDeleteButton } from "@/components/typed-delete-button";
 import { getGuardrailRulesets } from "@/lib/api";
 
@@ -7,15 +8,16 @@ export default async function GuardrailsBuilderPage() {
 
   return (
     <section className="space-y-4">
-      <header className="flex items-center justify-between gap-2">
-        <div>
-          <h1 className="text-2xl font-semibold">Guardrails Builder</h1>
-          <p className="fx-muted">Production-ready preconfigured guardrails plus custom sets for agents and workflows.</p>
-        </div>
-        <Link href="/builder/guardrails/new" className="fx-btn-primary px-3 py-2 text-sm">
-          New guardrail set
-        </Link>
-      </header>
+      <FxSectionHeader
+        label="Guardrails"
+        index="/08 — Configure"
+        sub="Production-ready preconfigured guardrails plus custom sets for agents and workflows."
+        action={
+          <Link href="/builder/guardrails/new" className="fx-btn-primary px-3 py-1.5 text-[12px] font-medium no-underline">
+            New guardrail set
+          </Link>
+        }
+      />
 
       <div className="fx-panel overflow-hidden">
         <table className="w-full text-sm">

@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { FxSectionHeader } from "@/components/fx-ui";
 import { TypedDeleteButton } from "@/components/typed-delete-button";
 import { getAgentDefinitions } from "@/lib/api";
 
@@ -7,10 +8,11 @@ export default async function BuilderAgentsPage() {
 
   return (
     <section className="space-y-4">
-      <header>
-        <h1 className="text-2xl font-semibold">Agent Studio</h1>
-        <p className="fx-muted">Agents are individual units of execution used by workflows.</p>
-      </header>
+      <FxSectionHeader
+        label="Agent Builder"
+        index="/05 — Build"
+        sub="Agents are individual units of execution used by workflows."
+      />
 
       <div className="fx-panel overflow-hidden">
         <table className="w-full text-sm">

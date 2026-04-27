@@ -164,16 +164,25 @@ export function LeftNav({ mode, pathname, inAdmin, expanded, platformVersion }: 
     return null;
   }
 
+  const workspaceRole = mode === "builder" ? "Builder" : "Operator";
+
   return (
     <div className="flex h-full flex-col">
-      <div className="border-b border-[var(--ui-border)] px-3 pb-3 pt-3">
-        <button type="button" className="fx-workspace-switcher w-full text-left" aria-label="Workspace switcher">
-          <span className="fx-workspace-switcher-kicker">{workspaceLabel}</span>
-          <span className="mt-1 block truncate text-[0.92rem] font-semibold text-[hsl(var(--foreground))]">Lattix Corporation</span>
-          <span className="mt-1 flex items-center justify-between gap-2 text-[0.72rem] text-[var(--fx-muted)]">
-            <span className="truncate">{modeLabel}</span>
-            <span aria-hidden="true">⌄</span>
+      <div className="border-b border-[var(--ui-border)] px-2.5 pb-2 pt-2">
+        <button
+          type="button"
+          className="fx-workspace-chip"
+          aria-label={`${workspaceLabel} switcher`}
+          title={modeLabel}
+        >
+          <span className="fx-workspace-chip-avatar" aria-hidden="true">LX</span>
+          <span className="flex min-w-0 flex-1 flex-col">
+            <span className="fx-workspace-chip-name">Lattix Corporation</span>
+            <span className="fx-workspace-chip-role">{workspaceRole}</span>
           </span>
+          <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1.5" className="flex-shrink-0 text-[var(--fx-muted)]" aria-hidden="true">
+            <path d="M2 4l3 3 3-3" />
+          </svg>
         </button>
       </div>
 
@@ -199,16 +208,9 @@ export function LeftNav({ mode, pathname, inAdmin, expanded, platformVersion }: 
           </nav>
         </section>
 
-        <div className="mt-3 border-t border-[var(--ui-border)] px-2 pt-3">
-          <div className="flex items-center justify-between gap-3 text-[0.68rem] uppercase tracking-[0.12em] text-[var(--fx-muted)]">
-            <span>Platform version</span>
-            <span className="rounded-full border border-[var(--ui-border)] bg-[hsl(var(--card))] px-2 py-1 text-[0.72rem] font-semibold normal-case text-[hsl(var(--foreground))]">
-              {versionLabel}
-            </span>
-          </div>
-
+        <div className="mt-3 border-t border-[var(--ui-border)] pt-2">
           {updateVersionDetails ? (
-            <div className="mt-3 rounded-2xl border border-[color-mix(in_srgb,var(--fx-primary-strong)_28%,var(--ui-border))] bg-[color-mix(in_srgb,var(--fx-primary)_12%,var(--fx-sidebar))] p-3 shadow-[0_10px_24px_rgba(0,0,0,0.16)]">
+            <div className="mx-2 rounded-2xl border border-[color-mix(in_srgb,var(--fx-primary-strong)_28%,var(--ui-border))] bg-[color-mix(in_srgb,var(--fx-primary)_12%,var(--fx-sidebar))] p-3 shadow-[0_10px_24px_rgba(0,0,0,0.16)]">
               <p className="text-[0.68rem] font-semibold uppercase tracking-[0.12em] text-[var(--fx-primary-strong)]">Update available</p>
               <p className="mt-1 text-[0.9rem] font-semibold text-[hsl(var(--foreground))]">
                 {versionLabel} → {latestVersionLabel}
@@ -236,10 +238,19 @@ export function LeftNav({ mode, pathname, inAdmin, expanded, platformVersion }: 
                 ) : null}
               </details>
             </div>
-          ) : versionStatus === "up_to_date" ? (
-            <p className="mt-3 text-[0.74rem] leading-5 text-[var(--fx-muted)]">Current build is up to date.</p>
           ) : (
-            <p className="mt-3 text-[0.74rem] leading-5 text-[var(--fx-muted)]">Update status is unavailable right now.</p>
+            <>
+              <div className="fx-platform-footer-row">
+                <span className="fx-platform-footer-label">Platform</span>
+                <span className="fx-platform-footer-version">{versionLabel}</span>
+              </div>
+              <div className="fx-platform-footer-status">
+                <span className="fx-platform-footer-status-dot" aria-hidden="true" />
+                <span className="fx-platform-footer-status-text">
+                  {versionStatus === "up_to_date" ? "Systems Nominal" : "Status unavailable"}
+                </span>
+              </div>
+            </>
           )}
         </div>
       </div>

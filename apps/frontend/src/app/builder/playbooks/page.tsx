@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
+import { FxSectionHeader } from "@/components/fx-ui";
 import {
   getPlaybooks,
   instantiatePlaybook,
@@ -55,10 +56,11 @@ export default function PlaybooksPage() {
 
   return (
     <section className="space-y-6">
-      <header>
-        <h1 className="text-2xl font-semibold">Playbooks</h1>
-        <p className="fx-muted">Playbooks are collaborations of workflows designed to achieve high-level outcomes.</p>
-      </header>
+      <FxSectionHeader
+        label="Playbook Builder"
+        index="/07 — Build"
+        sub="Playbooks are collaborations of workflows designed to achieve high-level outcomes."
+      />
 
       {error && (
         <div className="border border-[#6b1f2a] bg-[#2f1a21] p-3 text-sm text-[#ffb8c4]">

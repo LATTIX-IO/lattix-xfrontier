@@ -18,18 +18,18 @@ export function ModeSwitch({
     >
       <Link
         href="/inbox"
-        className={`rounded-[calc(var(--radius)-3px)] px-2.5 py-1 text-[11px] font-medium no-underline transition ${
+        className={`rounded-[calc(var(--radius)-3px)] px-3.5 py-1 text-[11px] font-medium no-underline transition ${
           !inBuilder
             ? "bg-[hsl(var(--card))] text-[hsl(var(--foreground))] shadow-sm border border-[var(--ui-border)]"
             : "border border-transparent text-[var(--fx-muted)] hover:text-[hsl(var(--foreground))] hover:bg-[var(--fx-nav-hover)]"
         }`}
       >
-        User Mode
+        User
       </Link>
       <Link
         href="/builder/workflows"
         aria-disabled={!canAccessBuilder}
-        className={`rounded-[calc(var(--radius)-3px)] px-2.5 py-1 text-[11px] font-medium no-underline transition ${
+        className={`rounded-[calc(var(--radius)-3px)] px-3.5 py-1 text-[11px] font-medium no-underline transition ${
           !canAccessBuilder
             ? "cursor-not-allowed border border-transparent text-[var(--fx-muted)] opacity-70"
             : inBuilder
@@ -43,7 +43,7 @@ export function ModeSwitch({
           }
         }}
       >
-        Builder Mode
+        Builder
       </Link>
     </div>
   );

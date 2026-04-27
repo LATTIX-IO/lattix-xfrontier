@@ -4,11 +4,20 @@ import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { ApiStatusBanner } from "@/components/api-status-banner";
+import {
+  CLASSIFICATION_BANNER_HEIGHT,
+  ClassificationBanner,
+  type ClassificationPreset,
+} from "@/components/classification-banner";
 import { ModeSwitch } from "@/components/mode-switch";
 import { LeftNav } from "@/components/navigation/left-nav";
 import { UserConsoleSidebar } from "@/components/navigation/user-console-sidebar";
 import { getOperatorSession, getPlatformVersionStatus, logoutOperator } from "@/lib/api";
 import type { AppMode, OperatorSession, PlatformVersionStatus } from "@/types/frontier";
+
+const CLASSIFICATION_BANNER_TEXT =
+  "Internal · Operational Console · Zero Trust Enforced";
+const CLASSIFICATION_BANNER_PRESET: ClassificationPreset = "success";
 
 function resolveOperatorLabel(session: OperatorSession | null): string {
   if (!session) {
@@ -52,16 +61,13 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const [activeSessionRequestId, setActiveSessionRequestId] = useState(0);
   const [resolvedSessionRequestId, setResolvedSessionRequestId] = useState(0);
 
-  const SHOW_SOFT_LAUNCH = true;
   const SHOW_CLASSIFICATION = true;
   const SHOW_READ_ONLY = false;
 
-  const SOFT_LAUNCH_HEIGHT = 36;
-  const CLASSIFICATION_HEIGHT = 32;
   const TOP_NAV_HEIGHT = 48;
   const READ_ONLY_HEIGHT = 24;
 
-  const topLayerOffset = (SHOW_SOFT_LAUNCH ? SOFT_LAUNCH_HEIGHT : 0) + (SHOW_CLASSIFICATION ? CLASSIFICATION_HEIGHT : 0);
+  const topLayerOffset = SHOW_CLASSIFICATION ? CLASSIFICATION_BANNER_HEIGHT : 0;
   const contentTopOffset = topLayerOffset + TOP_NAV_HEIGHT + (SHOW_READ_ONLY ? READ_ONLY_HEIGHT : 0);
 
   const sidebarWidthExpanded = 248;
@@ -173,7 +179,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     }
     const defaultHref = operatorSession.capabilities.can_builder && operatorSession.default_mode === "builder"
       ? "/builder/workflows"
-      : "/inbox";
+      : "/home";
     router.replace(defaultHref);
   }, [isPublicAuthRoute, operatorSession?.authenticated, operatorSession?.capabilities.can_builder, operatorSession?.default_mode, router, sessionResolved]);
 
@@ -240,56 +246,39 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       >
         Skip to content
       </a>
-      {SHOW_SOFT_LAUNCH ? (
-        <div className="fx-top-strip fixed inset-x-0 top-0 z-40 flex h-9 items-center justify-center px-4 text-[11px] font-semibold uppercase tracking-[0.12em]">
-          Soft launch in progress • staging only • data operations disabled
-        </div>
-      ) : null}
-
       {SHOW_CLASSIFICATION ? (
-        <div
-          className="fixed inset-x-0 z-40 flex items-center justify-center border-b border-[var(--ui-border)] bg-[hsl(var(--muted))] px-4 text-[11px] font-semibold uppercase tracking-[0.08em]"
-          style={{ top: SHOW_SOFT_LAUNCH ? `${SOFT_LAUNCH_HEIGHT}px` : "0px", height: `${CLASSIFICATION_HEIGHT}px` }}
-        >
-          Internal • Operational Console
-        </div>
+        <ClassificationBanner
+          text={CLASSIFICATION_BANNER_TEXT}
+          preset={CLASSIFICATION_BANNER_PRESET}
+          top={0}
+        />
       ) : null}
 
       <header className="fx-header fixed inset-x-0 z-40" style={{ top: `${topLayerOffset}px`, height: `${TOP_NAV_HEIGHT}px` }}>
-        <div className="flex h-full items-center justify-between gap-3 px-3">
+        <div className="flex h-full items-center justify-between gap-2 px-3">
           <div className="flex min-w-0 items-center gap-2">
             <button
               onClick={() => setSidebarExpanded((value) => !value)}
-              className="fx-btn-secondary inline-flex h-7 w-7 items-center justify-center text-xs"
+              className="fx-btn-secondary inline-flex h-7 w-7 items-center justify-center"
               aria-label="Toggle sidebar"
             >
-              ☰
+              <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true">
+                <path d="M2 4h12M2 8h12M2 12h12" />
+              </svg>
             </button>
-            <span className="text-xs font-semibold tracking-wide text-[var(--foreground)]">Lattix</span>
-            <span className="fx-badge-local px-2 py-0.5 text-[10px]">Local</span>
-            <nav className="min-w-0 truncate text-[11px] text-[var(--fx-muted)]">
+            <span className="flex-shrink-0 text-[12px] font-bold tracking-wide text-[hsl(var(--foreground))]">Lattix xFrontier</span>
+            <span className="fx-badge-local flex-shrink-0 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.1em]">Local</span>
+            <nav className="ml-1 flex min-w-0 items-center gap-1 truncate text-[11px] text-[var(--fx-muted)]">
               {breadcrumbParts.map((part, index) => (
-                <span key={`${part}-${index}`}>
-                  {index > 0 ? <span className="mx-1 text-[var(--fx-muted)]">/</span> : null}
-                  <span className={index === breadcrumbParts.length - 1 ? "text-[var(--foreground)]" : ""}>{part}</span>
+                <span key={`${part}-${index}`} className="flex items-center gap-1">
+                  {index > 0 ? <span className="text-[var(--fx-muted)]">/</span> : null}
+                  <span className={index === breadcrumbParts.length - 1 ? "text-[hsl(var(--foreground))]" : ""}>{part}</span>
                 </span>
               ))}
             </nav>
           </div>
 
           <div className="relative flex items-center gap-1.5">
-            <a
-              href="mailto:9ff6ac2b6c9d@intake.linear.app?subject=%5BFeedback%5D%20Lattix%20Frontier&body=%0A---%20Feedback%20---%0A%0AType%3A%20%5B%20Bug%20%7C%20Feature%20Request%20%7C%20Improvement%20%7C%20Other%20%5D%0A%0ADescription%3A%0A%0A%0ASteps%20to%20reproduce%20(if%20bug)%3A%0A1.%20%0A2.%20%0A3.%20%0A%0AExpected%20behavior%3A%0A%0A%0AActual%20behavior%3A%0A%0A%0AAdditional%20context%3A%0A"
-              className="fx-btn-secondary px-2 py-1 text-[11px] no-underline"
-            >
-              Feedback
-            </a>
-            <button className="fx-btn-secondary h-7 w-7 px-0 text-[11px]" aria-label="Docs">
-              ?
-            </button>
-            <button className="fx-btn-secondary h-7 w-7 px-0 text-[11px]" aria-label="Notifications">
-              🔔
-            </button>
             <span className="inline-flex items-center gap-1 rounded-full border border-[var(--ui-border)] bg-[hsl(var(--card))] px-2 py-1 text-[10px]">
               <span className="h-1.5 w-1.5 rounded-full bg-[hsl(var(--state-success))]" />
               DB OK
@@ -297,12 +286,12 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             <ModeSwitch activeMode={activeMode} canAccessBuilder={canBuilder} />
             {activeMode === "user" ? (
               <Link href="/workflows/start" className="fx-btn-primary px-2.5 py-1 text-[11px] font-medium">
-                Start Workflow
+                + New Task
               </Link>
             ) : null}
             <button
               onClick={() => setMenuOpen((value) => !value)}
-              className="fx-btn-secondary h-7 w-7 px-0 text-[11px] font-semibold"
+              className="fx-avatar-btn"
               aria-label="User menu"
               title={operatorLabel}
             >

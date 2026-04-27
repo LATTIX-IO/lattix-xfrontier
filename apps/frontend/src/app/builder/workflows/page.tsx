@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { FxSectionHeader } from "@/components/fx-ui";
 import { TypedDeleteButton } from "@/components/typed-delete-button";
 import { WorkflowStatusButton } from "@/components/workflow-status-button";
 import { getWorkflowDefinitions } from "@/lib/api";
@@ -8,10 +9,11 @@ export default async function BuilderWorkflowsPage() {
 
   return (
     <section className="space-y-4">
-      <header>
-        <h1 className="text-2xl font-semibold">Workflow Studio</h1>
-        <p className="fx-muted">Workflows are tasks for one or more agents to execute end-to-end.</p>
-      </header>
+      <FxSectionHeader
+        label="Workflow Builder"
+        index="/06 — Build"
+        sub="Workflows are tasks for one or more agents to execute end-to-end."
+      />
 
       <div className="fx-panel overflow-hidden">
         <table className="w-full text-sm">
