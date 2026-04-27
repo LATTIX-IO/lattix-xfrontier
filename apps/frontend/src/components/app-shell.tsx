@@ -337,15 +337,17 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               className="fx-btn-secondary inline-flex h-8 w-8 items-center justify-center px-0 text-[11px]"
               aria-label="Toggle sidebar"
             >
-              ☰
+              <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true">
+                <path d="M2 4h12M2 8h12M2 12h12" />
+              </svg>
             </button>
             <span className="text-[0.94rem] font-semibold tracking-[-0.02em] text-[var(--foreground)]">Lattix</span>
             <span className="fx-badge-local px-2.5 py-0.5 text-[10px] font-medium">Local</span>
             <nav className="min-w-0 truncate text-[12px] text-[var(--fx-muted)]">
               {breadcrumbParts.map((part, index) => (
-                <span key={`${part}-${index}`}>
-                  {index > 0 ? <span className="mx-1 text-[var(--fx-muted)]">/</span> : null}
-                  <span className={index === breadcrumbParts.length - 1 ? "text-[var(--foreground)]" : ""}>{part}</span>
+                <span key={`${part}-${index}`} className="flex items-center gap-1">
+                  {index > 0 ? <span className="text-[var(--fx-muted)]">/</span> : null}
+                  <span className={index === breadcrumbParts.length - 1 ? "text-[hsl(var(--foreground))]" : ""}>{part}</span>
                 </span>
               ))}
             </nav>

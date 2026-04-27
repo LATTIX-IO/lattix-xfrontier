@@ -239,8 +239,7 @@ describe("AppShell", () => {
 
     expect(await screen.findByText(/workflow studio/i)).toBeInTheDocument();
     expect(screen.getByRole("link", { name: /^settings$/i })).toHaveAttribute("href", "/builder/settings");
-    expect(screen.getByText(/platform version/i)).toBeInTheDocument();
-    expect(screen.getByText(/^v0\.1\.0$/i)).toBeInTheDocument();
+    expect(screen.getByText(/v0\.1\.0\s*→\s*v0\.1\.1/i)).toBeInTheDocument();
     expect(screen.getByText(/update available/i)).toBeInTheDocument();
     expect(screen.getByText(/lattix update/i)).toBeInTheDocument();
     expect(screen.getByText(/internal • operational console/i)).toBeInTheDocument();

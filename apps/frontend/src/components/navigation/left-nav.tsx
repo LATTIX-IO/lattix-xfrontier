@@ -163,6 +163,8 @@ export function LeftNav({ mode, pathname, inAdmin, expanded, platformVersion }: 
     return null;
   }
 
+  const workspaceRole = mode === "builder" ? "Builder" : "Operator";
+
   return (
     <div className="flex h-full flex-col">
       {mode === "builder" ? (

@@ -24,7 +24,7 @@ export function ModeSwitch({
             : "border border-transparent text-[var(--fx-muted)] hover:text-[hsl(var(--foreground))] hover:bg-[var(--fx-nav-hover)]"
         }`}
       >
-        User Mode
+        User
       </Link>
       <Link
         href="/builder/workflows"
@@ -43,7 +43,7 @@ export function ModeSwitch({
           }
         }}
       >
-        Builder Mode
+        Builder
       </Link>
     </div>
   );
