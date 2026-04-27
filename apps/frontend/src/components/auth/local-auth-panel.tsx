@@ -59,10 +59,10 @@ export function LocalAuthPanel({ providerLabel }: LocalAuthPanelProps) {
         });
       }
       const session = await getOperatorSession();
-      const destination = session.capabilities.can_builder && session.default_mode === "builder"
-        ? "/builder/workflows"
-        : "/inbox";
-      router.replace(destination);
+      if (!session.authenticated) {
+        throw new Error("Authenticated session was not established.");
+      }
+      router.replace("/inbox");
       router.refresh();
     } catch (error) {
       setErrorMessage(normalizeError(error));
@@ -73,7 +73,7 @@ export function LocalAuthPanel({ providerLabel }: LocalAuthPanelProps) {
 
   return (
     <div className="space-y-6">
-      <div className="inline-flex rounded-full border border-[var(--ui-border)] bg-[color-mix(in_srgb,hsl(var(--card))_86%,transparent)] p-1">
+      <div className="inline-flex rounded-[14px] border border-[var(--ui-border)] bg-[hsl(var(--card))] p-1 shadow-[var(--fx-shadow-soft)]">
         {([
           ["signin", "Sign in"],
           ["signup", "Create account"],
@@ -87,9 +87,9 @@ export function LocalAuthPanel({ providerLabel }: LocalAuthPanelProps) {
                 setMode(value);
                 setErrorMessage("");
               }}
-              className={`rounded-full px-3 py-1.5 text-xs font-semibold transition ${active
-                ? "bg-[hsl(var(--foreground))] text-[hsl(var(--background))]"
-                : "text-[var(--fx-muted)] hover:text-[hsl(var(--foreground))]"
+              className={`min-w-32 rounded-[10px] border px-3 py-2 text-[12px] font-medium transition ${active
+                ? "border-[var(--fx-primary)] bg-[var(--fx-primary)] text-[var(--fx-primary-text)]"
+                : "border-transparent text-[var(--fx-muted)] hover:border-[var(--ui-border)] hover:bg-[var(--fx-nav-hover)] hover:text-[hsl(var(--foreground))]"
                 }`}
             >
               {label}
@@ -99,8 +99,9 @@ export function LocalAuthPanel({ providerLabel }: LocalAuthPanelProps) {
       </div>
 
       <form className="space-y-4" onSubmit={handleSubmit}>
-        <div className="space-y-2">
-          <label className="block text-xs font-semibold uppercase tracking-[0.14em] text-[var(--fx-muted)]" htmlFor="auth-username">
+        <div className="grid gap-4 sm:grid-cols-2">
+          <div className="space-y-2 sm:col-span-2">
+          <label className="block text-[12px] font-medium tracking-[0.03em] text-[var(--fx-muted)]" htmlFor="auth-username">
             Username
           </label>
           <input
@@ -108,16 +109,16 @@ export function LocalAuthPanel({ providerLabel }: LocalAuthPanelProps) {
             autoComplete={mode === "signin" ? "username" : "new-username"}
             value={username}
             onChange={(event) => setUsername(event.target.value)}
-            className="w-full rounded-2xl border border-[var(--ui-border)] bg-[hsl(var(--card))] px-4 py-3 text-sm outline-none transition focus:border-[var(--fx-primary)] focus:ring-2 focus:ring-[color-mix(in_srgb,var(--fx-primary)_25%,transparent)]"
-            placeholder="james"
+            className="w-full rounded-[12px] border border-[var(--ui-border)] bg-[hsl(var(--background))] px-4 py-3 text-sm outline-none transition focus:border-[var(--fx-primary)] focus:ring-2 focus:ring-[color-mix(in_srgb,var(--fx-primary)_18%,transparent)]"
+            placeholder="username"
             required
           />
-        </div>
+          </div>
 
-        {mode === "signup" ? (
-          <>
-            <div className="space-y-2">
-              <label className="block text-xs font-semibold uppercase tracking-[0.14em] text-[var(--fx-muted)]" htmlFor="auth-display-name">
+          {mode === "signup" ? (
+            <>
+              <div className="space-y-2 sm:col-span-2">
+              <label className="block text-[12px] font-medium tracking-[0.03em] text-[var(--fx-muted)]" htmlFor="auth-display-name">
                 Display name
               </label>
               <input
@@ -125,13 +126,13 @@ export function LocalAuthPanel({ providerLabel }: LocalAuthPanelProps) {
                 autoComplete="name"
                 value={displayName}
                 onChange={(event) => setDisplayName(event.target.value)}
-                className="w-full rounded-2xl border border-[var(--ui-border)] bg-[hsl(var(--card))] px-4 py-3 text-sm outline-none transition focus:border-[var(--fx-primary)] focus:ring-2 focus:ring-[color-mix(in_srgb,var(--fx-primary)_25%,transparent)]"
+                className="w-full rounded-[12px] border border-[var(--ui-border)] bg-[hsl(var(--background))] px-4 py-3 text-sm outline-none transition focus:border-[var(--fx-primary)] focus:ring-2 focus:ring-[color-mix(in_srgb,var(--fx-primary)_18%,transparent)]"
                 placeholder="James Booth"
                 required
               />
             </div>
             <div className="space-y-2">
-              <label className="block text-xs font-semibold uppercase tracking-[0.14em] text-[var(--fx-muted)]" htmlFor="auth-email">
+              <label className="block text-[12px] font-medium tracking-[0.03em] text-[var(--fx-muted)]" htmlFor="auth-email">
                 Email
               </label>
               <input
@@ -140,7 +141,7 @@ export function LocalAuthPanel({ providerLabel }: LocalAuthPanelProps) {
                 autoComplete="email"
                 value={email}
                 onChange={(event) => setEmail(event.target.value)}
-                className="w-full rounded-2xl border border-[var(--ui-border)] bg-[hsl(var(--card))] px-4 py-3 text-sm outline-none transition focus:border-[var(--fx-primary)] focus:ring-2 focus:ring-[color-mix(in_srgb,var(--fx-primary)_25%,transparent)]"
+                className="w-full rounded-[12px] border border-[var(--ui-border)] bg-[hsl(var(--background))] px-4 py-3 text-sm outline-none transition focus:border-[var(--fx-primary)] focus:ring-2 focus:ring-[color-mix(in_srgb,var(--fx-primary)_18%,transparent)]"
                 placeholder="james@xfrontier.localhost"
                 required
               />
@@ -148,8 +149,8 @@ export function LocalAuthPanel({ providerLabel }: LocalAuthPanelProps) {
           </>
         ) : null}
 
-        <div className="space-y-2">
-          <label className="block text-xs font-semibold uppercase tracking-[0.14em] text-[var(--fx-muted)]" htmlFor="auth-password">
+          <div className="space-y-2">
+          <label className="block text-[12px] font-medium tracking-[0.03em] text-[var(--fx-muted)]" htmlFor="auth-password">
             Password
           </label>
           <input
@@ -158,15 +159,15 @@ export function LocalAuthPanel({ providerLabel }: LocalAuthPanelProps) {
             autoComplete={mode === "signin" ? "current-password" : "new-password"}
             value={password}
             onChange={(event) => setPassword(event.target.value)}
-            className="w-full rounded-2xl border border-[var(--ui-border)] bg-[hsl(var(--card))] px-4 py-3 text-sm outline-none transition focus:border-[var(--fx-primary)] focus:ring-2 focus:ring-[color-mix(in_srgb,var(--fx-primary)_25%,transparent)]"
+            className="w-full rounded-[12px] border border-[var(--ui-border)] bg-[hsl(var(--background))] px-4 py-3 text-sm outline-none transition focus:border-[var(--fx-primary)] focus:ring-2 focus:ring-[color-mix(in_srgb,var(--fx-primary)_18%,transparent)]"
             placeholder="••••••••"
             required
           />
-        </div>
+          </div>
 
-        {mode === "signup" ? (
-          <div className="space-y-2">
-            <label className="block text-xs font-semibold uppercase tracking-[0.14em] text-[var(--fx-muted)]" htmlFor="auth-password-confirm">
+          {mode === "signup" ? (
+            <div className="space-y-2">
+            <label className="block text-[12px] font-medium tracking-[0.03em] text-[var(--fx-muted)]" htmlFor="auth-password-confirm">
               Confirm password
             </label>
             <input
@@ -175,15 +176,16 @@ export function LocalAuthPanel({ providerLabel }: LocalAuthPanelProps) {
               autoComplete="new-password"
               value={confirmPassword}
               onChange={(event) => setConfirmPassword(event.target.value)}
-              className="w-full rounded-2xl border border-[var(--ui-border)] bg-[hsl(var(--card))] px-4 py-3 text-sm outline-none transition focus:border-[var(--fx-primary)] focus:ring-2 focus:ring-[color-mix(in_srgb,var(--fx-primary)_25%,transparent)]"
+              className="w-full rounded-[12px] border border-[var(--ui-border)] bg-[hsl(var(--background))] px-4 py-3 text-sm outline-none transition focus:border-[var(--fx-primary)] focus:ring-2 focus:ring-[color-mix(in_srgb,var(--fx-primary)_18%,transparent)]"
               placeholder="Repeat the password"
               required
             />
           </div>
         ) : null}
+        </div>
 
         {errorMessage ? (
-          <div className="rounded-2xl border border-[color-mix(in_srgb,var(--fx-danger)_45%,var(--ui-border)_55%)] bg-[color-mix(in_srgb,var(--fx-danger)_10%,transparent)] px-4 py-3 text-sm text-[hsl(var(--foreground))]">
+          <div className="rounded-[14px] border border-[color-mix(in_srgb,var(--fx-danger)_45%,var(--ui-border)_55%)] bg-[color-mix(in_srgb,var(--fx-danger)_10%,transparent)] px-4 py-3 text-sm text-[hsl(var(--foreground))]">
             {errorMessage}
           </div>
         ) : null}
@@ -197,10 +199,13 @@ export function LocalAuthPanel({ providerLabel }: LocalAuthPanelProps) {
         </button>
       </form>
 
-      <div className="rounded-[1.25rem] border border-dashed border-[var(--ui-border)] bg-[color-mix(in_srgb,hsl(var(--muted))_58%,transparent)] p-4">
-        <h3 className="text-sm font-semibold text-[hsl(var(--foreground))]">Why this stays inside xFrontier</h3>
-        <p className="mt-2 text-sm leading-6 text-[var(--fx-muted)]">
-          {providerLabel} still owns the account records, but this screen handles sign-in and sign-up directly so operators do not get dropped onto a raw OAuth endpoint and asked to enjoy the void.
+      <div className="rounded-[16px] border border-[var(--ui-border)] bg-[color-mix(in_srgb,hsl(var(--muted))_42%,transparent)] p-4 shadow-[var(--fx-shadow-soft)]">
+        <div className="flex items-center justify-between gap-3 border-b border-[var(--ui-border)] pb-3">
+          <h3 className="text-[0.95rem] font-semibold tracking-[-0.01em] text-[hsl(var(--foreground))]">Local sign-in</h3>
+          <span className="rounded-full border border-[var(--ui-border)] px-2.5 py-1 text-[0.68rem] font-medium text-[var(--fx-muted)]">Local first</span>
+        </div>
+        <p className="mt-3 text-sm leading-6 text-[var(--fx-muted)]">
+          {providerLabel} manages the identity records, and xFrontier handles the sign-in form and session setup here.
         </p>
       </div>
     </div>

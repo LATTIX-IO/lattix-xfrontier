@@ -90,6 +90,7 @@ export function TaskKickoffComposer() {
   const [draft, setDraft] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [createdRunId, setCreatedRunId] = useState<string | null>(null);
+  const [submitInfo, setSubmitInfo] = useState<string | null>(null);
   const [cursorPosition, setCursorPosition] = useState(0);
   const [publishedAgents, setPublishedAgents] = useState<AgentDefinition[]>([]);
   const [publishedWorkflows, setPublishedWorkflows] = useState<WorkflowDefinition[]>([]);
@@ -172,6 +173,14 @@ export function TaskKickoffComposer() {
   }
 
   function handleTextareaKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
+    if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
+      event.preventDefault();
+      if (!isSubmitting && draft.trim()) {
+        event.currentTarget.form?.requestSubmit();
+      }
+      return;
+    }
+
     if (!activeMention || mentionSuggestions.length === 0) {
       return;
     }
@@ -207,6 +216,7 @@ export function TaskKickoffComposer() {
     event.preventDefault();
     if (!draft.trim()) return;
     setSubmitError(null);
+    setSubmitInfo(null);
 
     try {
       setIsSubmitting(true);
@@ -223,24 +233,28 @@ export function TaskKickoffComposer() {
       });
 
       const payload = {
+        session_kind: "task",
         prompt: draft,
         tokens: filteredTokens,
       };
-      const result = await createWorkflowRun(payload);
+      const result = await createWorkflowRun(payload, { timeoutMs: 120000 });
       setCreatedRunId(result.id);
+      setSubmitInfo(`Task started. Opening run ${result.id}...`);
       setDraft("");
+      router.push(`/inbox?session=${encodeURIComponent(result.id)}`);
       router.refresh();
-    } catch {
-      setSubmitError("Unable to start task run. Please verify backend connectivity and try again.");
+    } catch (error) {
+      const messageText = error instanceof Error ? error.message : "Unable to start task run.";
+      setSubmitError(`${messageText} If the run is still processing, wait a few seconds and try again.`);
     } finally {
       setIsSubmitting(false);
     }
   }
 
   return (
-    <div className="fx-panel p-4">
-      <h2 className="mb-2 text-sm font-semibold uppercase tracking-wide">Kick off new task</h2>
-      <p className="fx-muted mb-3 text-sm">
+    <div className="fx-panel rounded-[18px] p-5">
+      <h2 className="mb-2 text-[1rem] font-semibold tracking-[-0.02em]">Kick off new task</h2>
+      <p className="fx-muted mb-3 text-sm leading-6">
         Use delimiters to structure intent: data, tags, workflow routing, and agent assignment.
       </p>
 
@@ -260,8 +274,8 @@ export function TaskKickoffComposer() {
         />
 
         {activeMention && mentionSuggestions.length > 0 ? (
-          <div className="border border-[var(--fx-border)] bg-[var(--fx-surface-elevated)]">
-            <div className="px-2 py-1 text-[10px] uppercase tracking-wide text-[var(--fx-muted)]">
+          <div className="overflow-hidden rounded-[14px] border border-[var(--fx-border)] bg-[var(--fx-surface-elevated)] shadow-[var(--fx-shadow-soft)]">
+            <div className="px-2.5 py-1.5 text-[10px] font-medium tracking-[0.04em] text-[var(--fx-muted)]">
               {activeMention.trigger === "@" ? "Published Agents" : "Published Workflows"}
             </div>
             <ul className="max-h-40 overflow-auto text-xs">
@@ -300,9 +314,9 @@ export function TaskKickoffComposer() {
           )}
         </div>
 
-        <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
           {delimiterLegend.map((item) => (
-            <div key={item.symbol} className="border border-[var(--fx-border)] bg-[var(--fx-surface-elevated)] p-2 text-xs">
+            <div key={item.symbol} className="rounded-[14px] border border-[var(--fx-border)] bg-[var(--fx-surface-elevated)] p-3 text-xs shadow-[var(--fx-shadow-soft)]">
               <p className="font-semibold text-[var(--foreground)]">
                 {item.symbol} {item.meaning}
               </p>
@@ -322,6 +336,7 @@ export function TaskKickoffComposer() {
           ) : null}
         </div>
 
+        {submitInfo ? <p className="text-xs text-[var(--fx-muted)]">{submitInfo}</p> : null}
         {submitError ? <p className="text-xs text-[var(--fx-danger)]">{submitError}</p> : null}
       </form>
     </div>

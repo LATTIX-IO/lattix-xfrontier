@@ -64,7 +64,15 @@ install_homebrew() {
     return 0
   fi
   echo "==> Installing Homebrew"
-  /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+  local homebrew_install_script
+  homebrew_install_script="$(mktemp "${TMPDIR:-/tmp}/homebrew-install.XXXXXX.sh")"
+  if ! curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh -o "$homebrew_install_script"; then
+    rm -f "$homebrew_install_script"
+    echo "Failed to download Homebrew installer." >&2
+    exit 1
+  fi
+  /bin/bash "$homebrew_install_script"
+  rm -f "$homebrew_install_script"
   refresh_common_paths
   if ! have_command brew; then
     echo "Homebrew installation completed, but 'brew' is still not on PATH. Reopen the shell and retry." >&2

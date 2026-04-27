@@ -3,10 +3,7 @@
 import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import dynamic from "next/dynamic";
-
-const ReactMarkdown = dynamic(() => import("react-markdown"), { ssr: false });
-import remarkGfm from "remark-gfm";
+import { MarkdownBlock } from "@/components/markdown-block";
 import { ReactFlowCanvas } from "@/components/reactflow-canvas";
 import { RunArchiveButton } from "@/components/run-archive-button";
 import { RunFollowupComposer } from "@/components/run-followup-composer";
@@ -37,36 +34,6 @@ function matchesEventFilter(event: WorkflowRunEvent, filter: EventFilter): boole
     return event.type === "error" || /error|failed|blocked|reject/i.test(`${event.title} ${event.summary}`);
   }
   return event.type !== "user_message" && event.type !== "agent_message";
-}
-
-function MarkdownBlock({ content, className = "" }: { content: string; className?: string }) {
-  return (
-    <div className={className}>
-      <ReactMarkdown
-        remarkPlugins={[remarkGfm]}
-        components={{
-          p: ({ children }) => <p className="mb-2 last:mb-0 text-xs leading-relaxed text-[var(--foreground)]">{children}</p>,
-          ul: ({ children }) => <ul className="mb-2 list-disc space-y-1 pl-4 text-xs text-[var(--foreground)]">{children}</ul>,
-          ol: ({ children }) => <ol className="mb-2 list-decimal space-y-1 pl-4 text-xs text-[var(--foreground)]">{children}</ol>,
-          li: ({ children }) => <li className="leading-relaxed">{children}</li>,
-          code: ({ children }) => (
-            <code className="rounded bg-[hsl(var(--muted)/0.65)] px-1 py-0.5 font-mono text-[11px] text-[var(--foreground)]">{children}</code>
-          ),
-          pre: ({ children }) => (
-            <pre className="mb-2 overflow-auto rounded-md border border-[var(--ui-border)] bg-[hsl(var(--muted)/0.5)] p-2 text-[11px] text-[var(--foreground)]">{children}</pre>
-          ),
-          h1: ({ children }) => <h4 className="mb-1 mt-2 text-sm font-semibold text-[var(--foreground)]">{children}</h4>,
-          h2: ({ children }) => <h4 className="mb-1 mt-2 text-sm font-semibold text-[var(--foreground)]">{children}</h4>,
-          h3: ({ children }) => <h5 className="mb-1 mt-2 text-xs font-semibold text-[var(--foreground)]">{children}</h5>,
-          blockquote: ({ children }) => (
-            <blockquote className="mb-2 border-l-2 border-[var(--ui-border)] pl-2 text-xs text-[hsl(var(--muted-foreground))]">{children}</blockquote>
-          ),
-        }}
-      >
-        {content}
-      </ReactMarkdown>
-    </div>
-  );
 }
 
 function statusColorForRun(status: string): string {
@@ -295,22 +262,23 @@ export function RunConversationConsole({ runId, run, events }: Props) {
     : [];
 
   return (
-    <div className="-m-6 min-h-[calc(100vh-57px)] p-6">
+    <div className="-m-6 min-h-[calc(100vh-57px)] bg-[radial-gradient(circle_at_top_left,rgba(37,99,235,0.06),transparent_34%),radial-gradient(circle_at_top_right,rgba(16,185,129,0.05),transparent_30%)] p-6">
       <section className="space-y-4">
-        <header className="flex flex-wrap items-start justify-between gap-3">
+        <header className="flex flex-wrap items-start justify-between gap-4 rounded-[1.8rem] border border-[var(--ui-border)] bg-[color-mix(in_srgb,hsl(var(--card))_96%,hsl(var(--background))_4%)] px-5 py-4 shadow-[0_24px_60px_rgba(15,23,42,0.07)]">
           <div>
-            <h1 className="text-xl font-semibold">Run Console</h1>
-            <p className="fx-muted text-sm">
+            <p className="text-[0.68rem] font-semibold uppercase tracking-[0.12em] text-[var(--fx-muted)]">Run workspace</p>
+            <h1 className="mt-2 text-[1.45rem] font-semibold tracking-[-0.03em] text-[var(--foreground)]">Run Console</h1>
+            <p className="fx-muted mt-2 text-sm leading-6">
               Review execution, triage issues, and continue the run for <span className="font-mono">{runId}</span>.
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-2 text-xs">
-            <span className="rounded-full border border-[var(--ui-border)] bg-[hsl(var(--card))] px-2 py-1 font-medium" style={{ color: statusColor }}>
+            <span className="rounded-full border border-[var(--ui-border)] bg-[hsl(var(--card))] px-2.5 py-1 font-medium" style={{ color: statusColor }}>
               {run.status}
             </span>
-            <span className="rounded-full border border-[var(--ui-border)] px-2 py-1 text-[var(--foreground)]">{orderedEvents.length} events</span>
-            <span className="rounded-full border border-[var(--ui-border)] px-2 py-1 text-[var(--foreground)]">{agentTraces.length} trace(s)</span>
-            <span className="rounded-full border border-[var(--ui-border)] px-2 py-1 text-[var(--foreground)]">{run.artifacts.length} artifact(s)</span>
+            <span className="fx-pill px-2.5 py-1 font-medium text-[var(--foreground)]">{orderedEvents.length} events</span>
+            <span className="fx-pill px-2.5 py-1 font-medium text-[var(--foreground)]">{agentTraces.length} trace(s)</span>
+            <span className="fx-pill px-2.5 py-1 font-medium text-[var(--foreground)]">{run.artifacts.length} artifact(s)</span>
             <button onClick={() => router.refresh()} className="fx-btn-secondary px-2 py-1 text-xs font-medium" type="button">
               Refresh
             </button>
@@ -318,53 +286,53 @@ export function RunConversationConsole({ runId, run, events }: Props) {
           </div>
         </header>
 
-        <div className="grid grid-cols-2 gap-2 text-xs md:grid-cols-4">
-          <div className="fx-panel px-3 py-2">
-            <p className="fx-muted">Chat turns</p>
+        <div className="grid grid-cols-2 gap-3 text-xs md:grid-cols-4">
+          <div className="fx-panel rounded-[1.1rem] px-3.5 py-3 shadow-[0_14px_34px_rgba(15,23,42,0.04)]">
+            <p className="text-[0.72rem] font-medium text-[var(--fx-muted)]">Chat turns</p>
             <p className="mt-1 text-base font-semibold text-[var(--foreground)]">{chatEventsCount}</p>
           </div>
-          <div className="fx-panel px-3 py-2">
-            <p className="fx-muted">System events</p>
+          <div className="fx-panel rounded-[1.1rem] px-3.5 py-3 shadow-[0_14px_34px_rgba(15,23,42,0.04)]">
+            <p className="text-[0.72rem] font-medium text-[var(--fx-muted)]">System events</p>
             <p className="mt-1 text-base font-semibold text-[var(--foreground)]">{systemEventsCount}</p>
           </div>
-          <div className="fx-panel px-3 py-2">
-            <p className="fx-muted">Errors / blockers</p>
+          <div className="fx-panel rounded-[1.1rem] px-3.5 py-3 shadow-[0_14px_34px_rgba(15,23,42,0.04)]">
+            <p className="text-[0.72rem] font-medium text-[var(--fx-muted)]">Errors / blockers</p>
             <p className="mt-1 text-base font-semibold text-[var(--foreground)]">{errorEventsCount}</p>
           </div>
-          <div className="fx-panel px-3 py-2">
-            <p className="fx-muted">Graph mode</p>
+          <div className="fx-panel rounded-[1.1rem] px-3.5 py-3 shadow-[0_14px_34px_rgba(15,23,42,0.04)]">
+            <p className="text-[0.72rem] font-medium text-[var(--fx-muted)]">Graph mode</p>
             <p className="mt-1 text-base font-semibold text-[var(--foreground)]">{usedAgentStudioAgent ? "Agent-mediated" : "Fallback view"}</p>
           </div>
         </div>
 
-        <div className="fx-panel p-3 text-xs">
+        <div className="fx-panel rounded-[1.35rem] p-4 text-xs shadow-[0_18px_44px_rgba(15,23,42,0.05)]">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <h2 className="text-sm font-semibold text-[var(--foreground)]">ATF posture at execution time</h2>
-            <span className="fx-muted text-[11px]">CSA Agentic Trust Framework</span>
+            <span className="fx-pill px-2.5 py-1 text-[0.72rem] font-medium text-[var(--fx-muted)]">CSA Agentic Trust Framework</span>
           </div>
           {atfReport ? (
             <>
-              <div className="mt-2 grid grid-cols-2 gap-2 md:grid-cols-4">
-                <div className="rounded-md border border-[var(--ui-border)] bg-[hsl(var(--card)/0.9)] px-2 py-1.5">
-                  <p className="fx-muted">Coverage</p>
+              <div className="mt-3 grid grid-cols-2 gap-3 md:grid-cols-4">
+                <div className="rounded-[1rem] border border-[var(--ui-border)] bg-[hsl(var(--card)/0.94)] px-3 py-2.5">
+                  <p className="text-[0.72rem] font-medium text-[var(--fx-muted)]">Coverage</p>
                   <p className="mt-0.5 text-sm font-semibold text-[var(--foreground)]">{Math.round(atfReport.coverage_percent)}%</p>
                 </div>
-                <div className="rounded-md border border-[var(--ui-border)] bg-[hsl(var(--card)/0.9)] px-2 py-1.5">
-                  <p className="fx-muted">Maturity</p>
+                <div className="rounded-[1rem] border border-[var(--ui-border)] bg-[hsl(var(--card)/0.94)] px-3 py-2.5">
+                  <p className="text-[0.72rem] font-medium text-[var(--fx-muted)]">Maturity</p>
                   <p className="mt-0.5 text-sm font-semibold capitalize text-[var(--foreground)]">{atfReport.maturity_estimate}</p>
                 </div>
-                <div className="rounded-md border border-[var(--ui-border)] bg-[hsl(var(--card)/0.9)] px-2 py-1.5">
-                  <p className="fx-muted">Blocked (24h)</p>
+                <div className="rounded-[1rem] border border-[var(--ui-border)] bg-[hsl(var(--card)/0.94)] px-3 py-2.5">
+                  <p className="text-[0.72rem] font-medium text-[var(--fx-muted)]">Blocked (24h)</p>
                   <p className="mt-0.5 text-sm font-semibold text-[var(--foreground)]">{atfReport.evidence.audit_blocked_24h}</p>
                 </div>
-                <div className="rounded-md border border-[var(--ui-border)] bg-[hsl(var(--card)/0.9)] px-2 py-1.5">
-                  <p className="fx-muted">Errors (24h)</p>
+                <div className="rounded-[1rem] border border-[var(--ui-border)] bg-[hsl(var(--card)/0.94)] px-3 py-2.5">
+                  <p className="text-[0.72rem] font-medium text-[var(--fx-muted)]">Errors (24h)</p>
                   <p className="mt-0.5 text-sm font-semibold text-[var(--foreground)]">{atfReport.evidence.audit_error_24h}</p>
                 </div>
               </div>
 
-              <div className="mt-2 rounded-md border border-[var(--ui-border)] bg-[hsl(var(--muted)/0.24)] p-2">
-                <p className="fx-muted text-[11px] uppercase tracking-wide">Top current gaps</p>
+              <div className="mt-3 rounded-[1.1rem] border border-[var(--ui-border)] bg-[hsl(var(--muted)/0.24)] p-3">
+                <p className="text-[0.72rem] font-medium text-[var(--fx-muted)]">Top current gaps</p>
                 {atfTopGaps.length > 0 ? (
                   <ul className="mt-1 list-disc space-y-0.5 pl-4 text-xs leading-relaxed text-[var(--foreground)]">
                     {atfTopGaps.map((gap, index) => (
@@ -382,7 +350,7 @@ export function RunConversationConsole({ runId, run, events }: Props) {
         </div>
 
         <div className="grid min-h-[72vh] grid-cols-1 gap-3 xl:grid-cols-[1.08fr_1.42fr]">
-          <section className="fx-panel flex min-h-0 flex-col overflow-hidden p-0">
+          <section className="fx-panel flex min-h-0 flex-col overflow-hidden rounded-[1.5rem] p-0 shadow-[0_22px_56px_rgba(15,23,42,0.06)]">
             <div className="border-b border-[var(--ui-border)] px-3 py-3">
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <h2 className="text-sm font-semibold">Timeline</h2>
@@ -415,19 +383,19 @@ export function RunConversationConsole({ runId, run, events }: Props) {
                   placeholder="Search timeline (events, summaries, errors)..."
                   className="fx-field h-8 px-2 text-xs"
                 />
-                <div className="flex items-center gap-1 rounded-md border border-[var(--ui-border)] bg-[hsl(var(--card))] p-1">
+                <div className="flex items-center gap-1 rounded-full border border-[var(--ui-border)] bg-[hsl(var(--card))] p-1">
                   {(["all", "chat", "system", "errors"] as EventFilter[]).map((filterOption) => (
                     <button
                       key={filterOption}
                       type="button"
                       onClick={() => setEventFilter(filterOption)}
-                      className={`rounded px-2 py-1 text-[11px] ${eventFilter === filterOption ? "bg-[hsl(var(--primary)/0.18)] text-[var(--foreground)]" : "text-[hsl(var(--muted-foreground))]"}`}
+                      className={`rounded-full px-2.5 py-1 text-[11px] ${eventFilter === filterOption ? "bg-[hsl(var(--primary)/0.18)] text-[var(--foreground)]" : "text-[hsl(var(--muted-foreground))]"}`}
                     >
                       {filterOption.charAt(0).toUpperCase() + filterOption.slice(1)}
                     </button>
                   ))}
                 </div>
-                <label className="flex items-center gap-1 rounded-md border border-[var(--ui-border)] px-2 text-[11px] text-[hsl(var(--muted-foreground))]">
+                <label className="flex items-center gap-1 rounded-full border border-[var(--ui-border)] px-2.5 text-[11px] text-[hsl(var(--muted-foreground))]">
                   <input type="checkbox" checked={autoScroll} onChange={(event) => setAutoScroll(event.target.checked)} />
                   Auto-scroll
                 </label>
@@ -466,9 +434,9 @@ export function RunConversationConsole({ runId, run, events }: Props) {
 
                   if (!isChatTurn) {
                     return (
-                      <article key={event.id} className="group mx-auto w-full max-w-[880px] rounded-lg border border-[var(--ui-border)] bg-[hsl(var(--card)/0.72)] px-3 py-2">
+                      <article key={event.id} className="group mx-auto w-full max-w-[880px] rounded-[1.05rem] border border-[var(--ui-border)] bg-[hsl(var(--card)/0.8)] px-3.5 py-3 shadow-[0_10px_24px_rgba(15,23,42,0.04)]">
                         <div className="mb-1 flex items-center justify-between gap-2">
-                          <p className="text-[11px] font-semibold uppercase tracking-wide text-[hsl(var(--muted-foreground))]">
+                          <p className="text-[11px] font-medium tracking-[0.02em] text-[hsl(var(--muted-foreground))]">
                             {event.type.replace(/_/g, " ")}
                           </p>
                           <span className="fx-muted text-[11px] opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">{event.createdAt}</span>
@@ -487,7 +455,7 @@ export function RunConversationConsole({ runId, run, events }: Props) {
 
                   return (
                     <article key={event.id} className={`group mx-auto flex w-full max-w-[880px] ${containerClass}`}>
-                      <div className={`w-full max-w-[760px] rounded-2xl border px-3 py-2.5 shadow-sm ${bubbleClass}`}>
+                      <div className={`w-full max-w-[760px] rounded-[1.35rem] border px-3.5 py-3 shadow-sm ${bubbleClass}`}>
                         <div className="mb-1 flex items-center justify-between gap-2">
                           <p className="text-[11px] font-semibold text-[hsl(var(--muted-foreground))]">{roleLabel}</p>
                           <span className="fx-muted text-[11px] opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">{event.createdAt}</span>
@@ -500,13 +468,13 @@ export function RunConversationConsole({ runId, run, events }: Props) {
 
                             <div className="mt-2 space-y-2">
                               <div className="rounded-md border border-[var(--ui-border)] bg-[hsl(var(--card)/0.8)] p-2">
-                                <p className="fx-muted text-[10px] uppercase tracking-wide">Summary</p>
+                                <p className="fx-muted text-[10px] font-medium tracking-[0.02em]">Summary</p>
                                 <MarkdownBlock content={trace.reasoningSummary} className="mt-1" />
                               </div>
 
                               {reasoningSummaries.length > 0 ? (
                                 <div className="rounded-md border border-[var(--ui-border)] bg-[hsl(var(--card)/0.8)] p-2">
-                                  <p className="fx-muted text-[10px] uppercase tracking-wide">Model reasoning highlights (auto)</p>
+                                  <p className="fx-muted text-[10px] font-medium tracking-[0.02em]">Model reasoning highlights (auto)</p>
                                   <ul className="mt-1 list-disc space-y-1 pl-4 text-xs leading-relaxed text-[var(--foreground)]">
                                     {reasoningSummaries.map((item, index) => (
                                       <li key={`${event.id}-reasoning-${index}`}>{item}</li>
@@ -517,7 +485,7 @@ export function RunConversationConsole({ runId, run, events }: Props) {
 
                               {trace.actions.length > 0 ? (
                                 <div className="rounded-md border border-[var(--ui-border)] bg-[hsl(var(--card)/0.8)] p-2">
-                                  <p className="fx-muted text-[10px] uppercase tracking-wide">Actions</p>
+                                  <p className="fx-muted text-[10px] font-medium tracking-[0.02em]">Actions</p>
                                   <ul className="mt-1 list-disc space-y-1 pl-4 text-xs leading-relaxed text-[var(--foreground)]">
                                     {trace.actions.map((action, index) => (
                                       <li key={`${trace.agent}-${index}`}>{action}</li>
@@ -528,7 +496,7 @@ export function RunConversationConsole({ runId, run, events }: Props) {
 
                               {showTraceOutput ? (
                                 <div className="rounded-md border border-[var(--ui-border)] bg-[hsl(var(--card)/0.8)] p-2">
-                                  <p className="fx-muted text-[10px] uppercase tracking-wide">Full output</p>
+                                  <p className="fx-muted text-[10px] font-medium tracking-[0.02em]">Full output</p>
                                   <MarkdownBlock content={trace.output} className="mt-1" />
                                 </div>
                               ) : null}
@@ -543,15 +511,15 @@ export function RunConversationConsole({ runId, run, events }: Props) {
 
               {showTypingPlaceholder ? (
                 <article className="mx-auto flex w-full max-w-[880px] justify-start">
-                  <div className="w-full max-w-[760px] rounded-2xl border border-[var(--ui-border)] bg-[hsl(var(--card)/0.98)] px-3 py-2.5 shadow-sm">
+                  <div className="w-full max-w-[760px] rounded-[1.35rem] border border-[var(--ui-border)] bg-[hsl(var(--card)/0.98)] px-3.5 py-3">
                     <div className="mb-1 flex items-center justify-between gap-2">
                       <p className="text-[11px] font-semibold text-[hsl(var(--muted-foreground))]">Assistant</p>
                       <span className="fx-muted text-[11px]">streaming</span>
                     </div>
-                    <div className="inline-flex items-center gap-1.5 rounded-full border border-[var(--ui-border)] bg-[hsl(var(--muted)/0.45)] px-2 py-1">
-                      <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-[hsl(var(--muted-foreground))] [animation-delay:0ms]" />
-                      <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-[hsl(var(--muted-foreground))] [animation-delay:120ms]" />
-                      <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-[hsl(var(--muted-foreground))] [animation-delay:240ms]" />
+                    <div className="inline-flex items-center gap-1.5 border border-[var(--ui-border)] bg-[hsl(var(--muted)/0.45)] px-2 py-1">
+                      <span className="h-1.5 w-1.5 animate-pulse bg-[hsl(var(--muted-foreground))] [animation-delay:0ms]" />
+                      <span className="h-1.5 w-1.5 animate-pulse bg-[hsl(var(--muted-foreground))] [animation-delay:120ms]" />
+                      <span className="h-1.5 w-1.5 animate-pulse bg-[hsl(var(--muted-foreground))] [animation-delay:240ms]" />
                       <span className="ml-1 text-xs text-[hsl(var(--muted-foreground))]">Thinking…</span>
                     </div>
                   </div>
@@ -559,14 +527,14 @@ export function RunConversationConsole({ runId, run, events }: Props) {
               ) : null}
             </div>
 
-            <div className="sticky bottom-0 border-t border-[var(--ui-border)] bg-[hsl(var(--background)/0.86)] px-3 py-3 shadow-[0_-8px_24px_rgba(0,0,0,0.08)] backdrop-blur-md">
+            <div className="sticky bottom-0 border-t border-[var(--ui-border)] bg-[hsl(var(--background)/0.86)] px-3 py-3 backdrop-blur-md">
               <RunFollowupComposer runId={runId} recentContext={recentContext} />
             </div>
           </section>
 
           <section className="min-h-0 space-y-3">
-            <div className="fx-panel p-2">
-              <div className="mb-2 flex items-center gap-1 rounded-lg border border-[var(--ui-border)] bg-[hsl(var(--card))] p-1 text-xs">
+            <div className="fx-panel rounded-[1.5rem] p-3 shadow-[0_22px_56px_rgba(15,23,42,0.06)]">
+              <div className="mb-3 flex items-center gap-1 rounded-full border border-[var(--ui-border)] bg-[hsl(var(--card))] p-1 text-xs">
                 {([
                   ["graph", "Execution Graph"],
                   ["artifacts", "Artifacts"],
@@ -577,7 +545,7 @@ export function RunConversationConsole({ runId, run, events }: Props) {
                     key={tabKey}
                     type="button"
                     onClick={() => setRightPanelTab(tabKey)}
-                    className={`rounded px-2 py-1 ${rightPanelTab === tabKey ? "bg-[hsl(var(--primary)/0.18)] text-[var(--foreground)]" : "text-[hsl(var(--muted-foreground))]"}`}
+                    className={`rounded-full px-2.5 py-1 ${rightPanelTab === tabKey ? "bg-[hsl(var(--primary)/0.18)] text-[var(--foreground)]" : "text-[hsl(var(--muted-foreground))]"}`}
                   >
                     {label}
                   </button>
@@ -586,9 +554,9 @@ export function RunConversationConsole({ runId, run, events }: Props) {
 
               {rightPanelTab === "graph" ? (
                 <div>
-                  <div className="mb-2 flex items-center justify-between px-2 text-xs">
+                  <div className="mb-3 flex items-center justify-between px-2 text-xs">
                     <h2 className="font-semibold">Execution Graph</h2>
-                    <span className="fx-muted">
+                    <span className="fx-pill px-2.5 py-1 text-[0.72rem] font-medium text-[var(--fx-muted)]">
                       {usedAgentStudioAgent ? "Read-only snapshot • draggable nodes" : "Default chat agent fallback shown"}
                     </span>
                   </div>
@@ -604,7 +572,7 @@ export function RunConversationConsole({ runId, run, events }: Props) {
                   ) : (
                     <ul className="space-y-1.5 text-xs text-[var(--foreground)]">
                       {run.artifacts.map((artifact) => (
-                        <li key={artifact.id} className="flex items-center justify-between gap-2 border border-[var(--fx-border)] bg-[var(--fx-surface-elevated)] px-2 py-1.5">
+                        <li key={artifact.id} className="flex items-center justify-between gap-2 rounded-[1rem] border border-[var(--fx-border)] bg-[var(--fx-surface-elevated)] px-3 py-2">
                           <div className="min-w-0">
                             <p className="truncate font-medium text-[var(--foreground)]">{artifact.name}</p>
                             <p className="fx-muted truncate">{artifact.status} • v{artifact.version}</p>
@@ -622,7 +590,7 @@ export function RunConversationConsole({ runId, run, events }: Props) {
               {rightPanelTab === "approvals" ? (
                 <div className="p-2">
                   <h3 className="mb-2 text-sm font-semibold">Approvals</h3>
-                  <div className="mb-2 border border-[var(--fx-border)] bg-[var(--fx-surface-elevated)] p-2 text-xs">
+                  <div className="mb-2 rounded-[1rem] border border-[var(--fx-border)] bg-[var(--fx-surface-elevated)] p-3 text-xs">
                     <p className="font-semibold text-[var(--foreground)]">Pending approval target</p>
                     {approvals.required ? (
                       <p className="fx-muted mt-1">
@@ -661,7 +629,7 @@ export function RunConversationConsole({ runId, run, events }: Props) {
                         }}
                         className="space-y-1.5"
                       >
-                        <label htmlFor="approval-feedback" className="fx-muted block text-[11px] uppercase tracking-wide">
+                        <label htmlFor="approval-feedback" className="fx-muted block text-[11px] font-medium">
                           Feedback / requested edits
                         </label>
                         <textarea
@@ -686,7 +654,7 @@ export function RunConversationConsole({ runId, run, events }: Props) {
                   ) : (
                     <ul className="space-y-2">
                       {guardrailEvents.map((event) => (
-                        <li key={event.id} className="rounded-md border border-[var(--ui-border)] bg-[hsl(var(--card)/0.9)] p-2">
+                        <li key={event.id} className="rounded-[1rem] border border-[var(--ui-border)] bg-[hsl(var(--card)/0.9)] p-3">
                           <p className="text-xs font-semibold text-[var(--foreground)]">{event.title}</p>
                           <p className="fx-muted mt-0.5 text-[11px]">{event.createdAt}</p>
                           <MarkdownBlock content={event.summary} className="mt-1" />

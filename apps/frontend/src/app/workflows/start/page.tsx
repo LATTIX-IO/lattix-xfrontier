@@ -20,7 +20,7 @@ export default function WorkflowStartPage() {
     setStartingId(workflowId);
     setStartError(null);
     try {
-      const result = await createWorkflowRun({ workflow_definition_id: workflowId });
+      const result = await createWorkflowRun({ workflow_definition_id: workflowId, session_kind: "workflow" });
       setLastRunId(result.id);
     } catch {
       setStartError("Unable to start workflow run. Please try again after backend is healthy.");
