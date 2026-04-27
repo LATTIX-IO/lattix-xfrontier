@@ -1,18 +1,24 @@
 import "@testing-library/jest-dom/vitest";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const replaceMock = vi.fn();
 
 const {
   getOperatorSessionMock,
   getPlatformVersionStatusMock,
+  getWorkflowRunsMock,
+  getInboxMock,
   pathnameState,
+  searchParamsState,
 } = vi.hoisted(() => ({
   getOperatorSessionMock: vi.fn(),
   getPlatformVersionStatusMock: vi.fn(),
+  getWorkflowRunsMock: vi.fn(),
+  getInboxMock: vi.fn(),
   pathnameState: { current: "/inbox" },
+  searchParamsState: { current: new URLSearchParams() },
 }));
 
 vi.mock("next/link", () => ({
@@ -21,8 +27,10 @@ vi.mock("next/link", () => ({
 
 vi.mock("next/navigation", () => ({
   usePathname: () => pathnameState.current,
+  useSearchParams: () => searchParamsState.current,
   useRouter: () => ({
     replace: replaceMock,
+    refresh: vi.fn(),
   }),
 }));
 
@@ -33,6 +41,8 @@ vi.mock("@/components/api-status-banner", () => ({
 vi.mock("@/lib/api", () => ({
   getOperatorSession: getOperatorSessionMock,
   getPlatformVersionStatus: getPlatformVersionStatusMock,
+  getWorkflowRuns: getWorkflowRunsMock,
+  getInbox: getInboxMock,
 }));
 
 import { AppShell } from "@/components/app-shell";
@@ -101,6 +111,46 @@ const updateAvailableVersion = {
   summary: "Version 0.1.1 is available.",
 } as const;
 
+const userSidebarRuns = [
+  {
+    id: "run-1",
+    title: "Quarterly review",
+    status: "Done",
+    updatedAt: "2026-03-26T00:00:00Z",
+    progressLabel: "Completed",
+    kind: "workflow",
+  },
+] as const;
+
+const userSidebarInbox = [
+  {
+    id: "inbox-1",
+    runId: "run-1",
+    runName: "Quarterly review",
+    artifactType: "summary",
+    reason: "Needs approval",
+    queue: "Needs Approval",
+  },
+] as const;
+
+beforeEach(() => {
+  Object.defineProperty(window, "innerWidth", {
+    configurable: true,
+    writable: true,
+    value: 1280,
+  });
+  replaceMock.mockReset();
+  getOperatorSessionMock.mockReset();
+  getPlatformVersionStatusMock.mockReset();
+  getWorkflowRunsMock.mockReset();
+  getInboxMock.mockReset();
+  searchParamsState.current = new URLSearchParams();
+  pathnameState.current = "/inbox";
+
+  getWorkflowRunsMock.mockResolvedValue(userSidebarRuns);
+  getInboxMock.mockResolvedValue(userSidebarInbox);
+});
+
 describe("AppShell", () => {
   it("redirects unauthenticated users away from protected routes without rendering protected content", async () => {
     pathnameState.current = "/inbox";
@@ -150,8 +200,7 @@ describe("AppShell", () => {
 
     expect(await screen.findByText(/workflow studio/i)).toBeInTheDocument();
     expect(screen.getByRole("link", { name: /^settings$/i })).toHaveAttribute("href", "/builder/settings");
-    expect(screen.getByText(/platform version/i)).toBeInTheDocument();
-    expect(screen.getByText(/^v0\.1\.0$/i)).toBeInTheDocument();
+    expect(screen.getByText(/v0\.1\.0\s*→\s*v0\.1\.1/i)).toBeInTheDocument();
     expect(screen.getByText(/update available/i)).toBeInTheDocument();
     expect(screen.getByText(/lattix update/i)).toBeInTheDocument();
     expect(screen.getByText(/builder child/i)).toBeInTheDocument();
@@ -169,7 +218,7 @@ describe("AppShell", () => {
 
     render(<AppShell><div>user child</div></AppShell>);
 
-    expect(await screen.findByRole("link", { name: /^inbox$/i })).toHaveAttribute("href", "/inbox");
+    expect(await screen.findByRole("link", { name: /^tasks\s+1$/i })).toHaveAttribute("href", "/inbox");
     expect(screen.getByRole("link", { name: /^settings$/i })).toHaveAttribute("href", "/settings");
     expect(screen.getByText(/user child/i)).toBeInTheDocument();
   });
@@ -263,7 +312,7 @@ describe("AppShell", () => {
 
     render(<AppShell><div>user child</div></AppShell>);
 
-    expect(await screen.findByText(/update status is unavailable right now/i)).toBeInTheDocument();
+    expect(await screen.findByText(/status unavailable/i)).toBeInTheDocument();
     expect(screen.queryByText(/current build is up to date/i)).not.toBeInTheDocument();
   });
 });
