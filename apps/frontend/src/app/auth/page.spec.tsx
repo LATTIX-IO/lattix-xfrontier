@@ -111,7 +111,32 @@ describe("AuthPage", () => {
     expect(screen.getByRole("button", { name: /sign in with oidc provider/i })).toBeDisabled();
   });
 
-  it("disables interactive auth actions when redirect URLs do not match the configured issuer", async () => {
+  it("disables interactive auth actions when redirect URLs do not match the configured issuer and browser flow is unavailable", async () => {
+    getOperatorSessionMock.mockResolvedValue({
+      ...anonymousSession,
+      auth_mode: "oidc",
+      provider: "oidc",
+      oidc: {
+        configured: true,
+        issuer: "https://issuer.example.com",
+        audience: "",
+        provider: "oidc",
+        validation_error: "",
+        browser_flow_configured: false,
+        browser_flow_error: "",
+      },
+    });
+    process.env.FRONTIER_AUTH_OIDC_SIGNIN_URL = "https://evil.example.com/login";
+    process.env.FRONTIER_AUTH_OIDC_SIGNUP_URL = "https://issuer.example.com/signup";
+
+    render(await AuthPage());
+
+    expect(screen.getAllByText(/sign-in url must belong to the configured oidc issuer origin/i).length).toBeGreaterThan(0);
+    expect(screen.getByRole("button", { name: /sign in with oidc provider/i })).toBeDisabled();
+    expect(screen.getByRole("button", { name: /create account/i })).toBeDisabled();
+  });
+
+  it("offers browser sign-in when backend browser flow is configured even if redirect urls do not match", async () => {
     getOperatorSessionMock.mockResolvedValue({
       ...anonymousSession,
       auth_mode: "oidc",
@@ -127,13 +152,19 @@ describe("AuthPage", () => {
       },
     });
     process.env.FRONTIER_AUTH_OIDC_SIGNIN_URL = "https://evil.example.com/login";
-    process.env.FRONTIER_AUTH_OIDC_SIGNUP_URL = "https://issuer.example.com/signup";
+    process.env.FRONTIER_AUTH_OIDC_SIGNUP_URL = "";
 
     render(await AuthPage());
 
-    expect(screen.getAllByText(/sign-in url must belong to the configured oidc issuer origin/i).length).toBeGreaterThan(0);
-    expect(screen.getByRole("button", { name: /sign in with oidc provider/i })).toBeDisabled();
-    expect(screen.getByRole("button", { name: /create account/i })).toBeDisabled();
+    expect(screen.getByRole("link", { name: /sign in with oidc provider/i })).toHaveAttribute(
+      "href",
+      "/api/auth/oidc/start?intent=signin",
+    );
+    expect(screen.getByRole("link", { name: /create account/i })).toHaveAttribute(
+      "href",
+      "/api/auth/oidc/start?intent=signup",
+    );
+    expect(screen.getByText(/start browser sign-in and finish the callback flow in xfrontier/i)).toBeInTheDocument();
   });
 
   it("explains shared-token fallback when interactive login is disabled", async () => {

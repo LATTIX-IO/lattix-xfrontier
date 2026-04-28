@@ -94,6 +94,7 @@ function getAuthUiConfigFromSession(session: OperatorSession | null): AuthUiConf
   const clientId = (process.env.FRONTIER_AUTH_OIDC_CLIENT_ID ?? "").trim();
   const browserFlowConfigured = Boolean(session?.oidc?.browser_flow_configured);
   const browserFlowError = String(session?.oidc?.browser_flow_error ?? "").trim();
+  const sessionConfigured = Boolean(session?.oidc?.configured);
 
   const normalizedMode: AuthUiConfig["authMode"] = authMode === "oidc"
     ? "oidc"
@@ -115,14 +116,23 @@ function getAuthUiConfigFromSession(session: OperatorSession | null): AuthUiConf
     const backendValidationError = session?.oidc?.validation_error?.trim() ?? "";
     if (backendValidationError) {
       validationError = backendValidationError;
-    } else if (!issuerUrl) {
-      validationError = "OIDC issuer must be a valid absolute http(s) URL.";
-    } else if (!oidcRedirectMatchesIssuer(signinUrl, issuer)) {
-      validationError = "Sign-in URL must belong to the configured OIDC issuer origin.";
-    } else if (!oidcRedirectMatchesIssuer(signupUrl, issuer)) {
-      validationError = "Sign-up URL must belong to the configured OIDC issuer origin.";
+    } else if (!browserFlowConfigured) {
+      if (!issuerUrl) {
+        validationError = "OIDC issuer must be a valid absolute http(s) URL.";
+      } else if (!oidcRedirectMatchesIssuer(signinUrl, issuer)) {
+        validationError = "Sign-in URL must belong to the configured OIDC issuer origin.";
+      } else if (!oidcRedirectMatchesIssuer(signupUrl, issuer)) {
+        validationError = "Sign-up URL must belong to the configured OIDC issuer origin.";
+      }
     }
   }
+
+  const redirectFlowConfigured = Boolean(signinUrl && signupUrl && issuer)
+    && Boolean(sessionConfigured || Boolean(signinUrl && signupUrl && issuer))
+    && !validationError;
+  const isConfigured = normalizedMode === "oidc"
+    && !validationError
+    && (browserFlowConfigured || redirectFlowConfigured);
 
   return {
     authMode: normalizedMode,
@@ -134,10 +144,7 @@ function getAuthUiConfigFromSession(session: OperatorSession | null): AuthUiConf
     scopes,
     audience,
     clientId,
-    isConfigured: normalizedMode === "oidc"
-      && Boolean(signinUrl && signupUrl && issuer)
-      && Boolean(session?.oidc?.configured ?? Boolean(signinUrl && signupUrl && issuer))
-      && !validationError,
+    isConfigured,
     validationError,
     browserFlowConfigured,
     browserFlowError,

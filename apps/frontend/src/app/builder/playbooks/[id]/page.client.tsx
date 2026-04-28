@@ -81,8 +81,8 @@ export function PlaybookStudioClient({ playbookId, initialPlaybook, isNew }: Pro
     };
   }, []);
 
-  const activeNodes = persistedPlaybook?.graph_json?.nodes?.length ? persistedPlaybook.graph_json.nodes : defaultNodes;
-  const activeLinks = persistedPlaybook?.graph_json?.links?.length ? persistedPlaybook.graph_json.links : defaultLinks;
+  const activeNodes = persistedPlaybook?.graph_json?.nodes ?? defaultNodes;
+  const activeLinks = persistedPlaybook?.graph_json?.links ?? defaultLinks;
   const workflowIdOptions = useMemo(() => workflowDefinitions.map((workflow) => workflow.id), [workflowDefinitions]);
   const canvasEntityId = isNew ? "playbook-draft" : playbookId;
 

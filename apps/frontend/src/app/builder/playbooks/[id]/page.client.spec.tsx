@@ -29,6 +29,8 @@ vi.mock("next/dynamic", () => ({
   default: () => {
     return function MockStudioFullCanvas(props: {
       entityName: string;
+      initialNodes?: Array<{ id: string }>;
+      initialLinks?: Array<{ from: string; to: string }>;
       externalWidgetOptionOverrides?: { workflow?: { workflow_id?: string[] } };
       rightSidebarSlot?: ReactNode;
       onSave?: (graph: typeof saveGraph) => Promise<void>;
@@ -36,6 +38,8 @@ vi.mock("next/dynamic", () => ({
       return (
         <div data-testid="studio-full-canvas">
           <div data-testid="studio-entity-name">{props.entityName}</div>
+          <div data-testid="initial-node-count">{props.initialNodes?.length ?? -1}</div>
+          <div data-testid="initial-link-count">{props.initialLinks?.length ?? -1}</div>
           <div data-testid="workflow-options">{props.externalWidgetOptionOverrides?.workflow?.workflow_id?.join(",") ?? ""}</div>
           {props.rightSidebarSlot}
           <button type="button" onClick={() => void props.onSave?.(saveGraph)}>
@@ -114,6 +118,28 @@ describe("PlaybookStudioClient", () => {
     );
     await waitFor(() => expect(getPlaybookMock).toHaveBeenCalledWith("pb-1"));
     expect(routerReplaceSpy).not.toHaveBeenCalled();
+  });
+
+  it("preserves intentionally empty persisted graph arrays", async () => {
+    render(
+      <PlaybookStudioClient
+        playbookId="pb-1"
+        isNew={false}
+        initialPlaybook={{
+          id: "pb-1",
+          name: "Ops Escalation",
+          description: "Coordinate an escalation path.",
+          category: "operations",
+          status: "published",
+          metadata_json: {},
+          graph_json: { nodes: [], links: [] },
+        }}
+      />,
+    );
+
+    expect(await screen.findByDisplayValue("Ops Escalation")).toBeInTheDocument();
+    expect(screen.getByTestId("initial-node-count")).toHaveTextContent("0");
+    expect(screen.getByTestId("initial-link-count")).toHaveTextContent("0");
   });
 
   it("keeps a successful draft save even if the immediate playbook readback fails", async () => {

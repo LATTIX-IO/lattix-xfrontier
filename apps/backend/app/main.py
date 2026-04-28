@@ -3359,7 +3359,7 @@ def _heuristic_workflow_run_title(prompt_text: str, run_kind: str) -> str:
         }
         return labels.get(run_kind, "New workflow run")
 
-    cleaned = re.sub(r"^[\s\-:;,.\"'`]+|[\s\-:;,.\"'`]+$", "", cleaned)
+    cleaned = cleaned.strip(" -:;,.\"'`")
     lower = cleaned.lower()
     prefixes = (
         "please ",

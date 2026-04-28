@@ -21,6 +21,22 @@ vi.mock("reactflow", () => {
     positionAbsoluteY?: number;
   };
 
+  function applySelectionChanges<T extends { id: string; selected?: boolean }>(
+    changes: Array<{ id?: string; type?: string; selected?: boolean }>,
+    items: T[],
+  ): T[] {
+    return items.map((item) => {
+      const selectChange = changes.find((change) => change.type === "select" && change.id === item.id);
+      if (!selectChange) {
+        return item;
+      }
+      return {
+        ...item,
+        selected: Boolean(selectChange.selected),
+      };
+    });
+  }
+
   return {
     Background: () => <div data-testid="rf-background" />,
     Controls: ({ style }: { style?: React.CSSProperties }) => <div data-testid="rf-controls" style={style} />,
@@ -34,8 +50,8 @@ vi.mock("reactflow", () => {
     ReactFlowProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
     Handle: ({ id, type }: { id: string; type: string }) => <div data-testid={`handle-${type}-${id}`} />,
     addEdge: (edge: Record<string, unknown>, edges: Array<Record<string, unknown>>) => [...edges, edge],
-    applyEdgeChanges: (_changes: unknown, edges: Array<Record<string, unknown>>) => edges,
-    applyNodeChanges: (_changes: unknown, nodes: Array<Record<string, unknown>>) => nodes,
+    applyEdgeChanges: (changes: Array<{ id?: string; type?: string; selected?: boolean }>, edges: Array<Record<string, unknown>>) => applySelectionChanges(changes, edges),
+    applyNodeChanges: (changes: Array<{ id?: string; type?: string; selected?: boolean }>, nodes: Array<Record<string, unknown>>) => applySelectionChanges(changes, nodes),
     ReactFlow: (props: Record<string, unknown>) => {
       reactFlowPropsSpy(props);
       const nodeTypes = (props.nodeTypes ?? {}) as Record<string, React.ComponentType<MockNodeComponentProps>>;
@@ -62,7 +78,7 @@ vi.mock("reactflow", () => {
                 id={String(node.id)}
                 data={node.data}
                 type={node.type}
-                selected={false}
+                selected={Boolean(node.selected)}
                 dragging={false}
                 zIndex={0}
                 isConnectable
@@ -73,6 +89,24 @@ vi.mock("reactflow", () => {
               />
             );
           })}
+          <button
+            type="button"
+            onClick={() => {
+              const onNodesChange = props.onNodesChange as undefined | ((changes: Array<Record<string, unknown>>) => void);
+              onNodesChange?.([{ id: "run-trigger", type: "select", selected: true }]);
+            }}
+          >
+            select run-trigger
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              const onEdgesChange = props.onEdgesChange as undefined | ((changes: Array<Record<string, unknown>>) => void);
+              onEdgesChange?.([{ id: "run-trigger:out->run-agent:in:0", type: "select", selected: true }]);
+            }}
+          >
+            select first edge
+          </button>
           <button
             type="button"
             onClick={() => {
@@ -361,6 +395,31 @@ describe("ReactFlowCanvas", () => {
           expect.objectContaining({ source: "run-trigger", target: "run-agent" }),
         ]),
       );
+    });
+  });
+
+  it("preserves read-only selection changes in the rendered graph state", async () => {
+    const readOnlyNodes: GraphNode[] = [
+      { id: "run-trigger", title: "Run Trigger", type: "frontier/trigger", x: 80, y: 120 },
+      { id: "run-agent", title: "Agent", type: "frontier/agent", x: 360, y: 120 },
+    ];
+    const readOnlyLinks: GraphLink[] = [
+      { from: "run-trigger", to: "run-agent", from_port: "out", to_port: "in" },
+    ];
+
+    render(<ReactFlowCanvas nodes={readOnlyNodes} links={readOnlyLinks} readOnly />);
+
+    fireEvent.click(screen.getByRole("button", { name: /select run-trigger/i }));
+    fireEvent.click(screen.getByRole("button", { name: /select first edge/i }));
+
+    await waitFor(() => {
+      const latestProps = reactFlowPropsSpy.mock.calls.at(-1)?.[0] as {
+        nodes?: Array<{ id: string; selected?: boolean }>;
+        edges?: Array<{ id: string; selected?: boolean }>;
+      };
+
+      expect(latestProps.nodes?.find((node) => node.id === "run-trigger")?.selected).toBe(true);
+      expect(latestProps.edges?.find((edge) => edge.id === "run-trigger:out->run-agent:in:0")?.selected).toBe(true);
     });
   });
 });

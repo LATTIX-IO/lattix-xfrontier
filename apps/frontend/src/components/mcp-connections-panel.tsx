@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
 import {
   approveMcpConnection,
@@ -55,6 +55,7 @@ function starterAuthLabel(authType: MCPStarterTemplate["auth_type"]): string {
 export function McpConnectionsPanel() {
   const [connections, setConnections] = useState<MCPConnectionDefinition[]>([]);
   const [connectionsLoading, setConnectionsLoading] = useState(true);
+  const [connectionsError, setConnectionsError] = useState("");
   const [starterTemplates, setStarterTemplates] = useState<MCPStarterTemplate[]>([]);
   const [starterTemplatesLoading, setStarterTemplatesLoading] = useState(true);
   const [starterCatalogError, setStarterCatalogError] = useState("");
@@ -88,7 +89,7 @@ export function McpConnectionsPanel() {
     [starterTemplates],
   );
 
-  function applyStarterTemplate(template: MCPStarterTemplate): void {
+  const applyStarterTemplate = useCallback((template: MCPStarterTemplate): void => {
     setEditingId(null);
     setSelectedStarterId(template.id);
     setName(template.name);
@@ -102,7 +103,7 @@ export function McpConnectionsPanel() {
     setDataAccess(formatLineList(template.data_access));
     setEgressAllowlist(formatLineList(template.egress_allowlist));
     setStatusMessage(`${template.name} MCP starter loaded.`);
-  }
+  }, []);
 
   function resetForm(nextStarterId?: string): void {
     const fallbackStarter = starterTemplates.find((item) => item.id === (nextStarterId ?? selectedStarterId)) ?? starterTemplates[0] ?? null;
@@ -142,9 +143,12 @@ export function McpConnectionsPanel() {
 
   async function refreshConnections(): Promise<void> {
     setConnectionsLoading(true);
+    setConnectionsError("");
     try {
       const nextConnections = await getMcpConnections();
       setConnections(nextConnections);
+    } catch (error) {
+      setConnectionsError(error instanceof Error ? error.message : "Unable to load staged MCP connections.");
     } finally {
       setConnectionsLoading(false);
     }
@@ -166,9 +170,6 @@ export function McpConnectionsPanel() {
           return;
         }
         setStarterTemplates(templates);
-        if (!selectedStarterId && templates[0]) {
-          applyStarterTemplate(templates[0]);
-        }
       } catch (error) {
         if (!cancelled) {
           setStarterCatalogError(error instanceof Error ? error.message : "Unable to load MCP starter catalog.");
@@ -186,6 +187,14 @@ export function McpConnectionsPanel() {
       cancelled = true;
     };
   }, []);
+
+  useEffect(() => {
+    const defaultStarter = starterTemplates[0];
+    if (!defaultStarter || selectedStarterId || editingId !== null) {
+      return;
+    }
+    applyStarterTemplate(defaultStarter);
+  }, [applyStarterTemplate, editingId, selectedStarterId, starterTemplates]);
 
   async function handleSave() {
     setStatusMessage("");
@@ -526,6 +535,10 @@ export function McpConnectionsPanel() {
             {connectionsLoading ? (
               <tr>
                 <td className="px-3 py-3 text-xs text-[var(--foreground)]" colSpan={8}>Loading staged MCP connections...</td>
+              </tr>
+            ) : connectionsError ? (
+              <tr>
+                <td className="px-3 py-3 text-xs text-[var(--foreground)]" colSpan={8}>{connectionsError}</td>
               </tr>
             ) : connections.length === 0 ? (
               <tr>

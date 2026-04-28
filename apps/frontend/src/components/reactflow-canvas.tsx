@@ -653,6 +653,8 @@ function ReactFlowCanvasImpl({
 
   const [rfNodes, setRfNodes] = useState<Node<FrontierNodeData>[]>(() => nodes.map(toCanvasNode));
   const [rfEdges, setRfEdges] = useState<Edge[]>(() => buildCanvasEdges(nodes.map(toCanvasNode), links));
+  const [readonlySelectedNodeIds, setReadonlySelectedNodeIds] = useState<string[]>([]);
+  const [readonlySelectedEdgeIds, setReadonlySelectedEdgeIds] = useState<string[]>([]);
 
   useEffect(() => {
     if (!readOnly) {
@@ -789,19 +791,38 @@ function ReactFlowCanvasImpl({
     }
   }, [rfEdges]);
 
+  const activeRfNodes = useMemo(() => {
+    if (!readOnly) {
+      return rfNodes;
+    }
+    const selectedNodeIds = new Set(readonlySelectedNodeIds);
+    return readonlyNodes.map((node) => ({
+      ...node,
+      selected: selectedNodeIds.has(node.id) || Boolean(node.selected),
+    }));
+  }, [readOnly, readonlyNodes, readonlySelectedNodeIds, rfNodes]);
+
+  const activeRfEdges = useMemo(() => {
+    if (!readOnly) {
+      return rfEdges;
+    }
+    const selectedEdgeIds = new Set(readonlySelectedEdgeIds);
+    return readonlyEdges.map((edge) => ({
+      ...edge,
+      selected: selectedEdgeIds.has(edge.id) || Boolean(edge.selected),
+    }));
+  }, [readOnly, readonlyEdges, readonlySelectedEdgeIds, rfEdges]);
+
   const renderedEdges = useMemo(
     () =>
-      (readOnly ? readonlyEdges : rfEdges).map((edge) => ({
+      activeRfEdges.map((edge) => ({
         ...edge,
         type: normalizedEdgeType,
         animated: edgeAnimated,
         style: edgeVisualStyle,
       })),
-    [edgeAnimated, edgeVisualStyle, normalizedEdgeType, readOnly, readonlyEdges, rfEdges],
+    [activeRfEdges, edgeAnimated, edgeVisualStyle, normalizedEdgeType],
   );
-
-  const activeRfNodes = readOnly ? readonlyNodes : rfNodes;
-  const activeRfEdges = readOnly ? readonlyEdges : rfEdges;
 
   const serializeGraph = useCallback((): { nodes: GraphNode[]; links: GraphLink[] } => {
     const graphNodes: GraphNode[] = activeRfNodes.map((node) => ({
@@ -863,14 +884,56 @@ function ReactFlowCanvasImpl({
 
   const onNodesChange = useCallback((changes: NodeChange[]) => {
     const allowedChanges = readOnly ? changes.filter((change) => change.type === "select") : changes;
+    if (allowedChanges.length === 0) {
+      return;
+    }
+
+    if (readOnly) {
+      setReadonlySelectedNodeIds((previous) => {
+        const next = new Set(previous);
+        for (const change of allowedChanges) {
+          if (change.type !== "select" || !change.id) {
+            continue;
+          }
+          if (change.selected) {
+            next.add(change.id);
+          } else {
+            next.delete(change.id);
+          }
+        }
+        return Array.from(next);
+      });
+      return;
+    }
+
     setRfNodes((previous) => applyNodeChanges(allowedChanges, previous));
   }, [readOnly]);
 
   const onEdgesChange = useCallback((changes: EdgeChange[]) => {
-    if (readOnly) {
+    const allowedChanges = readOnly ? changes.filter((change) => change.type === "select") : changes;
+    if (allowedChanges.length === 0) {
       return;
     }
-    setRfEdges((previous) => applyEdgeChanges(changes, previous));
+
+    if (readOnly) {
+      setReadonlySelectedEdgeIds((previous) => {
+        const next = new Set(previous);
+        for (const change of allowedChanges) {
+          if (change.type !== "select" || !change.id) {
+            continue;
+          }
+          if (change.selected) {
+            next.add(change.id);
+          } else {
+            next.delete(change.id);
+          }
+        }
+        return Array.from(next);
+      });
+      return;
+    }
+
+    setRfEdges((previous) => applyEdgeChanges(allowedChanges, previous));
   }, [readOnly]);
 
   const isConnectionValid = useCallback(

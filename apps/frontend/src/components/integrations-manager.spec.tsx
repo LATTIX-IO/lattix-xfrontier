@@ -480,9 +480,10 @@ describe("IntegrationsManager", () => {
     render(<IntegrationsManager />);
 
     await screen.findByText(/saved staged mcp connections/i);
+    await screen.findByText("http://localhost:7071/mcp/github");
     fireEvent.click(screen.getByRole("button", { name: /^Edit$/i }));
 
-    expect(screen.getByText(/leave blank to keep the existing server-side secret path/i)).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: /update mcp connection/i })).toBeInTheDocument();
     fireEvent.change(screen.getByLabelText(/^MCP server URL$/i), { target: { value: "http://localhost:7171/mcp/github" } });
     fireEvent.click(screen.getByRole("button", { name: /update mcp connection/i }));
 

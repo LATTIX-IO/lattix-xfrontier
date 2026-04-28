@@ -703,6 +703,16 @@ def test_clean_inbox_prompt_strips_leading_agent_mentions() -> None:
     assert main_module._clean_inbox_prompt("No mentions here") == "No mentions here"
 
 
+def test_heuristic_workflow_run_title_trims_edge_punctuation_without_regex_backtracking() -> None:
+    assert (
+        main_module._heuristic_workflow_run_title(
+            '  ::: "Please review the rollout plan," :::  ', "workflow"
+        )
+        == "review the rollout plan"
+    )
+    assert main_module._heuristic_workflow_run_title("   ", "chat") == "New conversation"
+
+
 def test_truncate_event_summary_reports_observability_metadata() -> None:
     summary, metadata = main_module._truncate_text_with_metadata("x" * 705, max_chars=700)
 
