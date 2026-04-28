@@ -102,6 +102,18 @@ function resolvePublishedRevisionIdAtRevision(
   return publishedRevisionId;
 }
 
+function determinePublishedRevisionAfterRollback(
+  revisions: DefinitionRevisionSummary[],
+  restoredRevisionId: string,
+  status: string,
+): string | null {
+  if (revisions.length > 0) {
+    return resolvePublishedRevisionIdAtRevision(revisions, restoredRevisionId);
+  }
+
+  return status === "published" ? restoredRevisionId : null;
+}
+
 function StatusBadge({ label, tone }: { label: string; tone: "default" | "success" | "info" }) {
   const className = tone === "success"
     ? "border-[color-mix(in_srgb,var(--fx-success)_42%,var(--ui-border))] bg-[color-mix(in_srgb,var(--fx-success)_14%,transparent)]"
@@ -163,40 +175,50 @@ function ReleaseSection({
     const key = entityKey(entityType, item.id);
     const targetRevisionId = revisionId ?? item.published_revision_id ?? null;
     setActionKey(`${key}:activate:${targetRevisionId ?? "published"}`);
+    let shouldRefresh = false;
     try {
       const response = await activationActions[entityType](item.id, revisionId ? { revision_id: revisionId } : {});
       updateLocalItem(key, {
-        active_revision_id: response.active_revision.id ?? targetRevisionId,
+        active_revision_id: response.active_revision.id,
       });
       addToast("success", `${entityLabels[entityType]} runtime revision activated.`);
       await loadVersions(item, { toggle: false });
-      setActionKey(null);
-      router.refresh();
+      shouldRefresh = true;
     } catch (error) {
       addToast("error", error instanceof Error ? error.message : `Unable to activate ${entityLabels[entityType].toLowerCase()} revision.`);
+    } finally {
       setActionKey(null);
+      if (shouldRefresh) {
+        router.refresh();
+      }
     }
   }
 
   async function rollbackRevision(item: ReleaseItem, revisionId: string) {
     const key = entityKey(entityType, item.id);
     setActionKey(`${key}:rollback:${revisionId}`);
+    let shouldRefresh = false;
     try {
       const response = await rollbackActions[entityType](item.id, { revision_id: revisionId });
       updateLocalItem(key, {
         version: response.version,
         status: response.status,
-        published_revision_id:
-          resolvePublishedRevisionIdAtRevision(versionsByKey[key] ?? [], revisionId)
-          ?? (response.status === "published" ? response.restored_from.id : null),
+        published_revision_id: determinePublishedRevisionAfterRollback(
+          versionsByKey[key] ?? [],
+          response.restored_from.id,
+          response.status,
+        ),
       });
       addToast("success", `${entityLabels[entityType]} restored from the selected revision.`);
       await loadVersions(item, { toggle: false });
-      setActionKey(null);
-      router.refresh();
+      shouldRefresh = true;
     } catch (error) {
       addToast("error", error instanceof Error ? error.message : `Unable to restore ${entityLabels[entityType].toLowerCase()} revision.`);
+    } finally {
       setActionKey(null);
+      if (shouldRefresh) {
+        router.refresh();
+      }
     }
   }
 
