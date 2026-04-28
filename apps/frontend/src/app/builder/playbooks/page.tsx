@@ -1,96 +1,99 @@
-"use client";
+import Link from "next/link";
+import { BuilderLibraryActions } from "@/components/builder-library-actions";
+import { BuilderLibraryStatusBadges } from "@/components/builder-library-status-badges";
+import { getPlaybooks } from "@/lib/api";
 
-import { useEffect, useState } from "react";
-import { useRouter } from "next/navigation";
-import {
-  getPlaybooks,
-  instantiatePlaybook,
-} from "@/lib/api";
-import type { PlaybookDefinition } from "@/types/frontier";
+type BuilderPlaybooksPageProps = {
+  searchParams?: Promise<{ view?: string }>;
+};
 
-export default function PlaybooksPage() {
-  const router = useRouter();
-  const [playbooks, setPlaybooks] = useState<PlaybookDefinition[]>([]);
-  const [busyKey, setBusyKey] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    let cancelled = false;
-
-    async function load() {
-      try {
-        const playbookData = await getPlaybooks();
-        if (cancelled) {
-          return;
-        }
-        setPlaybooks(playbookData);
-      } catch {
-        if (!cancelled) {
-          setError("Unable to load playbooks.");
-        }
-      }
-    }
-
-    void load();
-
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  async function handleCreateFromPlaybook(playbook: PlaybookDefinition) {
-    setBusyKey(`playbook:${playbook.id}`);
-    setError(null);
-    try {
-      const created = await instantiatePlaybook(playbook.id, {
-        name: `${playbook.name} Instance`,
-      });
-      router.push(`/builder/workflows/${created.id}`);
-    } catch {
-      setError(`Failed to instantiate playbook ${playbook.name}.`);
-    } finally {
-      setBusyKey(null);
-    }
-  }
+export default async function BuilderPlaybooksPage({ searchParams }: BuilderPlaybooksPageProps) {
+  const playbooks = await getPlaybooks();
+  const resolvedSearchParams = await searchParams;
+  const view = resolvedSearchParams?.view === "archived" ? "archived" : "library";
+  const playbookCounts = {
+    draft: playbooks.filter((playbook) => playbook.status === "draft").length,
+    published: playbooks.filter((playbook) => playbook.status === "published").length,
+    archived: playbooks.filter((playbook) => playbook.status === "archived").length,
+  };
+  const visiblePlaybooks = playbooks.filter((playbook) =>
+    view === "archived" ? playbook.status === "archived" : playbook.status !== "archived",
+  );
 
   return (
-    <section className="space-y-6">
-      <header>
-        <h1 className="text-2xl font-semibold">Playbooks</h1>
-        <p className="fx-muted">Playbooks are collaborations of workflows designed to achieve high-level outcomes.</p>
+    <section className="space-y-4">
+      <header className="flex flex-wrap items-start justify-between gap-4">
+        <div>
+          <h1 className="text-2xl font-semibold">Playbooks</h1>
+          <p className="fx-muted">Playbooks orchestrate multiple workflows into larger operating motions.</p>
+          <BuilderLibraryStatusBadges
+            counts={[
+              { label: "Draft", count: playbookCounts.draft },
+              { label: "Published", count: playbookCounts.published },
+              { label: "Archived", count: playbookCounts.archived },
+            ]}
+          />
+        </div>
+        <Link className="fx-btn-secondary px-4 py-2 text-sm font-medium" href="/builder/playbooks/new">
+          New Playbook
+        </Link>
       </header>
 
-      {error && (
-        <div className="border border-[#6b1f2a] bg-[#2f1a21] p-3 text-sm text-[#ffb8c4]">
-          {error}
-        </div>
-      )}
+      <div className="flex flex-wrap items-center gap-2 text-sm">
+        <Link
+          href="/builder/playbooks"
+          className={view === "library" ? "fx-btn-secondary px-3 py-1.5 font-medium" : "fx-btn-ghost px-3 py-1.5 font-medium"}
+        >
+          Library
+        </Link>
+        <Link
+          href="/builder/playbooks?view=archived"
+          className={view === "archived" ? "fx-btn-secondary px-3 py-1.5 font-medium" : "fx-btn-ghost px-3 py-1.5 font-medium"}
+        >
+          Archived
+        </Link>
+        <p className="fx-muted ml-auto text-xs uppercase tracking-[0.12em]">{visiblePlaybooks.length} shown</p>
+      </div>
 
-      <div className="grid gap-4">
-        <article className="fx-panel p-4">
-          <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide fx-muted">Available Playbooks</h2>
-          <ul className="space-y-2 text-sm">
-            {playbooks.map((playbook) => (
-              <li key={playbook.id} className="border border-[var(--fx-border)] bg-[var(--fx-surface-elevated)] p-3">
-                <div className="flex items-start justify-between gap-3">
-                  <div>
-                    <div className="font-semibold text-[var(--foreground)]">{playbook.name}</div>
-                    <div className="fx-muted">{playbook.description}</div>
-                    <div className="mt-1 text-xs fx-muted">category={playbook.category} · status={playbook.status}</div>
-                  </div>
-                  <button
-                    className="fx-btn-secondary px-2 py-1 text-xs"
-                    disabled={busyKey === `playbook:${playbook.id}` || playbook.status !== "active"}
-                    onClick={() => void handleCreateFromPlaybook(playbook)}
-                  >
-                    {busyKey === `playbook:${playbook.id}` ? "Creating..." : "Launch Playbook"}
-                  </button>
-                </div>
-              </li>
-            ))}
-            {playbooks.length === 0 && <li className="fx-muted">No playbooks available.</li>}
-          </ul>
-        </article>
+      <div className="fx-panel overflow-hidden">
+        <table className="w-full text-sm">
+          <thead className="fx-table-head">
+            <tr>
+              <th className="px-3 py-2 text-left">Playbook</th>
+              <th className="px-3 py-2 text-left">Category</th>
+              <th className="px-3 py-2 text-left">Status</th>
+              <th className="px-3 py-2 text-left">Description</th>
+              <th className="px-3 py-2 text-right">Action</th>
+            </tr>
+          </thead>
+          <tbody>
+            {visiblePlaybooks.length === 0 ? (
+              <tr className="border-t border-[var(--fx-border)]">
+                <td colSpan={5} className="fx-muted px-3 py-6 text-center">
+                  {view === "archived" ? "No archived playbooks." : "No playbooks available."}
+                </td>
+              </tr>
+            ) : (
+              visiblePlaybooks.map((playbook) => (
+                <tr key={playbook.id} className="border-t border-[var(--fx-border)]">
+                  <td className="px-3 py-2 text-[var(--foreground)]">{playbook.name}</td>
+                  <td className="px-3 py-2 text-[var(--foreground)]">{playbook.category}</td>
+                  <td className="px-3 py-2 text-[var(--foreground)]">{playbook.status}</td>
+                  <td className="fx-muted px-3 py-2">{playbook.description}</td>
+                  <td className="px-3 py-2 text-right">
+                    <BuilderLibraryActions
+                      entityType="playbook"
+                      entityId={playbook.id}
+                      entityName={playbook.name}
+                      openHref={`/builder/playbooks/${playbook.id}`}
+                      status={playbook.status}
+                    />
+                  </td>
+                </tr>
+              ))
+            )}
+          </tbody>
+        </table>
       </div>
     </section>
   );

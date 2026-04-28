@@ -14,26 +14,26 @@ export function ModeSwitch({
 
   return (
     <div
-      className="inline-flex items-center gap-0.5 rounded-md border border-[var(--ui-border)] bg-[hsl(var(--muted)/0.45)] p-0.5"
+      className="inline-flex items-center gap-0.5 rounded-[12px] border border-[var(--ui-border)] bg-[color-mix(in_srgb,hsl(var(--muted))_70%,white_30%)] p-0.5 shadow-[var(--fx-shadow-soft)]"
     >
       <Link
         href="/inbox"
-        className={`rounded-[calc(var(--radius)-3px)] px-2.5 py-1 text-[11px] font-medium no-underline transition ${
+        className={`rounded-[10px] px-3 py-1.5 text-[11px] font-medium no-underline transition ${
           !inBuilder
-            ? "bg-[hsl(var(--card))] text-[hsl(var(--foreground))] shadow-sm border border-[var(--ui-border)]"
+            ? "bg-[hsl(var(--card))] text-[hsl(var(--foreground))] border border-[var(--ui-border)]"
             : "border border-transparent text-[var(--fx-muted)] hover:text-[hsl(var(--foreground))] hover:bg-[var(--fx-nav-hover)]"
         }`}
       >
-        User Mode
+        User
       </Link>
       <Link
         href="/builder/workflows"
         aria-disabled={!canAccessBuilder}
-        className={`rounded-[calc(var(--radius)-3px)] px-2.5 py-1 text-[11px] font-medium no-underline transition ${
+        className={`rounded-[10px] px-3 py-1.5 text-[11px] font-medium no-underline transition ${
           !canAccessBuilder
             ? "cursor-not-allowed border border-transparent text-[var(--fx-muted)] opacity-70"
             : inBuilder
-              ? "bg-[hsl(var(--card))] text-[hsl(var(--foreground))] shadow-sm border border-[var(--ui-border)]"
+              ? "bg-[hsl(var(--card))] text-[hsl(var(--foreground))] border border-[var(--ui-border)]"
               : "border border-transparent text-[var(--fx-muted)] hover:text-[hsl(var(--foreground))] hover:bg-[var(--fx-nav-hover)]"
         }`}
         title={canAccessBuilder ? "Switch to builder mode" : "Builder mode requires a builder-capable identity."}
@@ -43,7 +43,7 @@ export function ModeSwitch({
           }
         }}
       >
-        Builder Mode
+        Builder
       </Link>
     </div>
   );

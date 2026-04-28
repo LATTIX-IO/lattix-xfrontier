@@ -2,17 +2,22 @@ from __future__ import annotations
 
 import json
 import os
+import logging
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator
 from uuid import uuid4
 
+LOGGER = logging.getLogger(__name__)
+PSYCOPG_IMPORT_ERROR: str | None = None
+
 try:
     import psycopg
     from psycopg import sql as psycopg_sql
-except Exception:  # pragma: no cover - optional dependency in some local test paths
+except Exception as exc:  # pragma: no cover - optional dependency in some local test paths
     psycopg = None
     psycopg_sql = None
+    PSYCOPG_IMPORT_ERROR = f"{type(exc).__name__}: {exc}"
 
 try:
     import redis
@@ -77,13 +82,14 @@ class _BasePostgresService:
         self.dsn = str(dsn or "").strip()
         self.enabled = bool(self.dsn) and psycopg is not None
         self._initialized = False
+        self.import_error = PSYCOPG_IMPORT_ERROR
 
     @contextmanager
     def _connect(self) -> Iterator[Any]:
         if not self.enabled:
             raise RuntimeError("Postgres service is not enabled")
         assert psycopg is not None
-        with psycopg.connect(self.dsn, autocommit=True) as connection:
+        with psycopg.connect(self.dsn, autocommit=True, connect_timeout=5) as connection:
             yield connection
 
     def healthcheck(self) -> bool:
@@ -97,6 +103,15 @@ class _BasePostgresService:
             return bool(row and row[0] == 1)
         except Exception:  # noqa: BLE001
             return False
+
+    def status(self) -> tuple[str, str]:
+        if not self.dsn:
+            return "disabled", "POSTGRES_DSN is not configured"
+        if psycopg is None:
+            return "degraded", self.import_error or "psycopg is unavailable"
+        if self.healthcheck():
+            return "connected", ""
+        return "degraded", "Postgres connection healthcheck failed"
 
 
 class PostgresStateStore(_BasePostgresService):
@@ -1094,6 +1109,217 @@ class Neo4jRunGraph:
                     )
         except Exception:  # noqa: BLE001
             return
+
+    def project_causal_assembly(self, *, projection: dict[str, Any]) -> bool:
+        if not self.enabled or self._driver is None:
+            return False
+
+        assembly = (
+            projection.get("assembly") if isinstance(projection.get("assembly"), dict) else {}
+        )
+        if not assembly:
+            return False
+
+        assembly_id = str(assembly.get("assembly_id") or assembly.get("id") or "").strip()
+        if not assembly_id:
+            return False
+        assembly_graph_id = str(assembly.get("id") or f"causal-assembly:{assembly_id}").strip()
+
+        columns = [item for item in projection.get("columns", []) if isinstance(item, dict)]
+        belief_snapshots = [
+            item for item in projection.get("belief_snapshots", []) if isinstance(item, dict)
+        ]
+        beliefs = [item for item in projection.get("beliefs", []) if isinstance(item, dict)]
+        confidence_samples = [
+            item for item in projection.get("confidence_samples", []) if isinstance(item, dict)
+        ]
+        outcomes = [item for item in projection.get("outcomes", []) if isinstance(item, dict)]
+        support_edges = [
+            item for item in projection.get("support_edges", []) if isinstance(item, dict)
+        ]
+        dissent_edges = [
+            item for item in projection.get("dissent_edges", []) if isinstance(item, dict)
+        ]
+
+        try:
+            with self._driver.session() as session:
+                tx = session.begin_transaction()
+                try:
+                    tx.run(
+                        """
+                        MATCH (assembly:CausalAssembly {assembly_id: $assembly_id})
+                        OPTIONAL MATCH path = (assembly)-[*0..4]->(node)
+                        WITH [item IN collect(DISTINCT node) WHERE item IS NOT NULL] AS nodes
+                        UNWIND nodes AS node
+                        DETACH DELETE node
+                        """,
+                        {"assembly_id": assembly_id},
+                    )
+
+                    tx.run(
+                        """
+                        MERGE (assembly:CausalAssembly {assembly_id: $assembly_id})
+                        SET assembly.id = $assembly_graph_id,
+                            assembly.updated_at = $updated_at,
+                            assembly.column_count = $column_count,
+                            assembly.belief_snapshot_count = $belief_snapshot_count,
+                            assembly.belief_count = $belief_count,
+                            assembly.confidence_sample_count = $confidence_sample_count,
+                            assembly.outcome_count = $outcome_count,
+                            assembly.projected_at = datetime()
+                        """,
+                        {
+                            "assembly_id": assembly_id,
+                            "assembly_graph_id": assembly_graph_id,
+                            "updated_at": float(assembly.get("updated_at") or 0.0),
+                            "column_count": int(assembly.get("column_count") or 0),
+                            "belief_snapshot_count": int(
+                                assembly.get("belief_snapshot_count") or 0
+                            ),
+                            "belief_count": int(assembly.get("belief_count") or 0),
+                            "confidence_sample_count": int(
+                                assembly.get("confidence_sample_count") or 0
+                            ),
+                            "outcome_count": int(assembly.get("outcome_count") or 0),
+                        },
+                    )
+
+                    if columns:
+                        tx.run(
+                            """
+                        UNWIND $columns AS column
+                        MERGE (assembly:CausalAssembly {assembly_id: $assembly_id})
+                        MERGE (node:CausalColumn {id: column.id})
+                        SET node.assembly_id = column.assembly_id,
+                            node.column_id = column.column_id,
+                            node.kind = column.kind,
+                            node.confidence = column.confidence,
+                            node.last_updated = column.last_updated,
+                            node.evidence_refs = column.evidence_refs,
+                            node.adaptation_metrics_json = column.adaptation_metrics_json,
+                            node.belief_count = column.belief_count,
+                            node.projected_at = datetime()
+                        MERGE (assembly)-[rel:HAS_COLUMN]->(node)
+                        SET rel.updated_at = datetime()
+                        """,
+                            {"assembly_id": assembly_id, "columns": columns},
+                        )
+
+                    if belief_snapshots:
+                        tx.run(
+                            """
+                        UNWIND $belief_snapshots AS snapshot
+                        MATCH (column:CausalColumn {id: snapshot.column_node_id})
+                        MERGE (node:CausalBeliefSnapshot {id: snapshot.id})
+                        SET node.assembly_id = snapshot.assembly_id,
+                            node.column_id = snapshot.column_id,
+                            node.recorded_at = snapshot.recorded_at,
+                            node.confidence = snapshot.confidence,
+                            node.evidence_refs = snapshot.evidence_refs,
+                            node.cause_json = snapshot.cause_json,
+                            node.belief_count = snapshot.belief_count,
+                            node.projected_at = datetime()
+                        MERGE (column)-[rel:HAS_BELIEF_SNAPSHOT]->(node)
+                        SET rel.updated_at = datetime()
+                        """,
+                            {"belief_snapshots": belief_snapshots},
+                        )
+
+                    if beliefs:
+                        tx.run(
+                            """
+                        UNWIND $beliefs AS belief
+                        MATCH (snapshot:CausalBeliefSnapshot {id: belief.snapshot_id})
+                        MERGE (node:CausalBelief {id: belief.id})
+                        SET node.assembly_id = belief.assembly_id,
+                            node.column_id = belief.column_id,
+                            node.belief_key = belief.belief_key,
+                            node.value_json = belief.value_json,
+                            node.confidence = belief.confidence,
+                            node.evidence_refs = belief.evidence_refs,
+                            node.rationale = belief.rationale,
+                            node.metadata_json = belief.metadata_json,
+                            node.projected_at = datetime()
+                        MERGE (snapshot)-[rel:HAS_BELIEF]->(node)
+                        SET rel.updated_at = datetime()
+                        """,
+                            {"beliefs": beliefs},
+                        )
+
+                    if confidence_samples:
+                        tx.run(
+                            """
+                        UNWIND $confidence_samples AS sample
+                        MATCH (column:CausalColumn {id: sample.column_node_id})
+                        MERGE (node:CausalConfidenceSample {id: sample.id})
+                        SET node.assembly_id = sample.assembly_id,
+                            node.column_id = sample.column_id,
+                            node.recorded_at = sample.recorded_at,
+                            node.confidence = sample.confidence,
+                            node.adaptation_metrics_json = sample.adaptation_metrics_json,
+                            node.cause_json = sample.cause_json,
+                            node.projected_at = datetime()
+                        MERGE (column)-[rel:HAS_CONFIDENCE_SAMPLE]->(node)
+                        SET rel.updated_at = datetime()
+                        """,
+                            {"confidence_samples": confidence_samples},
+                        )
+
+                    if outcomes:
+                        tx.run(
+                            """
+                        UNWIND $outcomes AS outcome
+                        MERGE (assembly:CausalAssembly {assembly_id: $assembly_id})
+                        MERGE (node:CausalOutcome {id: outcome.id})
+                        SET node.assembly_id = outcome.assembly_id,
+                            node.outcome = outcome.outcome,
+                            node.recorded_at = outcome.recorded_at,
+                            node.metadata_json = outcome.metadata_json,
+                            node.decision = outcome.decision,
+                            node.commitment_confidence = outcome.commitment_confidence,
+                            node.is_ready = outcome.is_ready,
+                            node.blockers = outcome.blockers,
+                            node.next_actions = outcome.next_actions,
+                            node.supporting_columns = outcome.supporting_columns,
+                            node.dissenting_columns = outcome.dissenting_columns,
+                            node.projected_at = datetime()
+                        MERGE (assembly)-[rel:HAS_OUTCOME]->(node)
+                        SET rel.updated_at = datetime()
+                        """,
+                            {"assembly_id": assembly_id, "outcomes": outcomes},
+                        )
+
+                    if support_edges:
+                        tx.run(
+                            """
+                        UNWIND $support_edges AS edge
+                        MATCH (outcome:CausalOutcome {id: edge.outcome_id})
+                        MATCH (column:CausalColumn {id: edge.column_id})
+                        MERGE (outcome)-[rel:SUPPORTED_BY]->(column)
+                        SET rel.updated_at = datetime()
+                        """,
+                            {"support_edges": support_edges},
+                        )
+
+                    if dissent_edges:
+                        tx.run(
+                            """
+                        UNWIND $dissent_edges AS edge
+                        MATCH (outcome:CausalOutcome {id: edge.outcome_id})
+                        MATCH (column:CausalColumn {id: edge.column_id})
+                        MERGE (outcome)-[rel:DISSENTED_BY]->(column)
+                        SET rel.updated_at = datetime()
+                        """,
+                            {"dissent_edges": dissent_edges},
+                        )
+
+                    tx.commit()
+                except Exception:
+                    tx.rollback()
+                    raise
+                return True
+        except Exception:  # noqa: BLE001
+            return False
 
     def query_memory_context(
         self,

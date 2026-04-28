@@ -132,7 +132,7 @@ function NavSection({ group, pathname }: { group: NavGroup; pathname: string }) 
   return (
     <section className="fx-nav-section">
       <h3 className="fx-nav-section-title">{group.title}</h3>
-      <nav className="space-y-1.5" aria-label={group.title}>
+      <nav className="space-y-1" aria-label={group.title}>
         {group.items.map((item) => {
           const active = isActive(pathname, item);
 
@@ -154,7 +154,6 @@ export function LeftNav({ mode, pathname, inAdmin, expanded, platformVersion }: 
   const navGroups = getPrimaryNavGroups(mode, inAdmin);
   const preferenceItem = getPreferenceNavItem(mode);
   const modeLabel = mode === "builder" ? "Builder Console" : "Operational Console";
-  const workspaceLabel = mode === "builder" ? "Builder workspace" : "Workspace";
   const versionLabel = platformVersion?.current_version ? `v${platformVersion.current_version}` : "Version unavailable";
   const latestVersionLabel = platformVersion?.latest_version ? `v${platformVersion.latest_version}` : "";
   const versionStatus = platformVersion?.status ?? "unknown";
@@ -164,26 +163,24 @@ export function LeftNav({ mode, pathname, inAdmin, expanded, platformVersion }: 
     return null;
   }
 
+  const workspaceRole = mode === "builder" ? "Builder" : "Operator";
+
   return (
     <div className="flex h-full flex-col">
-      <div className="border-b border-[var(--ui-border)] px-3 pb-3 pt-3">
-        <button type="button" className="fx-workspace-switcher w-full text-left" aria-label="Workspace switcher">
-          <span className="fx-workspace-switcher-kicker">{workspaceLabel}</span>
-          <span className="mt-1 block truncate text-[0.92rem] font-semibold text-[hsl(var(--foreground))]">Lattix Corporation</span>
-          <span className="mt-1 flex items-center justify-between gap-2 text-[0.72rem] text-[var(--fx-muted)]">
-            <span className="truncate">{modeLabel}</span>
-            <span aria-hidden="true">⌄</span>
-          </span>
-        </button>
-      </div>
+      {mode === "builder" ? (
+        <div className="border-b border-[var(--ui-border)] px-3 pb-3 pt-3">
+          <p className="text-[0.67rem] font-medium tracking-[0.06em] text-[var(--fx-muted)]">{modeLabel}</p>
+          <p className="mt-2 text-[0.84rem] leading-6 text-[hsl(var(--foreground))]">Build agents, workflows, and playbooks without extra builder chrome getting in the way.</p>
+        </div>
+      ) : null}
 
-      <div className="flex-1 overflow-y-auto px-2 py-3">
+      <div className="flex-1 overflow-y-auto px-2.5 py-3">
         {navGroups.map((group) => (
           <NavSection key={group.title} group={group} pathname={pathname} />
         ))}
       </div>
 
-      <div className="border-t border-[var(--ui-border)] px-2 py-3">
+      <div className="border-t border-[var(--ui-border)] px-2.5 py-3">
         <section className="fx-nav-section mb-0">
           <h3 className="fx-nav-section-title">Preferences</h3>
           <nav aria-label="Preferences">
@@ -200,28 +197,28 @@ export function LeftNav({ mode, pathname, inAdmin, expanded, platformVersion }: 
         </section>
 
         <div className="mt-3 border-t border-[var(--ui-border)] px-2 pt-3">
-          <div className="flex items-center justify-between gap-3 text-[0.68rem] uppercase tracking-[0.12em] text-[var(--fx-muted)]">
+          <div className="flex items-center justify-between gap-3 text-[0.72rem] font-medium tracking-[0.04em] text-[var(--fx-muted)]">
             <span>Platform version</span>
-            <span className="rounded-full border border-[var(--ui-border)] bg-[hsl(var(--card))] px-2 py-1 text-[0.72rem] font-semibold normal-case text-[hsl(var(--foreground))]">
+            <span className="rounded-full border border-[var(--ui-border)] bg-[color-mix(in_srgb,hsl(var(--card))_90%,hsl(var(--muted))_10%)] px-2.5 py-1 text-[0.7rem] font-semibold normal-case text-[hsl(var(--foreground))]">
               {versionLabel}
             </span>
           </div>
 
           {updateVersionDetails ? (
-            <div className="mt-3 rounded-2xl border border-[color-mix(in_srgb,var(--fx-primary-strong)_28%,var(--ui-border))] bg-[color-mix(in_srgb,var(--fx-primary)_12%,var(--fx-sidebar))] p-3 shadow-[0_10px_24px_rgba(0,0,0,0.16)]">
-              <p className="text-[0.68rem] font-semibold uppercase tracking-[0.12em] text-[var(--fx-primary-strong)]">Update available</p>
-              <p className="mt-1 text-[0.9rem] font-semibold text-[hsl(var(--foreground))]">
+            <div className="mt-3 rounded-[14px] border border-[color-mix(in_srgb,var(--fx-primary-strong)_18%,var(--ui-border))] bg-[color-mix(in_srgb,var(--fx-primary)_6%,white_94%)] p-3 shadow-[var(--fx-shadow-soft)]">
+              <p className="text-[0.7rem] font-medium tracking-[0.04em] text-[var(--fx-primary-strong)]">Update available</p>
+              <p className="mt-1 text-[0.88rem] font-semibold tracking-[-0.01em] text-[hsl(var(--foreground))]">
                 {versionLabel} → {latestVersionLabel}
               </p>
-              <p className="mt-2 text-[0.74rem] leading-5 text-[var(--fx-muted)]">
+              <p className="mt-2 text-[0.78rem] leading-5 text-[var(--fx-muted)]">
                 Refresh the local app in place. Workflows, agents, settings, and installer state stay intact.
               </p>
-              <details className="mt-3 rounded-xl border border-[var(--ui-border)] bg-[hsl(var(--card))] p-2 text-[0.74rem] text-[var(--foreground)]">
+              <details className="mt-3 rounded-[12px] border border-[var(--ui-border)] bg-[hsl(var(--card))] p-2.5 text-[0.76rem] text-[var(--foreground)]">
                 <summary className="cursor-pointer list-none font-medium text-[var(--foreground)] marker:hidden">
                   How to update
                 </summary>
                 <p className="mt-2 leading-5 text-[var(--fx-muted)]">Open a terminal on this machine and run the updater command below.</p>
-                <div className="mt-2 rounded-lg border border-[var(--ui-border)] bg-[var(--fx-sidebar)] px-2 py-2 font-mono text-[0.72rem] text-[hsl(var(--foreground))]">
+                <div className="mt-2 rounded-[10px] border border-[var(--ui-border)] bg-[var(--fx-sidebar)] px-2.5 py-2 font-mono text-[0.72rem] text-[hsl(var(--foreground))]">
                   {updateVersionDetails.update_command}
                 </div>
                 {updateVersionDetails.release_notes_url ? (
@@ -236,10 +233,8 @@ export function LeftNav({ mode, pathname, inAdmin, expanded, platformVersion }: 
                 ) : null}
               </details>
             </div>
-          ) : versionStatus === "up_to_date" ? (
-            <p className="mt-3 text-[0.74rem] leading-5 text-[var(--fx-muted)]">Current build is up to date.</p>
           ) : (
-            <p className="mt-3 text-[0.74rem] leading-5 text-[var(--fx-muted)]">Update status is unavailable right now.</p>
+            <p className="mt-3 text-[0.78rem] leading-5 text-[var(--fx-muted)]">Update status is unavailable right now.</p>
           )}
         </div>
       </div>
