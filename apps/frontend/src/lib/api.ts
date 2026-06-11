@@ -952,6 +952,38 @@ export async function getInbox(): Promise<InboxItem[]> {
   return safeFetch<InboxItem[]>("/inbox", mockInbox);
 }
 
+export type InboxGroup = {
+  id: string;
+  name: string;
+  created_at: string;
+  run_ids: string[];
+};
+
+export async function getInboxGroups(): Promise<InboxGroup[]> {
+  return safeFetch<InboxGroup[]>("/inbox/groups", []);
+}
+
+export async function createInboxGroup(name: string): Promise<InboxGroup> {
+  return strictFetch<InboxGroup>("/inbox/groups", {
+    method: "POST",
+    body: JSON.stringify({ name }),
+  });
+}
+
+export async function updateInboxGroup(
+  id: string,
+  payload: { name?: string; add_run_id?: string; remove_run_id?: string },
+): Promise<InboxGroup> {
+  return strictFetch<InboxGroup>(`/inbox/groups/${encodeURIComponent(id)}`, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function deleteInboxGroup(id: string): Promise<{ ok: boolean }> {
+  return strictFetch(`/inbox/groups/${encodeURIComponent(id)}`, { method: "DELETE" });
+}
+
 export async function getArtifacts(): Promise<ArtifactSummary[]> {
   return safeFetch<ArtifactSummary[]>("/artifacts", mockArtifacts);
 }

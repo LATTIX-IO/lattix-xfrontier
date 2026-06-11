@@ -329,6 +329,24 @@ _ROUTE_ACCESS_RULES: tuple[RouteAccessRule, ...] = (
     ),
     RouteAccessRule(("GET",), "/inbox", RouteAccessCategory.AUTHENTICATED_READ, "inbox.read"),
     RouteAccessRule(
+        ("GET",), "/inbox/groups", RouteAccessCategory.AUTHENTICATED_READ, "inbox.groups.list"
+    ),
+    RouteAccessRule(
+        ("POST",), "/inbox/groups", RouteAccessCategory.AUTHENTICATED_MUTATE, "inbox.groups.create"
+    ),
+    RouteAccessRule(
+        ("POST",),
+        "/inbox/groups/{group_id}",
+        RouteAccessCategory.AUTHENTICATED_MUTATE,
+        "inbox.groups.update",
+    ),
+    RouteAccessRule(
+        ("DELETE",),
+        "/inbox/groups/{group_id}",
+        RouteAccessCategory.AUTHENTICATED_MUTATE,
+        "inbox.groups.delete",
+    ),
+    RouteAccessRule(
         ("GET",), "/integrations", RouteAccessCategory.AUTHENTICATED_READ, "integration.list"
     ),
     RouteAccessRule(

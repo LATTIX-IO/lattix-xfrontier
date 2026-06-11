@@ -91,6 +91,8 @@ class WorkflowRunSummary(BaseModel):
     status: Literal["Running", "Blocked", "Needs Review", "Done", "Failed"]
     updatedAt: str
     progressLabel: str
+    # The surface that started the run, used for inbox/console categorization.
+    kind: Literal["individual", "agent", "workflow", "playbook"] = "individual"
 
 
 class WorkflowRunEvent(BaseModel):
@@ -8540,6 +8542,10 @@ class InMemoryStore:
         # memory store under the collection's knowledge bucket.
         self.knowledge_collections: dict[str, dict[str, Any]] = {}
 
+        # User-defined inbox folders for organizing historical chats/runs.
+        # id -> {id, name, created_at, run_ids: [str]}.
+        self.inbox_groups: dict[str, dict[str, Any]] = {}
+
         self.collaboration_sessions: dict[str, CollaborationSession] = {}
         self.audit_events: list[AuditEvent] = []
         self.a2a_seen_nonces: dict[str, str] = {}
@@ -10975,6 +10981,7 @@ def _serialize_store_state() -> dict[str, Any]:
         "workflow_triggers": store.workflow_triggers,
         "workflow_schedules": store.workflow_schedules,
         "knowledge_collections": store.knowledge_collections,
+        "inbox_groups": store.inbox_groups,
     }
     if _AUDIT_LOG is None or not _AUDIT_LOG.enabled:
         # Without the append-only audit table, audit events ride in the state
@@ -11264,6 +11271,19 @@ def _apply_store_state(payload: dict[str, Any]) -> None:
             if isinstance(meta, dict) and meta.get("id"):
                 hydrated_knowledge[str(collection_id)] = dict(meta)
         store.knowledge_collections = hydrated_knowledge
+
+    inbox_groups_payload = payload.get("inbox_groups")
+    if isinstance(inbox_groups_payload, dict):
+        hydrated_groups: dict[str, dict[str, Any]] = {}
+        for group_id, meta in inbox_groups_payload.items():
+            if isinstance(meta, dict) and meta.get("id"):
+                hydrated_groups[str(group_id)] = {
+                    "id": str(meta.get("id") or group_id),
+                    "name": str(meta.get("name") or "Untitled"),
+                    "created_at": str(meta.get("created_at") or ""),
+                    "run_ids": [str(rid) for rid in (meta.get("run_ids") or []) if str(rid)],
+                }
+        store.inbox_groups = hydrated_groups
 
     seen_nonces_payload = payload.get("a2a_seen_nonces")
     if isinstance(seen_nonces_payload, dict):
@@ -13682,6 +13702,18 @@ def create_workflow_run(
     if requested_workflows and title == "Workflow Run":
         title = f"Workflow Run — {requested_workflows[0]}"
 
+    requested_playbook_tokens = _normalize_string_list(
+        payload.get("playbooks") or payload.get("playbook") or []
+    )
+    if requested_playbook_tokens or payload.get("playbook_id"):
+        run_kind: Literal["individual", "agent", "workflow", "playbook"] = "playbook"
+    elif requested_workflows:
+        run_kind = "workflow"
+    elif requested_agents:
+        run_kind = "agent"
+    else:
+        run_kind = "individual"
+
     if len(requested_agents) > store.platform_settings.collaboration_max_agents:
         raise HTTPException(
             status_code=400,
@@ -13745,6 +13777,7 @@ def create_workflow_run(
             status=run_status,
             updatedAt="just now",
             progressLabel="Blocked by policy",
+            kind=run_kind,
         )
         summary_parts: list[str] = []
         if blocked_terms:
@@ -13835,6 +13868,7 @@ def create_workflow_run(
         status="Running",
         updatedAt="just now",
         progressLabel="Executing agent",
+        kind=run_kind,
     )
     store.run_events[run_id] = [
         WorkflowRunEvent(
@@ -13931,6 +13965,7 @@ def create_workflow_run(
                     status="Failed",
                     updatedAt="just now",
                     progressLabel="Provider configuration error",
+                    kind=run_kind,
                 )
                 store.run_events[run_id].extend(
                     [
@@ -14101,6 +14136,7 @@ def create_workflow_run(
                 status=run_status,
                 updatedAt="just now",
                 progressLabel=progress_label,
+                kind=run_kind,
             )
             event_response_text = response_text
             if store.platform_settings.mask_secrets_in_events:
@@ -14260,6 +14296,7 @@ def create_workflow_run(
                 status="Failed",
                 updatedAt="just now",
                 progressLabel="Execution error",
+                kind=run_kind,
             )
             store.run_events.setdefault(run_id, []).append(
                 WorkflowRunEvent(
@@ -16071,6 +16108,85 @@ def get_inbox(request: Request) -> list[dict[str, Any]]:
     visible_run_ids = _visible_run_ids(request, actor)
     items = [item for item in store.inbox if item.runId in visible_run_ids]
     return [item.model_dump() for item in items]
+
+
+def _inbox_group_view(group: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": group.get("id", ""),
+        "name": group.get("name", ""),
+        "created_at": group.get("created_at", ""),
+        "run_ids": list(group.get("run_ids", [])),
+    }
+
+
+@app.get("/inbox/groups")
+def list_inbox_groups(request: Request) -> list[dict[str, Any]]:
+    _enforce_request_authn(request, action="inbox.groups.list")
+    return [
+        _inbox_group_view(group)
+        for group in sorted(
+            store.inbox_groups.values(), key=lambda g: str(g.get("name", "")).lower()
+        )
+    ]
+
+
+@app.post("/inbox/groups")
+def create_inbox_group(
+    request: Request, payload: dict[str, Any] = Body(default_factory=dict)
+) -> dict[str, Any]:
+    actor = _enforce_request_authn(request, payload=payload, action="inbox.groups.create")
+    _enforce_emergency_write_policy("inbox.groups.create", actor)
+    name = str(payload.get("name") or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Folder name is required")
+    group_id = str(uuid4())
+    store.inbox_groups[group_id] = {
+        "id": group_id,
+        "name": name,
+        "created_at": _now_iso(),
+        "run_ids": [],
+    }
+    _append_audit_event("inbox.groups.create", actor, "allowed", {"group_id": group_id})
+    _persist_store_state()
+    return _inbox_group_view(store.inbox_groups[group_id])
+
+
+@app.post("/inbox/groups/{group_id}")
+def update_inbox_group(
+    group_id: str, request: Request, payload: dict[str, Any] = Body(default_factory=dict)
+) -> dict[str, Any]:
+    actor = _enforce_request_authn(request, payload=payload, action="inbox.groups.update")
+    _enforce_emergency_write_policy("inbox.groups.update", actor)
+    group = store.inbox_groups.get(group_id)
+    if group is None:
+        raise HTTPException(status_code=404, detail="Folder not found")
+    if "name" in payload:
+        new_name = str(payload.get("name") or "").strip()
+        if not new_name:
+            raise HTTPException(status_code=400, detail="Folder name cannot be empty")
+        group["name"] = new_name
+    run_ids = [str(rid) for rid in group.get("run_ids", []) if str(rid)]
+    add_run_id = str(payload.get("add_run_id") or "").strip()
+    if add_run_id and add_run_id not in run_ids:
+        run_ids.append(add_run_id)
+    remove_run_id = str(payload.get("remove_run_id") or "").strip()
+    if remove_run_id:
+        run_ids = [rid for rid in run_ids if rid != remove_run_id]
+    group["run_ids"] = run_ids
+    _append_audit_event("inbox.groups.update", actor, "allowed", {"group_id": group_id})
+    _persist_store_state()
+    return _inbox_group_view(group)
+
+
+@app.delete("/inbox/groups/{group_id}")
+def delete_inbox_group(group_id: str, request: Request) -> dict[str, bool]:
+    actor = _enforce_request_authn(request, action="inbox.groups.delete")
+    _enforce_emergency_write_policy("inbox.groups.delete", actor)
+    if store.inbox_groups.pop(group_id, None) is None:
+        raise HTTPException(status_code=404, detail="Folder not found")
+    _append_audit_event("inbox.groups.delete", actor, "allowed", {"group_id": group_id})
+    _persist_store_state()
+    return {"ok": True}
 
 
 @app.get("/integrations")

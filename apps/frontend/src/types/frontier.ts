@@ -47,12 +47,15 @@ export type RunStatus =
   | "Done"
   | "Failed";
 
+export type RunKind = "individual" | "agent" | "workflow" | "playbook";
+
 export type WorkflowRunSummary = {
   id: string;
   title: string;
   status: RunStatus;
   updatedAt: string;
   progressLabel: string;
+  kind?: RunKind;
 };
 
 export type WorkflowRunEvent = {
