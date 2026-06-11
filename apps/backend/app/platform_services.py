@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import os
+import sqlite3
+import threading
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator
@@ -39,10 +41,14 @@ def _json_default(value: Any) -> Any:
 
 
 def _safe_json_loads(payload: Any) -> Any:
-    if payload in {None, ""}:
+    # psycopg returns JSONB columns as already-decoded dicts/lists; membership
+    # checks against a set would raise on unhashable values, so test explicitly.
+    if payload is None:
         return None
     if isinstance(payload, (dict, list)):
         return payload
+    if isinstance(payload, str) and not payload.strip():
+        return None
     try:
         return json.loads(str(payload))
     except Exception:  # noqa: BLE001
@@ -100,6 +106,8 @@ class _BasePostgresService:
 
 
 class PostgresStateStore(_BasePostgresService):
+    SECTION_KEY_PREFIX = "section:"
+
     def initialize(self) -> None:
         if not self.enabled or self._initialized:
             return
@@ -122,17 +130,26 @@ class PostgresStateStore(_BasePostgresService):
         self.initialize()
         with self._connect() as connection:
             with connection.cursor() as cursor:
-                cursor.execute(
-                    "SELECT payload FROM frontier_state_store WHERE state_key = %s",
-                    ("global",),
-                )
-                row = cursor.fetchone()
-        if not row:
+                cursor.execute("SELECT state_key, payload FROM frontier_state_store")
+                rows = cursor.fetchall()
+        if not rows:
             return None
-        payload = row[0]
-        if isinstance(payload, dict):
-            return payload
-        return _safe_json_loads(payload)
+        legacy: dict[str, Any] = {}
+        sections: dict[str, Any] = {}
+        for state_key, raw_payload in rows:
+            value = _safe_json_loads(raw_payload)
+            key = str(state_key)
+            if key == "global" and isinstance(value, dict):
+                legacy = value
+            elif key.startswith(self.SECTION_KEY_PREFIX):
+                sections[key[len(self.SECTION_KEY_PREFIX) :]] = value
+        if not legacy and not sections:
+            return None
+        # Per-section rows are authoritative; the legacy "global" row only fills
+        # sections that have not been rewritten since the sectioned format landed.
+        merged = dict(legacy)
+        merged.update(sections)
+        return merged
 
     def save_state(self, payload: dict[str, Any]) -> None:
         if not self.enabled:
@@ -150,6 +167,310 @@ class PostgresStateStore(_BasePostgresService):
 					""",
                     ("global", encoded_payload),
                 )
+
+    def save_state_sections(
+        self, encoded_sections: dict[str, str], *, replace_all: bool = False
+    ) -> None:
+        """Upsert only the store sections whose content changed.
+
+        ``encoded_sections`` maps section name to its already-JSON-encoded payload.
+        ``replace_all`` marks a full snapshot write, after which the legacy
+        single-row "global" payload is removed.
+        """
+        if not self.enabled or not encoded_sections:
+            return
+        self.initialize()
+        with self._connect() as connection:
+            with connection.cursor() as cursor:
+                for section, encoded in encoded_sections.items():
+                    cursor.execute(
+                        """
+						INSERT INTO frontier_state_store (state_key, payload, updated_at)
+						VALUES (%s, %s::jsonb, timezone('utc', now()))
+						ON CONFLICT (state_key)
+						DO UPDATE SET payload = EXCLUDED.payload, updated_at = EXCLUDED.updated_at
+						""",
+                        (f"{self.SECTION_KEY_PREFIX}{section}", encoded),
+                    )
+                if replace_all:
+                    cursor.execute(
+                        "DELETE FROM frontier_state_store WHERE state_key = %s",
+                        ("global",),
+                    )
+
+
+class PostgresAuditLog(_BasePostgresService):
+    """Append-only audit event log.
+
+    One small insert per audit event instead of rewriting the full audit
+    section blob on every store persist — audit events are immutable, so the
+    append-only table is both cheaper and a better tamper-evidence posture.
+    """
+
+    def initialize(self) -> None:
+        if not self.enabled or self._initialized:
+            return
+        with self._connect() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """
+					CREATE TABLE IF NOT EXISTS frontier_audit_events (
+						id TEXT PRIMARY KEY,
+						action TEXT NOT NULL,
+						actor TEXT NOT NULL,
+						outcome TEXT NOT NULL,
+						created_at TEXT NOT NULL,
+						metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+						inserted_at TIMESTAMPTZ NOT NULL DEFAULT timezone('utc', now())
+					)
+					"""
+                )
+        self._initialized = True
+
+    def append(self, event: dict[str, Any]) -> None:
+        if not self.enabled:
+            return
+        self.initialize()
+        with self._connect() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """
+					INSERT INTO frontier_audit_events
+						(id, action, actor, outcome, created_at, metadata)
+					VALUES (%s, %s, %s, %s, %s, %s::jsonb)
+					ON CONFLICT (id) DO NOTHING
+					""",
+                    (
+                        str(event.get("id") or ""),
+                        str(event.get("action") or ""),
+                        str(event.get("actor") or ""),
+                        str(event.get("outcome") or ""),
+                        str(event.get("created_at") or ""),
+                        json.dumps(event.get("metadata") or {}, default=_json_default),
+                    ),
+                )
+
+    def load_recent(self, limit: int = 2000) -> list[dict[str, Any]]:
+        if not self.enabled:
+            return []
+        self.initialize()
+        with self._connect() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """
+					SELECT id, action, actor, outcome, created_at, metadata
+					FROM frontier_audit_events
+					ORDER BY inserted_at DESC
+					LIMIT %s
+					""",
+                    (max(1, int(limit)),),
+                )
+                rows = cursor.fetchall()
+        events: list[dict[str, Any]] = []
+        for row in rows:
+            metadata = _safe_json_loads(row[5])
+            events.append(
+                {
+                    "id": str(row[0]),
+                    "action": str(row[1]),
+                    "actor": str(row[2]),
+                    "outcome": str(row[3]),
+                    "created_at": str(row[4]),
+                    "metadata": metadata if isinstance(metadata, dict) else {},
+                }
+            )
+        return events
+
+
+class _BaseSQLiteService:
+    """Zero-container persistence backend (resource plan 2.3).
+
+    Stdlib sqlite3 with WAL journaling; one shared connection guarded by a lock
+    (writes are short and infrequent — sections only persist when changed).
+    """
+
+    def __init__(self, path: str) -> None:
+        self.path = str(path or "").strip()
+        self.enabled = bool(self.path)
+        self._initialized = False
+        self._lock = threading.Lock()
+        self._connection: sqlite3.Connection | None = None
+
+    def _connect(self) -> sqlite3.Connection:
+        if not self.enabled:
+            raise RuntimeError("SQLite service is not enabled")
+        if self._connection is None:
+            db_path = Path(self.path)
+            if db_path.parent and not db_path.parent.exists():
+                db_path.parent.mkdir(parents=True, exist_ok=True)
+            self._connection = sqlite3.connect(self.path, check_same_thread=False)
+            self._connection.execute("PRAGMA journal_mode=WAL")
+        return self._connection
+
+    def healthcheck(self) -> bool:
+        if not self.enabled:
+            return False
+        try:
+            with self._lock:
+                self._connect().execute("SELECT 1")
+            return True
+        except Exception:  # noqa: BLE001
+            return False
+
+
+class SQLiteStateStore(_BaseSQLiteService):
+    """Drop-in alternative to PostgresStateStore for zero-container local mode."""
+
+    SECTION_KEY_PREFIX = "section:"
+
+    def initialize(self) -> None:
+        if not self.enabled or self._initialized:
+            return
+        with self._lock:
+            self._connect().execute(
+                """
+				CREATE TABLE IF NOT EXISTS frontier_state_store (
+					state_key TEXT PRIMARY KEY,
+					payload TEXT NOT NULL,
+					updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+				)
+				"""
+            )
+            self._connect().commit()
+        self._initialized = True
+
+    def load_state(self) -> dict[str, Any] | None:
+        if not self.enabled:
+            return None
+        self.initialize()
+        with self._lock:
+            rows = (
+                self._connect()
+                .execute("SELECT state_key, payload FROM frontier_state_store")
+                .fetchall()
+            )
+        if not rows:
+            return None
+        legacy: dict[str, Any] = {}
+        sections: dict[str, Any] = {}
+        for state_key, raw_payload in rows:
+            value = _safe_json_loads(raw_payload)
+            key = str(state_key)
+            if key == "global" and isinstance(value, dict):
+                legacy = value
+            elif key.startswith(self.SECTION_KEY_PREFIX):
+                sections[key[len(self.SECTION_KEY_PREFIX) :]] = value
+        if not legacy and not sections:
+            return None
+        merged = dict(legacy)
+        merged.update(sections)
+        return merged
+
+    def save_state(self, payload: dict[str, Any]) -> None:
+        if not self.enabled:
+            return
+        self.initialize()
+        encoded_payload = json.dumps(payload, default=_json_default)
+        with self._lock:
+            connection = self._connect()
+            connection.execute(
+                "INSERT OR REPLACE INTO frontier_state_store (state_key, payload, updated_at) "
+                "VALUES (?, ?, datetime('now'))",
+                ("global", encoded_payload),
+            )
+            connection.commit()
+
+    def save_state_sections(
+        self, encoded_sections: dict[str, str], *, replace_all: bool = False
+    ) -> None:
+        if not self.enabled or not encoded_sections:
+            return
+        self.initialize()
+        with self._lock:
+            connection = self._connect()
+            for section, encoded in encoded_sections.items():
+                connection.execute(
+                    "INSERT OR REPLACE INTO frontier_state_store (state_key, payload, updated_at) "
+                    "VALUES (?, ?, datetime('now'))",
+                    (f"{self.SECTION_KEY_PREFIX}{section}", encoded),
+                )
+            if replace_all:
+                connection.execute(
+                    "DELETE FROM frontier_state_store WHERE state_key = ?", ("global",)
+                )
+            connection.commit()
+
+
+class SQLiteAuditLog(_BaseSQLiteService):
+    """Append-only audit log for zero-container local mode."""
+
+    def initialize(self) -> None:
+        if not self.enabled or self._initialized:
+            return
+        with self._lock:
+            self._connect().execute(
+                """
+				CREATE TABLE IF NOT EXISTS frontier_audit_events (
+					id TEXT PRIMARY KEY,
+					action TEXT NOT NULL,
+					actor TEXT NOT NULL,
+					outcome TEXT NOT NULL,
+					created_at TEXT NOT NULL,
+					metadata TEXT NOT NULL DEFAULT '{}'
+				)
+				"""
+            )
+            self._connect().commit()
+        self._initialized = True
+
+    def append(self, event: dict[str, Any]) -> None:
+        if not self.enabled:
+            return
+        self.initialize()
+        with self._lock:
+            connection = self._connect()
+            connection.execute(
+                "INSERT OR IGNORE INTO frontier_audit_events "
+                "(id, action, actor, outcome, created_at, metadata) VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    str(event.get("id") or ""),
+                    str(event.get("action") or ""),
+                    str(event.get("actor") or ""),
+                    str(event.get("outcome") or ""),
+                    str(event.get("created_at") or ""),
+                    json.dumps(event.get("metadata") or {}, default=_json_default),
+                ),
+            )
+            connection.commit()
+
+    def load_recent(self, limit: int = 2000) -> list[dict[str, Any]]:
+        if not self.enabled:
+            return []
+        self.initialize()
+        with self._lock:
+            rows = (
+                self._connect()
+                .execute(
+                    "SELECT id, action, actor, outcome, created_at, metadata "
+                    "FROM frontier_audit_events ORDER BY rowid DESC LIMIT ?",
+                    (max(1, int(limit)),),
+                )
+                .fetchall()
+            )
+        events: list[dict[str, Any]] = []
+        for row in rows:
+            metadata = _safe_json_loads(row[5])
+            events.append(
+                {
+                    "id": str(row[0]),
+                    "action": str(row[1]),
+                    "actor": str(row[2]),
+                    "outcome": str(row[3]),
+                    "created_at": str(row[4]),
+                    "metadata": metadata if isinstance(metadata, dict) else {},
+                }
+            )
+        return events
 
 
 class RedisMemoryStore:

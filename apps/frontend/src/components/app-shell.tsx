@@ -4,6 +4,7 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { ApiStatusBanner } from "@/components/api-status-banner";
+import { ClassificationBanner, useClassificationBanner } from "@/components/classification-banner";
 import { ModeSwitch } from "@/components/mode-switch";
 import { LeftNav } from "@/components/navigation/left-nav";
 import { getOperatorSession, getPlatformVersionStatus, logoutOperator } from "@/lib/api";
@@ -50,16 +51,16 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const [activeSessionRequestId, setActiveSessionRequestId] = useState(0);
   const [resolvedSessionRequestId, setResolvedSessionRequestId] = useState(0);
 
-  const SHOW_SOFT_LAUNCH = true;
-  const SHOW_CLASSIFICATION = true;
   const SHOW_READ_ONLY = false;
 
-  const SOFT_LAUNCH_HEIGHT = 36;
   const CLASSIFICATION_HEIGHT = 32;
   const TOP_NAV_HEIGHT = 48;
   const READ_ONLY_HEIGHT = 24;
 
-  const topLayerOffset = (SHOW_SOFT_LAUNCH ? SOFT_LAUNCH_HEIGHT : 0) + (SHOW_CLASSIFICATION ? CLASSIFICATION_HEIGHT : 0);
+  const [classificationBanner] = useClassificationBanner();
+  const classificationHeight = classificationBanner.enabled ? CLASSIFICATION_HEIGHT : 0;
+
+  const topLayerOffset = classificationHeight;
   const contentTopOffset = topLayerOffset + TOP_NAV_HEIGHT + (SHOW_READ_ONLY ? READ_ONLY_HEIGHT : 0);
 
   const sidebarWidthExpanded = 248;
@@ -182,17 +183,11 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   if (isPublicAuthRoute) {
     return (
       <div className="fx-app min-h-screen text-[var(--foreground)]">
-        <div className="fixed inset-x-0 top-0 z-30 border-b border-[var(--ui-border)] bg-[color-mix(in_srgb,var(--fx-header)_94%,transparent)] backdrop-blur-sm">
-          <div className="mx-auto flex h-14 max-w-7xl items-center justify-between gap-3 px-4 sm:px-6 lg:px-8">
-            <div className="flex min-w-0 items-center gap-3">
-              <span className="text-xs font-semibold uppercase tracking-[0.16em] text-[var(--fx-muted)]">Lattix xFrontier</span>
-              <span className="fx-badge-local px-2 py-0.5 text-[10px]">Identity</span>
-            </div>
-            <span className="text-[11px] font-medium text-[var(--fx-muted)]">Authentication required</span>
-          </div>
-        </div>
+        <ClassificationBanner state={classificationBanner} top={0} height={CLASSIFICATION_HEIGHT} />
         <ApiStatusBanner />
-        <main className="min-h-screen pt-14">{children}</main>
+        <main className="min-h-screen" style={{ paddingTop: `${classificationHeight}px` }}>
+          {children}
+        </main>
       </div>
     );
   }
@@ -237,69 +232,71 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       >
         Skip to content
       </a>
-      {SHOW_SOFT_LAUNCH ? (
-        <div className="fx-top-strip fixed inset-x-0 top-0 z-40 flex h-9 items-center justify-center px-4 text-[11px] font-semibold uppercase tracking-[0.12em]">
-          Soft launch in progress • staging only • data operations disabled
-        </div>
-      ) : null}
-
-      {SHOW_CLASSIFICATION ? (
-        <div
-          className="fixed inset-x-0 z-40 flex items-center justify-center border-b border-[var(--ui-border)] bg-[hsl(var(--muted))] px-4 text-[11px] font-semibold uppercase tracking-[0.08em]"
-          style={{ top: SHOW_SOFT_LAUNCH ? `${SOFT_LAUNCH_HEIGHT}px` : "0px", height: `${CLASSIFICATION_HEIGHT}px` }}
-        >
-          Internal • Operational Console
-        </div>
-      ) : null}
+      <ClassificationBanner state={classificationBanner} top={0} height={CLASSIFICATION_HEIGHT} />
 
       <header className="fx-header fixed inset-x-0 z-40" style={{ top: `${topLayerOffset}px`, height: `${TOP_NAV_HEIGHT}px` }}>
         <div className="flex h-full items-center justify-between gap-3 px-3">
-          <div className="flex min-w-0 items-center gap-2">
+          <div className="flex min-w-0 flex-1 items-center gap-2 overflow-hidden">
             <button
               onClick={() => setSidebarExpanded((value) => !value)}
-              className="fx-btn-secondary inline-flex h-7 w-7 items-center justify-center text-xs"
+              className="fx-btn-secondary inline-flex h-7 w-7 shrink-0 items-center justify-center text-xs"
               aria-label="Toggle sidebar"
             >
               ☰
             </button>
-            <span className="text-xs font-semibold tracking-wide text-[var(--foreground)]">Lattix</span>
-            <span className="fx-badge-local px-2 py-0.5 text-[10px]">Local</span>
-            <nav className="min-w-0 truncate text-[11px] text-[var(--fx-muted)]">
+            <span className="shrink-0 text-[13px] font-bold tracking-wide text-[var(--foreground)]">
+              Lattix xFrontier
+            </span>
+            <span className="fx-badge-local shrink-0 whitespace-nowrap px-2 py-0.5 font-mono text-[9px] font-semibold uppercase tracking-[0.1em]">
+              Local
+            </span>
+            <nav
+              className="hidden min-w-0 items-center gap-1 truncate text-[11px] text-[var(--fx-muted)] sm:flex"
+              aria-label="Breadcrumb"
+            >
               {breadcrumbParts.map((part, index) => (
-                <span key={`${part}-${index}`}>
+                <span key={`${part}-${index}`} className="flex shrink-0 items-center">
                   {index > 0 ? <span className="mx-1 text-[var(--fx-muted)]">/</span> : null}
-                  <span className={index === breadcrumbParts.length - 1 ? "text-[var(--foreground)]" : ""}>{part}</span>
+                  <span
+                    className={
+                      index === breadcrumbParts.length - 1
+                        ? "max-w-[18ch] truncate text-[var(--foreground)]"
+                        : "shrink-0"
+                    }
+                  >
+                    {part}
+                  </span>
                 </span>
               ))}
             </nav>
           </div>
 
-          <div className="relative flex items-center gap-1.5">
+          <div className="relative flex shrink-0 items-center gap-1.5">
             <a
               href="mailto:9ff6ac2b6c9d@intake.linear.app?subject=%5BFeedback%5D%20Lattix%20Frontier&body=%0A---%20Feedback%20---%0A%0AType%3A%20%5B%20Bug%20%7C%20Feature%20Request%20%7C%20Improvement%20%7C%20Other%20%5D%0A%0ADescription%3A%0A%0A%0ASteps%20to%20reproduce%20(if%20bug)%3A%0A1.%20%0A2.%20%0A3.%20%0A%0AExpected%20behavior%3A%0A%0A%0AActual%20behavior%3A%0A%0A%0AAdditional%20context%3A%0A"
-              className="fx-btn-secondary px-2 py-1 text-[11px] no-underline"
+              className="fx-btn-secondary hidden whitespace-nowrap px-2 py-1 text-[11px] no-underline md:inline-flex"
             >
               Feedback
             </a>
-            <button className="fx-btn-secondary h-7 w-7 px-0 text-[11px]" aria-label="Docs">
+            <button className="fx-btn-secondary hidden h-7 w-7 px-0 text-[11px] md:inline-flex" aria-label="Docs">
               ?
             </button>
-            <button className="fx-btn-secondary h-7 w-7 px-0 text-[11px]" aria-label="Notifications">
+            <button className="fx-btn-secondary hidden h-7 w-7 px-0 text-[11px] md:inline-flex" aria-label="Notifications">
               🔔
             </button>
-            <span className="inline-flex items-center gap-1 rounded-full border border-[var(--ui-border)] bg-[hsl(var(--card))] px-2 py-1 text-[10px]">
-              <span className="h-1.5 w-1.5 rounded-full bg-[hsl(var(--state-success))]" />
+            <span className="fx-db-chip inline-flex items-center gap-1.5 whitespace-nowrap rounded-full border border-[var(--ui-border)] bg-[hsl(var(--card))] px-2 py-[3px] text-[10px] font-medium text-[var(--fx-muted)]">
+              <span className="h-1.5 w-1.5 rounded-full bg-[hsl(var(--state-success))]" aria-hidden="true" />
               DB OK
             </span>
             <ModeSwitch activeMode={activeMode} canAccessBuilder={canBuilder} />
             {activeMode === "user" ? (
-              <Link href="/workflows/start" className="fx-btn-primary px-2.5 py-1 text-[11px] font-medium">
+              <Link href="/workflows/start" className="fx-btn-primary whitespace-nowrap px-2.5 py-1 text-[11px] font-medium">
                 Start Workflow
               </Link>
             ) : null}
             <button
               onClick={() => setMenuOpen((value) => !value)}
-              className="fx-btn-secondary h-7 w-7 px-0 text-[11px] font-semibold"
+              className="inline-flex h-7 w-7 items-center justify-center rounded-full border-2 border-[hsl(var(--primary))] bg-[hsl(var(--primary)/0.12)] font-mono text-[10px] font-bold text-[hsl(var(--primary))] transition-[filter] hover:brightness-95"
               aria-label="User menu"
               title={operatorLabel}
             >

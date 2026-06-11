@@ -2859,6 +2859,18 @@ def test_workflow_run_without_explicit_agent_redeploys_and_uses_default_chat_age
         assert default_agent.status == "published"
         assert default_agent.name == "Default Chat Agent"
 
+        # Execution runs on the bounded worker pool; wait for it to finish.
+        def _execution_settled() -> bool:
+            if store.runs[run_id].status == "Running":
+                return False
+            detail_payload = store.run_details.get(run_id)
+            return isinstance(detail_payload, dict) and bool(detail_payload.get("agent_traces"))
+
+        deadline = time.time() + 15
+        while time.time() < deadline and not _execution_settled():
+            time.sleep(0.05)
+        assert _execution_settled(), "run execution did not settle within 15s"
+
         detail = store.run_details[run_id]
         assert detail["agent_traces"][0]["agent"] == "Default Chat Agent"
         assert detail["graph"]["nodes"][1]["config"]["agent_id"] == default_agent_id

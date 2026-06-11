@@ -53,6 +53,14 @@ services:
       FRONTIER_MEMORY_ENABLE_LONG_TERM: ${FRONTIER_MEMORY_ENABLE_LONG_TERM:-true}
       FRONTIER_MEMORY_LEARNING_ENABLED: ${FRONTIER_MEMORY_LEARNING_ENABLED:-true}
       OPENAI_EMBEDDING_MODEL: ${OPENAI_EMBEDDING_MODEL:-text-embedding-3-small}
+      # NVIDIA NIM (hosted API by default; NIM_BASE_URL can target self-hosted
+      # NIM microservices to keep inference on-prem).
+      NVIDIA_API_KEY: ${NVIDIA_API_KEY:-}
+      NIM_BASE_URL: ${NIM_BASE_URL:-}
+      NIM_MODEL: ${NIM_MODEL:-}
+      # Local open-weight models served by the ollama sidecar.
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://ollama:11434}
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-llama3.2:3b}
       NEO4J_URI: ${NEO4J_URI:-bolt://neo4j:7687}
       NEO4J_USERNAME: ${NEO4J_USERNAME:-neo4j}
       NEO4J_PASSWORD: ${NEO4J_PASSWORD}
@@ -282,11 +290,28 @@ services:
       COLLECTOR_OTLP_ENABLED: "true"
     ports: ["127.0.0.1:16686:16686"]
 
+  # Local open-weight model runtime (download + serve via OpenAI-compatible
+  # API). Idles small; memory is consumed only while a model is loaded.
+  ollama:
+    <<: *default-logging
+    image: ollama/ollama:latest
+    mem_limit: 8g
+    volumes:
+      - ollama-models:/root/.ollama
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: all
+    #           capabilities: [gpu]
+
 volumes:
   vault-data:
   postgres-data:
   nats-data:
   neo4j-data:
+  ollama-models:
 
 networks:
   sandbox-internal:

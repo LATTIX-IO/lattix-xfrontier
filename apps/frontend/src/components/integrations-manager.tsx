@@ -1,7 +1,15 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { deleteIntegration, getIntegrations, saveIntegration, testIntegration } from "@/lib/api";
+import {
+  deleteIntegration,
+  getIntegrationCatalog,
+  getIntegrations,
+  installCatalogIntegration,
+  saveIntegration,
+  testIntegration,
+  type IntegrationCatalogEntry,
+} from "@/lib/api";
 import type { IntegrationDefinition } from "@/types/frontier";
 
 type LastTestMetadata = {
@@ -81,6 +89,37 @@ export function IntegrationsManager() {
   const [oauthAudience, setOauthAudience] = useState("");
   const [statusMessage, setStatusMessage] = useState("");
   const [testingId, setTestingId] = useState<string | null>(null);
+  const [catalog, setCatalog] = useState<IntegrationCatalogEntry[]>([]);
+  const [installingId, setInstallingId] = useState<string | null>(null);
+
+  async function refreshCatalog() {
+    try {
+      setCatalog(await getIntegrationCatalog());
+    } catch {
+      // Catalog is additive; the manager remains usable without it.
+    }
+  }
+
+  useEffect(() => {
+    void refreshCatalog();
+  }, []);
+
+  async function installFromCatalog(entry: IntegrationCatalogEntry) {
+    setInstallingId(entry.catalog_id);
+    try {
+      const result = await installCatalogIntegration(entry.catalog_id);
+      setStatusMessage(
+        result.already_installed
+          ? `${entry.name} is already installed.`
+          : `${entry.name} added as a draft — configure its credentials below.`,
+      );
+      await Promise.all([refresh(), refreshCatalog()]);
+    } catch (err) {
+      setStatusMessage(err instanceof Error ? err.message : `Unable to install ${entry.name}.`);
+    } finally {
+      setInstallingId(null);
+    }
+  }
 
   async function refresh() {
     setLoading(true);
@@ -202,7 +241,46 @@ export function IntegrationsManager() {
       </header>
 
       <div className="fx-panel p-4">
-        <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide">Add integration</h2>
+        <div className="mb-3 flex items-center justify-between">
+          <h2 className="text-sm font-semibold uppercase tracking-wide">Catalog — MCP servers &amp; APIs</h2>
+          <span className="fx-muted text-xs">Preloaded, vetted entries. Credentials are configured after install.</span>
+        </div>
+        <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-3">
+          {catalog.map((entry) => {
+            const protocol = String(entry.metadata_json?.protocol ?? "http");
+            return (
+              <div key={entry.catalog_id} className="border border-[var(--fx-border)] bg-[var(--fx-surface-elevated)] p-2.5 text-xs">
+                <div className="flex items-start justify-between gap-2">
+                  <p className="font-medium text-[var(--foreground)]">{entry.name}</p>
+                  <span className="fx-muted rounded-full border border-[var(--ui-border)] px-2 py-0.5 text-[10px] uppercase">
+                    {protocol === "mcp" ? "MCP" : "API"}
+                  </span>
+                </div>
+                <p className="fx-muted mt-1 truncate">{entry.capabilities.join(", ")}</p>
+                <div className="mt-2 flex items-center justify-between">
+                  <span className="fx-muted text-[10px] uppercase">{entry.auth_type === "none" ? "no auth" : entry.auth_type}</span>
+                  {entry.installed ? (
+                    <span className="text-[hsl(var(--state-success))]">Installed</span>
+                  ) : (
+                    <button
+                      type="button"
+                      disabled={installingId === entry.catalog_id}
+                      onClick={() => void installFromCatalog(entry)}
+                      className="fx-btn-secondary px-2 py-1 text-[11px] font-medium disabled:opacity-60"
+                    >
+                      {installingId === entry.catalog_id ? "Adding..." : "Add"}
+                    </button>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+          {catalog.length === 0 ? <p className="fx-muted text-xs">Catalog unavailable.</p> : null}
+        </div>
+      </div>
+
+      <div className="fx-panel p-4">
+        <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide">Add your own integration</h2>
         <div className="grid gap-3 md:grid-cols-2">
           <label className="block text-sm">
             Name

@@ -1,15 +1,22 @@
+import { randomUUID } from "node:crypto";
 import Link from "next/link";
 import { TypedDeleteButton } from "@/components/typed-delete-button";
 import { getAgentDefinitions } from "@/lib/api";
 
 export default async function BuilderAgentsPage() {
   const agents = await getAgentDefinitions();
+  const newAgentId = randomUUID();
 
   return (
     <section className="space-y-4">
-      <header>
-        <h1 className="text-2xl font-semibold">Agent Studio</h1>
-        <p className="fx-muted">Agents are individual units of execution used by workflows.</p>
+      <header className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h1 className="text-2xl font-semibold">Agent Studio</h1>
+          <p className="fx-muted">Agents are individual units of execution used by workflows.</p>
+        </div>
+        <Link className="fx-btn-primary px-3 py-2 text-sm font-medium" href={`/builder/agents/${newAgentId}`}>
+          New Agent
+        </Link>
       </header>
 
       <div className="fx-panel overflow-hidden">

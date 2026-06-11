@@ -1,4 +1,4 @@
-.PHONY: up down update remove local-up local-down stack-up stack-down test lint typecheck policy-test helm-validate release-bundle bootstrap health ps logs smoke install-opa
+.PHONY: up down update remove local-up local-down stack-up stack-down test lint typecheck policy-test helm-validate release-bundle bootstrap health ps logs smoke install-opa frontend-serve resource-baseline
 
 # Canonical public install path: install/bootstrap.sh (or install/bootstrap.ps1 on Windows).
 # This Makefile is kept as a source-checkout convenience wrapper for contributors.
@@ -89,4 +89,14 @@ logs:
 
 smoke:
 	$(CLI_RUNNER) smoke
+
+frontend-serve: ## Build and serve the frontend production bundle (far lighter than `next dev`)
+	cd apps/frontend && npm run build && npm run start
+
+resource-baseline: ## Capture per-process and per-container memory baseline to docs/perf/baselines/
+ifeq ($(OS),Windows_NT)
+	powershell -NoProfile -ExecutionPolicy Bypass -File scripts/resource-baseline.ps1
+else
+	bash scripts/resource-baseline.sh
+endif
 

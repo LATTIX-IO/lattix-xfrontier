@@ -55,9 +55,18 @@ export default function PlaybooksPage() {
 
   return (
     <section className="space-y-6">
-      <header>
-        <h1 className="text-2xl font-semibold">Playbooks</h1>
-        <p className="fx-muted">Playbooks are collaborations of workflows designed to achieve high-level outcomes.</p>
+      <header className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h1 className="text-2xl font-semibold">Playbooks</h1>
+          <p className="fx-muted">Playbooks are collaborations of workflows designed to achieve high-level outcomes.</p>
+        </div>
+        <button
+          type="button"
+          className="fx-btn-primary px-3 py-2 text-sm font-medium"
+          onClick={() => router.push(`/builder/workflows/${crypto.randomUUID()}`)}
+        >
+          New Workflow
+        </button>
       </header>
 
       {error && (

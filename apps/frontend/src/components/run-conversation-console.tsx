@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
+import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import dynamic from "next/dynamic";
@@ -10,7 +10,14 @@ import remarkGfm from "remark-gfm";
 import { ReactFlowCanvas } from "@/components/reactflow-canvas";
 import { RunArchiveButton } from "@/components/run-archive-button";
 import { RunFollowupComposer } from "@/components/run-followup-composer";
-import { getAtfAlignmentReport, submitApproval, type WorkflowRunDetail } from "@/lib/api";
+import {
+  getAtfAlignmentReport,
+  getWorkflowRunEventsLive,
+  getWorkflowRunLive,
+  streamWorkflowRunEvents,
+  submitApproval,
+  type WorkflowRunDetail,
+} from "@/lib/api";
 import type { AtfAlignmentReport, WorkflowRunEvent } from "@/types/frontier";
 
 type Props = {
@@ -20,7 +27,14 @@ type Props = {
 };
 
 type EventFilter = "all" | "chat" | "system" | "errors";
-type RightPanelTab = "graph" | "artifacts" | "approvals" | "guardrails";
+type RightPanelTab = "graph" | "cognition" | "artifacts" | "approvals" | "guardrails";
+
+function toStringList(value: unknown): string[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value.map((item) => String(item ?? "").trim()).filter(Boolean);
+}
 
 function normalizeComparableText(value: string): string {
   return String(value || "").replace(/\s+/g, " ").trim();
@@ -82,10 +96,18 @@ function statusColorForRun(status: string): string {
   return "hsl(var(--state-info))";
 }
 
-export function RunConversationConsole({ runId, run, events }: Props) {
+const LIVE_POLL_RUNNING_MS = 3000;
+const LIVE_POLL_IDLE_MS = 8000;
+
+export function RunConversationConsole({ runId, run: initialRun, events: initialEvents }: Props) {
   const router = useRouter();
   const timelineRef = useRef<HTMLDivElement | null>(null);
 
+  const [run, setRun] = useState<WorkflowRunDetail>(initialRun);
+  const [events, setEvents] = useState<WorkflowRunEvent[]>(initialEvents);
+  // Prefer the SSE bridge (one idle connection); drop to interval polling if it fails.
+  const [liveTransport, setLiveTransport] = useState<"stream" | "poll">("stream");
+  const lastEventIdRef = useRef<string>("");
   const [eventFilter, setEventFilter] = useState<EventFilter>("all");
   const [searchQuery, setSearchQuery] = useState("");
   const [rightPanelTab, setRightPanelTab] = useState<RightPanelTab>("graph");
@@ -94,6 +116,8 @@ export function RunConversationConsole({ runId, run, events }: Props) {
   const [approvalFeedback, setApprovalFeedback] = useState("");
   const [approvalBusy, setApprovalBusy] = useState<"approved" | "changes_requested" | null>(null);
   const [approvalMessage, setApprovalMessage] = useState<string | null>(null);
+  // Details flyout: collapsed by default so the chat stays the primary surface.
+  const [flyoutOpen, setFlyoutOpen] = useState(false);
   const [atfReport, setAtfReport] = useState<AtfAlignmentReport | null>(null);
   const [atfReportError, setAtfReportError] = useState<string | null>(null);
 
@@ -191,12 +215,158 @@ export function RunConversationConsole({ runId, run, events }: Props) {
   const usedAgentStudioAgent = hasAgentNode || agentTraces.length > 0;
 
   const guardrailEvents = orderedEvents.filter((event) => event.type === "guardrail_result");
+  const approvalAttention = Boolean(approvals.required && approvals.pending);
+  const alertAttention =
+    run.status === "Failed" ||
+    run.status === "Blocked" ||
+    guardrailEvents.length > 0 ||
+    orderedEvents.some((event) => event.type === "error");
+  // "action" (operator must do something) outranks "alert" (something went wrong).
+  const flyoutAttention: "action" | "alert" | null = approvalAttention
+    ? "action"
+    : alertAttention
+      ? "alert"
+      : null;
+  const cognitiveSummary = run.cognitive ?? null;
+  const cognitiveCommitment = cognitiveSummary?.commitment ?? null;
+  const cognitiveAssembly = cognitiveSummary?.assembly ?? null;
+  const cognitiveStates = cognitiveSummary?.states ?? {};
+  const cognitiveMessages = Array.isArray(cognitiveSummary?.messages) ? cognitiveSummary.messages : [];
+  const cognitiveStateEntries = Object.entries(cognitiveStates);
+
+  // Server components re-render with fresh data on router.refresh(); adopt it.
+  useEffect(() => {
+    setRun(initialRun);
+    setEvents(initialEvents);
+  }, [initialRun, initialEvents]);
+
+  const refreshLiveState = useCallback(async () => {
+    const [nextRun, nextEvents] = await Promise.all([
+      getWorkflowRunLive(runId),
+      getWorkflowRunEventsLive(runId),
+    ]);
+    setRun(nextRun);
+    setEvents(nextEvents);
+  }, [runId]);
+
+  const runIsLive =
+    run.status === "Running" || run.status === "Needs Review" || Boolean(run.approvals?.pending);
+
+  useEffect(() => {
+    lastEventIdRef.current = events.length > 0 ? events[events.length - 1].id : "";
+  }, [events]);
+
+  // Primary live transport: server-sent events. One idle connection instead of
+  // request pairs every few seconds; any failure downgrades to polling below.
+  useEffect(() => {
+    if (!runIsLive || liveTransport !== "stream") {
+      return;
+    }
+    const controller = new AbortController();
+    let cancelled = false;
+    let detailTimer: ReturnType<typeof setTimeout> | null = null;
+
+    const scheduleDetailRefresh = () => {
+      if (cancelled || detailTimer) {
+        return;
+      }
+      detailTimer = setTimeout(() => {
+        detailTimer = null;
+        void getWorkflowRunLive(runId)
+          .then((nextRun) => {
+            if (!cancelled) {
+              setRun(nextRun);
+            }
+          })
+          .catch(() => {
+            // Transient; the stream keeps delivering events regardless.
+          });
+      }, 400);
+    };
+
+    void (async () => {
+      while (!cancelled) {
+        try {
+          const endReason = await streamWorkflowRunEvents(runId, {
+            afterEventId: lastEventIdRef.current || undefined,
+            signal: controller.signal,
+            onEvent: (event) => {
+              lastEventIdRef.current = event.id;
+              setEvents((prev) => (prev.some((item) => item.id === event.id) ? prev : [...prev, event]));
+              scheduleDetailRefresh();
+            },
+            onStatus: () => scheduleDetailRefresh(),
+          });
+          if (endReason === "terminal") {
+            // Let polling close out the final state (it stops once terminal).
+            if (!cancelled) {
+              setLiveTransport("poll");
+            }
+            return;
+          }
+          // "timeout": server rotated the connection; reconnect with the cursor.
+        } catch {
+          if (!cancelled) {
+            setLiveTransport("poll");
+          }
+          return;
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+      controller.abort();
+      if (detailTimer) {
+        clearTimeout(detailTimer);
+      }
+    };
+  }, [liveTransport, runId, runIsLive]);
+
+  useEffect(() => {
+    if (!runIsLive || liveTransport !== "poll") {
+      return;
+    }
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const intervalMs = run.status === "Running" ? LIVE_POLL_RUNNING_MS : LIVE_POLL_IDLE_MS;
+
+    async function tick() {
+      if (cancelled) {
+        return;
+      }
+      if (typeof document === "undefined" || document.visibilityState !== "hidden") {
+        try {
+          await refreshLiveState();
+        } catch {
+          // Transient failure — keep the last known state and retry on the next tick.
+        }
+      }
+      if (!cancelled) {
+        timer = setTimeout(tick, intervalMs);
+      }
+    }
+
+    timer = setTimeout(tick, intervalMs);
+    return () => {
+      cancelled = true;
+      if (timer) {
+        clearTimeout(timer);
+      }
+    };
+  }, [liveTransport, refreshLiveState, run.status, runIsLive]);
 
   useEffect(() => {
     if (approvals.required && approvals.pending) {
       setRightPanelTab("approvals");
     }
   }, [approvals.pending, approvals.required]);
+
+  useEffect(() => {
+    if (cognitiveCommitment && rightPanelTab === "graph") {
+      setRightPanelTab("cognition");
+    }
+  }, [cognitiveCommitment, rightPanelTab]);
 
   useEffect(() => {
     let active = true;
@@ -278,6 +448,11 @@ export function RunConversationConsole({ runId, run, events }: Props) {
         feedback: decision === "changes_requested" ? feedback : undefined,
       });
       setApprovalMessage(decision === "approved" ? "Approval submitted." : "Change request submitted.");
+      try {
+        await refreshLiveState();
+      } catch {
+        // Fresh state also arrives via the server-component refresh below.
+      }
       router.refresh();
     } catch {
       setApprovalMessage("Unable to submit approval decision. Please retry.");
@@ -308,80 +483,35 @@ export function RunConversationConsole({ runId, run, events }: Props) {
             <span className="rounded-full border border-[var(--ui-border)] bg-[hsl(var(--card))] px-2 py-1 font-medium" style={{ color: statusColor }}>
               {run.status}
             </span>
-            <span className="rounded-full border border-[var(--ui-border)] px-2 py-1 text-[var(--foreground)]">{orderedEvents.length} events</span>
-            <span className="rounded-full border border-[var(--ui-border)] px-2 py-1 text-[var(--foreground)]">{agentTraces.length} trace(s)</span>
-            <span className="rounded-full border border-[var(--ui-border)] px-2 py-1 text-[var(--foreground)]">{run.artifacts.length} artifact(s)</span>
             <button onClick={() => router.refresh()} className="fx-btn-secondary px-2 py-1 text-xs font-medium" type="button">
               Refresh
             </button>
             <RunArchiveButton runId={runId} buttonClassName="fx-btn-secondary px-2 py-1 text-xs font-medium" />
+            <button
+              type="button"
+              onClick={() => setFlyoutOpen(true)}
+              aria-label="Open run details"
+              className="fx-btn-secondary relative px-2 py-1 text-xs font-medium"
+            >
+              Details
+              {flyoutAttention ? (
+                <span
+                  data-testid="flyout-attention"
+                  aria-label={
+                    flyoutAttention === "action" ? "Action required" : "Issues detected"
+                  }
+                  className={`absolute -right-1 -top-1 h-2.5 w-2.5 animate-pulse rounded-full ${
+                    flyoutAttention === "action"
+                      ? "bg-[hsl(var(--state-warning))]"
+                      : "bg-[hsl(var(--state-critical))]"
+                  }`}
+                />
+              ) : null}
+            </button>
           </div>
         </header>
 
-        <div className="grid grid-cols-2 gap-2 text-xs md:grid-cols-4">
-          <div className="fx-panel px-3 py-2">
-            <p className="fx-muted">Chat turns</p>
-            <p className="mt-1 text-base font-semibold text-[var(--foreground)]">{chatEventsCount}</p>
-          </div>
-          <div className="fx-panel px-3 py-2">
-            <p className="fx-muted">System events</p>
-            <p className="mt-1 text-base font-semibold text-[var(--foreground)]">{systemEventsCount}</p>
-          </div>
-          <div className="fx-panel px-3 py-2">
-            <p className="fx-muted">Errors / blockers</p>
-            <p className="mt-1 text-base font-semibold text-[var(--foreground)]">{errorEventsCount}</p>
-          </div>
-          <div className="fx-panel px-3 py-2">
-            <p className="fx-muted">Graph mode</p>
-            <p className="mt-1 text-base font-semibold text-[var(--foreground)]">{usedAgentStudioAgent ? "Agent-mediated" : "Fallback view"}</p>
-          </div>
-        </div>
-
-        <div className="fx-panel p-3 text-xs">
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <h2 className="text-sm font-semibold text-[var(--foreground)]">ATF posture at execution time</h2>
-            <span className="fx-muted text-[11px]">CSA Agentic Trust Framework</span>
-          </div>
-          {atfReport ? (
-            <>
-              <div className="mt-2 grid grid-cols-2 gap-2 md:grid-cols-4">
-                <div className="rounded-md border border-[var(--ui-border)] bg-[hsl(var(--card)/0.9)] px-2 py-1.5">
-                  <p className="fx-muted">Coverage</p>
-                  <p className="mt-0.5 text-sm font-semibold text-[var(--foreground)]">{Math.round(atfReport.coverage_percent)}%</p>
-                </div>
-                <div className="rounded-md border border-[var(--ui-border)] bg-[hsl(var(--card)/0.9)] px-2 py-1.5">
-                  <p className="fx-muted">Maturity</p>
-                  <p className="mt-0.5 text-sm font-semibold capitalize text-[var(--foreground)]">{atfReport.maturity_estimate}</p>
-                </div>
-                <div className="rounded-md border border-[var(--ui-border)] bg-[hsl(var(--card)/0.9)] px-2 py-1.5">
-                  <p className="fx-muted">Blocked (24h)</p>
-                  <p className="mt-0.5 text-sm font-semibold text-[var(--foreground)]">{atfReport.evidence.audit_blocked_24h}</p>
-                </div>
-                <div className="rounded-md border border-[var(--ui-border)] bg-[hsl(var(--card)/0.9)] px-2 py-1.5">
-                  <p className="fx-muted">Errors (24h)</p>
-                  <p className="mt-0.5 text-sm font-semibold text-[var(--foreground)]">{atfReport.evidence.audit_error_24h}</p>
-                </div>
-              </div>
-
-              <div className="mt-2 rounded-md border border-[var(--ui-border)] bg-[hsl(var(--muted)/0.24)] p-2">
-                <p className="fx-muted text-[11px] uppercase tracking-wide">Top current gaps</p>
-                {atfTopGaps.length > 0 ? (
-                  <ul className="mt-1 list-disc space-y-0.5 pl-4 text-xs leading-relaxed text-[var(--foreground)]">
-                    {atfTopGaps.map((gap, index) => (
-                      <li key={`atf-gap-${index}`}>{gap}</li>
-                    ))}
-                  </ul>
-                ) : (
-                  <p className="mt-1 text-xs text-[var(--foreground)]">No major gaps currently flagged.</p>
-                )}
-              </div>
-            </>
-          ) : (
-            <p className="mt-2 text-xs text-[hsl(var(--muted-foreground))]">{atfReportError ?? "Loading ATF posture..."}</p>
-          )}
-        </div>
-
-        <div className="grid min-h-[72vh] grid-cols-1 gap-3 xl:grid-cols-[1.08fr_1.42fr]">
+        <div className="mx-auto grid min-h-[72vh] w-full max-w-[1100px]">
           <section className="fx-panel flex min-h-0 flex-col overflow-hidden p-0">
             <div className="border-b border-[var(--ui-border)] px-3 py-3">
               <div className="flex flex-wrap items-center justify-between gap-2">
@@ -564,11 +694,100 @@ export function RunConversationConsole({ runId, run, events }: Props) {
             </div>
           </section>
 
-          <section className="min-h-0 space-y-3">
+        </div>
+
+        {flyoutOpen ? (
+          <>
+            <div
+              className="fixed inset-0 z-40 bg-black/40"
+              onClick={() => setFlyoutOpen(false)}
+              aria-hidden="true"
+            />
+            <aside
+              role="dialog"
+              aria-label="Run details"
+              className="fixed right-0 top-0 z-50 flex h-full w-full max-w-[620px] flex-col gap-3 overflow-y-auto border-l border-[var(--ui-border)] bg-[hsl(var(--background))] p-4 shadow-2xl"
+            >
+              <div className="flex items-center justify-between">
+                <h2 className="text-sm font-semibold">Run details</h2>
+                <button
+                  type="button"
+                  onClick={() => setFlyoutOpen(false)}
+                  aria-label="Close run details"
+                  className="fx-btn-secondary px-2 py-1 text-xs font-medium"
+                >
+                  Close
+                </button>
+              </div>
+
+              <div className="grid grid-cols-2 gap-2 text-xs md:grid-cols-4">
+                <div className="fx-panel px-3 py-2">
+                  <p className="fx-muted">Chat turns</p>
+                  <p className="mt-1 text-base font-semibold text-[var(--foreground)]">{chatEventsCount}</p>
+                </div>
+                <div className="fx-panel px-3 py-2">
+                  <p className="fx-muted">System events</p>
+                  <p className="mt-1 text-base font-semibold text-[var(--foreground)]">{systemEventsCount}</p>
+                </div>
+                <div className="fx-panel px-3 py-2">
+                  <p className="fx-muted">Errors / blockers</p>
+                  <p className="mt-1 text-base font-semibold text-[var(--foreground)]">{errorEventsCount}</p>
+                </div>
+                <div className="fx-panel px-3 py-2">
+                  <p className="fx-muted">Graph mode</p>
+                  <p className="mt-1 text-base font-semibold text-[var(--foreground)]">{usedAgentStudioAgent ? "Agent-mediated" : "Fallback view"}</p>
+                </div>
+              </div>
+
+              <div className="fx-panel p-3 text-xs">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <h2 className="text-sm font-semibold text-[var(--foreground)]">ATF posture at execution time</h2>
+                  <span className="fx-muted text-[11px]">CSA Agentic Trust Framework</span>
+                </div>
+                {atfReport ? (
+                  <>
+                    <div className="mt-2 grid grid-cols-2 gap-2 md:grid-cols-4">
+                      <div className="rounded-md border border-[var(--ui-border)] bg-[hsl(var(--card)/0.9)] px-2 py-1.5">
+                        <p className="fx-muted">Coverage</p>
+                        <p className="mt-0.5 text-sm font-semibold text-[var(--foreground)]">{Math.round(atfReport.coverage_percent)}%</p>
+                      </div>
+                      <div className="rounded-md border border-[var(--ui-border)] bg-[hsl(var(--card)/0.9)] px-2 py-1.5">
+                        <p className="fx-muted">Maturity</p>
+                        <p className="mt-0.5 text-sm font-semibold capitalize text-[var(--foreground)]">{atfReport.maturity_estimate}</p>
+                      </div>
+                      <div className="rounded-md border border-[var(--ui-border)] bg-[hsl(var(--card)/0.9)] px-2 py-1.5">
+                        <p className="fx-muted">Blocked (24h)</p>
+                        <p className="mt-0.5 text-sm font-semibold text-[var(--foreground)]">{atfReport.evidence.audit_blocked_24h}</p>
+                      </div>
+                      <div className="rounded-md border border-[var(--ui-border)] bg-[hsl(var(--card)/0.9)] px-2 py-1.5">
+                        <p className="fx-muted">Errors (24h)</p>
+                        <p className="mt-0.5 text-sm font-semibold text-[var(--foreground)]">{atfReport.evidence.audit_error_24h}</p>
+                      </div>
+                    </div>
+
+                    <div className="mt-2 rounded-md border border-[var(--ui-border)] bg-[hsl(var(--muted)/0.24)] p-2">
+                      <p className="fx-muted text-[11px] uppercase tracking-wide">Top current gaps</p>
+                      {atfTopGaps.length > 0 ? (
+                        <ul className="mt-1 list-disc space-y-0.5 pl-4 text-xs leading-relaxed text-[var(--foreground)]">
+                          {atfTopGaps.map((gap, index) => (
+                            <li key={`atf-gap-${index}`}>{gap}</li>
+                          ))}
+                        </ul>
+                      ) : (
+                        <p className="mt-1 text-xs text-[var(--foreground)]">No major gaps currently flagged.</p>
+                      )}
+                    </div>
+                  </>
+                ) : (
+                  <p className="mt-2 text-xs text-[hsl(var(--muted-foreground))]">{atfReportError ?? "Loading ATF posture..."}</p>
+                )}
+              </div>
+
             <div className="fx-panel p-2">
               <div className="mb-2 flex items-center gap-1 rounded-lg border border-[var(--ui-border)] bg-[hsl(var(--card))] p-1 text-xs">
                 {([
                   ["graph", "Execution Graph"],
+                  ["cognition", "Cognition"],
                   ["artifacts", "Artifacts"],
                   ["approvals", "Approvals"],
                   ["guardrails", "Guardrails"],
@@ -593,6 +812,112 @@ export function RunConversationConsole({ runId, run, events }: Props) {
                     </span>
                   </div>
                   <ReactFlowCanvas nodes={effectiveGraphNodes} links={effectiveGraphLinks} height={560} readOnly />
+                </div>
+              ) : null}
+
+              {rightPanelTab === "cognition" ? (
+                <div className="p-2">
+                  <h3 className="mb-2 text-sm font-semibold">Cognitive artifacts</h3>
+                  {!cognitiveCommitment ? (
+                    <p className="fx-muted text-xs">No cognitive artifacts were captured for this run.</p>
+                  ) : (
+                    <div className="space-y-2 text-xs">
+                      <div className="rounded-md border border-[var(--ui-border)] bg-[hsl(var(--card)/0.9)] p-2">
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <p className="font-semibold text-[var(--foreground)]">Commitment</p>
+                          <div className="flex flex-wrap items-center gap-1.5">
+                            <span className="rounded-full border border-[var(--ui-border)] px-2 py-0.5 text-[11px] text-[var(--foreground)]">
+                              Status: {String(cognitiveCommitment.status || "captured")}
+                            </span>
+                            <span className="rounded-full border border-[var(--ui-border)] px-2 py-0.5 text-[11px] text-[var(--foreground)]">
+                              Confidence: {typeof cognitiveCommitment.confidence === "number" ? `${Math.round(cognitiveCommitment.confidence * 100)}%` : "n/a"}
+                            </span>
+                          </div>
+                        </div>
+                        <p className="mt-2 text-xs font-medium text-[var(--foreground)]">{String(cognitiveCommitment.decision || "No decision captured")}</p>
+                        {String(cognitiveCommitment.rationale || "").trim() ? (
+                          <p className="mt-1 text-xs leading-relaxed text-[hsl(var(--muted-foreground))]">{String(cognitiveCommitment.rationale)}</p>
+                        ) : null}
+                      </div>
+
+                      <div className="grid gap-2 md:grid-cols-2">
+                        <div className="rounded-md border border-[var(--ui-border)] bg-[hsl(var(--card)/0.9)] p-2">
+                          <p className="fx-muted text-[10px] uppercase tracking-wide">Blockers</p>
+                          {toStringList(cognitiveCommitment.blockers).length > 0 ? (
+                            <ul className="mt-1 list-disc space-y-0.5 pl-4 text-[var(--foreground)]">
+                              {toStringList(cognitiveCommitment.blockers).map((item, index) => (
+                                <li key={`blocker-${index}`}>{item}</li>
+                              ))}
+                            </ul>
+                          ) : (
+                            <p className="mt-1 text-[var(--foreground)]">No blockers.</p>
+                          )}
+                        </div>
+                        <div className="rounded-md border border-[var(--ui-border)] bg-[hsl(var(--card)/0.9)] p-2">
+                          <p className="fx-muted text-[10px] uppercase tracking-wide">Next actions</p>
+                          {toStringList(cognitiveCommitment.next_actions).length > 0 ? (
+                            <ul className="mt-1 list-disc space-y-0.5 pl-4 text-[var(--foreground)]">
+                              {toStringList(cognitiveCommitment.next_actions).map((item, index) => (
+                                <li key={`next-action-${index}`}>{item}</li>
+                              ))}
+                            </ul>
+                          ) : (
+                            <p className="mt-1 text-[var(--foreground)]">No next actions recorded.</p>
+                          )}
+                        </div>
+                      </div>
+
+                      <div className="grid gap-2 md:grid-cols-2">
+                        <div className="rounded-md border border-[var(--ui-border)] bg-[hsl(var(--card)/0.9)] p-2">
+                          <p className="fx-muted text-[10px] uppercase tracking-wide">Supporting columns</p>
+                          <p className="mt-1 text-[var(--foreground)]">{toStringList(cognitiveCommitment.supporting_columns).join(", ") || "None"}</p>
+                        </div>
+                        <div className="rounded-md border border-[var(--ui-border)] bg-[hsl(var(--card)/0.9)] p-2">
+                          <p className="fx-muted text-[10px] uppercase tracking-wide">Dissenting columns</p>
+                          <p className="mt-1 text-[var(--foreground)]">{toStringList(cognitiveCommitment.dissenting_columns).join(", ") || "None"}</p>
+                        </div>
+                      </div>
+
+                      <div className="rounded-md border border-[var(--ui-border)] bg-[hsl(var(--card)/0.9)] p-2">
+                        <p className="fx-muted text-[10px] uppercase tracking-wide">Assembly</p>
+                        <p className="mt-1 text-[var(--foreground)]">
+                          {String(cognitiveAssembly?.assembly_id || "unknown")} • {String(cognitiveAssembly?.consensus_policy || "unspecified")} • {String(cognitiveAssembly?.inference_mode || "unspecified")}
+                        </p>
+                        {toStringList(cognitiveAssembly?.columns).length > 0 ? (
+                          <p className="mt-1 text-[hsl(var(--muted-foreground))]">Columns: {toStringList(cognitiveAssembly?.columns).join(", ")}</p>
+                        ) : null}
+                      </div>
+
+                      {cognitiveStateEntries.length > 0 ? (
+                        <div className="rounded-md border border-[var(--ui-border)] bg-[hsl(var(--card)/0.9)] p-2">
+                          <p className="fx-muted text-[10px] uppercase tracking-wide">Column states</p>
+                          <div className="mt-2 space-y-1.5">
+                            {cognitiveStateEntries.map(([key, value]) => (
+                              <div key={key} className="flex items-center justify-between gap-2 rounded border border-[var(--ui-border)] px-2 py-1">
+                                <span className="font-medium text-[var(--foreground)]">{String(value?.column_id || key)}</span>
+                                <span className="text-[hsl(var(--muted-foreground))]">
+                                  Confidence: {typeof value?.confidence === "number" ? `${Math.round(value.confidence * 100)}%` : "n/a"}
+                                </span>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      ) : null}
+
+                      {cognitiveMessages.length > 0 ? (
+                        <div className="rounded-md border border-[var(--ui-border)] bg-[hsl(var(--card)/0.9)] p-2">
+                          <p className="fx-muted text-[10px] uppercase tracking-wide">Messages</p>
+                          <div className="mt-2 flex flex-wrap gap-1.5">
+                            {cognitiveMessages.map((message, index) => (
+                              <span key={`cognitive-message-${index}`} className="rounded-full border border-[var(--ui-border)] px-2 py-0.5 text-[11px] text-[var(--foreground)]">
+                                {String(message.message_type || "message")} · {String(message.column_id || "unknown")}
+                              </span>
+                            ))}
+                          </div>
+                        </div>
+                      ) : null}
+                    </div>
+                  )}
                 </div>
               ) : null}
 
@@ -703,8 +1028,9 @@ export function RunConversationConsole({ runId, run, events }: Props) {
                 {approvalMessage}
               </div>
             ) : null}
-          </section>
-        </div>
+            </aside>
+          </>
+        ) : null}
       </section>
     </div>
   );

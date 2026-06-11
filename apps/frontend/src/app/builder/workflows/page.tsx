@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import Link from "next/link";
 import { TypedDeleteButton } from "@/components/typed-delete-button";
 import { WorkflowStatusButton } from "@/components/workflow-status-button";
@@ -5,12 +6,18 @@ import { getWorkflowDefinitions } from "@/lib/api";
 
 export default async function BuilderWorkflowsPage() {
   const workflows = await getWorkflowDefinitions();
+  const newWorkflowId = randomUUID();
 
   return (
     <section className="space-y-4">
-      <header>
-        <h1 className="text-2xl font-semibold">Workflow Studio</h1>
-        <p className="fx-muted">Workflows are tasks for one or more agents to execute end-to-end.</p>
+      <header className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h1 className="text-2xl font-semibold">Workflow Studio</h1>
+          <p className="fx-muted">Workflows are tasks for one or more agents to execute end-to-end.</p>
+        </div>
+        <Link className="fx-btn-primary px-3 py-2 text-sm font-medium" href={`/builder/workflows/${newWorkflowId}`}>
+          New Workflow
+        </Link>
       </header>
 
       <div className="fx-panel overflow-hidden">

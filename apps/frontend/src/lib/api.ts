@@ -266,6 +266,43 @@ export type WorkflowRunDetail = {
     version?: number;
     scope?: string;
   };
+  cognitive?: {
+    assembly?: {
+      assembly_id?: string;
+      consensus_policy?: string;
+      inference_mode?: string;
+      columns?: string[];
+    };
+    commitment?: {
+      decision?: string;
+      confidence?: number;
+      supporting_columns?: string[];
+      dissenting_columns?: string[];
+      blockers?: string[];
+      next_actions?: string[];
+      evidence_refs?: string[];
+      rationale?: string;
+      status?: string;
+    };
+    states?: Record<
+      string,
+      {
+        column_id?: string;
+        assembly_id?: string;
+        belief_set?: Record<string, unknown>;
+        evidence_refs?: string[];
+        confidence?: number;
+        last_updated?: string;
+      }
+    >;
+    messages?: Array<{
+      message_type?: string;
+      column_id?: string;
+      assembly_id?: string;
+      confidence?: number;
+      evidence_refs?: string[];
+    }>;
+  };
 };
 
 async function safeFetch<T>(path: string, fallback: T, init?: RequestInit): Promise<T> {
@@ -404,6 +441,320 @@ export async function getWorkflowRunEvents(id: string): Promise<WorkflowRunEvent
   return safeFetch<WorkflowRunEvent[]>(`/workflow-runs/${id}/events`, mockEvents);
 }
 
+// Live variants throw on failure instead of falling back to mock data, so pollers
+// never overwrite real run state with placeholders.
+export async function getWorkflowRunLive(id: string): Promise<WorkflowRunDetail> {
+  return strictFetch<WorkflowRunDetail>(`/workflow-runs/${id}`);
+}
+
+export async function getWorkflowRunEventsLive(
+  id: string,
+  afterEventId?: string,
+): Promise<WorkflowRunEvent[]> {
+  const suffix = afterEventId ? `?after=${encodeURIComponent(afterEventId)}` : "";
+  return strictFetch<WorkflowRunEvent[]>(`/workflow-runs/${id}/events${suffix}`);
+}
+
+export type SkillDefinition = {
+  id: string;
+  name: string;
+  description: string;
+  content: string;
+  status: "enabled" | "disabled";
+  tags: string[];
+  source: "bundled" | "custom";
+  auto_inject: boolean;
+  version: number;
+  updated_at: string;
+  usage_count: number;
+  last_used_at: string;
+};
+
+export type WorkflowTrigger = {
+  id: string;
+  token_fingerprint: string;
+  label: string;
+  created_at: string;
+};
+
+export async function getWorkflowTriggers(workflowId: string): Promise<WorkflowTrigger[]> {
+  return strictFetch<WorkflowTrigger[]>(
+    `/workflow-definitions/${encodeURIComponent(workflowId)}/triggers`,
+  );
+}
+
+export async function createWorkflowTrigger(
+  workflowId: string,
+  label: string,
+): Promise<{ ok: boolean; token: string; webhook_url: string; label: string }> {
+  return strictFetch(`/workflow-definitions/${encodeURIComponent(workflowId)}/triggers`, {
+    method: "POST",
+    body: JSON.stringify({ label }),
+  });
+}
+
+export async function revokeWorkflowTrigger(token: string): Promise<{ ok: boolean }> {
+  return strictFetch(`/triggers/${encodeURIComponent(token)}`, { method: "DELETE" });
+}
+
+export type WorkflowSchedule = {
+  id: string;
+  workflow_id: string;
+  label: string;
+  cron: string;
+  enabled: boolean;
+  created_at: string;
+  last_fired_minute: string;
+};
+
+export async function getWorkflowSchedules(workflowId: string): Promise<WorkflowSchedule[]> {
+  return strictFetch<WorkflowSchedule[]>(
+    `/workflow-definitions/${encodeURIComponent(workflowId)}/schedules`,
+  );
+}
+
+export async function createWorkflowSchedule(
+  workflowId: string,
+  cron: string,
+  label: string,
+): Promise<WorkflowSchedule> {
+  return strictFetch(`/workflow-definitions/${encodeURIComponent(workflowId)}/schedules`, {
+    method: "POST",
+    body: JSON.stringify({ cron, label }),
+  });
+}
+
+export async function toggleWorkflowSchedule(
+  scheduleId: string,
+  enabled: boolean,
+): Promise<WorkflowSchedule> {
+  return strictFetch(`/schedules/${encodeURIComponent(scheduleId)}/toggle`, {
+    method: "POST",
+    body: JSON.stringify({ enabled }),
+  });
+}
+
+export async function deleteWorkflowSchedule(scheduleId: string): Promise<{ ok: boolean }> {
+  return strictFetch(`/schedules/${encodeURIComponent(scheduleId)}`, { method: "DELETE" });
+}
+
+export type SkillTestResult = {
+  skill_id: string;
+  model: string;
+  provider: string;
+  mode: string;
+  reason?: string;
+  output: string;
+};
+
+export async function testSkill(
+  id: string,
+  payload: { prompt: string; model?: string },
+): Promise<SkillTestResult> {
+  return strictFetch<SkillTestResult>(`/skills/${encodeURIComponent(id)}/test`, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function getSkills(): Promise<SkillDefinition[]> {
+  return strictFetch<SkillDefinition[]>("/skills");
+}
+
+export async function saveSkill(payload: Partial<SkillDefinition>): Promise<SkillDefinition> {
+  return strictFetch<SkillDefinition>("/skills", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function deleteSkill(id: string): Promise<{ ok: boolean }> {
+  return strictFetch<{ ok: boolean }>(`/skills/${encodeURIComponent(id)}`, { method: "DELETE" });
+}
+
+export type IntegrationCatalogEntry = {
+  catalog_id: string;
+  name: string;
+  type: string;
+  auth_type: string;
+  base_url: string;
+  publisher: string;
+  capabilities: string[];
+  egress_allowlist: string[];
+  metadata_json: Record<string, unknown>;
+  installed: boolean;
+};
+
+export async function getIntegrationCatalog(): Promise<IntegrationCatalogEntry[]> {
+  return strictFetch<IntegrationCatalogEntry[]>("/integrations/catalog");
+}
+
+export async function installCatalogIntegration(
+  catalogId: string,
+): Promise<{ ok: boolean; id: string; already_installed: boolean }> {
+  return strictFetch(`/integrations/catalog/${encodeURIComponent(catalogId)}/install`, {
+    method: "POST",
+  });
+}
+
+export type LocalModelPullState = {
+  status: "downloading" | "ready" | "error" | string;
+  detail?: string;
+  progress_percent?: number;
+};
+
+export type LocalModelCatalogItem = {
+  id: string;
+  label: string;
+  family: string;
+  size_gb: number;
+  min_ram_gb: number;
+  notes: string;
+  installed: boolean;
+  reference: string;
+  pull?: LocalModelPullState | null;
+};
+
+export type ModelsOverview = {
+  providers: {
+    openai: { configured: boolean; default_model: string };
+    nim: {
+      configured: boolean;
+      base_url: string;
+      default_model: string;
+      reference_example: string;
+    };
+    ollama: {
+      available: boolean;
+      base_url: string;
+      default_model: string;
+      installed_models: { id: string; size_bytes: number; modified_at: string }[];
+    };
+  };
+  external: {
+    id: string;
+    label: string;
+    configured: boolean;
+    base_url: string;
+    default_model: string;
+    reference_example: string;
+    key_required: boolean;
+  }[];
+  catalog: LocalModelCatalogItem[];
+};
+
+export async function getModelsOverview(): Promise<ModelsOverview> {
+  return strictFetch<ModelsOverview>("/models/overview");
+}
+
+export type ProviderModelsResponse = {
+  provider: string;
+  configured: boolean;
+  models: string[];
+  reason?: string;
+};
+
+export async function getProviderModels(providerId: string): Promise<ProviderModelsResponse> {
+  return strictFetch<ProviderModelsResponse>(
+    `/models/providers/${encodeURIComponent(providerId)}/models`,
+  );
+}
+
+export async function pullLocalModel(
+  model: string,
+): Promise<{ ok: boolean; model: string; pull: LocalModelPullState }> {
+  return strictFetch("/models/local/pull", {
+    method: "POST",
+    body: JSON.stringify({ model }),
+  });
+}
+
+export type RunStatusFrame = {
+  status: string;
+  progress_label?: string;
+  approval_pending?: boolean;
+};
+
+export type RunStreamOptions = {
+  afterEventId?: string;
+  signal: AbortSignal;
+  onEvent?: (event: WorkflowRunEvent) => void;
+  onStatus?: (status: RunStatusFrame) => void;
+};
+
+// Fetch-based SSE consumer (fetch can carry identity headers; EventSource cannot).
+// Resolves with the server's stream_end reason ("terminal" | "timeout"); throws on
+// transport/HTTP failure so callers can fall back to polling.
+export async function streamWorkflowRunEvents(
+  id: string,
+  options: RunStreamOptions,
+): Promise<string> {
+  const suffix = options.afterEventId ? `?after=${encodeURIComponent(options.afterEventId)}` : "";
+  const res = await fetch(`${getApiBase()}/workflow-runs/${id}/events/stream${suffix}`, {
+    headers: {
+      Accept: "text/event-stream",
+      ...getRequestIdentityHeaders(),
+    },
+    cache: "no-store",
+    signal: options.signal,
+  });
+  if (!res.ok || !res.body) {
+    throw new Error(`Run event stream failed (${res.status})`);
+  }
+  setApiConnected(true);
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+
+  const handleFrame = (frame: string): string | null => {
+    let eventName = "message";
+    const dataLines: string[] = [];
+    for (const line of frame.split("\n")) {
+      if (line.startsWith("event:")) {
+        eventName = line.slice(6).trim();
+      } else if (line.startsWith("data:")) {
+        dataLines.push(line.slice(5).trim());
+      }
+    }
+    if (dataLines.length === 0) {
+      return null;
+    }
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(dataLines.join("\n"));
+    } catch {
+      return null;
+    }
+    if (eventName === "run_event") {
+      options.onEvent?.(parsed as WorkflowRunEvent);
+    } else if (eventName === "run_status") {
+      options.onStatus?.(parsed as RunStatusFrame);
+    } else if (eventName === "stream_end") {
+      return String((parsed as { reason?: string }).reason ?? "terminal");
+    }
+    return null;
+  };
+
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) {
+      return "terminal";
+    }
+    buffer += decoder.decode(value, { stream: true });
+    let separator = buffer.indexOf("\n\n");
+    while (separator >= 0) {
+      const frame = buffer.slice(0, separator);
+      buffer = buffer.slice(separator + 2);
+      const endReason = handleFrame(frame);
+      if (endReason !== null) {
+        return endReason;
+      }
+      separator = buffer.indexOf("\n\n");
+    }
+  }
+}
+
 export async function archiveWorkflowRun(id: string): Promise<{ ok: boolean }> {
   return safeFetch<{ ok: boolean }>(`/workflow-runs/${id}/archive`, { ok: true }, { method: "POST" });
 }
@@ -484,7 +835,32 @@ export async function deleteAgentDefinition(id: string): Promise<{ ok: boolean }
   return safeFetch<{ ok: boolean }>(`/agent-definitions/${id}`, { ok: true }, { method: "DELETE" });
 }
 
-export async function getNodeDefinitions(options?: { includeInternal?: boolean }): Promise<Array<{ type_key: string; title?: string; description: string; category?: string; color?: string }>> {
+export type NodeFieldSpec = {
+  name: string;
+  label: string;
+  field_type: "text" | "textarea" | "number" | "slider" | "bool" | "dropdown" | "secret" | "code";
+  description?: string;
+  required?: boolean;
+  advanced?: boolean;
+  default?: unknown;
+  options?: string[];
+  placeholder?: string;
+  min?: number | null;
+  max?: number | null;
+  step?: number | null;
+  options_source?: string;
+};
+
+export type NodeDefinitionResponse = {
+  type_key: string;
+  title?: string;
+  description: string;
+  category?: string;
+  color?: string;
+  inputs?: NodeFieldSpec[];
+};
+
+export async function getNodeDefinitions(options?: { includeInternal?: boolean }): Promise<NodeDefinitionResponse[]> {
   const suffix = options?.includeInternal ? "?include_internal=true" : "";
   return safeFetch(`/node-definitions${suffix}`, [
     { type_key: "frontier/trigger", title: "Trigger", description: "Workflow trigger/intake node", category: "Core", color: "#6ca0ff" },
@@ -656,7 +1032,7 @@ export async function getPlatformSettings(): Promise<PlatformSettings> {
     enforce_egress_allowlist: false,
     allowed_egress_hosts: [],
     enforce_local_network_only: true,
-    allow_local_network_hostnames: true,
+    allow_local_network_hostnames: ["localhost", ".local"],
     allowed_retrieval_sources: [],
     retrieval_require_local_source_url: true,
     allowed_mcp_server_urls: [],

@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { getPublishedWorkflows } from "@/lib/api";
+import { WorkflowTriggersManager } from "@/components/workflow-triggers-manager";
 
 type Props = {
   params: Promise<{ id: string }>;
@@ -33,6 +34,11 @@ export default async function WorkflowDetailPage({ params }: Props) {
           </Link>
         </div>
       </div>
+
+      <WorkflowTriggersManager
+        workflowId={workflow.id}
+        apiBaseHint={process.env.NEXT_PUBLIC_API_BASE_URL ?? ""}
+      />
     </section>
   );
 }

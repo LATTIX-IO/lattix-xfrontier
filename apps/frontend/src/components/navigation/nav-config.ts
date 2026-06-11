@@ -29,7 +29,7 @@ export type NavGroup = {
 
 const userNavGroups: NavGroup[] = [
   {
-    title: "Platform",
+    title: "Work",
     items: [
       { href: "/inbox", label: "Inbox", icon: "inbox" },
       { href: "/workflows/start", label: "Workflows", icon: "workflow" },
@@ -40,7 +40,7 @@ const userNavGroups: NavGroup[] = [
 
 const builderNavGroups: NavGroup[] = [
   {
-    title: "Platform",
+    title: "Build",
     items: [
       { href: "/builder/agents", label: "Agent Studio", icon: "agent" },
       { href: "/builder/workflows", label: "Workflow Studio", icon: "studio" },
@@ -49,8 +49,10 @@ const builderNavGroups: NavGroup[] = [
     ],
   },
   {
-    title: "Services",
+    title: "Configure",
     items: [
+      { href: "/builder/skills", label: "Skills", icon: "templates" },
+      { href: "/builder/models", label: "Models", icon: "nodes" },
       { href: "/builder/observability", label: "Observability", icon: "observability" },
       { href: "/builder/integrations", label: "Integrations", icon: "integrations" },
       { href: "/builder/nodes", label: "Node Library", icon: "nodes" },

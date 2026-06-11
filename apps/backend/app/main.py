@@ -6,9 +6,11 @@ import os
 import re
 import asyncio
 import hashlib
+import secrets as secrets_module
 import hmac
 import ipaddress
 import socket
+import threading
 import time
 import tomllib
 import http.cookiejar
@@ -18,6 +20,9 @@ from importlib import metadata as importlib_metadata
 from collections import Counter, defaultdict, deque
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
+
+UTC = timezone.utc
 from pathlib import Path
 from pprint import pformat
 from threading import Lock
@@ -28,16 +33,27 @@ from urllib import request as urllib_request
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
+from concurrent.futures import ThreadPoolExecutor
+
 from fastapi import Body, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field
+from fastapi.responses import JSONResponse, StreamingResponse
+from pydantic import BaseModel, Field, ValidationError
+from app import cron as app_cron
+from app import local_models, mcp_client, skills_catalog
 from app.generated_artifacts import GeneratedArtifactService
 from app.platform_services import (
     Neo4jRunGraph,
     PostgresLongTermMemoryStore,
     PostgresStateStore,
     RedisMemoryStore,
+)
+from frontier_runtime.cognitive import (
+    ColumnState,
+    ConsensusEngine,
+    EvidenceColumn,
+    GoalColumn,
+    SynthesisColumn,
 )
 from app.request_security import (
     RouteAccessCategory,
@@ -62,10 +78,10 @@ try:
 except Exception:  # pragma: no cover - optional dependency during local setup
     OpenAI = None
 
-try:
-    from presidio_analyzer import AnalyzerEngine
-except Exception:  # pragma: no cover - optional dependency during local setup
-    AnalyzerEngine = None
+# presidio_analyzer (and its spaCy dependency tree) is imported lazily inside
+# _get_presidio_analyzer(): the eager import costs hundreds of MB of RSS and
+# seconds of cold start even when no guardrail ruleset enables NER-grade PII
+# scanning. The deterministic keyword/regex guardrail tier never needs it.
 
 
 class WorkflowRunSummary(BaseModel):
@@ -87,6 +103,7 @@ class WorkflowRunEvent(BaseModel):
         "artifact_created",
         "approval_required",
         "approval_decision",
+        "tool_call",
         "error",
     ]
     title: str
@@ -126,6 +143,27 @@ class InboxItem(BaseModel):
     queue: Literal[
         "Needs Review", "Needs Approval", "Clarifications Requested", "Blocked by Guardrails"
     ]
+
+
+class SkillDefinition(BaseModel):
+    """A named, versioned operating procedure injected into agent context.
+
+    Modeled on Symphony's SKILL.md format: frontmatter-style name/description
+    plus a markdown body describing goal, steps, and expected output.
+    """
+
+    id: str
+    name: str
+    description: str = ""
+    content: str = ""
+    status: Literal["enabled", "disabled"] = "enabled"
+    tags: list[str] = Field(default_factory=list)
+    source: Literal["bundled", "custom"] = "custom"
+    auto_inject: bool = True
+    version: int = 1
+    updated_at: str = ""
+    usage_count: int = 0
+    last_used_at: str = ""
 
 
 class WorkflowDefinition(BaseModel):
@@ -270,6 +308,51 @@ class PlatformSettings(BaseModel):
     block_retrieval_calls: bool = False
     require_authenticated_requests: bool = False
     require_a2a_runtime_headers: bool = False
+    # AI inference provider configuration. Values here override environment
+    # variables. Secret fields are write-only through the API: masked on read,
+    # empty submissions leave the stored value unchanged, and the literal
+    # "__clear__" removes a stored key.
+    openai_api_key: str = ""
+    openai_model: str = ""
+    openai_fallback_model: str = ""
+    nim_api_key: str = ""
+    nim_base_url: str = ""
+    nim_default_model: str = ""
+    ollama_base_url: str = ""
+    ollama_default_model: str = ""
+    # Unified per-provider configuration map keyed by provider id (openai,
+    # anthropic, azure, google, mistral, xai, nim, ollama). Each entry may set
+    # api_key / base_url / default_model. Takes precedence over the legacy flat
+    # fields above and over environment variables.
+    ai_providers: dict[str, dict[str, str]] = Field(default_factory=dict)
+
+
+class NodeFieldSpec(BaseModel):
+    """Declarative typed input for a node (Langflow-style component schema).
+
+    The studio renders config panels generically from these specs instead of
+    hand-coding a form per node type: one schema drives label, control type,
+    validation, options, defaults, and advanced/secret treatment.
+    """
+
+    name: str
+    label: str
+    field_type: Literal[
+        "text", "textarea", "number", "slider", "bool", "dropdown", "secret", "code"
+    ] = "text"
+    description: str = ""
+    required: bool = False
+    advanced: bool = False
+    default: Any = None
+    options: list[str] = Field(default_factory=list)
+    placeholder: str = ""
+    # Slider/number bounds (ignored by other field types).
+    min: float | None = None
+    max: float | None = None
+    step: float | None = None
+    # When set, the studio refreshes `options` from this provider/source id
+    # (e.g. "models:openai") rather than using the static list above.
+    options_source: str = ""
 
 
 class NodeDefinition(BaseModel):
@@ -278,6 +361,7 @@ class NodeDefinition(BaseModel):
     description: str
     category: str = "Core"
     color: str = "#6ca0ff"
+    inputs: list[NodeFieldSpec] = Field(default_factory=list)
 
 
 class IntegrationDefinition(BaseModel):
@@ -1096,6 +1180,39 @@ def _normalize_local_casdoor_username(username: str) -> str:
     return f"built-in/{candidate}"
 
 
+def _casdoor_safe_username(value: str) -> str:
+    """Derive a Casdoor-legal username from an email or free-form input.
+
+    The sign-up form submits the email address as the username; Casdoor only
+    allows alphanumerics, underscores, and hyphens (no consecutive or
+    leading/trailing separators).
+    """
+    candidate = str(value or "").strip().lower().partition("@")[0]
+    candidate = re.sub(r"[^a-z0-9_-]+", "-", candidate)
+    candidate = re.sub(r"[-_]{2,}", "-", candidate)
+    candidate = candidate.strip("-_")
+    return candidate or "operator"
+
+
+def _casdoor_email_suffix(email: str) -> str:
+    return hashlib.sha256(str(email or "").strip().lower().encode("utf-8")).hexdigest()[:6]
+
+
+def _casdoor_login_name_candidates(name: str) -> list[str]:
+    """Login names to try for a sign-in identifier (usually an email): the raw
+    value plus the deterministic derivations used at registration."""
+    candidates = [name]
+    if "@" in name:
+        safe = _casdoor_safe_username(name)
+        candidates.append(safe)
+        candidates.append(f"{safe}-{_casdoor_email_suffix(name)}")
+    deduped: list[str] = []
+    for candidate in candidates:
+        if candidate and candidate not in deduped:
+            deduped.append(candidate)
+    return deduped
+
+
 def _casdoor_get_account(
     opener: urllib_request.OpenerDirector, base_url: str, headers: dict[str, str]
 ) -> dict[str, Any] | None:
@@ -1110,32 +1227,51 @@ def _casdoor_get_account(
     return None
 
 
-def _casdoor_login_admin(
-    opener: urllib_request.OpenerDirector, base_url: str, headers: dict[str, str]
-) -> None:
-    login_url = (
-        f"{base_url.rstrip('/')}"
-        "/api/login?clientId=app-built-in&responseType=code&redirectUri=http://localhost"
-        "&scope=openid%20profile%20email&state=frontier-local-auth"
-    )
-    login_payload = urllib_parse.urlencode(
+def _casdoor_session_login(
+    opener: urllib_request.OpenerDirector,
+    base_url: str,
+    headers: dict[str, str],
+    *,
+    username: str,
+    password: str,
+) -> dict[str, Any]:
+    """Plain Casdoor session login (`type: login`).
+
+    Casdoor expects a JSON body here; form-urlencoded payloads are rejected by
+    its JSON parser with "invalid character ... looking for beginning of value".
+    """
+    owner, _, name = str(username or "").strip().partition("/")
+    if not name:
+        owner, name = "built-in", owner
+    login_payload = json.dumps(
         {
             "application": "app-built-in",
-            "organization": "built-in",
-            "username": "built-in/admin",
-            "password": "123",
+            "organization": owner or "built-in",
+            "username": name,
+            "password": password,
+            "type": "login",
+            "signinMethod": "Password",
+            "autoSignin": True,
         }
     ).encode("utf-8")
-    response = _casdoor_urlopen_json(
+    return _casdoor_urlopen_json(
         opener,
-        login_url,
+        f"{base_url.rstrip('/')}/api/login",
         method="POST",
         data=login_payload,
         headers={
             **headers,
-            "Content-Type": "application/x-www-form-urlencoded",
+            "Content-Type": "application/json",
             "Accept": "application/json",
         },
+    )
+
+
+def _casdoor_login_admin(
+    opener: urllib_request.OpenerDirector, base_url: str, headers: dict[str, str]
+) -> None:
+    response = _casdoor_session_login(
+        opener, base_url, headers, username="built-in/admin", password="123"
     )
     if _casdoor_get_account(opener, base_url, headers) is not None:
         return
@@ -1150,42 +1286,30 @@ def _authenticate_local_casdoor_user(username: str, password: str) -> dict[str, 
         raise HTTPException(status_code=400, detail="Password is required")
 
     last_error = ""
+    owner, _, raw_name = normalized_username.partition("/")
     for base_url, headers in _casdoor_http_base_candidates():
-        cookie_jar = http.cookiejar.CookieJar()
-        opener = urllib_request.build_opener(urllib_request.HTTPCookieProcessor(cookie_jar))
-        login_url = (
-            f"{base_url.rstrip('/')}"
-            "/api/login?clientId=app-built-in&responseType=code&redirectUri=http://localhost"
-            "&scope=openid%20profile%20email&state=frontier-local-auth"
-        )
-        login_payload = urllib_parse.urlencode(
-            {
-                "application": "app-built-in",
-                "organization": "built-in",
-                "username": normalized_username,
-                "password": password_value,
-            }
-        ).encode("utf-8")
-        try:
-            login_response = _casdoor_urlopen_json(
-                opener,
-                login_url,
-                method="POST",
-                data=login_payload,
-                headers={
-                    **headers,
-                    "Content-Type": "application/x-www-form-urlencoded",
-                    "Accept": "application/json",
-                },
-            )
-            account_data = _casdoor_get_account(opener, base_url, headers)
-            if account_data is not None:
-                return account_data
-            last_error = str(login_response.get("msg") or "Invalid username or password")
-        except urllib_error.HTTPError as exc:
-            last_error = f"HTTP {exc.code}"
-        except (urllib_error.URLError, TimeoutError, OSError, RuntimeError) as exc:
-            last_error = str(exc)
+        for login_name in _casdoor_login_name_candidates(raw_name):
+            cookie_jar = http.cookiejar.CookieJar()
+            opener = urllib_request.build_opener(urllib_request.HTTPCookieProcessor(cookie_jar))
+            try:
+                login_response = _casdoor_session_login(
+                    opener,
+                    base_url,
+                    headers,
+                    username=f"{owner}/{login_name}",
+                    password=password_value,
+                )
+                account_data = _casdoor_get_account(opener, base_url, headers)
+                if account_data is not None:
+                    return account_data
+                last_error = str(login_response.get("msg") or "Invalid username or password")
+            except urllib_error.HTTPError as exc:
+                last_error = f"HTTP {exc.code}"
+            except (urllib_error.URLError, TimeoutError, OSError, RuntimeError) as exc:
+                # Connection-level noise from fallback candidates must not mask a
+                # meaningful error already captured from a reachable candidate.
+                if not last_error:
+                    last_error = str(exc)
     raise HTTPException(status_code=401, detail=last_error or "Invalid username or password")
 
 
@@ -1194,8 +1318,8 @@ def _provision_local_casdoor_user(
 ) -> dict[str, Any]:
     _require_local_casdoor_password_auth()
     normalized_username = _normalize_local_casdoor_username(username)
-    owner, _, name = normalized_username.partition("/")
-    if not name:
+    owner, _, raw_name = normalized_username.partition("/")
+    if not raw_name:
         raise HTTPException(status_code=400, detail="Username is invalid")
     normalized_email = str(email or "").strip()
     normalized_display_name = str(display_name or "").strip()
@@ -1207,24 +1331,65 @@ def _provision_local_casdoor_user(
     if len(password_value) < 8:
         raise HTTPException(status_code=400, detail="Password must be at least 8 characters long")
 
+    # The form submits an email as the username; Casdoor forbids '@'/'.' in
+    # usernames. Derive a legal name, with a deterministic email-hash suffix
+    # as the fallback when two different emails share a local part.
+    safe_name = _casdoor_safe_username(raw_name)
+    suffixed_name = f"{safe_name}-{_casdoor_email_suffix(normalized_email)}"
+
     last_error = ""
     for base_url, headers in _casdoor_http_base_candidates():
         cookie_jar = http.cookiejar.CookieJar()
         opener = urllib_request.build_opener(urllib_request.HTTPCookieProcessor(cookie_jar))
         try:
             _casdoor_login_admin(opener, base_url, headers)
-            user_id = urllib_parse.quote(f"{owner}/{name}", safe="")
-            existing = _casdoor_urlopen_json(
+
+            # Bootstrap rule: the first real account on a local deployment
+            # becomes the platform admin; everyone after that is a regular
+            # member until an admin elevates them. The bundled Casdoor
+            # bootstrap account ("admin") does not count as a real user, and
+            # admin is only granted when the user list is positively confirmed.
+            is_first_user = False
+            users_response = _casdoor_urlopen_json(
                 opener,
-                f"{base_url.rstrip('/')}/api/get-user?id={user_id}",
+                f"{base_url.rstrip('/')}/api/get-users?owner={urllib_parse.quote(owner, safe='')}",
                 headers={**headers, "Accept": "application/json"},
             )
-            existing_data = existing.get("data") if isinstance(existing.get("data"), dict) else None
-            if (
-                existing.get("status") == "ok"
-                and isinstance(existing_data, dict)
-                and str(existing_data.get("name") or "").strip() == name
+            if users_response.get("status") == "ok" and isinstance(
+                users_response.get("data"), list
             ):
+                is_first_user = not any(
+                    isinstance(item, dict)
+                    and str(item.get("name") or "").strip() not in {"", "admin"}
+                    for item in users_response["data"]
+                )
+
+            target_name = ""
+            for candidate_name in (safe_name, suffixed_name):
+                user_id = urllib_parse.quote(f"{owner}/{candidate_name}", safe="")
+                existing = _casdoor_urlopen_json(
+                    opener,
+                    f"{base_url.rstrip('/')}/api/get-user?id={user_id}",
+                    headers={**headers, "Accept": "application/json"},
+                )
+                existing_data = (
+                    existing.get("data") if isinstance(existing.get("data"), dict) else None
+                )
+                if (
+                    existing.get("status") == "ok"
+                    and isinstance(existing_data, dict)
+                    and str(existing_data.get("name") or "").strip() == candidate_name
+                ):
+                    existing_email = str(existing_data.get("email") or "").strip().lower()
+                    if existing_email == normalized_email.lower():
+                        raise HTTPException(
+                            status_code=409,
+                            detail="An account with that email already exists — use Sign In instead",
+                        )
+                    continue
+                target_name = candidate_name
+                break
+            if not target_name:
                 raise HTTPException(
                     status_code=409, detail="An account with that username already exists"
                 )
@@ -1236,14 +1401,14 @@ def _provision_local_casdoor_user(
                 data=json.dumps(
                     {
                         "owner": owner,
-                        "name": name,
+                        "name": target_name,
                         "displayName": normalized_display_name,
                         "email": normalized_email,
                         "password": password_value,
                         "passwordType": "plain",
                         "signupApplication": "app-built-in",
                         "type": "normal-user",
-                        "isAdmin": False,
+                        "isAdmin": is_first_user,
                         "isForbidden": False,
                         "isDeleted": False,
                     }
@@ -1263,7 +1428,10 @@ def _provision_local_casdoor_user(
         except urllib_error.HTTPError as exc:
             last_error = f"HTTP {exc.code}"
         except (urllib_error.URLError, TimeoutError, OSError, RuntimeError) as exc:
-            last_error = str(exc)
+            # Connection-level noise from fallback candidates must not mask a
+            # meaningful error already captured from a reachable candidate.
+            if not last_error:
+                last_error = str(exc)
     raise HTTPException(
         status_code=502, detail=last_error or "Unable to reach the local Casdoor identity service"
     )
@@ -2503,12 +2671,219 @@ def _resolve_node_runtime_engine(runtime_info: dict[str, Any], role: str) -> dic
     }
 
 
+_PROVIDER_SECRET_FIELDS = ("openai_api_key", "nim_api_key")
+_PROVIDER_CLEAR_SENTINEL = "__clear__"
+
+# Chat provider registry. Every entry exposes an OpenAI-compatible
+# chat-completions endpoint, so one SDK covers all of them. Provider-qualified
+# model ids ("anthropic/claude-sonnet-4-6") route through this table; bare ids
+# default to OpenAI.
+_PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
+    "openai": {
+        "label": "OpenAI",
+        "default_base_url": "",
+        "key_env": ["OPENAI_API_KEY"],
+        "model_env": "OPENAI_MODEL",
+        "default_model": "gpt-5.2",
+        "key_required": True,
+    },
+    "anthropic": {
+        "label": "Anthropic Claude",
+        "default_base_url": "https://api.anthropic.com/v1",
+        "key_env": ["ANTHROPIC_API_KEY"],
+        "model_env": "ANTHROPIC_MODEL",
+        "default_model": "claude-sonnet-4-6",
+        "key_required": True,
+    },
+    "azure": {
+        "label": "Microsoft Azure OpenAI",
+        # Resource-specific: https://<resource>.openai.azure.com/openai/v1
+        "default_base_url": "",
+        "key_env": ["AZURE_OPENAI_API_KEY"],
+        "model_env": "AZURE_OPENAI_DEPLOYMENT",
+        "default_model": "",
+        "key_required": True,
+        "base_url_required": True,
+    },
+    "google": {
+        "label": "Google Gemini",
+        "default_base_url": "https://generativelanguage.googleapis.com/v1beta/openai",
+        "key_env": ["GOOGLE_API_KEY", "GEMINI_API_KEY"],
+        "model_env": "GEMINI_MODEL",
+        "default_model": "gemini-2.5-pro",
+        "key_required": True,
+    },
+    "mistral": {
+        "label": "Mistral",
+        "default_base_url": "https://api.mistral.ai/v1",
+        "key_env": ["MISTRAL_API_KEY"],
+        "model_env": "MISTRAL_MODEL",
+        "default_model": "mistral-large-latest",
+        "key_required": True,
+    },
+    "xai": {
+        "label": "xAI Grok",
+        "default_base_url": "https://api.x.ai/v1",
+        "key_env": ["XAI_API_KEY"],
+        "model_env": "XAI_MODEL",
+        "default_model": "grok-4",
+        "key_required": True,
+    },
+    "nim": {
+        "label": "NVIDIA NIM",
+        "default_base_url": "https://integrate.api.nvidia.com/v1",
+        "key_env": ["NVIDIA_API_KEY", "NIM_API_KEY"],
+        "model_env": "NIM_MODEL",
+        "default_model": "meta/llama-3.3-70b-instruct",
+        "key_required": True,
+    },
+    "ollama": {
+        "label": "Local (Ollama)",
+        "default_base_url": "",  # resolved via local_models
+        "key_env": [],
+        "model_env": "OLLAMA_MODEL",
+        "default_model": "llama3.2:3b",
+        "key_required": False,
+    },
+}
+
+
+def _provider_setting(name: str) -> str:
+    """Platform-settings value for a legacy flat provider field."""
+    try:
+        return str(getattr(store.platform_settings, name, "") or "").strip()
+    except Exception:  # noqa: BLE001 - store may not be initialized in edge paths
+        return ""
+
+
+def _provider_settings_entry(provider: str) -> dict[str, str]:
+    """Per-provider config from the unified ai_providers settings map."""
+    try:
+        entry = store.platform_settings.ai_providers.get(provider)
+    except Exception:  # noqa: BLE001
+        return {}
+    if not isinstance(entry, dict):
+        return {}
+    return {str(key): str(value or "").strip() for key, value in entry.items()}
+
+
+# Legacy flat settings fields kept for persisted-state compatibility.
+_LEGACY_PROVIDER_FIELDS: dict[tuple[str, str], str] = {
+    ("openai", "api_key"): "openai_api_key",
+    ("openai", "default_model"): "openai_model",
+    ("nim", "api_key"): "nim_api_key",
+    ("nim", "base_url"): "nim_base_url",
+    ("nim", "default_model"): "nim_default_model",
+    ("ollama", "base_url"): "ollama_base_url",
+    ("ollama", "default_model"): "ollama_default_model",
+}
+
+
+def _provider_config_value(provider: str, field: str) -> str:
+    """Resolution order: ai_providers map -> legacy flat field -> environment."""
+    value = _provider_settings_entry(provider).get(field, "")
+    if value:
+        return value
+    legacy_field = _LEGACY_PROVIDER_FIELDS.get((provider, field))
+    if legacy_field:
+        value = _provider_setting(legacy_field)
+        if value:
+            return value
+    registry = _PROVIDER_REGISTRY.get(provider, {})
+    if field == "api_key":
+        for env_name in registry.get("key_env", []):
+            env_value = str(os.getenv(env_name) or "").strip()
+            if env_value:
+                return env_value
+        return ""
+    if field == "base_url":
+        env_value = str(os.getenv(f"{provider.upper()}_BASE_URL") or "").strip()
+        return env_value or str(registry.get("default_base_url") or "")
+    if field == "default_model":
+        model_env = str(registry.get("model_env") or "")
+        env_value = str(os.getenv(model_env) or "").strip() if model_env else ""
+        return env_value or str(registry.get("default_model") or "")
+    return ""
+
+
+def _provider_api_key(provider: str) -> str:
+    return _provider_config_value(provider, "api_key")
+
+
+def _provider_base_url(provider: str) -> str:
+    return _provider_config_value(provider, "base_url").rstrip("/")
+
+
+def _provider_default_model(provider: str) -> str:
+    return _provider_config_value(provider, "default_model")
+
+
+def _provider_configured(provider: str) -> bool:
+    registry = _PROVIDER_REGISTRY.get(provider, {})
+    key = _provider_api_key(provider)
+    key_ok = bool(key) and "change" not in key.lower() and "your-" not in key.lower()
+    if registry.get("key_required", True) and not key_ok:
+        return False
+    if registry.get("base_url_required") and not _provider_base_url(provider):
+        return False
+    return True
+
+
+def _openai_api_key() -> str:
+    return _provider_api_key("openai")
+
+
 def _default_openai_model() -> str:
-    return os.getenv("OPENAI_MODEL", "gpt-5.2")
+    return _provider_default_model("openai")
 
 
 def _fallback_openai_model() -> str:
-    return os.getenv("OPENAI_FALLBACK_MODEL", "gpt-5.1")
+    return _provider_setting("openai_fallback_model") or os.getenv(
+        "OPENAI_FALLBACK_MODEL", "gpt-5.1"
+    )
+
+
+def _nim_api_key() -> str:
+    return _provider_api_key("nim")
+
+
+def _nim_base_url() -> str:
+    return _provider_base_url("nim")
+
+
+def _default_nim_model() -> str:
+    return _provider_default_model("nim")
+
+
+def _default_ollama_model() -> str:
+    return _provider_default_model("ollama")
+
+
+def _apply_provider_settings_side_effects() -> None:
+    """Propagate provider settings to cached clients and helper modules."""
+    global _OPENAI_CLIENT  # noqa: PLW0603
+    _OPENAI_CLIENT = None
+    _PROVIDER_CLIENTS.clear()
+    local_models.set_base_url_override(
+        _provider_settings_entry("ollama").get("base_url", "")
+        or _provider_setting("ollama_base_url")
+    )
+
+
+def _resolve_chat_provider(model: str) -> tuple[str, str]:
+    """Split a provider-qualified model id into (provider, bare_model).
+
+    "nim/meta/llama-3.3-70b-instruct" -> ("nim", "meta/llama-3.3-70b-instruct")
+    "ollama/llama3.2:3b"              -> ("ollama", "llama3.2:3b")
+    anything else                      -> ("openai", model)
+    """
+    candidate = str(model or "").strip()
+    lowered = candidate.lower()
+    for provider in _PROVIDER_REGISTRY:
+        token = f"{provider}/"
+        if lowered.startswith(token):
+            return provider, candidate[len(token) :].strip()
+    return "openai", candidate
 
 
 def _strip_leading_agent_mentions(text: str) -> str:
@@ -2710,7 +3085,7 @@ def _resolve_agent_chat_model(agent: AgentDefinition | None) -> str:
 
 
 def _openai_status() -> RuntimeProviderStatus:
-    key = os.getenv("OPENAI_API_KEY", "").strip()
+    key = _openai_api_key()
     has_client = OpenAI is not None
     is_placeholder_key = (
         key.lower().startswith("replace-")
@@ -2728,7 +3103,35 @@ def _openai_status() -> RuntimeProviderStatus:
 
 _OPENAI_CLIENT: Any | None = None
 _PRESIDIO_ANALYZER: Any | None = None
-_POSTGRES_STATE = PostgresStateStore(os.getenv("POSTGRES_DSN", ""))
+_PRESIDIO_UNAVAILABLE = False
+
+
+def _build_state_backends() -> tuple[Any, Any | None]:
+    """Select the state/audit persistence backend.
+
+    POSTGRES_DSN wins when set. Otherwise FRONTIER_SQLITE_STATE_PATH opts into
+    the zero-container SQLite backend (resource plan 2.3). Classes are resolved
+    via getattr so injected/fake platform_services modules without the newer
+    classes fall back to legacy snapshot behavior.
+    """
+    services = importlib.import_module("app.platform_services")
+    dsn = os.getenv("POSTGRES_DSN", "").strip()
+    sqlite_path = os.getenv("FRONTIER_SQLITE_STATE_PATH", "").strip()
+    if not dsn and sqlite_path:
+        sqlite_state_cls = getattr(services, "SQLiteStateStore", None)
+        sqlite_audit_cls = getattr(services, "SQLiteAuditLog", None)
+        if sqlite_state_cls is not None:
+            return (
+                sqlite_state_cls(sqlite_path),
+                sqlite_audit_cls(sqlite_path) if sqlite_audit_cls is not None else None,
+            )
+    audit_cls = getattr(services, "PostgresAuditLog", None)
+    return PostgresStateStore(dsn), (audit_cls(dsn) if audit_cls is not None else None)
+
+
+# Name kept for backward compatibility (tests and tooling reference it); the
+# actual backend may be Postgres or SQLite depending on environment.
+_POSTGRES_STATE, _AUDIT_LOG = _build_state_backends()
 _REDIS_MEMORY = RedisMemoryStore(os.getenv("REDIS_URL", ""))
 _POSTGRES_MEMORY = PostgresLongTermMemoryStore(os.getenv("POSTGRES_DSN", ""))
 _NEO4J_GRAPH = Neo4jRunGraph(
@@ -2744,8 +3147,46 @@ def _get_openai_client() -> Any | None:
     if not status.configured:
         return None
     if _OPENAI_CLIENT is None:
-        _OPENAI_CLIENT = OpenAI(api_key=os.getenv("OPENAI_API_KEY", "").strip())
+        _OPENAI_CLIENT = OpenAI(api_key=_openai_api_key())
     return _OPENAI_CLIENT
+
+
+_PROVIDER_CLIENTS: dict[str, Any] = {}
+
+
+def _get_chat_client(provider: str) -> tuple[Any | None, str]:
+    """Resolve an OpenAI-SDK-compatible client for a chat provider.
+
+    NIM and Ollama both expose OpenAI-compatible chat-completions endpoints,
+    so one SDK covers all three providers. Returns (client, unavailable_reason).
+    """
+    if OpenAI is None:
+        return None, "OpenAI SDK unavailable"
+    registry = _PROVIDER_REGISTRY.get(provider)
+    if registry is None:
+        return None, f"Unknown chat provider '{provider}'"
+    if provider == "openai":
+        client = _get_openai_client()
+        if client is None:
+            return None, "OpenAI API key missing/placeholder or OpenAI SDK unavailable"
+        return client, ""
+    if provider in _PROVIDER_CLIENTS:
+        return _PROVIDER_CLIENTS[provider], ""
+    if provider == "ollama":
+        # Ollama ignores the API key but the SDK requires a non-empty value.
+        client = OpenAI(api_key="ollama", base_url=local_models.ollama_openai_base_url())
+    else:
+        key = _provider_api_key(provider)
+        if registry.get("key_required", True) and (
+            not key or "change" in key.lower() or "your-" in key.lower()
+        ):
+            return None, f"{registry['label']} API key missing or placeholder"
+        base_url = _provider_base_url(provider)
+        if not base_url:
+            return None, f"{registry['label']} endpoint is not configured"
+        client = OpenAI(api_key=key or "unused", base_url=base_url)
+    _PROVIDER_CLIENTS[provider] = client
+    return client, ""
 
 
 def _module_available(module_name: str) -> bool:
@@ -3897,14 +4338,16 @@ def _run_framework_human_review(
 
 
 def _get_presidio_analyzer() -> Any | None:
-    global _PRESIDIO_ANALYZER  # noqa: PLW0603
-    if AnalyzerEngine is None:
-        return None
-    if _PRESIDIO_ANALYZER is None:
-        try:
-            _PRESIDIO_ANALYZER = AnalyzerEngine()
-        except Exception:  # noqa: BLE001
-            _PRESIDIO_ANALYZER = None
+    global _PRESIDIO_ANALYZER, _PRESIDIO_UNAVAILABLE  # noqa: PLW0603
+    if _PRESIDIO_ANALYZER is not None or _PRESIDIO_UNAVAILABLE:
+        return _PRESIDIO_ANALYZER
+    try:
+        from presidio_analyzer import AnalyzerEngine
+
+        _PRESIDIO_ANALYZER = AnalyzerEngine()
+    except Exception:  # noqa: BLE001 - optional dependency; deterministic tier still applies
+        _PRESIDIO_UNAVAILABLE = True
+        _PRESIDIO_ANALYZER = None
     return _PRESIDIO_ANALYZER
 
 
@@ -3915,16 +4358,21 @@ def _run_openai_chat(
     model: str,
     temperature: float,
     messages: list[dict[str, str]] | None = None,
+    tools: list[dict[str, Any]] | None = None,
+    tool_executor: Callable[[str, dict[str, Any]], str] | None = None,
+    max_tool_calls: int = 8,
+    on_tool_event: Callable[[str, dict[str, Any], str, bool], None] | None = None,
 ) -> tuple[str, dict[str, Any]]:
-    client = _get_openai_client()
+    provider, bare_model = _resolve_chat_provider(model)
+    client, unavailable_reason = _get_chat_client(provider)
     if client is None:
         return (
             f"[simulated:{model}] {user_prompt[:280]}",
             {
-                "provider": "openai",
+                "provider": provider,
                 "model": model,
                 "mode": "simulated",
-                "reason": "OPENAI_API_KEY missing/placeholder or OpenAI SDK unavailable",
+                "reason": unavailable_reason,
             },
         )
 
@@ -3935,21 +4383,28 @@ def _run_openai_chat(
         messages.append({"role": "user", "content": user_prompt})
 
     attempt_models: list[str] = []
-    primary_model = str(model or "").strip() or _default_openai_model()
-    secondary_model = _fallback_openai_model().strip()
-    if not secondary_model:
-        secondary_model = "gpt-5.1"
-
-    candidate_models = [primary_model]
-    if secondary_model and secondary_model not in candidate_models:
-        candidate_models.append(secondary_model)
+    if provider == "openai":
+        primary_model = bare_model or _default_openai_model()
+        secondary_model = _fallback_openai_model().strip()
+        if not secondary_model:
+            secondary_model = "gpt-5.1"
+        candidate_models = [primary_model]
+        if secondary_model and secondary_model not in candidate_models:
+            candidate_models.append(secondary_model)
+    else:
+        primary_model = bare_model or _provider_default_model(provider)
+        candidate_models = [primary_model]
 
     last_error = ""
     for candidate_model in candidate_models:
         attempt_models.append(candidate_model)
         response_api_error = ""
 
-        responses_client = getattr(client, "responses", None)
+        # The Responses API is OpenAI-specific; NIM/Ollama use chat.completions.
+        # Tool loops always go through chat.completions for cross-provider parity.
+        responses_client = (
+            getattr(client, "responses", None) if provider == "openai" and not tools else None
+        )
         if responses_client is not None and hasattr(responses_client, "create"):
             try:
                 response_api = responses_client.create(
@@ -3981,22 +4436,92 @@ def _run_openai_chat(
                 response_api_error = str(exc)
 
         try:
-            response = client.chat.completions.create(
-                model=candidate_model,
-                temperature=temperature,
-                messages=messages,
-            )
-            text = (response.choices[0].message.content or "").strip()
+            conversation: list[dict[str, Any]] = list(messages)
+            tool_calls_made = 0
+            tools_exhausted = False
+            while True:
+                request_kwargs: dict[str, Any] = {
+                    "model": candidate_model,
+                    "temperature": temperature,
+                    "messages": conversation,
+                }
+                if tools and tool_executor is not None and not tools_exhausted:
+                    request_kwargs["tools"] = tools
+                    request_kwargs["tool_choice"] = "auto"
+                response = client.chat.completions.create(**request_kwargs)
+                choice_message = response.choices[0].message
+                tool_calls = list(getattr(choice_message, "tool_calls", None) or [])
+                if not tool_calls or tool_executor is None:
+                    text = (choice_message.content or "").strip()
+                    break
+
+                conversation.append(
+                    {
+                        "role": "assistant",
+                        "content": choice_message.content or None,
+                        "tool_calls": [
+                            {
+                                "id": tool_call.id,
+                                "type": "function",
+                                "function": {
+                                    "name": tool_call.function.name,
+                                    "arguments": tool_call.function.arguments,
+                                },
+                            }
+                            for tool_call in tool_calls
+                        ],
+                    }
+                )
+                for tool_call in tool_calls:
+                    tool_name = str(tool_call.function.name or "")
+                    try:
+                        tool_args = json.loads(tool_call.function.arguments or "{}")
+                        if not isinstance(tool_args, dict):
+                            tool_args = {}
+                    except json.JSONDecodeError:
+                        tool_args = {}
+                    if tool_calls_made >= max_tool_calls:
+                        tool_output = (
+                            "Tool-call limit reached for this run; answer with the "
+                            "information already gathered."
+                        )
+                        tools_exhausted = True
+                        succeeded = False
+                    else:
+                        tool_calls_made += 1
+                        try:
+                            tool_output = tool_executor(tool_name, tool_args)
+                            succeeded = True
+                        except Exception as tool_exc:  # noqa: BLE001
+                            tool_output = f"Tool '{tool_name}' failed: {str(tool_exc)[:300]}"
+                            succeeded = False
+                    if on_tool_event is not None:
+                        try:
+                            on_tool_event(tool_name, tool_args, tool_output, succeeded)
+                        except Exception:  # noqa: BLE001 - event emission is best-effort
+                            pass
+                    conversation.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": tool_call.id,
+                            "content": str(tool_output)[:8000],
+                        }
+                    )
+                if tool_calls_made >= max_tool_calls:
+                    tools_exhausted = True
+
             return (
                 text,
                 {
-                    "provider": "openai",
+                    "provider": provider,
                     "model": candidate_model,
                     "requested_model": primary_model,
                     "attempted_models": attempt_models,
                     "fallback_used": candidate_model != primary_model,
                     "mode": "live",
                     "response_api": "chat.completions",
+                    "tools_available": len(tools or []),
+                    "tool_calls_made": tool_calls_made,
                     "reasoning": {
                         "summary_mode": "auto",
                         "available": False,
@@ -4015,11 +4540,11 @@ def _run_openai_chat(
     return (
         f"[fallback:{primary_model}] {user_prompt[:280]}",
         {
-            "provider": "openai",
+            "provider": provider,
             "model": primary_model,
             "attempted_models": attempt_models,
             "mode": "simulated",
-            "reason": f"OpenAI call failed: {last_error[:180]}",
+            "reason": f"{provider} call failed: {last_error[:180]}",
         },
     )
 
@@ -4646,6 +5171,68 @@ def _validate_graph(payload: GraphPayload) -> GraphValidationResult:
                     )
                 )
 
+        if normalized_type == "frontier/goal":
+            if not str(node.config.get("intent") or "").strip():
+                issues.append(
+                    GraphValidationIssue(
+                        code="GOAL_INTENT_REQUIRED",
+                        message="Goal nodes require config.intent.",
+                        path=f"{node_path}.config.intent",
+                    )
+                )
+
+        if normalized_type == "frontier/evidence":
+            required_evidence = node.config.get("required_evidence")
+            if required_evidence is not None and not isinstance(required_evidence, list):
+                issues.append(
+                    GraphValidationIssue(
+                        code="EVIDENCE_REQUIRED_LIST_INVALID",
+                        message="Evidence nodes require config.required_evidence to be a list when provided.",
+                        path=f"{node_path}.config.required_evidence",
+                    )
+                )
+
+        if normalized_type == "frontier/assembly":
+            if len(_incoming_to_port(node_id, "goal")) == 0:
+                issues.append(
+                    GraphValidationIssue(
+                        code="ASSEMBLY_GOAL_INPUT_REQUIRED",
+                        message="Assembly nodes require a goal input connection to port 'goal'.",
+                        path=f"{node_path}.inputs.goal",
+                    )
+                )
+            if len(_incoming_to_port(node_id, "evidence")) == 0:
+                issues.append(
+                    GraphValidationIssue(
+                        code="ASSEMBLY_EVIDENCE_INPUT_REQUIRED",
+                        message="Assembly nodes require an evidence input connection to port 'evidence'.",
+                        path=f"{node_path}.inputs.evidence",
+                    )
+                )
+            threshold_raw = node.config.get("confidence_threshold", 0.6)
+            try:
+                threshold = float(threshold_raw)
+            except (TypeError, ValueError):
+                threshold = -1.0
+            if threshold < 0.0 or threshold > 1.0:
+                issues.append(
+                    GraphValidationIssue(
+                        code="ASSEMBLY_CONFIDENCE_THRESHOLD_INVALID",
+                        message="Assembly nodes require config.confidence_threshold between 0.0 and 1.0.",
+                        path=f"{node_path}.config.confidence_threshold",
+                    )
+                )
+
+        if normalized_type == "frontier/commitment":
+            if len(_incoming_to_port(node_id, "commitment")) == 0:
+                issues.append(
+                    GraphValidationIssue(
+                        code="COMMITMENT_INPUT_REQUIRED",
+                        message="Commitment nodes require a commitment input connection to port 'commitment'.",
+                        path=f"{node_path}.inputs.commitment",
+                    )
+                )
+
         if normalized_type.startswith("frontier/agent"):
             if not str(node.config.get("agent_id") or "").strip():
                 issues.append(
@@ -4897,6 +5484,35 @@ def _port_values(
     for name in port_names:
         merged.extend(by_port.get(name, []))
     return merged
+
+
+def _column_state_from_payload(
+    *, column_id: str, assembly_id: str, payload: dict[str, Any] | None
+) -> ColumnState:
+    source = payload if isinstance(payload, dict) else {}
+    belief_set = source.get("belief_set") if isinstance(source.get("belief_set"), dict) else {}
+    evidence_refs = (
+        source.get("evidence_refs") if isinstance(source.get("evidence_refs"), list) else []
+    )
+    confidence_raw = source.get("confidence", 0.0)
+    try:
+        confidence = max(0.0, min(1.0, float(confidence_raw)))
+    except (TypeError, ValueError):
+        confidence = 0.0
+    adaptation_metrics = (
+        source.get("adaptation_metrics")
+        if isinstance(source.get("adaptation_metrics"), dict)
+        else {}
+    )
+    return ColumnState(
+        column_id=column_id,
+        assembly_id=str(source.get("assembly_id") or assembly_id),
+        belief_set=dict(belief_set),
+        evidence_refs=[str(item) for item in evidence_refs if str(item or "").strip()],
+        confidence=confidence,
+        last_updated=str(source.get("last_updated") or _now_iso()),
+        adaptation_metrics=dict(adaptation_metrics),
+    )
 
 
 def _safe_json(value: Any) -> str:
@@ -5824,6 +6440,128 @@ def _execute_node(
                 "safety_level": safety_level,
                 "include_citations": include_citations,
             },
+        }
+
+    if node_type == "frontier/goal":
+        goal_column = GoalColumn()
+        goal_state = goal_column.observe(
+            assembly_id=node.id,
+            config=node.config if isinstance(node.config, dict) else {},
+            run_input=run_input,
+        )
+        goal_message = goal_column.emit_message(goal_state)
+        return {
+            "goal": goal_state.belief_set,
+            "goal_state": goal_state.model_dump(),
+            "belief_update": goal_message.__dict__,
+            "confidence": goal_state.confidence,
+            "out": goal_state.belief_set,
+        }
+
+    if node_type == "frontier/evidence":
+        evidence_column = EvidenceColumn()
+        evidence_state = evidence_column.observe(
+            assembly_id=node.id,
+            config=node.config if isinstance(node.config, dict) else {},
+            run_input=run_input,
+            incoming_context=incoming,
+        )
+        evidence_message = evidence_column.emit_message(evidence_state)
+        return {
+            "evidence": evidence_state.belief_set.get("evidence", []),
+            "evidence_state": evidence_state.model_dump(),
+            "evidence_claim": evidence_message.__dict__,
+            "confidence": evidence_state.confidence,
+            "out": evidence_state.belief_set.get("evidence", []),
+        }
+
+    if node_type == "frontier/assembly":
+        by_port = incoming_by_port or {}
+        goal_inputs = _port_values(by_port, "goal")
+        evidence_inputs = _port_values(by_port, "evidence")
+        goal_payload = goal_inputs[-1] if goal_inputs else {}
+        evidence_payload = evidence_inputs[-1] if evidence_inputs else {}
+        goal_state = _column_state_from_payload(
+            column_id="goal",
+            assembly_id=node.id,
+            payload=goal_payload.get("goal_state") if isinstance(goal_payload, dict) else None,
+        )
+        evidence_state = _column_state_from_payload(
+            column_id="evidence",
+            assembly_id=node.id,
+            payload=evidence_payload.get("evidence_state")
+            if isinstance(evidence_payload, dict)
+            else None,
+        )
+        synthesis_state = SynthesisColumn().observe(
+            assembly_id=node.id,
+            goal_state=goal_state,
+            evidence_state=evidence_state,
+        )
+        threshold_raw = node.config.get("confidence_threshold", 0.6)
+        try:
+            confidence_threshold = max(0.0, min(1.0, float(threshold_raw)))
+        except (TypeError, ValueError):
+            confidence_threshold = 0.6
+        commitment = ConsensusEngine().fuse(
+            goal_state=goal_state,
+            evidence_state=evidence_state,
+            synthesis_state=synthesis_state,
+            confidence_threshold=confidence_threshold,
+        )
+        return {
+            "assembly": {
+                "assembly_id": node.id,
+                "consensus_policy": str(node.config.get("consensus_policy") or "weighted-support"),
+                "inference_mode": str(node.config.get("inference_mode") or "bounded"),
+            },
+            "synthesis": synthesis_state.belief_set,
+            "synthesis_state": synthesis_state.model_dump(),
+            "commitment": commitment.model_dump(),
+            "dissent": {
+                "columns": commitment.dissenting_columns,
+                "blockers": commitment.blockers,
+            },
+            "confidence": commitment.confidence,
+            "out": commitment.model_dump(),
+        }
+
+    if node_type == "frontier/commitment":
+        by_port = incoming_by_port or {}
+        commitment_inputs = _port_values(by_port, "commitment")
+        commitment_payload = commitment_inputs[-1] if commitment_inputs else {}
+        commitment_data = (
+            dict(commitment_payload.get("commitment"))
+            if isinstance(commitment_payload, dict)
+            and isinstance(commitment_payload.get("commitment"), dict)
+            else {}
+        )
+        if not commitment_data and isinstance(commitment_payload, dict):
+            commitment_data = dict(commitment_payload)
+        confidence_raw = commitment_data.get("confidence", 0.0)
+        try:
+            confidence = max(0.0, min(1.0, float(confidence_raw)))
+        except (TypeError, ValueError):
+            confidence = 0.0
+        threshold_raw = node.config.get("confidence_threshold", 0.6)
+        try:
+            confidence_threshold = max(0.0, min(1.0, float(threshold_raw)))
+        except (TypeError, ValueError):
+            confidence_threshold = 0.6
+        blocked = confidence < confidence_threshold or bool(commitment_data.get("blockers"))
+        autonomy_level = str(node.config.get("autonomy_level") or "bounded")
+        published_commitment = {
+            **commitment_data,
+            "autonomy_level": autonomy_level,
+            "status": "escalated" if blocked else "committed",
+            "confidence_threshold": confidence_threshold,
+        }
+        return {
+            "commitment": published_commitment,
+            "result": published_commitment,
+            "published": published_commitment,
+            "blocked": blocked,
+            "out": published_commitment,
         }
 
     if node_type == "frontier/manifold":
@@ -7712,6 +8450,28 @@ class InMemoryStore:
             ),
         }
 
+        self.skills: dict[str, SkillDefinition] = {
+            str(seed["id"]): SkillDefinition(
+                id=str(seed["id"]),
+                name=str(seed["name"]),
+                description=str(seed.get("description") or ""),
+                content=str(seed.get("content") or ""),
+                tags=[str(tag) for tag in seed.get("tags", [])],
+                source="bundled",
+            )
+            for seed in skills_catalog.SKILL_SEEDS
+        }
+
+        # Webhook trigger tokens: token -> {workflow_id, actor, label, created_at}.
+        # Lets external systems start a run for a workflow without an operator
+        # session (token is the credential; never exposed after creation).
+        self.workflow_triggers: dict[str, dict[str, str]] = {}
+
+        # Cron schedule triggers: id -> {workflow_id, actor, label, cron,
+        # enabled, created_at, last_fired_minute}. Evaluated by the scheduler
+        # loop at minute resolution.
+        self.workflow_schedules: dict[str, dict[str, Any]] = {}
+
         self.collaboration_sessions: dict[str, CollaborationSession] = {}
         self.audit_events: list[AuditEvent] = []
         self.a2a_seen_nonces: dict[str, str] = {}
@@ -8576,17 +9336,20 @@ def _append_audit_event(
     metadata: dict[str, Any] | None = None,
 ) -> None:
     audit_metadata = dict(metadata) if isinstance(metadata, dict) else {}
-    store.audit_events.insert(
-        0,
-        AuditEvent(
-            id=str(uuid4()),
-            action=action,
-            actor=str(actor or "anonymous"),
-            outcome=outcome,
-            created_at=_now_iso(),
-            metadata=audit_metadata,
-        ),
+    audit_event = AuditEvent(
+        id=str(uuid4()),
+        action=action,
+        actor=str(actor or "anonymous"),
+        outcome=outcome,
+        created_at=_now_iso(),
+        metadata=audit_metadata,
     )
+    store.audit_events.insert(0, audit_event)
+    if _AUDIT_LOG is not None and _AUDIT_LOG.enabled:
+        try:
+            _AUDIT_LOG.append(audit_event.model_dump())
+        except Exception:  # noqa: BLE001 - audit write-through is best-effort
+            pass
     if len(store.audit_events) > 2000:
         dropped = len(store.audit_events) - 2000
         newest = store.audit_events[0]
@@ -9274,9 +10037,19 @@ def _validate_platform_settings_update(
         _active_runtime_profile().require_authenticated_requests
         and not candidate.require_authenticated_requests
     ):
-        immutable_violations.append(
-            "require_authenticated_requests cannot be disabled in secure runtime profiles"
+        explicit_disable = "require_authenticated_requests" in payload and not bool(
+            payload.get("require_authenticated_requests")
         )
+        if explicit_disable and current.require_authenticated_requests:
+            immutable_violations.append(
+                "require_authenticated_requests cannot be disabled in secure runtime profiles"
+            )
+        else:
+            # Persisted settings may predate the secure profile. The profile
+            # enforces authentication at the request layer regardless, so align
+            # the stored flag with the baseline instead of failing unrelated
+            # settings updates.
+            candidate.require_authenticated_requests = True
     if candidate.a2a_require_signed_messages and not candidate.a2a_trusted_subjects:
         immutable_violations.append(
             "a2a_trusted_subjects must contain at least one trusted subject when signed A2A is enabled"
@@ -10097,7 +10870,7 @@ def _upsert_generated_artifact_summaries(artifacts: list[GeneratedCodeArtifact])
 
 
 def _serialize_store_state() -> dict[str, Any]:
-    return {
+    state = {
         "workflow_definitions": [item.model_dump() for item in store.workflow_definitions.values()],
         "agent_definitions": [item.model_dump() for item in store.agent_definitions.values()],
         "guardrail_rulesets": [item.model_dump() for item in store.guardrail_rulesets.values()],
@@ -10129,9 +10902,17 @@ def _serialize_store_state() -> dict[str, Any]:
         "collaboration_sessions": [
             item.model_dump() for item in store.collaboration_sessions.values()
         ],
-        "audit_events": [item.model_dump() for item in store.audit_events],
         "a2a_seen_nonces": store.a2a_seen_nonces,
+        "skills": [item.model_dump() for item in store.skills.values()],
+        "workflow_triggers": store.workflow_triggers,
+        "workflow_schedules": store.workflow_schedules,
     }
+    if _AUDIT_LOG is None or not _AUDIT_LOG.enabled:
+        # Without the append-only audit table, audit events ride in the state
+        # snapshot (legacy behavior). With it, they are persisted per-event and
+        # excluded here so routine mutations stop rewriting the audit blob.
+        state["audit_events"] = [item.model_dump() for item in store.audit_events]
+    return state
 
 
 def _apply_store_state(payload: dict[str, Any]) -> None:
@@ -10364,6 +11145,49 @@ def _apply_store_state(payload: dict[str, Any]) -> None:
                 continue
         store.audit_events = hydrated_audit_events
 
+    skills_payload = payload.get("skills")
+    if isinstance(skills_payload, list):
+        hydrated_skills: dict[str, SkillDefinition] = {}
+        for item in skills_payload:
+            try:
+                model = SkillDefinition.model_validate(item)
+                hydrated_skills[model.id] = model
+            except Exception:  # noqa: BLE001
+                continue
+        if hydrated_skills:
+            store.skills = hydrated_skills
+
+    triggers_payload = payload.get("workflow_triggers")
+    if isinstance(triggers_payload, dict):
+        hydrated_triggers: dict[str, dict[str, str]] = {}
+        for token, meta in triggers_payload.items():
+            if isinstance(meta, dict) and meta.get("workflow_id"):
+                hydrated_triggers[str(token)] = {
+                    "id": str(meta.get("id") or uuid4()),
+                    "workflow_id": str(meta.get("workflow_id") or ""),
+                    "actor": str(meta.get("actor") or ""),
+                    "label": str(meta.get("label") or ""),
+                    "created_at": str(meta.get("created_at") or ""),
+                }
+        store.workflow_triggers = hydrated_triggers
+
+    schedules_payload = payload.get("workflow_schedules")
+    if isinstance(schedules_payload, dict):
+        hydrated_schedules: dict[str, dict[str, Any]] = {}
+        for schedule_id, meta in schedules_payload.items():
+            if isinstance(meta, dict) and meta.get("workflow_id") and meta.get("cron"):
+                hydrated_schedules[str(schedule_id)] = {
+                    "id": str(meta.get("id") or schedule_id),
+                    "workflow_id": str(meta.get("workflow_id") or ""),
+                    "actor": str(meta.get("actor") or ""),
+                    "label": str(meta.get("label") or ""),
+                    "cron": str(meta.get("cron") or ""),
+                    "enabled": bool(meta.get("enabled", True)),
+                    "created_at": str(meta.get("created_at") or ""),
+                    "last_fired_minute": str(meta.get("last_fired_minute") or ""),
+                }
+        store.workflow_schedules = hydrated_schedules
+
     seen_nonces_payload = payload.get("a2a_seen_nonces")
     if isinstance(seen_nonces_payload, dict):
         normalized_seen: dict[str, str] = {}
@@ -10375,9 +11199,37 @@ def _apply_store_state(payload: dict[str, Any]) -> None:
         store.a2a_seen_nonces = normalized_seen
 
 
+# Last successfully written JSON encoding per store section. Lets _persist_store_state
+# skip rewriting sections whose content did not change since the previous persist.
+_PERSIST_SECTION_CACHE: dict[str, str] = {}
+
+
+def _persist_json_default(value: Any) -> Any:
+    if hasattr(value, "model_dump"):
+        return value.model_dump()
+    if isinstance(value, set):
+        return sorted(value)
+    return str(value)
+
+
 def _persist_store_state() -> None:
     try:
-        _POSTGRES_STATE.save_state(_serialize_store_state())
+        payload = _serialize_store_state()
+        save_sections = getattr(_POSTGRES_STATE, "save_state_sections", None)
+        if not callable(save_sections):
+            # Custom/test state stores that only implement save_state get the
+            # legacy full-snapshot behavior.
+            _POSTGRES_STATE.save_state(payload)
+            return
+        changed: dict[str, str] = {}
+        for section, value in payload.items():
+            encoded = json.dumps(value, default=_persist_json_default)
+            if _PERSIST_SECTION_CACHE.get(section) != encoded:
+                changed[section] = encoded
+        if not changed:
+            return
+        save_sections(changed, replace_all=len(changed) == len(payload))
+        _PERSIST_SECTION_CACHE.update(changed)
     except Exception:  # noqa: BLE001
         return
 
@@ -10401,6 +11253,10 @@ def _merge_missing_bootstrap_content() -> None:
     for playbook_id, playbook in bootstrap.playbooks.items():
         if playbook_id not in store.playbooks:
             store.playbooks[playbook_id] = playbook
+
+    for skill_id, skill in bootstrap.skills.items():
+        if skill_id not in store.skills:
+            store.skills[skill_id] = skill
 
 
 def _sync_repo_agents_into_store(*, update_existing: bool = False) -> None:
@@ -10434,6 +11290,20 @@ def _startup_initialize_state() -> None:
     state = _POSTGRES_STATE.load_state()
     if state:
         _apply_store_state(state)
+    _apply_provider_settings_side_effects()
+
+    if _AUDIT_LOG is not None and _AUDIT_LOG.enabled:
+        try:
+            hydrated_audit: list[AuditEvent] = []
+            for item in _AUDIT_LOG.load_recent(limit=2000):
+                try:
+                    hydrated_audit.append(AuditEvent.model_validate(item))
+                except Exception:  # noqa: BLE001
+                    continue
+            if hydrated_audit:
+                store.audit_events = hydrated_audit
+        except Exception:  # noqa: BLE001 - audit hydration is best-effort
+            pass
 
     _merge_missing_bootstrap_content()
 
@@ -10447,6 +11317,19 @@ def _startup_initialize_state() -> None:
     _ensure_definition_history_seeded()
     _validate_runtime_security_configuration()
     validate_route_inventory(app)
+
+    # Pre-warm the (lazy) Presidio analyzer off the request path: first-call
+    # engine construction can take minutes and must never block a run create.
+    if _env_flag("FRONTIER_PREWARM_PII_ANALYZER", True):
+        threading.Thread(
+            target=_get_presidio_analyzer, name="frontier-pii-prewarm", daemon=True
+        ).start()
+
+    # Cron schedule trigger loop (resource plan Phase D). Disable with
+    # FRONTIER_SCHEDULER_ENABLED=0 (e.g. for multi-replica deployments where a
+    # single leader should own scheduling).
+    if _env_flag("FRONTIER_SCHEDULER_ENABLED", True):
+        threading.Thread(target=_scheduler_loop, name="frontier-scheduler", daemon=True).start()
 
     _persist_store_state()
 
@@ -12145,11 +13028,31 @@ def get_local_integration_readiness(request: Request) -> dict[str, Any]:
     }
 
 
+def _masked_provider_settings_view(data: dict[str, Any]) -> dict[str, Any]:
+    """Provider API keys are write-only: never returned, never audited in clear."""
+    masked = dict(data)
+    for field in _PROVIDER_SECRET_FIELDS:
+        configured = bool(str(masked.get(field) or "").strip())
+        masked[field] = ""
+        masked[f"{field}_configured"] = configured
+    providers = masked.get("ai_providers")
+    if isinstance(providers, dict):
+        masked_providers: dict[str, dict[str, Any]] = {}
+        for provider, entry in providers.items():
+            entry_view: dict[str, Any] = dict(entry) if isinstance(entry, dict) else {}
+            configured = bool(str(entry_view.get("api_key") or "").strip())
+            entry_view["api_key"] = ""
+            entry_view["api_key_configured"] = configured
+            masked_providers[str(provider)] = entry_view
+        masked["ai_providers"] = masked_providers
+    return masked
+
+
 @app.get("/platform/settings")
 def get_platform_settings(request: Request) -> dict[str, Any]:
     actor = _enforce_request_authn(request, action="platform.settings.read")
     _append_audit_event("platform.settings.read", actor, "allowed")
-    return store.platform_settings.model_dump()
+    return _masked_provider_settings_view(store.platform_settings.model_dump())
 
 
 @app.get("/platform/security-policy")
@@ -12204,6 +13107,42 @@ def save_platform_settings(
     actor = _enforce_admin_access(request, payload=payload, action="platform.settings.save")
     current_settings = store.platform_settings
     current = current_settings.model_dump()
+
+    # Secret provider fields are write-only: empty submissions keep the stored
+    # value, the clear sentinel removes it.
+    payload = dict(payload)
+    for field in _PROVIDER_SECRET_FIELDS:
+        if field in payload:
+            value = str(payload[field] or "").strip()
+            if not value:
+                payload.pop(field)
+            elif value == _PROVIDER_CLEAR_SENTINEL:
+                payload[field] = ""
+    if isinstance(payload.get("ai_providers"), dict):
+        merged_providers: dict[str, dict[str, str]] = {
+            provider: dict(entry)
+            for provider, entry in (current.get("ai_providers") or {}).items()
+            if isinstance(entry, dict)
+        }
+        for provider, entry in payload["ai_providers"].items():
+            if not isinstance(entry, dict):
+                continue
+            provider_id = str(provider).strip().lower()
+            if provider_id not in _PROVIDER_REGISTRY:
+                continue
+            target = merged_providers.setdefault(provider_id, {})
+            for field in ("base_url", "default_model"):
+                if field in entry:
+                    target[field] = str(entry.get(field) or "").strip()
+            if "api_key" in entry:
+                key_value = str(entry.get("api_key") or "").strip()
+                if key_value == _PROVIDER_CLEAR_SENTINEL:
+                    target["api_key"] = ""
+                elif key_value:
+                    target["api_key"] = key_value
+                # blank submissions keep the stored key
+        payload["ai_providers"] = merged_providers
+
     merged = {**current}
     for key in current.keys():
         if key in payload:
@@ -12227,18 +13166,32 @@ def save_platform_settings(
                 merged.get("default_runtime_engine") or "native"
             ),
         )
-    candidate_settings = PlatformSettings.model_validate(merged)
+    try:
+        candidate_settings = PlatformSettings.model_validate(merged)
+    except ValidationError as exc:
+        errors = [
+            {
+                "field": ".".join(str(part) for part in error.get("loc", [])),
+                "message": str(error.get("msg") or "invalid value"),
+            }
+            for error in exc.errors()[:5]
+        ]
+        raise HTTPException(
+            status_code=400,
+            detail={"message": "Invalid platform settings payload", "errors": errors},
+        ) from exc
     _validate_platform_settings_update(
         current_settings, candidate_settings, payload=payload, actor=actor
     )
     store.platform_settings = candidate_settings
+    _apply_provider_settings_side_effects()
     _append_config_mutation_audit(
         "platform.settings.save",
         actor,
         entity_type="platform_settings",
         entity_id="platform",
-        before=current,
-        after=candidate_settings.model_dump(),
+        before=_masked_provider_settings_view(current),
+        after=_masked_provider_settings_view(candidate_settings.model_dump()),
         extra={"updated_keys": [key for key in payload.keys() if key in current]},
     )
     _persist_store_state()
@@ -12380,9 +13333,194 @@ def get_active_workflows() -> list[dict[str, Any]]:
     ]
 
 
+def _sync_run_execution_enabled() -> bool:
+    """Escape hatch (FRONTIER_SYNC_RUN_EXECUTION) to execute runs inline in the request."""
+    return str(os.getenv("FRONTIER_SYNC_RUN_EXECUTION", "")).strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
+def _resolve_integration_bearer(integration: IntegrationDefinition) -> str:
+    """Resolve an integration's credential from its secret reference.
+
+    Supported reference forms: ``env:VAR_NAME`` (local-first) and Vault paths
+    (``secret/...``). Raw credentials are never stored in integrations.
+    """
+    ref = str(integration.secret_ref or "").strip()
+    if not ref:
+        return ""
+    if ref.startswith("env:"):
+        return str(os.getenv(ref[4:].strip()) or "").strip()
+    if ref.startswith("secret/"):
+        try:
+            from frontier_runtime.security import VaultClient
+
+            data = VaultClient().read_secret(ref)
+            for key in ("token", "api_key", "bearer", "value", "password"):
+                value = str(data.get(key) or "").strip()
+                if value:
+                    return value
+        except Exception:  # noqa: BLE001 - unresolved secrets simply disable the integration
+            return ""
+    return ""
+
+
+def _mcp_server_allowed(base_url: str) -> bool:
+    platform = store.platform_settings
+    if not platform.mcp_require_local_server:
+        return True
+    host = str(urlsplit(base_url).hostname or "")
+    if _hostname_is_local(host):
+        return True
+    normalized = base_url.rstrip("/")
+    for allowed in platform.allowed_mcp_server_urls or []:
+        allowed_clean = str(allowed or "").strip().rstrip("/")
+        if allowed_clean and normalized.startswith(allowed_clean):
+            return True
+    return False
+
+
+_MCP_MAX_TOOLS_PER_SERVER = 40
+
+
+def _gather_mcp_run_tools() -> tuple[list[dict[str, Any]], dict[str, tuple[Any, str]], list[str]]:
+    """Collect callable tools from configured MCP integrations.
+
+    Returns (OpenAI tool schemas, qualified-name dispatch map, source names).
+    Gates applied: integration must be `configured` (drafts never expose tools),
+    MCP protocol over HTTP/SSE, server allowed by the MCP locality policy,
+    credentials resolvable, and tool names clear the high-risk patterns.
+    """
+    platform = store.platform_settings
+    if platform.block_tool_calls:
+        return [], {}, []
+    schemas: list[dict[str, Any]] = []
+    dispatch: dict[str, tuple[Any, str]] = {}
+    sources: list[str] = []
+    high_risk = [
+        str(pattern or "").strip().lower()
+        for pattern in (platform.high_risk_tool_patterns or [])
+        if str(pattern or "").strip()
+    ]
+
+    for integration in store.integrations.values():
+        if integration.status != "configured":
+            continue
+        metadata = integration.metadata_json if isinstance(integration.metadata_json, dict) else {}
+        if str(metadata.get("protocol") or "").lower() != "mcp":
+            continue
+        transport = str(metadata.get("transport") or "http").lower()
+        if transport not in {"http", "sse", "streamable-http"}:
+            continue  # stdio servers need the plugin runtime; not exposed yet
+        base_url = str(integration.base_url or "").strip()
+        if not base_url or not _mcp_server_allowed(base_url):
+            continue
+        token = _resolve_integration_bearer(integration)
+        if integration.auth_type != "none" and not token:
+            continue
+        try:
+            server = mcp_client.McpHttpClient(
+                base_url, bearer_token=token, timeout_seconds=15.0
+            )
+            tools = server.list_tools()
+        except Exception:  # noqa: BLE001 - unreachable servers contribute no tools
+            continue
+
+        prefix = (_slugify(integration.name) or integration.id[:8]).replace("-", "_")
+        exposed = 0
+        for tool in tools[:_MCP_MAX_TOOLS_PER_SERVER]:
+            tool_name = str(tool["name"])
+            qualified = f"{prefix}__{tool_name}"[:64]
+            risk_haystack = f"{integration.name} {tool_name}".lower()
+            if any(pattern in risk_haystack for pattern in high_risk):
+                continue  # high-risk tools stay behind explicit approval flows
+            if qualified in dispatch:
+                continue
+            schemas.append(
+                {
+                    "type": "function",
+                    "function": {
+                        "name": qualified,
+                        "description": (
+                            tool["description"] or f"{tool_name} via {integration.name}"
+                        )[:1024],
+                        "parameters": tool["input_schema"],
+                    },
+                }
+            )
+            dispatch[qualified] = (server, tool_name)
+            exposed += 1
+        if exposed:
+            sources.append(integration.name)
+    return schemas, dispatch, sources
+
+
+_SKILLS_PROMPT_CHAR_BUDGET = 6000
+
+
+def _augment_system_prompt_with_skills(system_prompt: str) -> str:
+    """Append enabled auto-inject skills to the agent system prompt.
+
+    Symphony-style skills are operating procedures the agent should follow;
+    the total injected size is bounded so skills can never crowd out the
+    agent's own prompt.
+    """
+    sections: list[str] = []
+    used = 0
+    injected: list[SkillDefinition] = []
+    for skill in sorted(store.skills.values(), key=lambda item: item.name.lower()):
+        if skill.status != "enabled" or not skill.auto_inject:
+            continue
+        body = skill.content.strip()
+        if not body:
+            continue
+        block = f"### Skill: {skill.name}\n{body}"
+        if used + len(block) > _SKILLS_PROMPT_CHAR_BUDGET:
+            continue
+        used += len(block)
+        sections.append(block)
+        injected.append(skill)
+    if not sections:
+        return system_prompt
+    injected_at = _now_iso()
+    for skill in injected:
+        skill.usage_count += 1
+        skill.last_used_at = injected_at
+    return (
+        system_prompt
+        + "\n\n## Platform skills\nFollow these operating procedures when they apply to the task:\n\n"
+        + "\n\n".join(sections)
+    )
+
+
+def _run_worker_concurrency() -> int:
+    try:
+        configured = int(os.getenv("FRONTIER_WORKER_CONCURRENCY", "2"))
+    except ValueError:
+        configured = 2
+    return max(1, min(16, configured))
+
+
+# Bounded executor for run execution: a burst of run creations queues here
+# instead of consuming the API server's shared request threadpool. This is the
+# seam the future external worker (resource plan 2.1) replaces.
+_RUN_EXECUTOR = ThreadPoolExecutor(
+    max_workers=_run_worker_concurrency(), thread_name_prefix="frontier-run"
+)
+
+
+@app.on_event("shutdown")
+def _shutdown_run_executor() -> None:
+    _RUN_EXECUTOR.shutdown(wait=False, cancel_futures=True)
+
+
 @app.post("/workflow-runs")
 def create_workflow_run(
-    request: Request, payload: dict[str, Any] = Body(default_factory=dict)
+    request: Request,
+    payload: dict[str, Any] = Body(default_factory=dict),
 ) -> dict[str, str]:
     actor = _enforce_request_authn(request, payload=payload, action="workflow.run.create")
     _enforce_emergency_write_policy("workflow.run.create", actor)
@@ -12584,6 +13722,7 @@ def create_workflow_run(
         selected_agent_definition,
         requested_token=selected_agent_token or _DEFAULT_CHAT_AGENT_SOURCE_ID,
     )
+    system_prompt = _augment_system_prompt_with_skills(system_prompt)
 
     selected_model = _resolve_agent_chat_model(selected_agent_definition)
     request_prompt = _with_architecture_contract(
@@ -12593,155 +13732,7 @@ def create_workflow_run(
         ),
     )
 
-    response_text, model_meta = _run_openai_chat(
-        system_prompt=system_prompt,
-        user_prompt=request_prompt,
-        model=selected_model,
-        temperature=0.2,
-    )
-
-    if str(model_meta.get("mode") or "") != "live":
-        reason = str(model_meta.get("reason") or "Agent execution provider is not available.")
-        failure_artifact = ArtifactSummary(
-            id=str(uuid4()),
-            name="Agent Execution Failure Report",
-            status="Blocked",
-            version=1,
-        )
-        _upsert_artifact_summary(failure_artifact)
-        store.runs[run_id] = WorkflowRunSummary(
-            id=run_id,
-            title=title,
-            status="Failed",
-            updatedAt="just now",
-            progressLabel="Provider configuration error",
-        )
-        store.run_events[run_id] = [
-            WorkflowRunEvent(
-                id=f"evt-{uuid4()}",
-                type="error",
-                title="Agent execution failed",
-                summary=reason,
-                createdAt=_now_iso(),
-                metadata={
-                    "selected_agent_id": selected_agent_id,
-                    "selected_agent_name": selected_agent,
-                    "model": model_meta,
-                    "system_prompt_source": system_prompt_source,
-                },
-            ),
-            WorkflowRunEvent(
-                id=f"evt-{uuid4()}",
-                type="artifact_created",
-                title="Failure artifact created",
-                summary="Captured provider/auth configuration failure details.",
-                createdAt=_now_iso(),
-                metadata={
-                    "artifact_id": failure_artifact.id,
-                    "artifact_name": failure_artifact.name,
-                },
-            ),
-        ]
-        store.run_details[run_id] = {
-            "artifacts": [failure_artifact.model_dump()],
-            "status": "Failed",
-            "graph": {
-                "nodes": [
-                    {"id": "n-trigger", "title": "Trigger", "type": "trigger", "x": 80, "y": 110},
-                    {
-                        "id": "n-agent",
-                        "title": selected_agent,
-                        "type": "agent",
-                        "x": 360,
-                        "y": 110,
-                        "config": {"agent_id": selected_agent_id},
-                    },
-                    {"id": "n-output", "title": "Output", "type": "output", "x": 660, "y": 110},
-                ],
-                "links": [
-                    {"from": "n-trigger", "to": "n-agent", "from_port": "output", "to_port": "in"},
-                    {"from": "n-agent", "to": "n-output", "from_port": "out", "to_port": "in"},
-                ],
-            },
-            "agent_traces": [
-                {
-                    "agent": selected_agent,
-                    "reasoningSummary": "Execution halted due to provider authentication/configuration error.",
-                    "actions": [
-                        "Parsed kickoff prompt",
-                        "Resolved agent prompt",
-                        "Failed provider auth/config check",
-                    ],
-                    "output": reason,
-                }
-            ],
-            "response_text": reason,
-            "approvals": {
-                "required": False,
-                "pending": False,
-            },
-            "access": _build_run_access_context(request, actor),
-        }
-        _persist_store_state()
-        _append_audit_event(
-            "workflow.run.create",
-            actor,
-            "error",
-            {"run_id": run_id, "status": "failed_provider"},
-        )
-        return {"id": run_id, "status": "failed"}
-
-    guardrail_output_triggered = False
-    guardrail_output_summary = ""
-    if chat_guardrail_config:
-        output_guardrail = _evaluate_guardrail(
-            response_text,
-            {
-                **chat_guardrail_config,
-                "stage": "output",
-                "tripwire_action": str(
-                    chat_guardrail_config.get("tripwire_action") or "reject_content"
-                ),
-            },
-            stage="output",
-        )
-        if output_guardrail.get("tripwire_triggered"):
-            guardrail_output_triggered = True
-            behavior = str(output_guardrail.get("behavior") or "reject_content")
-            if behavior in {"reject_content", "raise_exception"}:
-                response_text = str(
-                    chat_guardrail_config.get("reject_message")
-                    or "Response blocked by guardrail policy."
-                )
-            first_issue = next(
-                iter(output_guardrail.get("output_info", {}).get("issues", [])), None
-            )
-            if isinstance(first_issue, dict):
-                guardrail_output_summary = str(
-                    first_issue.get("message") or "Output blocked by guardrail."
-                )
-            else:
-                guardrail_output_summary = "Output blocked by guardrail."
-
-    approval_required = store.platform_settings.require_human_approval or any(
-        tag in {"need-review", "approval", "needs-approval"} for tag in requested_tags
-    )
-    artifact_id = str(uuid4())
-    artifact_status: Literal["Draft", "Needs Review", "Approved", "Blocked"] = (
-        "Blocked"
-        if guardrail_output_triggered
-        else ("Needs Review" if approval_required else "Draft")
-    )
-    artifacts = [
-        ArtifactSummary(
-            id=artifact_id,
-            name="Task Response",
-            status=artifact_status,
-            version=1,
-        )
-    ]
-    _upsert_artifact_summary(artifacts[0])
-
+    access_context = _build_run_access_context(request, actor)
     graph_nodes = [
         {"id": "n-trigger", "title": "Trigger", "type": "trigger", "x": 80, "y": 110},
         {
@@ -12758,40 +13749,13 @@ def create_workflow_run(
         {"from": "n-trigger", "to": "n-agent", "from_port": "output", "to_port": "in"},
         {"from": "n-agent", "to": "n-output", "from_port": "output", "to_port": "in"},
     ]
-
-    run_status: Literal["Running", "Blocked", "Needs Review", "Done", "Failed"] = (
-        "Blocked"
-        if guardrail_output_triggered
-        else ("Needs Review" if approval_required else "Running")
-    )
-
     store.runs[run_id] = WorkflowRunSummary(
         id=run_id,
         title=title,
-        status=run_status,
+        status="Running",
         updatedAt="just now",
-        progressLabel="Step 2/3",
+        progressLabel="Executing agent",
     )
-    event_response_text = response_text
-    if store.platform_settings.mask_secrets_in_events:
-        event_response_text = _redact_sensitive_text(event_response_text)
-    event_response_summary, event_response_meta = _truncate_text_with_metadata(event_response_text)
-
-    reasoning_meta = (
-        model_meta.get("reasoning") if isinstance(model_meta.get("reasoning"), dict) else {}
-    )
-    reasoning_summaries = (
-        reasoning_meta.get("summaries") if isinstance(reasoning_meta.get("summaries"), list) else []
-    )
-    reasoning_summary_text = ""
-    for item in reasoning_summaries:
-        candidate = str(item or "").strip()
-        if candidate:
-            reasoning_summary_text = candidate
-            break
-    if not reasoning_summary_text:
-        reasoning_summary_text = "Processed the task prompt and generated a response."
-
     store.run_events[run_id] = [
         WorkflowRunEvent(
             id=f"evt-{uuid4()}",
@@ -12809,127 +13773,440 @@ def create_workflow_run(
             createdAt=_now_iso(),
             metadata={"tokens": tokens_raw},
         ),
-        WorkflowRunEvent(
-            id=f"evt-{uuid4()}",
-            type="agent_message",
-            title=f"{selected_agent} response",
-            summary=event_response_summary,
-            createdAt=_now_iso(),
-            metadata={
-                "model": model_meta,
-                "selected_agent_id": selected_agent_id,
-                "selected_agent_name": selected_agent,
-                "system_prompt_source": system_prompt_source,
-                "summary_truncated": bool(event_response_meta["truncated"]),
-                "summary_original_length": int(event_response_meta["original_length"]),
-                "summary_max_chars": int(event_response_meta["max_chars"]),
-                "summary_truncated_chars": int(event_response_meta["truncated_chars"]),
-            },
-        ),
-        WorkflowRunEvent(
-            id=f"evt-{uuid4()}",
-            type="artifact_created",
-            title="Artifact created",
-            summary="Task response artifact generated.",
-            createdAt=_now_iso(),
-            metadata={"artifact_id": artifact_id},
-        ),
     ]
-
-    if guardrail_output_triggered:
-        store.run_events[run_id].append(
-            WorkflowRunEvent(
-                id=f"evt-{uuid4()}",
-                type="guardrail_result",
-                title="Output blocked",
-                summary=guardrail_output_summary or "Output blocked by guardrail.",
-                createdAt=_now_iso(),
-                metadata={
-                    "selected_agent_id": selected_agent_id,
-                    "selected_agent_name": selected_agent,
-                },
-            )
-        )
-
-    if approval_required and not guardrail_output_triggered:
-        store.run_events[run_id].append(
-            WorkflowRunEvent(
-                id=f"evt-{uuid4()}",
-                type="approval_required",
-                title="Approval required",
-                summary="Run requires human approval before completion.",
-                createdAt=_now_iso(),
-                metadata={"artifact_id": artifact_id, "version": 1},
-            )
-        )
-
     store.run_details[run_id] = {
-        "artifacts": [artifact.model_dump() for artifact in artifacts],
-        "status": run_status,
-        "graph": {
-            "nodes": graph_nodes,
-            "links": graph_links,
-        },
-        "agent_traces": [
-            {
-                "agent": selected_agent,
-                "reasoningSummary": reasoning_summary_text,
-                "actions": [
-                    "Parsed kickoff prompt",
-                    "Executed default chat agent"
-                    if selected_agent_token is None
-                    else "Executed selected agent",
-                    "Emitted response artifact",
-                ],
-                "output": response_text,
-            }
-        ],
-        "approvals": {
-            "required": approval_required and not guardrail_output_triggered,
-            "pending": approval_required and not guardrail_output_triggered,
-            "artifact_id": artifact_id,
-            "version": 1,
-            "scope": "final send/export",
-        },
-        "runtime": model_meta,
-        "response_text": response_text,
-        "access": _build_run_access_context(request, actor),
+        "artifacts": [],
+        "status": "Running",
+        "graph": {"nodes": graph_nodes, "links": graph_links},
+        "agent_traces": [],
+        "approvals": {"required": False, "pending": False},
+        "access": access_context,
     }
-
-    _record_task_learning(
-        run_id=run_id,
-        actor=actor,
-        prompt_text=prompt_text,
-        response_text=response_text,
-        selected_agent_id=selected_agent_id,
-        selected_agent_name=selected_agent,
-        requested_workflows=requested_workflows,
-        requested_tags=requested_tags,
-    )
-
-    if approval_required:
-        store.inbox.insert(
-            0,
-            InboxItem(
-                id=str(uuid4()),
-                runId=run_id,
-                runName=title,
-                artifactType="Task Response",
-                reason="Approval required before task completion.",
-                queue="Needs Approval",
-            ),
-        )
-
-    _NEO4J_GRAPH.record_run(
-        run_id=run_id,
-        title=title,
-        agent=selected_agent,
-        workflow=requested_workflows[0] if requested_workflows else None,
-    )
     _append_audit_event(
         "workflow.run.create", actor, "allowed", {"run_id": run_id, "status": "started"}
     )
     _persist_store_state()
+
+    def _execute_run() -> None:
+        try:
+            tool_schemas, tool_dispatch, tool_sources = _gather_mcp_run_tools()
+
+            def _execute_mcp_tool(name: str, arguments: dict[str, Any]) -> str:
+                entry = tool_dispatch.get(name)
+                if entry is None:
+                    raise RuntimeError(f"Unknown tool '{name}'")
+                server, real_name = entry
+                return server.call_tool(real_name, arguments)
+
+            def _emit_tool_event(
+                name: str, arguments: dict[str, Any], output: str, succeeded: bool
+            ) -> None:
+                store.run_events.setdefault(run_id, []).append(
+                    WorkflowRunEvent(
+                        id=f"evt-{uuid4()}",
+                        type="tool_call",
+                        title=f"Tool {'call' if succeeded else 'error'}: {name}",
+                        summary=(str(output) or "(no output)")[:500],
+                        createdAt=_now_iso(),
+                        metadata={
+                            "tool": name,
+                            "arguments": {
+                                str(key): str(value)[:200]
+                                for key, value in (arguments or {}).items()
+                            },
+                            "succeeded": succeeded,
+                        },
+                    )
+                )
+
+            response_text, model_meta = _run_openai_chat(
+                system_prompt=system_prompt,
+                user_prompt=request_prompt,
+                model=selected_model,
+                temperature=0.2,
+                tools=tool_schemas or None,
+                tool_executor=_execute_mcp_tool if tool_dispatch else None,
+                max_tool_calls=max(
+                    1, int(store.platform_settings.max_tool_calls_per_run or 8)
+                ),
+                on_tool_event=_emit_tool_event,
+            )
+            if tool_sources:
+                model_meta = {**model_meta, "tool_sources": tool_sources}
+
+            if str(model_meta.get("mode") or "") != "live":
+                reason = str(
+                    model_meta.get("reason") or "Agent execution provider is not available."
+                )
+                failure_artifact = ArtifactSummary(
+                    id=str(uuid4()),
+                    name="Agent Execution Failure Report",
+                    status="Blocked",
+                    version=1,
+                )
+                _upsert_artifact_summary(failure_artifact)
+                store.runs[run_id] = WorkflowRunSummary(
+                    id=run_id,
+                    title=title,
+                    status="Failed",
+                    updatedAt="just now",
+                    progressLabel="Provider configuration error",
+                )
+                store.run_events[run_id].extend(
+                    [
+                        WorkflowRunEvent(
+                            id=f"evt-{uuid4()}",
+                            type="error",
+                            title="Agent execution failed",
+                            summary=reason,
+                            createdAt=_now_iso(),
+                            metadata={
+                                "selected_agent_id": selected_agent_id,
+                                "selected_agent_name": selected_agent,
+                                "model": model_meta,
+                                "system_prompt_source": system_prompt_source,
+                            },
+                        ),
+                        WorkflowRunEvent(
+                            id=f"evt-{uuid4()}",
+                            type="artifact_created",
+                            title="Failure artifact created",
+                            summary="Captured provider/auth configuration failure details.",
+                            createdAt=_now_iso(),
+                            metadata={
+                                "artifact_id": failure_artifact.id,
+                                "artifact_name": failure_artifact.name,
+                            },
+                        ),
+                    ]
+                )
+                store.run_details[run_id] = {
+                    "artifacts": [failure_artifact.model_dump()],
+                    "status": "Failed",
+                    "graph": {
+                        "nodes": [
+                            {
+                                "id": "n-trigger",
+                                "title": "Trigger",
+                                "type": "trigger",
+                                "x": 80,
+                                "y": 110,
+                            },
+                            {
+                                "id": "n-agent",
+                                "title": selected_agent,
+                                "type": "agent",
+                                "x": 360,
+                                "y": 110,
+                                "config": {"agent_id": selected_agent_id},
+                            },
+                            {
+                                "id": "n-output",
+                                "title": "Output",
+                                "type": "output",
+                                "x": 660,
+                                "y": 110,
+                            },
+                        ],
+                        "links": [
+                            {
+                                "from": "n-trigger",
+                                "to": "n-agent",
+                                "from_port": "output",
+                                "to_port": "in",
+                            },
+                            {
+                                "from": "n-agent",
+                                "to": "n-output",
+                                "from_port": "out",
+                                "to_port": "in",
+                            },
+                        ],
+                    },
+                    "agent_traces": [
+                        {
+                            "agent": selected_agent,
+                            "reasoningSummary": "Execution halted due to provider authentication/configuration error.",
+                            "actions": [
+                                "Parsed kickoff prompt",
+                                "Resolved agent prompt",
+                                "Failed provider auth/config check",
+                            ],
+                            "output": reason,
+                        }
+                    ],
+                    "response_text": reason,
+                    "approvals": {
+                        "required": False,
+                        "pending": False,
+                    },
+                    "access": access_context,
+                }
+                _persist_store_state()
+                _append_audit_event(
+                    "workflow.run.create",
+                    actor,
+                    "error",
+                    {"run_id": run_id, "status": "failed_provider"},
+                )
+                return
+
+            guardrail_output_triggered = False
+            guardrail_output_summary = ""
+            if chat_guardrail_config:
+                output_guardrail = _evaluate_guardrail(
+                    response_text,
+                    {
+                        **chat_guardrail_config,
+                        "stage": "output",
+                        "tripwire_action": str(
+                            chat_guardrail_config.get("tripwire_action") or "reject_content"
+                        ),
+                    },
+                    stage="output",
+                )
+                if output_guardrail.get("tripwire_triggered"):
+                    guardrail_output_triggered = True
+                    behavior = str(output_guardrail.get("behavior") or "reject_content")
+                    if behavior in {"reject_content", "raise_exception"}:
+                        response_text = str(
+                            chat_guardrail_config.get("reject_message")
+                            or "Response blocked by guardrail policy."
+                        )
+                    first_issue = next(
+                        iter(output_guardrail.get("output_info", {}).get("issues", [])), None
+                    )
+                    if isinstance(first_issue, dict):
+                        guardrail_output_summary = str(
+                            first_issue.get("message") or "Output blocked by guardrail."
+                        )
+                    else:
+                        guardrail_output_summary = "Output blocked by guardrail."
+
+            approval_required = store.platform_settings.require_human_approval or any(
+                tag in {"need-review", "approval", "needs-approval"} for tag in requested_tags
+            )
+            artifact_id = str(uuid4())
+            artifact_status: Literal["Draft", "Needs Review", "Approved", "Blocked"] = (
+                "Blocked"
+                if guardrail_output_triggered
+                else ("Needs Review" if approval_required else "Draft")
+            )
+            artifacts = [
+                ArtifactSummary(
+                    id=artifact_id,
+                    name="Task Response",
+                    status=artifact_status,
+                    version=1,
+                )
+            ]
+            _upsert_artifact_summary(artifacts[0])
+
+            run_status: Literal["Running", "Blocked", "Needs Review", "Done", "Failed"] = (
+                "Blocked"
+                if guardrail_output_triggered
+                else ("Needs Review" if approval_required else "Done")
+            )
+
+            progress_label = (
+                "Complete"
+                if run_status == "Done"
+                else (
+                    "Awaiting approval" if run_status == "Needs Review" else "Blocked by guardrail"
+                )
+            )
+            store.runs[run_id] = WorkflowRunSummary(
+                id=run_id,
+                title=title,
+                status=run_status,
+                updatedAt="just now",
+                progressLabel=progress_label,
+            )
+            event_response_text = response_text
+            if store.platform_settings.mask_secrets_in_events:
+                event_response_text = _redact_sensitive_text(event_response_text)
+            event_response_summary, event_response_meta = _truncate_text_with_metadata(
+                event_response_text
+            )
+
+            reasoning_meta = (
+                model_meta.get("reasoning") if isinstance(model_meta.get("reasoning"), dict) else {}
+            )
+            reasoning_summaries = (
+                reasoning_meta.get("summaries")
+                if isinstance(reasoning_meta.get("summaries"), list)
+                else []
+            )
+            reasoning_summary_text = ""
+            for item in reasoning_summaries:
+                candidate = str(item or "").strip()
+                if candidate:
+                    reasoning_summary_text = candidate
+                    break
+            if not reasoning_summary_text:
+                reasoning_summary_text = "Processed the task prompt and generated a response."
+
+            store.run_events[run_id].extend(
+                [
+                    WorkflowRunEvent(
+                        id=f"evt-{uuid4()}",
+                        type="agent_message",
+                        title=f"{selected_agent} response",
+                        summary=event_response_summary,
+                        createdAt=_now_iso(),
+                        metadata={
+                            "model": model_meta,
+                            "selected_agent_id": selected_agent_id,
+                            "selected_agent_name": selected_agent,
+                            "system_prompt_source": system_prompt_source,
+                            "summary_truncated": bool(event_response_meta["truncated"]),
+                            "summary_original_length": int(event_response_meta["original_length"]),
+                            "summary_max_chars": int(event_response_meta["max_chars"]),
+                            "summary_truncated_chars": int(event_response_meta["truncated_chars"]),
+                        },
+                    ),
+                    WorkflowRunEvent(
+                        id=f"evt-{uuid4()}",
+                        type="artifact_created",
+                        title="Artifact created",
+                        summary="Task response artifact generated.",
+                        createdAt=_now_iso(),
+                        metadata={"artifact_id": artifact_id},
+                    ),
+                ]
+            )
+
+            if guardrail_output_triggered:
+                store.run_events[run_id].append(
+                    WorkflowRunEvent(
+                        id=f"evt-{uuid4()}",
+                        type="guardrail_result",
+                        title="Output blocked",
+                        summary=guardrail_output_summary or "Output blocked by guardrail.",
+                        createdAt=_now_iso(),
+                        metadata={
+                            "selected_agent_id": selected_agent_id,
+                            "selected_agent_name": selected_agent,
+                        },
+                    )
+                )
+
+            if approval_required and not guardrail_output_triggered:
+                store.run_events[run_id].append(
+                    WorkflowRunEvent(
+                        id=f"evt-{uuid4()}",
+                        type="approval_required",
+                        title="Approval required",
+                        summary="Run requires human approval before completion.",
+                        createdAt=_now_iso(),
+                        metadata={"artifact_id": artifact_id, "version": 1},
+                    )
+                )
+
+            store.run_details[run_id] = {
+                "artifacts": [artifact.model_dump() for artifact in artifacts],
+                "status": run_status,
+                "graph": {
+                    "nodes": graph_nodes,
+                    "links": graph_links,
+                },
+                "agent_traces": [
+                    {
+                        "agent": selected_agent,
+                        "reasoningSummary": reasoning_summary_text,
+                        "actions": [
+                            "Parsed kickoff prompt",
+                            "Executed default chat agent"
+                            if selected_agent_token is None
+                            else "Executed selected agent",
+                            "Emitted response artifact",
+                        ],
+                        "output": response_text,
+                    }
+                ],
+                "approvals": {
+                    "required": approval_required and not guardrail_output_triggered,
+                    "pending": approval_required and not guardrail_output_triggered,
+                    "artifact_id": artifact_id,
+                    "version": 1,
+                    "scope": "final send/export",
+                },
+                "runtime": model_meta,
+                "response_text": response_text,
+                "access": access_context,
+            }
+
+            _record_task_learning(
+                run_id=run_id,
+                actor=actor,
+                prompt_text=prompt_text,
+                response_text=response_text,
+                selected_agent_id=selected_agent_id,
+                selected_agent_name=selected_agent,
+                requested_workflows=requested_workflows,
+                requested_tags=requested_tags,
+            )
+
+            if approval_required:
+                store.inbox.insert(
+                    0,
+                    InboxItem(
+                        id=str(uuid4()),
+                        runId=run_id,
+                        runName=title,
+                        artifactType="Task Response",
+                        reason="Approval required before task completion.",
+                        queue="Needs Approval",
+                    ),
+                )
+
+            _NEO4J_GRAPH.record_run(
+                run_id=run_id,
+                title=title,
+                agent=selected_agent,
+                workflow=requested_workflows[0] if requested_workflows else None,
+            )
+            _append_audit_event(
+                "workflow.run.execute",
+                actor,
+                "allowed",
+                {"run_id": run_id, "status": run_status.lower()},
+            )
+            _persist_store_state()
+        except Exception as exc:
+            store.runs[run_id] = WorkflowRunSummary(
+                id=run_id,
+                title=title,
+                status="Failed",
+                updatedAt="just now",
+                progressLabel="Execution error",
+            )
+            store.run_events.setdefault(run_id, []).append(
+                WorkflowRunEvent(
+                    id=f"evt-{uuid4()}",
+                    type="error",
+                    title="Agent execution failed",
+                    summary=f"Unexpected execution error: {exc}",
+                    createdAt=_now_iso(),
+                    metadata={"selected_agent_id": selected_agent_id},
+                )
+            )
+            failed_detail = store.run_details.get(run_id)
+            if isinstance(failed_detail, dict):
+                failed_detail["status"] = "Failed"
+                store.run_details[run_id] = failed_detail
+            _append_audit_event(
+                "workflow.run.execute",
+                actor,
+                "error",
+                {"run_id": run_id, "status": "failed_execution"},
+            )
+            _persist_store_state()
+
+    if _sync_run_execution_enabled():
+        _execute_run()
+    else:
+        _RUN_EXECUTOR.submit(_execute_run)
     return {"id": run_id, "status": "started"}
 
 
@@ -13155,10 +14432,707 @@ def get_workflow_run(run_id: str, request: Request) -> dict[str, Any]:
 
 
 @app.get("/workflow-runs/{run_id}/events")
-def get_workflow_run_events(run_id: str, request: Request) -> list[dict[str, Any]]:
+def get_workflow_run_events(
+    run_id: str, request: Request, after: str | None = None
+) -> list[dict[str, Any]]:
     actor = _enforce_request_authn(request, action="workflow.run.events.read")
     _enforce_run_access(request, actor, run_id, action="workflow.run.events.read")
-    return [event.model_dump() for event in store.run_events.get(run_id, [])]
+    events = store.run_events.get(run_id, [])
+    if after:
+        for index, event in enumerate(events):
+            if event.id == after:
+                events = events[index + 1 :]
+                break
+    return [event.model_dump() for event in events]
+
+
+_RUN_STREAM_MAX_SECONDS = 300
+_RUN_STREAM_POLL_INTERVAL_SECONDS = 1.0
+_RUN_TERMINAL_STATUSES = {"Done", "Failed", "Blocked"}
+
+
+@app.get("/workflow-runs/{run_id}/events/stream")
+async def stream_workflow_run_events(
+    run_id: str, request: Request, after: str | None = None
+) -> StreamingResponse:
+    """Server-sent-events bridge for live run consoles.
+
+    One idle connection replaces client-side polling. The stream closes itself
+    once the run reaches a terminal status with no pending approval (or after
+    _RUN_STREAM_MAX_SECONDS; clients reconnect with ?after=<last_event_id>).
+    Async generator: no worker thread is held while the connection idles.
+    """
+    actor = _enforce_request_authn(request, action="workflow.run.events.stream")
+    _enforce_run_access(request, actor, run_id, action="workflow.run.events.stream")
+
+    def _sse_frame(event_name: str, payload: dict[str, Any]) -> str:
+        return (
+            f"event: {event_name}\ndata: {json.dumps(payload, default=_persist_json_default)}\n\n"
+        )
+
+    async def event_stream():
+        last_event_id = str(after or "")
+        last_status_frame = ""
+        deadline = time.monotonic() + _RUN_STREAM_MAX_SECONDS
+        while time.monotonic() < deadline:
+            if await request.is_disconnected():
+                return
+
+            events = list(store.run_events.get(run_id, []))
+            start_index = 0
+            if last_event_id:
+                for index, event in enumerate(events):
+                    if event.id == last_event_id:
+                        start_index = index + 1
+                        break
+            for event in events[start_index:]:
+                last_event_id = event.id
+                yield f"id: {event.id}\n" + _sse_frame("run_event", event.model_dump())
+
+            run = store.runs.get(run_id)
+            detail = store.run_details.get(run_id)
+            approvals = (
+                detail.get("approvals")
+                if isinstance(detail, dict) and isinstance(detail.get("approvals"), dict)
+                else {}
+            )
+            status_frame = _sse_frame(
+                "run_status",
+                {
+                    "status": run.status if run else "unknown",
+                    "progress_label": run.progressLabel if run else "",
+                    "approval_pending": bool(approvals.get("pending")),
+                },
+            )
+            if status_frame != last_status_frame:
+                last_status_frame = status_frame
+                yield status_frame
+
+            if (run is None or run.status in _RUN_TERMINAL_STATUSES) and not bool(
+                approvals.get("pending")
+            ):
+                yield _sse_frame("stream_end", {"reason": "terminal"})
+                return
+
+            yield ": keep-alive\n\n"
+            await asyncio.sleep(_RUN_STREAM_POLL_INTERVAL_SECONDS)
+        yield _sse_frame("stream_end", {"reason": "timeout"})
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+def _workflow_definition_by_id(workflow_id: str) -> WorkflowDefinition | None:
+    item = store.workflow_definitions.get(str(workflow_id))
+    return item if isinstance(item, WorkflowDefinition) else None
+
+
+@app.get("/workflow-definitions/{item_id}/triggers")
+def list_workflow_triggers(item_id: str, request: Request) -> list[dict[str, Any]]:
+    _enforce_builder_access(request, action="workflow.trigger.list")
+    triggers: list[dict[str, Any]] = []
+    for token, meta in store.workflow_triggers.items():
+        if meta.get("workflow_id") != item_id:
+            continue
+        # The token is shown only at creation; list responses expose a
+        # fingerprint + opaque id (for revoke) — never the live token.
+        triggers.append(
+            {
+                "id": meta.get("id", ""),
+                "token_fingerprint": f"…{token[-6:]}" if len(token) >= 6 else "…",
+                "label": meta.get("label", ""),
+                "created_at": meta.get("created_at", ""),
+            }
+        )
+    return triggers
+
+
+@app.post("/workflow-definitions/{item_id}/triggers")
+def create_workflow_trigger(
+    item_id: str, request: Request, payload: dict[str, Any] = Body(default_factory=dict)
+) -> dict[str, Any]:
+    actor = _enforce_builder_access(request, payload=payload, action="workflow.trigger.create")
+    _enforce_emergency_write_policy("workflow.trigger.create", actor)
+    workflow = _workflow_definition_by_id(item_id)
+    if workflow is None:
+        raise HTTPException(status_code=404, detail="Workflow definition not found")
+    token = secrets_module.token_urlsafe(32)
+    store.workflow_triggers[token] = {
+        "id": str(uuid4()),
+        "workflow_id": item_id,
+        "actor": actor,
+        "label": str(payload.get("label") or "Webhook trigger"),
+        "created_at": _now_iso(),
+    }
+    _append_audit_event(
+        "workflow.trigger.create", actor, "allowed", {"workflow_id": item_id}
+    )
+    _persist_store_state()
+    # The full token is returned exactly once.
+    return {
+        "ok": True,
+        "token": token,
+        "webhook_url": f"/triggers/webhook/{token}",
+        "label": store.workflow_triggers[token]["label"],
+    }
+
+
+@app.delete("/triggers/{token}")
+def revoke_workflow_trigger(token: str, request: Request) -> dict[str, bool]:
+    actor = _enforce_builder_access(request, action="workflow.trigger.revoke")
+    _enforce_emergency_write_policy("workflow.trigger.revoke", actor)
+    # Accept either the opaque trigger id (from list responses) or the raw token.
+    existing = store.workflow_triggers.pop(token, None)
+    if existing is None:
+        for stored_token, meta in list(store.workflow_triggers.items()):
+            if meta.get("id") == token:
+                existing = store.workflow_triggers.pop(stored_token, None)
+                break
+    if existing is None:
+        raise HTTPException(status_code=404, detail="Trigger not found")
+    _append_audit_event(
+        "workflow.trigger.revoke",
+        actor,
+        "allowed",
+        {"workflow_id": existing.get("workflow_id", "")},
+    )
+    _persist_store_state()
+    return {"ok": True}
+
+
+@app.post("/triggers/webhook/{token}")
+def fire_workflow_trigger(
+    token: str,
+    request: Request,
+    payload: dict[str, Any] = Body(default_factory=dict),
+) -> dict[str, str]:
+    """Start a run for a workflow via a per-workflow trigger token.
+
+    The token is the sole credential (no operator session needed). It resolves
+    the owning workflow and actor, then runs through the normal run-creation
+    path — guardrails, executor, and audit all apply unchanged.
+    """
+    meta = store.workflow_triggers.get(token)
+    if meta is None:
+        raise HTTPException(status_code=404, detail="Unknown or revoked trigger token")
+    workflow = _workflow_definition_by_id(meta.get("workflow_id", ""))
+    if workflow is None:
+        raise HTTPException(status_code=404, detail="Workflow for this trigger no longer exists")
+    if str(workflow.status) != "published":
+        raise HTTPException(status_code=409, detail="Workflow is not published")
+
+    actor = meta.get("actor") or "system/webhook-trigger"
+    # Pre-authorize as the trigger owner so create_workflow_run's auth check
+    # passes without an operator session (honored via request.state).
+    request.state.frontier_auth_context = {"authenticated": True, "actor": actor}
+
+    prompt = str(payload.get("prompt") or "").strip() or "Run triggered via webhook."
+    _append_audit_event(
+        "workflow.trigger.fire", actor, "allowed", {"workflow_id": workflow.id}
+    )
+    run_payload = {
+        "title": f"Webhook: {workflow.name}",
+        "prompt": prompt,
+        "tokens": [{"kind": "workflow", "value": _slugify(workflow.name)}],
+        "context": {"source": "webhook_trigger", "trigger_label": meta.get("label", "")},
+    }
+    return create_workflow_run(request, run_payload)
+
+
+class _TriggerRequestShim:
+    """Minimal request stand-in for non-HTTP run creation (the scheduler).
+
+    create_workflow_run reads the request only through `_enforce_request_authn`
+    and `_build_run_access_context`, both of which use `.state`/`.headers`; a
+    shim carrying a pre-resolved auth context satisfies them.
+    """
+
+    def __init__(self, actor: str) -> None:
+        self.state = SimpleNamespace(
+            frontier_auth_context={"authenticated": True, "actor": actor}
+        )
+        self.headers: dict[str, str] = {}
+
+
+def _fire_scheduled_run(schedule: dict[str, Any]) -> None:
+    workflow = _workflow_definition_by_id(str(schedule.get("workflow_id") or ""))
+    if workflow is None or str(workflow.status) != "published":
+        return
+    actor = str(schedule.get("actor") or "system/schedule-trigger")
+    _append_audit_event(
+        "workflow.schedule.fire",
+        actor,
+        "allowed",
+        {"workflow_id": workflow.id, "schedule_id": schedule.get("id", "")},
+    )
+    run_payload = {
+        "title": f"Scheduled: {workflow.name}",
+        "prompt": f"Scheduled run for {workflow.name} ({schedule.get('cron', '')}).",
+        "tokens": [{"kind": "workflow", "value": _slugify(workflow.name)}],
+        "context": {"source": "schedule_trigger", "schedule_label": schedule.get("label", "")},
+    }
+    create_workflow_run(_TriggerRequestShim(actor), run_payload)  # type: ignore[arg-type]
+
+
+def _scheduler_tick(now: datetime | None = None) -> int:
+    """Fire all due schedules for the current minute. Returns count fired."""
+    moment = now or datetime.now(UTC)
+    minute_key = moment.strftime("%Y%m%d%H%M")
+    if store.platform_settings.block_new_runs:
+        return 0
+    fired = 0
+    for schedule in list(store.workflow_schedules.values()):
+        if not schedule.get("enabled", True):
+            continue
+        if schedule.get("last_fired_minute") == minute_key:
+            continue  # already fired this minute (guards sub-minute ticks)
+        cron_expr = str(schedule.get("cron") or "")
+        try:
+            if not app_cron.cron_matches(cron_expr, moment):
+                continue
+        except ValueError:
+            continue
+        schedule["last_fired_minute"] = minute_key
+        try:
+            _fire_scheduled_run(schedule)
+            fired += 1
+        except Exception:  # noqa: BLE001 - one bad schedule must not stall the loop
+            continue
+    if fired:
+        _persist_store_state()
+    return fired
+
+
+def _scheduler_loop() -> None:
+    while True:
+        try:
+            _scheduler_tick()
+        except Exception:  # noqa: BLE001 - the loop must survive transient errors
+            pass
+        # Tick every 30s; the minute-key dedupe prevents double-firing.
+        time.sleep(30)
+
+
+def _schedule_response(schedule: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": schedule.get("id", ""),
+        "workflow_id": schedule.get("workflow_id", ""),
+        "label": schedule.get("label", ""),
+        "cron": schedule.get("cron", ""),
+        "enabled": bool(schedule.get("enabled", True)),
+        "created_at": schedule.get("created_at", ""),
+        "last_fired_minute": schedule.get("last_fired_minute", ""),
+    }
+
+
+@app.get("/workflow-definitions/{item_id}/schedules")
+def list_workflow_schedules(item_id: str, request: Request) -> list[dict[str, Any]]:
+    _enforce_builder_access(request, action="workflow.schedule.list")
+    return [
+        _schedule_response(schedule)
+        for schedule in store.workflow_schedules.values()
+        if schedule.get("workflow_id") == item_id
+    ]
+
+
+@app.post("/workflow-definitions/{item_id}/schedules")
+def create_workflow_schedule(
+    item_id: str, request: Request, payload: dict[str, Any] = Body(default_factory=dict)
+) -> dict[str, Any]:
+    actor = _enforce_builder_access(request, payload=payload, action="workflow.schedule.create")
+    _enforce_emergency_write_policy("workflow.schedule.create", actor)
+    workflow = _workflow_definition_by_id(item_id)
+    if workflow is None:
+        raise HTTPException(status_code=404, detail="Workflow definition not found")
+    cron_expr = str(payload.get("cron") or "").strip()
+    if not app_cron.is_valid_cron(cron_expr):
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid cron expression (expected 5 fields: minute hour day month weekday)",
+        )
+    schedule_id = str(uuid4())
+    store.workflow_schedules[schedule_id] = {
+        "id": schedule_id,
+        "workflow_id": item_id,
+        "actor": actor,
+        "label": str(payload.get("label") or "Scheduled run"),
+        "cron": cron_expr,
+        "enabled": bool(payload.get("enabled", True)),
+        "created_at": _now_iso(),
+        "last_fired_minute": "",
+    }
+    _append_audit_event(
+        "workflow.schedule.create",
+        actor,
+        "allowed",
+        {"workflow_id": item_id, "cron": cron_expr},
+    )
+    _persist_store_state()
+    return _schedule_response(store.workflow_schedules[schedule_id])
+
+
+@app.post("/schedules/{schedule_id}/toggle")
+def toggle_workflow_schedule(
+    schedule_id: str, request: Request, payload: dict[str, Any] = Body(default_factory=dict)
+) -> dict[str, Any]:
+    actor = _enforce_builder_access(request, payload=payload, action="workflow.schedule.toggle")
+    _enforce_emergency_write_policy("workflow.schedule.toggle", actor)
+    schedule = store.workflow_schedules.get(schedule_id)
+    if schedule is None:
+        raise HTTPException(status_code=404, detail="Schedule not found")
+    schedule["enabled"] = bool(payload.get("enabled", not schedule.get("enabled", True)))
+    _append_audit_event(
+        "workflow.schedule.toggle",
+        actor,
+        "allowed",
+        {"schedule_id": schedule_id, "enabled": schedule["enabled"]},
+    )
+    _persist_store_state()
+    return _schedule_response(schedule)
+
+
+@app.delete("/schedules/{schedule_id}")
+def delete_workflow_schedule(schedule_id: str, request: Request) -> dict[str, bool]:
+    actor = _enforce_builder_access(request, action="workflow.schedule.delete")
+    _enforce_emergency_write_policy("workflow.schedule.delete", actor)
+    if store.workflow_schedules.pop(schedule_id, None) is None:
+        raise HTTPException(status_code=404, detail="Schedule not found")
+    _append_audit_event("workflow.schedule.delete", actor, "allowed", {"schedule_id": schedule_id})
+    _persist_store_state()
+    return {"ok": True}
+
+
+@app.get("/skills")
+def get_skills(request: Request) -> list[dict[str, Any]]:
+    _enforce_request_authn(request, action="skill.list")
+    return [
+        item.model_dump()
+        for item in sorted(store.skills.values(), key=lambda skill: skill.name.lower())
+    ]
+
+
+@app.post("/skills")
+def save_skill(
+    request: Request, payload: dict[str, Any] = Body(default_factory=dict)
+) -> dict[str, Any]:
+    actor = _enforce_builder_access(request, payload=payload, action="skill.save")
+    _enforce_emergency_write_policy("skill.save", actor)
+
+    skill_id = str(payload.get("id") or "").strip() or f"skill-{uuid4()}"
+    existing = store.skills.get(skill_id)
+    name = str(payload.get("name") or (existing.name if existing else "")).strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Skill name is required")
+
+    status_value = str(payload.get("status") or (existing.status if existing else "enabled"))
+    if status_value not in {"enabled", "disabled"}:
+        status_value = "enabled"
+
+    skill = SkillDefinition(
+        id=skill_id,
+        name=name,
+        description=str(
+            payload.get("description")
+            if "description" in payload
+            else (existing.description if existing else "")
+        ),
+        content=str(
+            payload.get("content")
+            if "content" in payload
+            else (existing.content if existing else "")
+        ),
+        status=status_value,
+        tags=_normalize_string_list(
+            payload.get("tags") if "tags" in payload else (existing.tags if existing else [])
+        ),
+        source=existing.source if existing else "custom",
+        auto_inject=bool(
+            payload.get("auto_inject")
+            if "auto_inject" in payload
+            else (existing.auto_inject if existing else True)
+        ),
+        version=(existing.version + 1) if existing else 1,
+        updated_at=_now_iso(),
+    )
+    store.skills[skill_id] = skill
+    _append_audit_event(
+        "skill.save",
+        actor,
+        "allowed",
+        {"skill_id": skill_id, "status": skill.status, "version": skill.version},
+    )
+    _persist_store_state()
+    return skill.model_dump()
+
+
+@app.post("/skills/{skill_id}/test")
+def test_skill(
+    skill_id: str, request: Request, payload: dict[str, Any] = Body(default_factory=dict)
+) -> dict[str, Any]:
+    """Dry-run a skill: execute a sample task with only this skill injected.
+
+    Lets builders validate that a procedure produces the intended behavior
+    before enabling it platform-wide.
+    """
+    actor = _enforce_builder_access(request, payload=payload, action="skill.test")
+    skill = store.skills.get(skill_id)
+    if skill is None:
+        raise HTTPException(status_code=404, detail="Skill not found")
+    sample_task = str(payload.get("prompt") or "").strip()
+    if not sample_task:
+        raise HTTPException(status_code=400, detail="A sample task prompt is required")
+    model = str(payload.get("model") or "").strip() or _default_openai_model()
+
+    system_prompt = (
+        "You are an agent on the Lattix xFrontier platform. Follow this operating "
+        "procedure exactly when handling the task:\n\n"
+        f"### Skill: {skill.name}\n{skill.content.strip()}"
+    )
+    response_text, model_meta = _run_openai_chat(
+        system_prompt=system_prompt,
+        user_prompt=sample_task,
+        model=model,
+        temperature=0.2,
+    )
+    _append_audit_event(
+        "skill.test",
+        actor,
+        "allowed",
+        {"skill_id": skill_id, "model": model, "mode": str(model_meta.get("mode") or "")},
+    )
+    return {
+        "skill_id": skill_id,
+        "model": model_meta.get("model"),
+        "provider": model_meta.get("provider"),
+        "mode": model_meta.get("mode"),
+        "reason": model_meta.get("reason"),
+        "output": response_text,
+    }
+
+
+@app.delete("/skills/{skill_id}")
+def delete_skill(skill_id: str, request: Request) -> dict[str, Any]:
+    actor = _enforce_builder_access(request, action="skill.delete")
+    _enforce_emergency_write_policy("skill.delete", actor)
+    existing = store.skills.get(skill_id)
+    if existing is None:
+        raise HTTPException(status_code=404, detail="Skill not found")
+    if existing.source == "bundled":
+        raise HTTPException(
+            status_code=400, detail="Bundled skills cannot be deleted — disable them instead"
+        )
+    store.skills.pop(skill_id, None)
+    _append_audit_event("skill.delete", actor, "allowed", {"skill_id": skill_id})
+    _persist_store_state()
+    return {"ok": True}
+
+
+@app.get("/integrations/catalog")
+def get_integration_catalog(request: Request) -> list[dict[str, Any]]:
+    _enforce_builder_access(request, action="integration.catalog.read")
+    installed_catalog_ids = {
+        str(item.metadata_json.get("catalog_id") or "")
+        for item in store.integrations.values()
+        if isinstance(item.metadata_json, dict)
+    }
+    entries: list[dict[str, Any]] = []
+    for entry in skills_catalog.INTEGRATION_CATALOG:
+        payload = dict(entry)
+        payload["installed"] = entry["catalog_id"] in installed_catalog_ids
+        entries.append(payload)
+    return entries
+
+
+@app.post("/integrations/catalog/{catalog_id}/install")
+def install_catalog_integration(catalog_id: str, request: Request) -> dict[str, Any]:
+    actor = _enforce_builder_access(request, action="integration.catalog.install")
+    _enforce_emergency_write_policy("integration.catalog.install", actor)
+    entry = skills_catalog.catalog_entry(catalog_id)
+    if entry is None:
+        raise HTTPException(status_code=404, detail="Catalog entry not found")
+
+    for item in store.integrations.values():
+        if (
+            isinstance(item.metadata_json, dict)
+            and str(item.metadata_json.get("catalog_id") or "") == entry["catalog_id"]
+        ):
+            return {"ok": True, "id": item.id, "already_installed": True}
+
+    metadata_json = dict(entry.get("metadata_json") or {})
+    metadata_json["catalog_id"] = entry["catalog_id"]
+    integration_id = str(uuid4())
+    integration = IntegrationDefinition(
+        id=integration_id,
+        name=str(entry["name"]),
+        type=str(entry.get("type") or "custom"),
+        status="draft",
+        base_url=str(entry.get("base_url") or ""),
+        auth_type=str(entry.get("auth_type") or "none"),
+        metadata_json=metadata_json,
+        capabilities=[str(item) for item in entry.get("capabilities", [])],
+        egress_allowlist=[str(item) for item in entry.get("egress_allowlist", [])],
+        publisher=str(entry.get("publisher") or "custom"),
+    )
+    store.integrations[integration_id] = integration
+    _append_audit_event(
+        "integration.catalog.install",
+        actor,
+        "allowed",
+        {"catalog_id": entry["catalog_id"], "integration_id": integration_id},
+    )
+    _persist_store_state()
+    return {"ok": True, "id": integration_id, "already_installed": False}
+
+
+@app.get("/models/providers/{provider_id}/models")
+def list_provider_models(provider_id: str, request: Request) -> dict[str, Any]:
+    """List the models a configured provider currently offers.
+
+    Used by the settings UI to populate default-model dropdowns. Errors return
+    an empty list with a reason — the UI falls back to free-text entry.
+    """
+    _enforce_request_authn(request, action="models.provider.models.read")
+    provider = str(provider_id or "").strip().lower()
+    if provider not in _PROVIDER_REGISTRY:
+        raise HTTPException(status_code=404, detail="Unknown provider")
+
+    if provider == "ollama":
+        available = local_models.ollama_available()
+        models = [item["id"] for item in local_models.installed_models()] if available else []
+        return {"provider": provider, "configured": available, "models": sorted(models)}
+
+    if not _provider_configured(provider):
+        return {"provider": provider, "configured": False, "models": []}
+
+    client, unavailable_reason = _get_chat_client(provider)
+    if client is None:
+        return {
+            "provider": provider,
+            "configured": False,
+            "models": [],
+            "reason": unavailable_reason,
+        }
+    try:
+        model_ids: set[str] = set()
+        for item in client.models.list():
+            model_id = str(getattr(item, "id", "") or "").strip()
+            if model_id:
+                model_ids.add(model_id)
+            if len(model_ids) >= 500:
+                break
+        return {"provider": provider, "configured": True, "models": sorted(model_ids)}
+    except Exception as exc:  # noqa: BLE001 - provider listing is best-effort
+        return {
+            "provider": provider,
+            "configured": True,
+            "models": [],
+            "reason": str(exc)[:200],
+        }
+
+
+@app.get("/models/overview")
+def get_models_overview(request: Request) -> dict[str, Any]:
+    _enforce_request_authn(request, action="models.overview.read")
+    openai_state = _openai_status()
+    nim_key = _nim_api_key()
+    nim_configured = bool(nim_key) and "change" not in nim_key.lower()
+    ollama_up = local_models.ollama_available()
+    installed = {item["id"]: item for item in local_models.installed_models()} if ollama_up else {}
+    pulls = local_models.pull_states()
+
+    catalog: list[dict[str, Any]] = []
+    for item in local_models.LOCAL_MODEL_CATALOG:
+        model_id = str(item["id"])
+        entry = dict(item)
+        entry["installed"] = model_id in installed
+        entry["pull"] = pulls.get(model_id)
+        entry["reference"] = f"ollama/{model_id}"
+        catalog.append(entry)
+
+    external: list[dict[str, Any]] = []
+    for provider_id, registry in _PROVIDER_REGISTRY.items():
+        if provider_id == "ollama":
+            configured = ollama_up
+        else:
+            configured = _provider_configured(provider_id)
+        default_model = _provider_default_model(provider_id)
+        external.append(
+            {
+                "id": provider_id,
+                "label": registry["label"],
+                "configured": configured,
+                "base_url": (
+                    local_models.ollama_base_url()
+                    if provider_id == "ollama"
+                    else _provider_base_url(provider_id)
+                ),
+                "default_model": default_model,
+                "reference_example": (
+                    default_model if provider_id == "openai" else f"{provider_id}/{default_model}"
+                ),
+                "key_required": bool(registry.get("key_required", True)),
+            }
+        )
+
+    return {
+        "providers": {
+            "openai": {
+                "configured": openai_state.configured,
+                "default_model": _default_openai_model(),
+            },
+            "nim": {
+                "configured": nim_configured,
+                "base_url": _nim_base_url(),
+                "default_model": _default_nim_model(),
+                "reference_example": f"nim/{_default_nim_model()}",
+            },
+            "ollama": {
+                "available": ollama_up,
+                "base_url": local_models.ollama_base_url(),
+                "default_model": _default_ollama_model(),
+                "installed_models": sorted(installed.values(), key=lambda item: item["id"]),
+            },
+        },
+        "external": external,
+        "catalog": catalog,
+    }
+
+
+@app.post("/models/local/pull")
+def pull_local_model(
+    request: Request, payload: dict[str, Any] = Body(default_factory=dict)
+) -> dict[str, Any]:
+    actor = _enforce_builder_access(request, payload=payload, action="models.local.pull")
+    _enforce_emergency_write_policy("models.local.pull", actor)
+    model_id = str(payload.get("model") or "").strip()
+    try:
+        state = local_models.start_pull(model_id)
+    except ValueError as exc:
+        _append_audit_event("models.local.pull", actor, "blocked", {"model": model_id})
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    _append_audit_event("models.local.pull", actor, "allowed", {"model": model_id})
+    return {"ok": True, "model": model_id, "pull": state}
+
+
+@app.delete("/models/local/{model_id}")
+def delete_local_model(model_id: str, request: Request) -> dict[str, Any]:
+    actor = _enforce_builder_access(request, action="models.local.delete")
+    _enforce_emergency_write_policy("models.local.delete", actor)
+    try:
+        removed = local_models.delete_model(model_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=str(exc)[:200]) from exc
+    _append_audit_event(
+        "models.local.delete", actor, "allowed", {"model": model_id, "removed": removed}
+    )
+    return {"ok": True, "removed": removed}
 
 
 @app.post("/workflow-runs/{run_id}/archive")
@@ -13231,6 +15205,7 @@ def submit_approval(
     decision = str(_payload.get("decision") or "")
     if run_id:
         _enforce_run_access(request, actor, run_id, action="approval.submit")
+    feedback = str(_payload.get("feedback") or "").strip()
     if run_id and run_id in store.run_details:
         details = store.run_details[run_id]
         approvals = details.get("approvals") if isinstance(details.get("approvals"), dict) else {}
@@ -13240,6 +15215,7 @@ def submit_approval(
             if run_id in store.runs:
                 store.runs[run_id].status = "Done"
                 store.runs[run_id].progressLabel = "Complete"
+                store.runs[run_id].updatedAt = "just now"
             store.inbox = [item for item in store.inbox if item.runId != run_id]
         elif decision == "changes_requested":
             approvals["pending"] = True
@@ -13247,8 +15223,31 @@ def submit_approval(
             if run_id in store.runs:
                 store.runs[run_id].status = "Needs Review"
                 store.runs[run_id].progressLabel = "Awaiting updates"
+                store.runs[run_id].updatedAt = "just now"
         details["approvals"] = approvals
         store.run_details[run_id] = details
+        if decision in {"approved", "changes_requested"}:
+            decision_summary = (
+                "Run approved by operator."
+                if decision == "approved"
+                else "Operator requested changes before approval."
+            )
+            if feedback:
+                decision_summary = f"{decision_summary} Feedback: {feedback[:500]}"
+            store.run_events.setdefault(run_id, []).append(
+                WorkflowRunEvent(
+                    id=f"evt-{uuid4()}",
+                    type="approval_decision",
+                    title="Approval decision recorded",
+                    summary=decision_summary,
+                    createdAt=_now_iso(),
+                    metadata={
+                        "decision": decision,
+                        "artifact_id": str(_payload.get("artifact_id") or ""),
+                        "actor": actor,
+                    },
+                )
+            )
     _persist_store_state()
     _append_audit_event(
         "approval.submit", actor, "allowed", {"run_id": run_id, "decision": decision}
@@ -13714,6 +15713,20 @@ def get_observability_dashboard(request: Request, limit: int = 20) -> dict[str, 
         [item for item in traces if str(item.status).lower() in {"failed", "blocked"}]
     )
 
+    skills_view = [
+        {
+            "id": skill.id,
+            "name": skill.name,
+            "status": skill.status,
+            "source": skill.source,
+            "auto_inject": skill.auto_inject,
+            "version": skill.version,
+            "usage_count": skill.usage_count,
+            "last_used_at": skill.last_used_at,
+        }
+        for skill in sorted(store.skills.values(), key=lambda item: item.usage_count, reverse=True)
+    ]
+
     return {
         "summary": {
             "total_runs": total_runs,
@@ -13721,8 +15734,13 @@ def get_observability_dashboard(request: Request, limit: int = 20) -> dict[str, 
             "token_estimate": total_tokens,
             "cost_estimate_usd": total_cost,
             "average_latency_ms": avg_latency,
+            "skills_enabled": len(
+                [skill for skill in store.skills.values() if skill.status == "enabled"]
+            ),
+            "skill_injections_total": sum(skill.usage_count for skill in store.skills.values()),
         },
         "runs": [item.model_dump() for item in traces],
+        "skills": skills_view,
     }
 
 
@@ -14981,6 +16999,180 @@ def activate_agent_definition(
     }
 
 
+_NODE_INPUT_SCHEMAS: dict[str, list[NodeFieldSpec]] = {
+    "frontier/trigger": [
+        NodeFieldSpec(
+            name="trigger_type",
+            label="Trigger type",
+            field_type="dropdown",
+            options=["manual", "schedule", "webhook", "event"],
+            default="manual",
+            description="How runs from this workflow are initiated.",
+        ),
+        NodeFieldSpec(
+            name="schedule_cron",
+            label="Schedule (cron)",
+            field_type="text",
+            advanced=True,
+            placeholder="0 9 * * 1-5",
+            description="Cron expression when trigger type is schedule.",
+        ),
+    ],
+    "frontier/agent": [
+        NodeFieldSpec(
+            name="agent_id",
+            label="Agent",
+            field_type="dropdown",
+            required=True,
+            options_source="agents",
+            description="Published agent that executes this node's objective.",
+        ),
+        NodeFieldSpec(
+            name="model",
+            label="Model override",
+            field_type="dropdown",
+            advanced=True,
+            options_source="models",
+            placeholder="provider default",
+            description="Provider-qualified model id (e.g. nim/<model>, ollama/<model>).",
+        ),
+        NodeFieldSpec(
+            name="temperature",
+            label="Temperature",
+            field_type="slider",
+            default=0.2,
+            min=0.0,
+            max=1.0,
+            step=0.01,
+            advanced=True,
+        ),
+        NodeFieldSpec(
+            name="objective",
+            label="Objective",
+            field_type="textarea",
+            description="What this agent node should accomplish.",
+        ),
+    ],
+    "frontier/prompt": [
+        NodeFieldSpec(
+            name="system_prompt",
+            label="System prompt",
+            field_type="textarea",
+            required=True,
+            description="Reusable system instructions passed to downstream agent nodes.",
+        ),
+    ],
+    "frontier/tool-call": [
+        NodeFieldSpec(
+            name="integration_id",
+            label="Integration",
+            field_type="dropdown",
+            required=True,
+            options_source="integrations",
+            description="Configured integration (MCP server or API) to invoke.",
+        ),
+        NodeFieldSpec(
+            name="tool_name",
+            label="Tool / operation",
+            field_type="text",
+            description="Specific tool or operation exposed by the integration.",
+        ),
+        NodeFieldSpec(
+            name="arguments_json",
+            label="Arguments (JSON)",
+            field_type="code",
+            advanced=True,
+            placeholder='{"query": "..."}',
+        ),
+    ],
+    "frontier/retrieval": [
+        NodeFieldSpec(
+            name="source",
+            label="Knowledge source",
+            field_type="dropdown",
+            options_source="retrieval_sources",
+            description="Vector DB, document collection, or KB to retrieve from.",
+        ),
+        NodeFieldSpec(
+            name="top_k",
+            label="Top K",
+            field_type="number",
+            default=5,
+            min=1,
+            max=50,
+            step=1,
+        ),
+        NodeFieldSpec(
+            name="rerank",
+            label="Rerank results",
+            field_type="bool",
+            default=False,
+            advanced=True,
+        ),
+    ],
+    "frontier/guardrail": [
+        NodeFieldSpec(
+            name="ruleset_id",
+            label="Guardrail ruleset",
+            field_type="dropdown",
+            options_source="guardrail_rulesets",
+            description="Published ruleset applied to content passing through this node.",
+        ),
+        NodeFieldSpec(
+            name="stage",
+            label="Stage",
+            field_type="dropdown",
+            options=["input", "output", "both"],
+            default="both",
+        ),
+    ],
+    "frontier/commitment": [
+        NodeFieldSpec(
+            name="confidence_threshold",
+            label="Confidence threshold",
+            field_type="slider",
+            default=0.7,
+            min=0.0,
+            max=1.0,
+            step=0.01,
+            description="Minimum confidence to finalize rather than escalate.",
+        ),
+        NodeFieldSpec(
+            name="escalation_target",
+            label="Escalation target",
+            field_type="text",
+            advanced=True,
+            placeholder="human-review",
+        ),
+    ],
+    "frontier/human-review": [
+        NodeFieldSpec(
+            name="reviewers",
+            label="Reviewers",
+            field_type="text",
+            placeholder="comma-separated actors or roles",
+        ),
+        NodeFieldSpec(
+            name="block_on_timeout",
+            label="Block on timeout",
+            field_type="bool",
+            default=True,
+            advanced=True,
+        ),
+    ],
+    "frontier/manifold": [
+        NodeFieldSpec(
+            name="logic",
+            label="Join logic",
+            field_type="dropdown",
+            options=["AND", "OR"],
+            default="AND",
+            description="Require all inbound flows (AND) or any (OR).",
+        ),
+    ],
+}
+
+
 @app.get("/node-definitions")
 def get_node_definitions(request: Request, include_internal: bool = False) -> list[dict[str, Any]]:
     _enforce_builder_access(request, action="node.definition.list")
@@ -14991,6 +17183,34 @@ def get_node_definitions(request: Request, include_internal: bool = False) -> li
             description="Workflow entrypoint for user kickoff, schedule, or external event.",
             category="Core",
             color="#6ca0ff",
+        ),
+        NodeDefinition(
+            type_key="frontier/goal",
+            title="Goal",
+            description="Define intent, success criteria, constraints, priorities, and output contract.",
+            category="Cognition",
+            color="#2962ff",
+        ),
+        NodeDefinition(
+            type_key="frontier/evidence",
+            title="Evidence",
+            description="Capture and validate evidence claims before synthesis and commitment.",
+            category="Cognition",
+            color="#00796b",
+        ),
+        NodeDefinition(
+            type_key="frontier/assembly",
+            title="Assembly",
+            description="Fuse goal and evidence signals into a bounded cognitive commitment proposal.",
+            category="Cognition",
+            color="#6a1b9a",
+        ),
+        NodeDefinition(
+            type_key="frontier/commitment",
+            title="Commitment",
+            description="Finalize or escalate a bounded commitment using explicit confidence thresholds.",
+            category="Cognition",
+            color="#ef6c00",
         ),
         NodeDefinition(
             type_key="frontier/agent",
@@ -15060,6 +17280,9 @@ def get_node_definitions(request: Request, include_internal: bool = False) -> li
                 color="#4f5966",
             ),
         )
+    for node in base_nodes:
+        if not node.inputs and node.type_key in _NODE_INPUT_SCHEMAS:
+            node.inputs = _NODE_INPUT_SCHEMAS[node.type_key]
     return [node.model_dump() for node in base_nodes]
 
 
