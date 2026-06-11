@@ -67,10 +67,9 @@ services:
       FRONTIER_MEMORY_ENABLE_LONG_TERM: ${FRONTIER_MEMORY_ENABLE_LONG_TERM:-1}
       FRONTIER_MEMORY_LEARNING_ENABLED: ${FRONTIER_MEMORY_LEARNING_ENABLED:-1}
       OPENAI_EMBEDDING_MODEL: ${OPENAI_EMBEDDING_MODEL:-text-embedding-3-small}
-      # Neo4j is opt-in locally (see the "graph" profile below). Leave the URI
-      # empty by default so the backend's world-graph projection disables itself
-      # instead of timing out against an absent bolt endpoint.
-      NEO4J_URI: ${NEO4J_URI:-}
+      # Neo4j ships on by default for world-model / knowledge-graph capabilities.
+      # The backend connects to the bolt endpoint of the neo4j service below.
+      NEO4J_URI: ${NEO4J_URI:-bolt://neo4j:7687}
       NEO4J_USERNAME: ${NEO4J_USERNAME:-neo4j}
       NEO4J_PASSWORD: ${NEO4J_PASSWORD:-frontier123}
     ports:
@@ -82,6 +81,8 @@ services:
       postgres:
         condition: service_healthy
       redis:
+        condition: service_started
+      neo4j:
         condition: service_started
 
   postgres:
@@ -142,9 +143,10 @@ services:
     #           count: all
     #           capabilities: [gpu]
 
-  # Opt-in: the Neo4j JVM costs ~1.5 GB RSS, far beyond the local-first budget.
-  # Enable with: docker compose --profile graph -f docker-compose.local.yml up
-  # and set NEO4J_URI=bolt://neo4j:7687 for the backend.
+  # Knowledge graph for world-model capabilities — on by default. The JVM is
+  # capped (heap 512m + pagecache 256m → ~1 GB RSS) to stay within the
+  # local-first budget. To run without it on a very constrained host, override
+  # NEO4J_URI="" and start with: docker compose up --scale neo4j=0.
   neo4j:
     logging:
       driver: json-file
@@ -152,7 +154,6 @@ services:
         max-size: "10m"
         max-file: "3"
     image: neo4j:5.23-community
-    profiles: ["graph"]
     mem_limit: 1536m
     environment:
       NEO4J_AUTH: ${NEO4J_USERNAME:-neo4j}/${NEO4J_PASSWORD:-frontier123}
