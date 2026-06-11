@@ -52,6 +52,7 @@ const builderNavGroups: NavGroup[] = [
     title: "Configure",
     items: [
       { href: "/builder/skills", label: "Skills", icon: "templates" },
+      { href: "/builder/knowledge", label: "Knowledge", icon: "artifact" },
       { href: "/builder/models", label: "Models", icon: "nodes" },
       { href: "/builder/observability", label: "Observability", icon: "observability" },
       { href: "/builder/integrations", label: "Integrations", icon: "integrations" },

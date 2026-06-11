@@ -40,6 +40,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field, ValidationError
 from app import cron as app_cron
+from app import knowledge as app_knowledge
 from app import local_models, mcp_client, skills_catalog
 from app.generated_artifacts import GeneratedArtifactService
 from app.platform_services import (
@@ -8472,6 +8473,11 @@ class InMemoryStore:
         # loop at minute resolution.
         self.workflow_schedules: dict[str, dict[str, Any]] = {}
 
+        # Knowledge collections: id -> {id, name, description, created_at,
+        # document_count, chunk_count}. Chunks live in the pgvector long-term
+        # memory store under the collection's knowledge bucket.
+        self.knowledge_collections: dict[str, dict[str, Any]] = {}
+
         self.collaboration_sessions: dict[str, CollaborationSession] = {}
         self.audit_events: list[AuditEvent] = []
         self.a2a_seen_nonces: dict[str, str] = {}
@@ -10906,6 +10912,7 @@ def _serialize_store_state() -> dict[str, Any]:
         "skills": [item.model_dump() for item in store.skills.values()],
         "workflow_triggers": store.workflow_triggers,
         "workflow_schedules": store.workflow_schedules,
+        "knowledge_collections": store.knowledge_collections,
     }
     if _AUDIT_LOG is None or not _AUDIT_LOG.enabled:
         # Without the append-only audit table, audit events ride in the state
@@ -11187,6 +11194,14 @@ def _apply_store_state(payload: dict[str, Any]) -> None:
                     "last_fired_minute": str(meta.get("last_fired_minute") or ""),
                 }
         store.workflow_schedules = hydrated_schedules
+
+    knowledge_payload = payload.get("knowledge_collections")
+    if isinstance(knowledge_payload, dict):
+        hydrated_knowledge: dict[str, dict[str, Any]] = {}
+        for collection_id, meta in knowledge_payload.items():
+            if isinstance(meta, dict) and meta.get("id"):
+                hydrated_knowledge[str(collection_id)] = dict(meta)
+        store.knowledge_collections = hydrated_knowledge
 
     seen_nonces_payload = payload.get("a2a_seen_nonces")
     if isinstance(seen_nonces_payload, dict):
@@ -14803,6 +14818,155 @@ def delete_workflow_schedule(schedule_id: str, request: Request) -> dict[str, bo
     _append_audit_event("workflow.schedule.delete", actor, "allowed", {"schedule_id": schedule_id})
     _persist_store_state()
     return {"ok": True}
+
+
+def _knowledge_collection_view(collection: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": collection.get("id", ""),
+        "name": collection.get("name", ""),
+        "description": collection.get("description", ""),
+        "created_at": collection.get("created_at", ""),
+        "document_count": int(collection.get("document_count", 0)),
+        "chunk_count": int(collection.get("chunk_count", 0)),
+    }
+
+
+@app.get("/knowledge/collections")
+def list_knowledge_collections(request: Request) -> list[dict[str, Any]]:
+    _enforce_builder_access(request, action="knowledge.collection.list")
+    return [
+        _knowledge_collection_view(item)
+        for item in sorted(
+            store.knowledge_collections.values(),
+            key=lambda c: str(c.get("name", "")).lower(),
+        )
+    ]
+
+
+@app.post("/knowledge/collections")
+def create_knowledge_collection(
+    request: Request, payload: dict[str, Any] = Body(default_factory=dict)
+) -> dict[str, Any]:
+    actor = _enforce_builder_access(request, payload=payload, action="knowledge.collection.create")
+    _enforce_emergency_write_policy("knowledge.collection.create", actor)
+    name = str(payload.get("name") or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Collection name is required")
+    collection_id = str(uuid4())
+    store.knowledge_collections[collection_id] = {
+        "id": collection_id,
+        "name": name,
+        "description": str(payload.get("description") or ""),
+        "created_at": _now_iso(),
+        "document_count": 0,
+        "chunk_count": 0,
+    }
+    _append_audit_event(
+        "knowledge.collection.create", actor, "allowed", {"collection_id": collection_id}
+    )
+    _persist_store_state()
+    return _knowledge_collection_view(store.knowledge_collections[collection_id])
+
+
+@app.delete("/knowledge/collections/{collection_id}")
+def delete_knowledge_collection(collection_id: str, request: Request) -> dict[str, bool]:
+    actor = _enforce_builder_access(request, action="knowledge.collection.delete")
+    _enforce_emergency_write_policy("knowledge.collection.delete", actor)
+    if store.knowledge_collections.pop(collection_id, None) is None:
+        raise HTTPException(status_code=404, detail="Collection not found")
+    _append_audit_event(
+        "knowledge.collection.delete", actor, "allowed", {"collection_id": collection_id}
+    )
+    _persist_store_state()
+    return {"ok": True}
+
+
+@app.post("/knowledge/collections/{collection_id}/documents")
+def add_knowledge_document(
+    collection_id: str, request: Request, payload: dict[str, Any] = Body(default_factory=dict)
+) -> dict[str, Any]:
+    actor = _enforce_builder_access(request, payload=payload, action="knowledge.document.add")
+    _enforce_emergency_write_policy("knowledge.document.add", actor)
+    collection = store.knowledge_collections.get(collection_id)
+    if collection is None:
+        raise HTTPException(status_code=404, detail="Collection not found")
+    if not (_POSTGRES_MEMORY.enabled and _POSTGRES_MEMORY.healthcheck()):
+        raise HTTPException(
+            status_code=503,
+            detail="Knowledge ingestion requires the long-term memory store (Postgres + embeddings)",
+        )
+    text = str(payload.get("text") or "").strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="Document text is required")
+    document_name = str(payload.get("name") or "document").strip() or "document"
+
+    chunks = app_knowledge.chunk_text(text)
+    if not chunks:
+        raise HTTPException(status_code=400, detail="Document produced no indexable content")
+    bucket = app_knowledge.collection_bucket(collection_id)
+    document_id = str(uuid4())
+    for index, chunk in enumerate(chunks):
+        _POSTGRES_MEMORY.append_entry(
+            bucket_id=bucket,
+            session_id=collection_id,
+            memory_scope="knowledge",
+            source="knowledge",
+            entry={
+                "content": chunk,
+                "document_id": document_id,
+                "document_name": document_name,
+                "chunk_index": index,
+            },
+        )
+    collection["document_count"] = int(collection.get("document_count", 0)) + 1
+    collection["chunk_count"] = int(collection.get("chunk_count", 0)) + len(chunks)
+    _append_audit_event(
+        "knowledge.document.add",
+        actor,
+        "allowed",
+        {"collection_id": collection_id, "document_id": document_id, "chunks": len(chunks)},
+    )
+    _persist_store_state()
+    return {
+        "ok": True,
+        "document_id": document_id,
+        "chunks_indexed": len(chunks),
+        "collection": _knowledge_collection_view(collection),
+    }
+
+
+@app.post("/knowledge/collections/{collection_id}/search")
+def search_knowledge_collection(
+    collection_id: str, request: Request, payload: dict[str, Any] = Body(default_factory=dict)
+) -> dict[str, Any]:
+    _enforce_builder_access(request, payload=payload, action="knowledge.search")
+    if store.knowledge_collections.get(collection_id) is None:
+        raise HTTPException(status_code=404, detail="Collection not found")
+    query = str(payload.get("query") or "").strip()
+    if not query:
+        raise HTTPException(status_code=400, detail="A search query is required")
+    if not (_POSTGRES_MEMORY.enabled and _POSTGRES_MEMORY.healthcheck()):
+        return {"query": query, "results": [], "reason": "long-term memory store unavailable"}
+    try:
+        limit = max(1, min(20, int(payload.get("top_k", 5))))
+    except (TypeError, ValueError):
+        limit = 5
+    entries = _POSTGRES_MEMORY.search_entries(
+        query,
+        bucket_id=app_knowledge.collection_bucket(collection_id),
+        memory_scope="knowledge",
+        limit=limit,
+    )
+    results = [
+        {
+            "content": entry.get("content", ""),
+            "document_name": entry.get("document_name") or entry.get("metadata", {}).get("document_name", ""),
+            "chunk_index": entry.get("chunk_index", entry.get("metadata", {}).get("chunk_index", 0)),
+            "score": entry.get("score"),
+        }
+        for entry in entries
+    ]
+    return {"query": query, "results": results}
 
 
 @app.get("/skills")

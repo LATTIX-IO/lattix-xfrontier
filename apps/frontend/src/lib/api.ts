@@ -455,6 +455,62 @@ export async function getWorkflowRunEventsLive(
   return strictFetch<WorkflowRunEvent[]>(`/workflow-runs/${id}/events${suffix}`);
 }
 
+export type KnowledgeCollection = {
+  id: string;
+  name: string;
+  description: string;
+  created_at: string;
+  document_count: number;
+  chunk_count: number;
+};
+
+export type KnowledgeSearchResult = {
+  content: string;
+  document_name: string;
+  chunk_index: number;
+  score: number | null;
+};
+
+export async function getKnowledgeCollections(): Promise<KnowledgeCollection[]> {
+  return strictFetch<KnowledgeCollection[]>("/knowledge/collections");
+}
+
+export async function createKnowledgeCollection(
+  name: string,
+  description: string,
+): Promise<KnowledgeCollection> {
+  return strictFetch("/knowledge/collections", {
+    method: "POST",
+    body: JSON.stringify({ name, description }),
+  });
+}
+
+export async function deleteKnowledgeCollection(id: string): Promise<{ ok: boolean }> {
+  return strictFetch(`/knowledge/collections/${encodeURIComponent(id)}`, { method: "DELETE" });
+}
+
+export async function addKnowledgeDocument(
+  collectionId: string,
+  name: string,
+  text: string,
+): Promise<{ ok: boolean; document_id: string; chunks_indexed: number; collection: KnowledgeCollection }> {
+  return strictFetch(`/knowledge/collections/${encodeURIComponent(collectionId)}/documents`, {
+    method: "POST",
+    body: JSON.stringify({ name, text }),
+  });
+}
+
+export async function searchKnowledgeCollection(
+  collectionId: string,
+  query: string,
+  topK = 5,
+): Promise<{ query: string; results: KnowledgeSearchResult[]; reason?: string }> {
+  return strictFetch(`/knowledge/collections/${encodeURIComponent(collectionId)}/search`, {
+    method: "POST",
+    body: JSON.stringify({ query, top_k: topK }),
+  });
+}
+
 export type SkillDefinition = {
   id: string;
   name: string;

@@ -200,6 +200,36 @@ _ROUTE_ACCESS_RULES: tuple[RouteAccessRule, ...] = (
     ),
     RouteAccessRule(
         ("GET",),
+        "/knowledge/collections",
+        RouteAccessCategory.AUTHENTICATED_READ,
+        "knowledge.collection.list",
+    ),
+    RouteAccessRule(
+        ("POST",),
+        "/knowledge/collections",
+        RouteAccessCategory.AUTHENTICATED_MUTATE,
+        "knowledge.collection.create",
+    ),
+    RouteAccessRule(
+        ("DELETE",),
+        "/knowledge/collections/{collection_id}",
+        RouteAccessCategory.AUTHENTICATED_MUTATE,
+        "knowledge.collection.delete",
+    ),
+    RouteAccessRule(
+        ("POST",),
+        "/knowledge/collections/{collection_id}/documents",
+        RouteAccessCategory.AUTHENTICATED_MUTATE,
+        "knowledge.document.add",
+    ),
+    RouteAccessRule(
+        ("POST",),
+        "/knowledge/collections/{collection_id}/search",
+        RouteAccessCategory.AUTHENTICATED_MUTATE,
+        "knowledge.search",
+    ),
+    RouteAccessRule(
+        ("GET",),
         "/skills",
         RouteAccessCategory.AUTHENTICATED_READ,
         "skill.list",

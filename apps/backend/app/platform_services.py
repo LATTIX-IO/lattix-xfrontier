@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sqlite3
 import threading
 from contextlib import contextmanager
@@ -841,9 +842,6 @@ class PostgresLongTermMemoryStore(_BasePostgresService):
             )
 
         self.initialize()
-        where_sql, params = self._filters(
-            bucket_id=bucket_id, session_id=session_id, memory_scope=memory_scope
-        )
         vector, _model = self._embed_text(normalized_query)
         with self._connect() as connection:
             with connection.cursor() as cursor:
@@ -852,9 +850,9 @@ class PostgresLongTermMemoryStore(_BasePostgresService):
                         """
 						SELECT id, bucket_id, session_id, memory_scope, source, task_id, content, metadata, created_at
 						FROM frontier_long_term_memory
-						WHERE (%s IS NULL OR bucket_id = %s)
-						AND (%s IS NULL OR session_id = %s)
-						AND (%s IS NULL OR memory_scope = %s)
+						WHERE (%s::text IS NULL OR bucket_id = %s::text)
+						AND (%s::text IS NULL OR session_id = %s::text)
+						AND (%s::text IS NULL OR memory_scope = %s::text)
 						AND embedding IS NOT NULL
 						ORDER BY embedding <=> %s::vector, created_at DESC
 						LIMIT %s
@@ -872,16 +870,27 @@ class PostgresLongTermMemoryStore(_BasePostgresService):
                     )
                     rows = cursor.fetchall()
                 else:
-                    pattern = f"%{normalized_query[:200]}%"
+                    # Keyword fallback when vector search is unavailable. Match
+                    # on individual terms (ranked by how many match) rather than
+                    # the whole query as one literal substring, so multi-word
+                    # queries still retrieve relevant chunks.
+                    terms = [
+                        term
+                        for term in re.split(r"\W+", normalized_query.lower())
+                        if len(term) >= 3
+                    ][:12] or [normalized_query[:60].lower()]
+                    score_terms = " + ".join(["(content ILIKE %s)::int"] * len(terms))
+                    match_clause = " OR ".join(["content ILIKE %s"] * len(terms))
+                    like_params = [f"%{term}%" for term in terms]
                     cursor.execute(
-                        """
+                        f"""
 						SELECT id, bucket_id, session_id, memory_scope, source, task_id, content, metadata, created_at
 						FROM frontier_long_term_memory
-						WHERE (%s IS NULL OR bucket_id = %s)
-						AND (%s IS NULL OR session_id = %s)
-						AND (%s IS NULL OR memory_scope = %s)
-						AND (content ILIKE %s OR metadata::text ILIKE %s)
-						ORDER BY created_at DESC
+						WHERE (%s::text IS NULL OR bucket_id = %s::text)
+						AND (%s::text IS NULL OR session_id = %s::text)
+						AND (%s::text IS NULL OR memory_scope = %s::text)
+						AND ({match_clause})
+						ORDER BY ({score_terms}) DESC, created_at DESC
 						LIMIT %s
 						""",
                         (
@@ -891,8 +900,8 @@ class PostgresLongTermMemoryStore(_BasePostgresService):
                             session_id,
                             memory_scope,
                             memory_scope,
-                            pattern,
-                            pattern,
+                            *like_params,  # match_clause
+                            *like_params,  # score_terms
                             max(1, limit),
                         ),
                     )

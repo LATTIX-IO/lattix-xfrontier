@@ -254,7 +254,9 @@ services:
 
   postgres:
     <<: *default-logging
-    image: postgres:16-alpine
+    # pgvector image (PG16) so the long-term memory / knowledge store can use
+    # vector similarity search. Volume-compatible with plain postgres:16.
+    image: pgvector/pgvector:pg16
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-frontier}
       POSTGRES_USER: ${POSTGRES_USER:-frontier}
