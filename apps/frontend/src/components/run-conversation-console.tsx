@@ -7,11 +7,10 @@ import dynamic from "next/dynamic";
 
 const ReactMarkdown = dynamic(() => import("react-markdown"), { ssr: false });
 import remarkGfm from "remark-gfm";
-import { ReactFlowCanvas } from "@/components/reactflow-canvas";
+import { RunGraphView } from "@/components/run-graph-view";
 import { RunArchiveButton } from "@/components/run-archive-button";
 import { RunFollowupComposer } from "@/components/run-followup-composer";
 import {
-  createWorkflowRun,
   getAtfAlignmentReport,
   getWorkflowRunEventsLive,
   getWorkflowRunLive,
@@ -19,16 +18,18 @@ import {
   submitApproval,
   type WorkflowRunDetail,
 } from "@/lib/api";
-
-function slugifyAgentName(value: string): string {
-  return String(value || "")
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .slice(0, 80);
-}
 import type { AtfAlignmentReport, WorkflowRunEvent } from "@/types/frontier";
+
+// Deterministic per-agent accent so multi-agent conversations are visually
+// distinct. Hashes the agent name to a stable hue.
+function agentAccentHue(name: string): number {
+  let hash = 0;
+  const value = String(name || "agent");
+  for (let i = 0; i < value.length; i += 1) {
+    hash = (hash * 31 + value.charCodeAt(i)) % 360;
+  }
+  return hash;
+}
 
 type Props = {
   runId: string;
@@ -126,7 +127,6 @@ export function RunConversationConsole({ runId, run: initialRun, events: initial
   const [approvalFeedback, setApprovalFeedback] = useState("");
   const [approvalBusy, setApprovalBusy] = useState<"approved" | "changes_requested" | null>(null);
   const [approvalMessage, setApprovalMessage] = useState<string | null>(null);
-  const [regenerating, setRegenerating] = useState(false);
   // Details flyout: collapsed by default so the chat stays the primary surface.
   const [flyoutOpen, setFlyoutOpen] = useState(false);
   const [atfReport, setAtfReport] = useState<AtfAlignmentReport | null>(null);
@@ -436,35 +436,6 @@ export function RunConversationConsole({ runId, run: initialRun, events: initial
     }
   }
 
-  async function handleRegenerate() {
-    // Re-run the original task as a linked new run (branch). Faithful to the
-    // run-centric model: reuses the agent the original run resolved to.
-    const firstUser = orderedEvents.find((event) => event.type === "user_message");
-    const originalPrompt = (firstUser?.summary ?? "").trim();
-    if (!originalPrompt) {
-      setApprovalMessage("No original prompt found to regenerate.");
-      return;
-    }
-    const agentName = run.agent_traces?.[0]?.agent ?? "";
-    const agentSlug = slugifyAgentName(agentName);
-    setRegenerating(true);
-    setApprovalMessage(null);
-    try {
-      const next = await createWorkflowRun({
-        title: `Regenerated: ${originalPrompt.slice(0, 60)}`,
-        prompt: agentSlug ? `@${agentSlug} ${originalPrompt}` : originalPrompt,
-        tokens: agentSlug ? [{ kind: "agent", value: agentSlug }] : [],
-        context: { source: "regenerate", source_run_id: runId },
-      });
-      router.push(`/runs/${next.id}`);
-      router.refresh();
-    } catch (error) {
-      setApprovalMessage(error instanceof Error ? error.message : "Unable to regenerate the run.");
-    } finally {
-      setRegenerating(false);
-    }
-  }
-
   async function handleApprovalDecision(decision: "approved" | "changes_requested") {
     if (!approvals.required) {
       return;
@@ -561,18 +532,6 @@ export function RunConversationConsole({ runId, run: initialRun, events: initial
           <button type="button" onClick={copyTranscript} className="fx-btn-secondary px-2 py-1 text-[11px]">
             Copy
           </button>
-          <button onClick={() => router.refresh()} className="fx-btn-secondary px-2 py-1 text-[11px] font-medium" type="button">
-            Refresh
-          </button>
-          <button
-            onClick={() => void handleRegenerate()}
-            disabled={regenerating}
-            className="fx-btn-secondary px-2 py-1 text-[11px] font-medium disabled:opacity-60"
-            type="button"
-            title="Re-run the original task as a new linked run"
-          >
-            {regenerating ? "Regenerating…" : "Regenerate"}
-          </button>
           <RunArchiveButton runId={runId} buttonClassName="fx-btn-secondary px-2 py-1 text-[11px] font-medium" />
           <button
             type="button"
@@ -642,17 +601,33 @@ export function RunConversationConsole({ runId, run: initialRun, events: initial
                     );
                   }
 
-                  const roleLabel = isUserMessage ? "You" : (trace?.agent || "Assistant");
+                  const agentName =
+                    trace?.agent ||
+                    String((event.metadata?.selected_agent_name as string | undefined) ?? "") ||
+                    "Assistant";
+                  const roleLabel = isUserMessage ? "You" : agentName;
                   const containerClass = isUserMessage ? "justify-end" : "justify-start";
+                  const agentHue = isAgentMessage ? agentAccentHue(agentName) : null;
                   const bubbleClass = isUserMessage
                     ? "border-[hsl(var(--primary)/0.45)] bg-[hsl(var(--primary)/0.16)]"
                     : "border-[var(--ui-border)] bg-[hsl(var(--card)/0.98)]";
+                  const bubbleStyle =
+                    agentHue !== null ? { borderLeft: `3px solid hsl(${agentHue} 68% 55%)` } : undefined;
 
                   return (
                     <article key={event.id} className={`group mx-auto flex w-full max-w-[880px] ${containerClass}`}>
-                      <div className={`w-full max-w-[760px] rounded-2xl border px-3 py-2.5 shadow-sm ${bubbleClass}`}>
+                      <div className={`w-full max-w-[760px] rounded-2xl border px-3 py-2.5 shadow-sm ${bubbleClass}`} style={bubbleStyle}>
                         <div className="mb-1 flex items-center justify-between gap-2">
-                          <p className="text-[11px] font-semibold text-[hsl(var(--muted-foreground))]">{roleLabel}</p>
+                          <p className="flex items-center gap-1.5 text-[11px] font-semibold text-[hsl(var(--muted-foreground))]">
+                            {agentHue !== null ? (
+                              <span
+                                aria-hidden
+                                className="inline-block h-2 w-2 rounded-full"
+                                style={{ background: `hsl(${agentHue} 68% 55%)` }}
+                              />
+                            ) : null}
+                            {roleLabel}
+                          </p>
                           <span className="fx-muted text-[11px] opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">{event.createdAt}</span>
                         </div>
                         <MarkdownBlock content={event.summary} className="mt-1" />
@@ -841,10 +816,10 @@ export function RunConversationConsole({ runId, run: initialRun, events: initial
                   <div className="mb-2 flex items-center justify-between px-2 text-xs">
                     <h2 className="font-semibold">Execution Graph</h2>
                     <span className="fx-muted">
-                      {usedAgentStudioAgent ? "Read-only snapshot • draggable nodes" : "Default chat agent fallback shown"}
+                      {usedAgentStudioAgent ? "Read-only snapshot" : "Default chat agent fallback shown"}
                     </span>
                   </div>
-                  <ReactFlowCanvas nodes={effectiveGraphNodes} links={effectiveGraphLinks} height={560} readOnly />
+                  <RunGraphView nodes={effectiveGraphNodes} links={effectiveGraphLinks} height={520} />
                 </div>
               ) : null}
 

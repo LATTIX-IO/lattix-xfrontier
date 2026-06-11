@@ -32,7 +32,6 @@ const userNavGroups: NavGroup[] = [
     title: "Work",
     items: [
       { href: "/inbox", label: "Inbox", icon: "inbox" },
-      { href: "/workflows/start", label: "Workflows", icon: "workflow" },
       { href: "/artifacts", label: "Artifacts", icon: "artifact" },
     ],
   },
