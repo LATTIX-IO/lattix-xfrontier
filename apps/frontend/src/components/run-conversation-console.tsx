@@ -509,111 +509,95 @@ export function RunConversationConsole({ runId, run: initialRun, events: initial
         .slice(0, 3)
     : [];
 
+  const kindLabel =
+    { individual: "Chat", agent: "Agent", workflow: "Workflow", playbook: "Playbook" }[
+      String((run as { kind?: string }).kind ?? "")
+    ] ?? "Run";
+
   return (
-    <div className="-m-6 min-h-[calc(100vh-57px)] p-6">
-      <section className="space-y-4">
-        <header className="flex flex-wrap items-start justify-between gap-3">
-          <div>
-            <h1 className="text-xl font-semibold">Run Console</h1>
-            <p className="fx-muted text-sm">
-              Review execution, triage issues, and continue the run for <span className="font-mono">{runId}</span>.
-            </p>
+    <div className="-m-6 flex h-[calc(100vh-57px)] flex-col">
+      {/* Slim top toolbar — the chat owns the rest of the page */}
+      <header className="flex flex-wrap items-center justify-between gap-2 border-b border-[var(--ui-border)] bg-[hsl(var(--background)/0.9)] px-4 py-2 backdrop-blur">
+        <div className="flex min-w-0 items-center gap-2">
+          <span
+            className="rounded-full border border-[var(--ui-border)] bg-[hsl(var(--card))] px-2 py-0.5 text-[11px] font-medium"
+            style={{ color: statusColor }}
+          >
+            {run.status}
+          </span>
+          <span className="truncate text-sm font-semibold text-[var(--foreground)]">
+            {kindLabel} <span className="fx-muted font-mono text-xs">· {runId.slice(0, 8)}</span>
+          </span>
+          {run.status === "Running" ? (
+            <span className="fx-muted text-[11px]">live</span>
+          ) : null}
+        </div>
+        <div className="flex flex-wrap items-center gap-1.5 text-xs">
+          <input
+            value={searchQuery}
+            onChange={(event) => setSearchQuery(event.target.value)}
+            placeholder="Search…"
+            className="fx-field h-7 w-36 px-2 text-xs"
+          />
+          <div className="flex items-center gap-1 rounded-md border border-[var(--ui-border)] bg-[hsl(var(--card))] p-0.5">
+            {(["all", "chat", "system", "errors"] as EventFilter[]).map((filterOption) => (
+              <button
+                key={filterOption}
+                type="button"
+                onClick={() => setEventFilter(filterOption)}
+                className={`rounded px-1.5 py-0.5 text-[11px] ${eventFilter === filterOption ? "bg-[hsl(var(--primary)/0.18)] text-[var(--foreground)]" : "text-[hsl(var(--muted-foreground))]"}`}
+              >
+                {filterOption.charAt(0).toUpperCase() + filterOption.slice(1)}
+              </button>
+            ))}
           </div>
-          <div className="flex flex-wrap items-center gap-2 text-xs">
-            <span className="rounded-full border border-[var(--ui-border)] bg-[hsl(var(--card))] px-2 py-1 font-medium" style={{ color: statusColor }}>
-              {run.status}
-            </span>
-            <button onClick={() => router.refresh()} className="fx-btn-secondary px-2 py-1 text-xs font-medium" type="button">
-              Refresh
-            </button>
-            <button
-              onClick={() => void handleRegenerate()}
-              disabled={regenerating}
-              className="fx-btn-secondary px-2 py-1 text-xs font-medium disabled:opacity-60"
-              type="button"
-              title="Re-run the original task as a new linked run"
-            >
-              {regenerating ? "Regenerating…" : "Regenerate"}
-            </button>
-            <RunArchiveButton runId={runId} buttonClassName="fx-btn-secondary px-2 py-1 text-xs font-medium" />
-            <button
-              type="button"
-              onClick={() => setFlyoutOpen(true)}
-              aria-label="Open run details"
-              className="fx-btn-secondary relative px-2 py-1 text-xs font-medium"
-            >
-              Details
-              {flyoutAttention ? (
-                <span
-                  data-testid="flyout-attention"
-                  aria-label={
-                    flyoutAttention === "action" ? "Action required" : "Issues detected"
-                  }
-                  className={`absolute -right-1 -top-1 h-2.5 w-2.5 animate-pulse rounded-full ${
-                    flyoutAttention === "action"
-                      ? "bg-[hsl(var(--state-warning))]"
-                      : "bg-[hsl(var(--state-critical))]"
-                  }`}
-                />
-              ) : null}
-            </button>
-          </div>
-        </header>
+          <button type="button" onClick={() => setExpandAllReasoning((prev) => !prev)} className="fx-btn-secondary px-2 py-1 text-[11px]">
+            {expandAllReasoning ? "Collapse" : "Reasoning"}
+          </button>
+          <label className="flex items-center gap-1 rounded-md border border-[var(--ui-border)] px-1.5 py-1 text-[11px] text-[hsl(var(--muted-foreground))]">
+            <input type="checkbox" checked={autoScroll} onChange={(event) => setAutoScroll(event.target.checked)} />
+            Auto
+          </label>
+          <button type="button" onClick={copyTranscript} className="fx-btn-secondary px-2 py-1 text-[11px]">
+            Copy
+          </button>
+          <button onClick={() => router.refresh()} className="fx-btn-secondary px-2 py-1 text-[11px] font-medium" type="button">
+            Refresh
+          </button>
+          <button
+            onClick={() => void handleRegenerate()}
+            disabled={regenerating}
+            className="fx-btn-secondary px-2 py-1 text-[11px] font-medium disabled:opacity-60"
+            type="button"
+            title="Re-run the original task as a new linked run"
+          >
+            {regenerating ? "Regenerating…" : "Regenerate"}
+          </button>
+          <RunArchiveButton runId={runId} buttonClassName="fx-btn-secondary px-2 py-1 text-[11px] font-medium" />
+          <button
+            type="button"
+            onClick={() => setFlyoutOpen(true)}
+            aria-label="Open run details"
+            className="fx-btn-secondary relative px-2 py-1 text-[11px] font-medium"
+          >
+            Details
+            {flyoutAttention ? (
+              <span
+                data-testid="flyout-attention"
+                aria-label={flyoutAttention === "action" ? "Action required" : "Issues detected"}
+                className={`absolute -right-1 -top-1 h-2.5 w-2.5 animate-pulse rounded-full ${
+                  flyoutAttention === "action"
+                    ? "bg-[hsl(var(--state-warning))]"
+                    : "bg-[hsl(var(--state-critical))]"
+                }`}
+              />
+            ) : null}
+          </button>
+        </div>
+      </header>
 
-        <div className="mx-auto grid min-h-[72vh] w-full max-w-[1100px]">
-          <section className="fx-panel flex min-h-0 flex-col overflow-hidden p-0">
-            <div className="border-b border-[var(--ui-border)] px-3 py-3">
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <h2 className="text-sm font-semibold">Timeline</h2>
-                <div className="flex items-center gap-1.5 text-xs">
-                  <button type="button" onClick={() => setExpandAllReasoning((prev) => !prev)} className="fx-btn-secondary px-2 py-1 text-[11px]">
-                    {expandAllReasoning ? "Collapse reasoning" : "Expand reasoning"}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      const timeline = timelineRef.current;
-                      if (timeline) {
-                        timeline.scrollTop = timeline.scrollHeight;
-                      }
-                    }}
-                    className="fx-btn-secondary px-2 py-1 text-[11px]"
-                  >
-                    Jump latest
-                  </button>
-                  <button type="button" onClick={copyTranscript} className="fx-btn-secondary px-2 py-1 text-[11px]">
-                    Copy timeline
-                  </button>
-                </div>
-              </div>
-
-              <div className="mt-2 grid gap-2 md:grid-cols-[1fr_auto_auto]">
-                <input
-                  value={searchQuery}
-                  onChange={(event) => setSearchQuery(event.target.value)}
-                  placeholder="Search timeline (events, summaries, errors)..."
-                  className="fx-field h-8 px-2 text-xs"
-                />
-                <div className="flex items-center gap-1 rounded-md border border-[var(--ui-border)] bg-[hsl(var(--card))] p-1">
-                  {(["all", "chat", "system", "errors"] as EventFilter[]).map((filterOption) => (
-                    <button
-                      key={filterOption}
-                      type="button"
-                      onClick={() => setEventFilter(filterOption)}
-                      className={`rounded px-2 py-1 text-[11px] ${eventFilter === filterOption ? "bg-[hsl(var(--primary)/0.18)] text-[var(--foreground)]" : "text-[hsl(var(--muted-foreground))]"}`}
-                    >
-                      {filterOption.charAt(0).toUpperCase() + filterOption.slice(1)}
-                    </button>
-                  ))}
-                </div>
-                <label className="flex items-center gap-1 rounded-md border border-[var(--ui-border)] px-2 text-[11px] text-[hsl(var(--muted-foreground))]">
-                  <input type="checkbox" checked={autoScroll} onChange={(event) => setAutoScroll(event.target.checked)} />
-                  Auto-scroll
-                </label>
-              </div>
-            </div>
-
-            <div ref={timelineRef} className="min-h-0 flex-1 space-y-4 overflow-auto bg-[hsl(var(--muted)/0.25)] px-3 py-4">
+      <section className="flex min-h-0 flex-1 flex-col overflow-hidden">
+            <div ref={timelineRef} className="min-h-0 flex-1 space-y-4 overflow-auto bg-[hsl(var(--muted)/0.18)] px-3 py-4">
               {filteredEvents.length === 0 ? (
                 <div className="mx-auto w-full max-w-[880px] rounded-xl border border-dashed border-[var(--ui-border)] bg-[hsl(var(--card)/0.8)] px-3 py-4 text-xs">
                   <p className="font-medium text-[var(--foreground)]">No events match your current filters.</p>
@@ -738,12 +722,12 @@ export function RunConversationConsole({ runId, run: initialRun, events: initial
               ) : null}
             </div>
 
-            <div className="sticky bottom-0 border-t border-[var(--ui-border)] bg-[hsl(var(--background)/0.86)] px-3 py-3 shadow-[0_-8px_24px_rgba(0,0,0,0.08)] backdrop-blur-md">
-              <RunFollowupComposer runId={runId} recentContext={recentContext} />
+            <div className="sticky bottom-0 border-t border-[var(--ui-border)] bg-[hsl(var(--background)/0.86)] px-4 py-3 shadow-[0_-8px_24px_rgba(0,0,0,0.08)] backdrop-blur-md">
+              <div className="mx-auto w-full max-w-[880px]">
+                <RunFollowupComposer runId={runId} recentContext={recentContext} />
+              </div>
             </div>
           </section>
-
-        </div>
 
         {flyoutOpen ? (
           <>
@@ -1080,7 +1064,6 @@ export function RunConversationConsole({ runId, run: initialRun, events: initial
             </aside>
           </>
         ) : null}
-      </section>
     </div>
   );
 }
