@@ -21,6 +21,17 @@ vs rubric → averaged score, ≥0.7 passes and earns `validated`) + a promotion
 `POST /skills/{id}/promote`. UI: tier/maturity/eval columns in the inventory and a
 maturity & evaluation panel (rubric, dataset, Run eval, Promote) in the build page.
 
+Skill import + security blast chamber (✅ done 2026-06-11): skills can be imported
+from an online source (`POST /skills/import` — URL with an SSRF guard rejecting
+private/loopback/reserved hosts, or pasted content) and land **disabled +
+quarantined**. Because skills are prompt procedures (not executable code), the
+"blast chamber" is the guarded LLM path: a static content scan (the platform's
+FOSS guardrail signals — prompt-injection/exfiltration/command-injection/PII +
+secret patterns) then a guarded dry-run whose output is scanned through the same
+signals. High-severity findings block; a skill stays quarantined until both stages
+clear (`POST /skills/{id}/scan` re-runs it). `save_skill` refuses to enable a
+pending/blocked skill and `_augment_system_prompt_with_skills` never injects one.
+
 Deferred Savant pieces (need product decisions): external tenant-Git storage with
 the repo contract + validation, governance registry files, signed bundles, and the
 review/release control-plane workflow.
