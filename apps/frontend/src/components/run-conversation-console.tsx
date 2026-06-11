@@ -608,14 +608,37 @@ export function RunConversationConsole({ runId, run: initialRun, events: initial
                   const roleLabel = isUserMessage ? "You" : agentName;
                   const containerClass = isUserMessage ? "justify-end" : "justify-start";
                   const agentHue = isAgentMessage ? agentAccentHue(agentName) : null;
+                  const parentEventId = isAgentMessage
+                    ? (event.metadata?.parent_event_id as string | undefined)
+                    : undefined;
+                  const isReply = Boolean(parentEventId);
+                  const isDeclined = Boolean(event.metadata?.declined);
+                  const decisionReason =
+                    event.metadata && typeof event.metadata.decision === "object"
+                      ? String((event.metadata.decision as Record<string, unknown>).reason ?? "")
+                      : "";
                   const bubbleClass = isUserMessage
                     ? "border-[hsl(var(--primary)/0.45)] bg-[hsl(var(--primary)/0.16)]"
                     : "border-[var(--ui-border)] bg-[hsl(var(--card)/0.98)]";
                   const bubbleStyle =
                     agentHue !== null ? { borderLeft: `3px solid hsl(${agentHue} 68% 55%)` } : undefined;
 
+                  // A threaded reply that declined renders as a compact note.
+                  if (isDeclined) {
+                    return (
+                      <article key={event.id} className="mx-auto w-full max-w-[880px] pl-10">
+                        <div className="rounded-lg border border-dashed border-[var(--ui-border)] bg-[hsl(var(--muted)/0.25)] px-3 py-1.5 text-[11px] fx-muted">
+                          <span className="font-medium" style={agentHue !== null ? { color: `hsl(${agentHue} 68% 55%)` } : undefined}>
+                            {agentName}
+                          </span>{" "}
+                          declined to respond{decisionReason ? ` — ${decisionReason}` : ""}
+                        </div>
+                      </article>
+                    );
+                  }
+
                   return (
-                    <article key={event.id} className={`group mx-auto flex w-full max-w-[880px] ${containerClass}`}>
+                    <article key={event.id} className={`group mx-auto flex w-full max-w-[880px] ${containerClass} ${isReply ? "pl-10" : ""}`}>
                       <div className={`w-full max-w-[760px] rounded-2xl border px-3 py-2.5 shadow-sm ${bubbleClass}`} style={bubbleStyle}>
                         <div className="mb-1 flex items-center justify-between gap-2">
                           <p className="flex items-center gap-1.5 text-[11px] font-semibold text-[hsl(var(--muted-foreground))]">
@@ -627,6 +650,11 @@ export function RunConversationConsole({ runId, run: initialRun, events: initial
                               />
                             ) : null}
                             {roleLabel}
+                            {isReply ? (
+                              <span className="rounded-full border border-[var(--ui-border)] px-1.5 py-0 text-[9px] uppercase tracking-wide fx-muted">
+                                ↳ thread
+                              </span>
+                            ) : null}
                           </p>
                           <span className="fx-muted text-[11px] opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">{event.createdAt}</span>
                         </div>

@@ -13596,6 +13596,178 @@ def _augment_system_prompt_with_skills(system_prompt: str) -> str:
     )
 
 
+# --- Mention-driven multi-agent collaboration ---------------------------------
+
+_AGENT_MENTION_RE = re.compile(r"@([a-z0-9][a-z0-9_-]{1,79})", re.IGNORECASE)
+_DEFAULT_COLLABORATION_TURNS = 6
+_MAX_COLLABORATION_TURNS = 20
+
+
+def _extract_agent_mentions(text: str) -> list[str]:
+    """Ordered, de-duplicated @handles referenced in text."""
+    seen: list[str] = []
+    for match in _AGENT_MENTION_RE.finditer(str(text or "")):
+        token = match.group(1).lower()
+        if token not in seen:
+            seen.append(token)
+    return seen
+
+
+def _resolve_collaboration_turns(
+    agent_def: "AgentDefinition", payload: dict[str, Any]
+) -> int:
+    """Turn cap, configurable per playbook/workflow (kickoff payload) or per agent
+    (config_json), falling back to a conservative default."""
+    config = getattr(agent_def, "config_json", {}) or {}
+    for candidate in (payload.get("max_collaboration_turns"), config.get("max_collaboration_turns")):
+        try:
+            value = int(candidate)
+        except (TypeError, ValueError):
+            continue
+        if value > 0:
+            return min(value, _MAX_COLLABORATION_TURNS)
+    return _DEFAULT_COLLABORATION_TURNS
+
+
+def _agent_decides_to_respond(
+    agent_def: "AgentDefinition", *, from_name: str, message: str, transcript: str
+) -> dict[str, Any]:
+    """The mention-gate: a called agent decides whether it needs to respond."""
+    prompt = (
+        f"You are the agent '{agent_def.name}'. In a multi-agent run, {from_name} addressed "
+        f'you:\n\n"{message[:1500]}"\n\nRecent conversation:\n{transcript[:2000]}\n\n'
+        "Decide whether YOU specifically need to respond. Respond only if you can add "
+        "something the others cannot, or you were asked a direct question. Reply with ONLY a "
+        'JSON object: {"respond": true|false, "reason": "<one short sentence>"}.'
+    )
+    text, meta = _run_openai_chat(
+        system_prompt="You are a precise routing gate. Reply with JSON only.",
+        user_prompt=prompt,
+        model=_resolve_agent_chat_model(agent_def),
+        temperature=0.0,
+    )
+    respond = str(meta.get("mode")) == "live"
+    reason = "Defaulted (gate output unparsable)."
+    try:
+        match = re.search(r"\{.*\}", text, re.DOTALL)
+        if match:
+            parsed = json.loads(match.group(0))
+            respond = bool(parsed.get("respond", respond))
+            reason = str(parsed.get("reason") or reason)
+    except (ValueError, TypeError):
+        pass
+    return {"respond": respond, "reason": reason[:200], "mode": str(meta.get("mode") or "")}
+
+
+def _run_agent_collaboration(
+    *,
+    run_id: str,
+    root_event_id: str,
+    initial_agent_id: str,
+    initial_agent_name: str,
+    seed_text: str,
+    transcript_seed: str,
+    max_turns: int,
+    mask_secrets: bool,
+) -> int:
+    """Mention-driven loop: agents @-call each other and decide whether to respond.
+
+    Each invoked agent's message threads under the message that called it
+    (``parent_event_id``); all share the opening message's ``thread_id``. Bounded
+    by ``max_turns`` and a per-(agent, parent) visited set so it always terminates.
+    """
+    turns = 0
+    transcript_lines = [transcript_seed]
+    visited: set[tuple[str, str]] = set()
+    queue: list[tuple[str, str, str, str]] = [
+        (token, root_event_id, initial_agent_name, seed_text)
+        for token in _extract_agent_mentions(seed_text)
+    ]
+    while queue and turns < max_turns:
+        token, parent_event_id, from_name, message_text = queue.pop(0)
+        agent_def = _resolve_published_agent_definition(token)
+        if agent_def is None:
+            continue
+        if agent_def.id == initial_agent_id and parent_event_id == root_event_id:
+            continue  # the author doesn't reply to its own opening message
+        visited_key = (agent_def.id, parent_event_id)
+        if visited_key in visited:
+            continue
+        visited.add(visited_key)
+
+        transcript = "\n".join(transcript_lines[-8:])
+        decision = _agent_decides_to_respond(
+            agent_def, from_name=from_name, message=message_text, transcript=transcript
+        )
+        turns += 1
+
+        if not decision["respond"]:
+            store.run_events[run_id].append(
+                WorkflowRunEvent(
+                    id=f"evt-{uuid4()}",
+                    type="agent_message",
+                    title=f"{agent_def.name} declined",
+                    summary=(
+                        f"_{agent_def.name} chose not to respond — "
+                        f"{decision['reason'] or 'no action needed'}._"
+                    ),
+                    createdAt=_now_iso(),
+                    metadata={
+                        "selected_agent_id": agent_def.id,
+                        "selected_agent_name": agent_def.name,
+                        "parent_event_id": parent_event_id,
+                        "thread_id": root_event_id,
+                        "decision": decision,
+                        "declined": True,
+                    },
+                )
+            )
+            continue
+
+        agent_system = _augment_system_prompt_with_skills(
+            _resolve_agent_system_prompt(agent_def, requested_token=token)[0]
+        )
+        collaboration_prompt = (
+            f"You are collaborating in a multi-agent run. {from_name} said:\n\n"
+            f"{message_text[:3000]}\n\nConversation so far:\n{transcript}\n\n"
+            "Respond concisely in your area of expertise. If you need another agent, mention "
+            "them with @their-handle."
+        )
+        output, meta = _run_openai_chat(
+            system_prompt=agent_system,
+            user_prompt=collaboration_prompt,
+            model=_resolve_agent_chat_model(agent_def),
+            temperature=0.3,
+        )
+        if str(meta.get("mode")) != "live":
+            break  # provider unavailable — stop rather than emit simulated chatter
+
+        display = _redact_sensitive_text(output) if mask_secrets else output
+        summary, _ = _truncate_text_with_metadata(display)
+        event_id = f"evt-{uuid4()}"
+        store.run_events[run_id].append(
+            WorkflowRunEvent(
+                id=event_id,
+                type="agent_message",
+                title=f"{agent_def.name} response",
+                summary=summary,
+                createdAt=_now_iso(),
+                metadata={
+                    "model": meta,
+                    "selected_agent_id": agent_def.id,
+                    "selected_agent_name": agent_def.name,
+                    "parent_event_id": parent_event_id,
+                    "thread_id": root_event_id,
+                    "decision": decision,
+                },
+            )
+        )
+        transcript_lines.append(f"{agent_def.name}: {output}")
+        for next_token in _extract_agent_mentions(output):
+            queue.append((next_token, event_id, agent_def.name, output))
+    return turns
+
+
 def _run_worker_concurrency() -> int:
     try:
         configured = int(os.getenv("FRONTIER_WORKER_CONCURRENCY", "2"))
@@ -14162,10 +14334,11 @@ def create_workflow_run(
             if not reasoning_summary_text:
                 reasoning_summary_text = "Processed the task prompt and generated a response."
 
+            primary_agent_event_id = f"evt-{uuid4()}"
             store.run_events[run_id].extend(
                 [
                     WorkflowRunEvent(
-                        id=f"evt-{uuid4()}",
+                        id=primary_agent_event_id,
                         type="agent_message",
                         title=f"{selected_agent} response",
                         summary=event_response_summary,
@@ -14174,6 +14347,7 @@ def create_workflow_run(
                             "model": model_meta,
                             "selected_agent_id": selected_agent_id,
                             "selected_agent_name": selected_agent,
+                            "thread_id": primary_agent_event_id,
                             "system_prompt_source": system_prompt_source,
                             "summary_truncated": bool(event_response_meta["truncated"]),
                             "summary_original_length": int(event_response_meta["original_length"]),
@@ -14218,6 +14392,21 @@ def create_workflow_run(
                         metadata={"artifact_id": artifact_id, "version": 1},
                     )
                 )
+
+            if not guardrail_output_triggered:
+                try:
+                    _run_agent_collaboration(
+                        run_id=run_id,
+                        root_event_id=primary_agent_event_id,
+                        initial_agent_id=selected_agent_id,
+                        initial_agent_name=selected_agent,
+                        seed_text=f"{request_prompt}\n{response_text}",
+                        transcript_seed=f"{selected_agent}: {response_text}",
+                        max_turns=_resolve_collaboration_turns(selected_agent_definition, payload),
+                        mask_secrets=store.platform_settings.mask_secrets_in_events,
+                    )
+                except Exception:  # noqa: BLE001 - collaboration is best-effort
+                    pass
 
             store.run_details[run_id] = {
                 "artifacts": [artifact.model_dump() for artifact in artifacts],
