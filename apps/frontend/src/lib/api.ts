@@ -572,7 +572,49 @@ export type SkillDefinition = {
     ran_at: string;
     model: string;
   } | null;
+  import_source: string;
+  quarantine_status: "none" | "pending" | "cleared" | "blocked";
+  security_scan: SkillSecurityScan | null;
 };
+
+export type SkillSecurityFinding = {
+  code: string;
+  message: string;
+  severity: string;
+  source: string;
+  stage: string;
+};
+
+export type SkillSecurityScan = {
+  cleared: boolean;
+  static_passed: boolean;
+  dry_run_passed: boolean;
+  dry_run_mode: string;
+  summary: string;
+  ran_at: string;
+  findings: SkillSecurityFinding[];
+};
+
+export async function importSkill(payload: {
+  url?: string;
+  content?: string;
+  name?: string;
+  description?: string;
+}): Promise<SkillDefinition> {
+  return strictFetch<SkillDefinition>("/skills/import", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function scanSkill(
+  id: string,
+): Promise<{ skill_id: string; quarantine_status: string; security_scan: SkillSecurityScan }> {
+  return strictFetch(`/skills/${encodeURIComponent(id)}/scan`, {
+    method: "POST",
+    body: JSON.stringify({}),
+  });
+}
 
 export type SkillEvalRunResult = {
   skill_id: string;

@@ -3,7 +3,39 @@
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { deleteSkill, getSkills, saveSkill, type SkillDefinition } from "@/lib/api";
+import {
+  deleteSkill,
+  getSkills,
+  importSkill,
+  saveSkill,
+  scanSkill,
+  type SkillDefinition,
+} from "@/lib/api";
+
+function quarantineBadge(status: SkillDefinition["quarantine_status"]): {
+  label: string;
+  className: string;
+} | null {
+  switch (status) {
+    case "pending":
+      return {
+        label: "Quarantined",
+        className: "border-[hsl(var(--state-warning)/0.5)] text-[hsl(var(--state-warning))]",
+      };
+    case "blocked":
+      return {
+        label: "Blocked",
+        className: "border-[hsl(var(--state-critical)/0.5)] text-[hsl(var(--state-critical))]",
+      };
+    case "cleared":
+      return {
+        label: "Cleared",
+        className: "border-[hsl(var(--state-success)/0.5)] text-[hsl(var(--state-success))]",
+      };
+    default:
+      return null;
+  }
+}
 
 export default function SkillsInventoryPage() {
   const router = useRouter();
@@ -11,6 +43,11 @@ export default function SkillsInventoryPage() {
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
+
+  const [showImport, setShowImport] = useState(false);
+  const [importUrl, setImportUrl] = useState("");
+  const [importName, setImportName] = useState("");
+  const [importContent, setImportContent] = useState("");
 
   const refresh = useCallback(async () => {
     try {
@@ -31,8 +68,57 @@ export default function SkillsInventoryPage() {
     try {
       await saveSkill({ id: skill.id, status: skill.status === "enabled" ? "disabled" : "enabled" });
       await refresh();
-    } catch {
-      setNotice(`Unable to update ${skill.name}.`);
+    } catch (err) {
+      setNotice(err instanceof Error ? err.message : `Unable to update ${skill.name}.`);
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function runImport() {
+    if (!importUrl.trim() && !importContent.trim()) {
+      setNotice("Provide a skill URL or paste skill content to import.");
+      return;
+    }
+    setBusy("import");
+    setNotice(null);
+    try {
+      const imported = await importSkill({
+        url: importUrl.trim() || undefined,
+        content: importContent.trim() || undefined,
+        name: importName.trim() || undefined,
+      });
+      const scan = imported.security_scan;
+      setNotice(
+        imported.quarantine_status === "cleared"
+          ? `Imported "${imported.name}" — blast chamber cleared. Enable it when ready.`
+          : `Imported "${imported.name}" — BLOCKED by the blast chamber: ${scan?.summary ?? "high-severity findings"}.`,
+      );
+      setImportUrl("");
+      setImportName("");
+      setImportContent("");
+      setShowImport(false);
+      await refresh();
+    } catch (err) {
+      setNotice(err instanceof Error ? err.message : "Unable to import skill.");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function rescanSkill(skill: SkillDefinition) {
+    setBusy(skill.id);
+    setNotice(null);
+    try {
+      const result = await scanSkill(skill.id);
+      setNotice(
+        result.quarantine_status === "cleared"
+          ? `${skill.name} cleared the blast chamber.`
+          : `${skill.name} is still blocked: ${result.security_scan.summary}`,
+      );
+      await refresh();
+    } catch (err) {
+      setNotice(err instanceof Error ? err.message : `Unable to scan ${skill.name}.`);
     } finally {
       setBusy(null);
     }
@@ -61,14 +147,70 @@ export default function SkillsInventoryPage() {
             Operating procedures injected into agent context. Open a skill to edit, version, and test it.
           </p>
         </div>
-        <button
-          type="button"
-          className="fx-btn-primary px-3 py-2 text-sm font-medium"
-          onClick={() => router.push(`/builder/skills/${crypto.randomUUID()}`)}
-        >
-          New Skill
-        </button>
+        <div className="flex gap-2">
+          <button
+            type="button"
+            className="fx-btn-secondary px-3 py-2 text-sm font-medium"
+            onClick={() => setShowImport((v) => !v)}
+          >
+            Import Skill
+          </button>
+          <button
+            type="button"
+            className="fx-btn-primary px-3 py-2 text-sm font-medium"
+            onClick={() => router.push(`/builder/skills/${crypto.randomUUID()}`)}
+          >
+            New Skill
+          </button>
+        </div>
       </header>
+
+      {showImport ? (
+        <article className="fx-panel space-y-2 p-3 text-xs">
+          <div className="flex items-center justify-between">
+            <h2 className="text-sm font-semibold">Import skill from an online source</h2>
+            <span className="fx-muted">
+              Imported skills are quarantined and run through a security blast chamber
+              (static scan → guarded dry-run) before they can be enabled.
+            </span>
+          </div>
+          <input
+            className="fx-field h-8 w-full px-2"
+            value={importUrl}
+            onChange={(e) => setImportUrl(e.target.value)}
+            placeholder="https://example.com/skill.md (https only, no internal hosts)"
+          />
+          <input
+            className="fx-field h-8 w-full px-2"
+            value={importName}
+            onChange={(e) => setImportName(e.target.value)}
+            placeholder="Skill name (optional — derived from the URL when blank)"
+          />
+          <textarea
+            className="fx-field min-h-24 w-full p-2"
+            value={importContent}
+            onChange={(e) => setImportContent(e.target.value)}
+            placeholder="…or paste the skill content directly instead of a URL."
+          />
+          <div className="flex gap-2">
+            <button
+              type="button"
+              disabled={busy === "import"}
+              onClick={() => void runImport()}
+              className="fx-btn-primary px-3 py-1.5 font-medium disabled:opacity-60"
+            >
+              {busy === "import" ? "Scanning…" : "Import & scan"}
+            </button>
+            <button
+              type="button"
+              onClick={() => setShowImport(false)}
+              className="fx-btn-secondary px-3 py-1.5 font-medium"
+            >
+              Cancel
+            </button>
+          </div>
+        </article>
+      ) : null}
 
       {error ? <div className="fx-panel border-[hsl(var(--state-critical)/0.4)] p-3 text-sm">{error}</div> : null}
 
@@ -80,6 +222,7 @@ export default function SkillsInventoryPage() {
               <th className="px-3 py-2 text-left">Tier</th>
               <th className="px-3 py-2 text-left">Maturity</th>
               <th className="px-3 py-2 text-left">Eval</th>
+              <th className="px-3 py-2 text-left">Security</th>
               <th className="px-3 py-2 text-left">Status</th>
               <th className="px-3 py-2 text-left">Uses</th>
               <th className="px-3 py-2 text-right">Action</th>
@@ -117,6 +260,26 @@ export default function SkillsInventoryPage() {
                     <span className="fx-muted">—</span>
                   )}
                 </td>
+                <td className="px-3 py-2 text-xs">
+                  {(() => {
+                    const badge = quarantineBadge(skill.quarantine_status);
+                    if (!badge) {
+                      return <span className="fx-muted">—</span>;
+                    }
+                    const highCount =
+                      skill.security_scan?.findings.filter((f) => f.severity === "high").length ??
+                      0;
+                    return (
+                      <span
+                        className={`rounded-full border px-2 py-0.5 text-[10px] uppercase tracking-wide ${badge.className}`}
+                        title={skill.security_scan?.summary ?? ""}
+                      >
+                        {badge.label}
+                        {highCount > 0 ? ` · ${highCount}` : ""}
+                      </span>
+                    );
+                  })()}
+                </td>
                 <td className="px-3 py-2">
                   <span
                     className={
@@ -134,14 +297,25 @@ export default function SkillsInventoryPage() {
                     <Link className="fx-btn-primary px-2.5 py-1 text-xs font-medium" href={`/builder/skills/${skill.id}`}>
                       Open
                     </Link>
-                    <button
-                      type="button"
-                      disabled={busy === skill.id}
-                      onClick={() => void toggleSkill(skill)}
-                      className="fx-btn-secondary px-2.5 py-1 text-xs font-medium disabled:opacity-60"
-                    >
-                      {skill.status === "enabled" ? "Disable" : "Enable"}
-                    </button>
+                    {skill.quarantine_status === "pending" || skill.quarantine_status === "blocked" ? (
+                      <button
+                        type="button"
+                        disabled={busy === skill.id}
+                        onClick={() => void rescanSkill(skill)}
+                        className="fx-btn-secondary px-2.5 py-1 text-xs font-medium disabled:opacity-60"
+                      >
+                        {busy === skill.id ? "Scanning…" : "Scan"}
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        disabled={busy === skill.id}
+                        onClick={() => void toggleSkill(skill)}
+                        className="fx-btn-secondary px-2.5 py-1 text-xs font-medium disabled:opacity-60"
+                      >
+                        {skill.status === "enabled" ? "Disable" : "Enable"}
+                      </button>
+                    )}
                     {skill.source === "custom" ? (
                       <button
                         type="button"
@@ -158,7 +332,7 @@ export default function SkillsInventoryPage() {
             ))}
             {skills.length === 0 && !error ? (
               <tr>
-                <td colSpan={7} className="fx-muted px-3 py-4 text-sm">
+                <td colSpan={8} className="fx-muted px-3 py-4 text-sm">
                   Loading skills...
                 </td>
               </tr>

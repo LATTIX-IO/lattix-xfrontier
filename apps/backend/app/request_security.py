@@ -253,6 +253,18 @@ _ROUTE_ACCESS_RULES: tuple[RouteAccessRule, ...] = (
         "skill.save",
     ),
     RouteAccessRule(
+        ("POST",),
+        "/skills/import",
+        RouteAccessCategory.AUTHENTICATED_MUTATE,
+        "skill.import",
+    ),
+    RouteAccessRule(
+        ("POST",),
+        "/skills/{skill_id}/scan",
+        RouteAccessCategory.AUTHENTICATED_MUTATE,
+        "skill.scan",
+    ),
+    RouteAccessRule(
         ("DELETE",),
         "/skills/{skill_id}",
         RouteAccessCategory.AUTHENTICATED_MUTATE,

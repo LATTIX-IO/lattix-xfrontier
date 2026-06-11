@@ -164,6 +164,34 @@ class SkillEvalResult(BaseModel):
     model: str = ""
 
 
+class SkillSecurityFinding(BaseModel):
+    """A single issue raised by the skill security blast chamber."""
+
+    code: str
+    message: str = ""
+    severity: str = "medium"
+    source: str = "rule"
+    stage: str = "static"
+
+
+class SkillSecurityScan(BaseModel):
+    """Result of running an (imported) skill through the security blast chamber.
+
+    Skills are prompt procedures, not executable code, so the "sandbox" here is
+    the guarded LLM-execution + content-scan path: a static scan of the skill
+    body, then a dry-run whose output is scanned through the same guardrail
+    signals. A skill stays quarantined until both stages clear.
+    """
+
+    cleared: bool = False
+    static_passed: bool = False
+    dry_run_passed: bool = False
+    dry_run_mode: str = ""
+    summary: str = ""
+    ran_at: str = ""
+    findings: list[SkillSecurityFinding] = Field(default_factory=list)
+
+
 class SkillDefinition(BaseModel):
     """A governed, measurable operating procedure injected into agent context.
 
@@ -195,6 +223,10 @@ class SkillDefinition(BaseModel):
     eval_rubric: str = ""
     eval_dataset: list[SkillEvalCase] = Field(default_factory=list)
     last_eval: SkillEvalResult | None = None
+    # Import & security blast chamber
+    import_source: str = ""
+    quarantine_status: Literal["none", "pending", "cleared", "blocked"] = "none"
+    security_scan: SkillSecurityScan | None = None
 
 
 class WorkflowDefinition(BaseModel):
@@ -13519,6 +13551,9 @@ def _augment_system_prompt_with_skills(system_prompt: str) -> str:
     for skill in sorted(store.skills.values(), key=lambda item: item.name.lower()):
         if skill.status != "enabled" or not skill.auto_inject:
             continue
+        if skill.quarantine_status in {"pending", "blocked"}:
+            # Imported skills that have not cleared the blast chamber never reach context.
+            continue
         body = skill.content.strip()
         if not body:
             continue
@@ -15168,6 +15203,16 @@ def save_skill(
     if status_value not in {"enabled", "disabled"}:
         status_value = "enabled"
 
+    resolved_quarantine = existing.quarantine_status if existing else "none"
+    if status_value == "enabled" and resolved_quarantine in {"pending", "blocked"}:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "This imported skill must pass the security blast chamber before it can be "
+                "enabled. Run a security scan first."
+            ),
+        )
+
     skill = SkillDefinition(
         id=skill_id,
         name=name,
@@ -15228,6 +15273,10 @@ def save_skill(
         ],
         # last_eval is preserved across edits; only the eval endpoint updates it.
         last_eval=existing.last_eval if existing else None,
+        # Import/quarantine state is owned by the import + scan endpoints.
+        import_source=existing.import_source if existing else "",
+        quarantine_status=resolved_quarantine,
+        security_scan=existing.security_scan if existing else None,
     )
     store.skills[skill_id] = skill
     _append_audit_event(
@@ -15391,6 +15440,242 @@ def promote_skill(
     )
     _persist_store_state()
     return skill.model_dump()
+
+
+# --- Skill import + security blast chamber -------------------------------------
+
+_SKILL_IMPORT_MAX_BYTES = 200_000
+_SKILL_IMPORT_PROBE_TASK = (
+    "Introduce yourself in one sentence, then state plainly what you will and will not "
+    "do while following your operating procedure."
+)
+
+
+def _validated_skill_import_url(url: str) -> str:
+    """Validate a skill-import URL and refuse SSRF-prone internal targets."""
+    parsed = urlsplit(str(url or "").strip())
+    if parsed.scheme.lower() not in {"http", "https"}:
+        raise ValueError("Skill import URL must use http or https")
+    if not parsed.hostname:
+        raise ValueError("Skill import URL must include a host")
+    if parsed.username or parsed.password:
+        raise ValueError("Skill import URL must not embed credentials")
+    host = parsed.hostname.lower()
+    if host == "localhost" or host.endswith(".localhost"):
+        raise ValueError("Refusing to import from a loopback host")
+    try:
+        port = parsed.port or (443 if parsed.scheme.lower() == "https" else 80)
+        infos = socket.getaddrinfo(parsed.hostname, port, proto=socket.IPPROTO_TCP)
+    except OSError as exc:
+        raise ValueError(f"Could not resolve import host: {exc}") from exc
+    for info in infos:
+        ip = ipaddress.ip_address(info[4][0])
+        if (
+            ip.is_private
+            or ip.is_loopback
+            or ip.is_link_local
+            or ip.is_reserved
+            or ip.is_multicast
+            or ip.is_unspecified
+        ):
+            raise ValueError("Refusing to import from a private, loopback or reserved address")
+    return parsed.geturl()
+
+
+def _fetch_remote_skill(url: str) -> tuple[str, str]:
+    """Fetch skill content from a validated remote URL; returns (content, name)."""
+    import httpx
+
+    safe_url = _validated_skill_import_url(url)
+    response = httpx.request(
+        "GET",
+        safe_url,
+        headers={
+            "Accept": "text/markdown, text/plain, */*",
+            "User-Agent": "lattix-xfrontier-skill-import/1.0",
+        },
+        timeout=10.0,
+        follow_redirects=False,
+    )
+    response.raise_for_status()
+    text = response.text[:_SKILL_IMPORT_MAX_BYTES]
+    name = ""
+    segments = [seg for seg in urlsplit(safe_url).path.split("/") if seg]
+    if segments:
+        name = segments[-1].rsplit(".", 1)[0].replace("-", " ").replace("_", " ").strip().title()
+    return text, name
+
+
+def _scan_skill_text(text: str, *, stage: str) -> list[SkillSecurityFinding]:
+    """Scan text through the platform's deterministic + FOSS guardrail signals."""
+    result = _evaluate_guardrail(
+        text,
+        {
+            "enable_foss_signals": True,
+            "detect_prompt_injection": True,
+            "detect_exfiltration": True,
+            "detect_command_injection": True,
+            "detect_pii": True,
+        },
+        stage=stage,
+    )
+    issues = result.get("output_info", {}).get("issues", [])
+    return [
+        SkillSecurityFinding(
+            code=str(issue.get("code") or "ISSUE"),
+            message=str(issue.get("message") or ""),
+            severity=str(issue.get("severity") or "medium"),
+            source=str(issue.get("source") or "rule"),
+            stage=stage,
+        )
+        for issue in issues
+        if isinstance(issue, dict)
+    ]
+
+
+def _run_skill_blast_chamber(skill: SkillDefinition) -> SkillSecurityScan:
+    """Run an imported skill through the static-scan → dry-run security pipeline."""
+    static_findings = _scan_skill_text(skill.content, stage="static")
+    static_passed = not any(f.severity.lower() == "high" for f in static_findings)
+
+    dry_run_findings: list[SkillSecurityFinding] = []
+    dry_run_mode = "skipped"
+    if static_passed and skill.content.strip():
+        system_prompt = (
+            "You are an agent on the Lattix xFrontier platform. Follow this operating "
+            f"procedure exactly when handling the task:\n\n### Skill: {skill.name}\n"
+            f"{skill.content.strip()}"
+        )
+        output, model_meta = _run_openai_chat(
+            system_prompt=system_prompt,
+            user_prompt=_SKILL_IMPORT_PROBE_TASK,
+            model=_default_openai_model(),
+            temperature=0.2,
+        )
+        dry_run_mode = str(model_meta.get("mode") or "live")
+        dry_run_findings = _scan_skill_text(output, stage="dry_run_output")
+    dry_run_passed = static_passed and not any(
+        f.severity.lower() == "high" for f in dry_run_findings
+    )
+
+    findings = static_findings + dry_run_findings
+    cleared = static_passed and dry_run_passed
+    high = len([f for f in findings if f.severity.lower() == "high"])
+    summary = (
+        "Cleared: no high-severity findings in the skill body or its dry-run output."
+        if cleared
+        else f"Blocked: {high} high-severity finding(s) across the static scan and dry-run."
+    )
+    return SkillSecurityScan(
+        cleared=cleared,
+        static_passed=static_passed,
+        dry_run_passed=dry_run_passed,
+        dry_run_mode=dry_run_mode,
+        summary=summary,
+        ran_at=_now_iso(),
+        findings=findings,
+    )
+
+
+@app.post("/skills/import")
+def import_skill(
+    request: Request, payload: dict[str, Any] = Body(default_factory=dict)
+) -> dict[str, Any]:
+    """Import a skill from an online source into quarantine, then run the blast chamber.
+
+    Imported skills land disabled and quarantined; they are immediately scanned
+    (static content scan + a guarded dry-run whose output is scanned) and can only
+    be enabled once the scan clears.
+    """
+    actor = _enforce_builder_access(request, payload=payload, action="skill.import")
+    _enforce_emergency_write_policy("skill.import", actor)
+
+    url = str(payload.get("url") or "").strip()
+    content = str(payload.get("content") or "")
+    name = str(payload.get("name") or "").strip()
+    source_label = url or str(payload.get("source") or "manual import")
+
+    if url and not content.strip():
+        try:
+            content, fetched_name = _fetch_remote_skill(url)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except Exception as exc:  # noqa: BLE001 - network/parse failures are user-facing
+            raise HTTPException(
+                status_code=502, detail=f"Unable to fetch skill from URL: {str(exc)[:180]}"
+            ) from exc
+        if not name:
+            name = fetched_name
+    if not content.strip():
+        raise HTTPException(
+            status_code=400, detail="Provide a skill URL to fetch or paste skill content"
+        )
+    if not name:
+        name = "Imported skill"
+
+    skill_id = f"skill-{uuid4()}"
+    skill = SkillDefinition(
+        id=skill_id,
+        name=name,
+        description=str(payload.get("description") or ""),
+        content=content,
+        status="disabled",
+        source="custom",
+        auto_inject=False,
+        version=1,
+        updated_at=_now_iso(),
+        tier="tier3",
+        maturity="draft",
+        import_source=source_label,
+        quarantine_status="pending",
+    )
+    store.skills[skill_id] = skill
+    _append_audit_event(
+        "skill.import", actor, "allowed", {"skill_id": skill_id, "source": source_label[:200]}
+    )
+
+    scan = _run_skill_blast_chamber(skill)
+    skill.security_scan = scan
+    skill.quarantine_status = "cleared" if scan.cleared else "blocked"
+    _append_audit_event(
+        "skill.scan",
+        actor,
+        "allowed" if scan.cleared else "blocked",
+        {
+            "skill_id": skill_id,
+            "cleared": scan.cleared,
+            "high_findings": len([f for f in scan.findings if f.severity.lower() == "high"]),
+        },
+    )
+    _persist_store_state()
+    return skill.model_dump()
+
+
+@app.post("/skills/{skill_id}/scan")
+def scan_skill(
+    skill_id: str, request: Request, payload: dict[str, Any] = Body(default_factory=dict)
+) -> dict[str, Any]:
+    """Re-run the security blast chamber for a skill and update its quarantine state."""
+    actor = _enforce_builder_access(request, payload=payload, action="skill.scan")
+    skill = store.skills.get(skill_id)
+    if skill is None:
+        raise HTTPException(status_code=404, detail="Skill not found")
+    scan = _run_skill_blast_chamber(skill)
+    skill.security_scan = scan
+    if skill.quarantine_status in {"pending", "blocked", "cleared"}:
+        skill.quarantine_status = "cleared" if scan.cleared else "blocked"
+    _append_audit_event(
+        "skill.scan",
+        actor,
+        "allowed" if scan.cleared else "blocked",
+        {"skill_id": skill_id, "cleared": scan.cleared},
+    )
+    _persist_store_state()
+    return {
+        "skill_id": skill_id,
+        "quarantine_status": skill.quarantine_status,
+        "security_scan": scan.model_dump(),
+    }
 
 
 @app.post("/skills/{skill_id}/test")
