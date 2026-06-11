@@ -14527,6 +14527,24 @@ def get_workflow_runs(request: Request, status: str | None = None) -> list[dict[
     return [item.model_dump() for item in items]
 
 
+@app.post("/workflow-runs/{run_id}/rename")
+def rename_workflow_run(
+    run_id: str, request: Request, payload: dict[str, Any] = Body(default_factory=dict)
+) -> dict[str, Any]:
+    actor = _enforce_request_authn(request, payload=payload, action="workflow.run.rename")
+    _enforce_run_access(request, actor, run_id, action="workflow.run.rename")
+    run = store.runs.get(run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="Run not found")
+    title = str(payload.get("title") or "").strip()
+    if not title:
+        raise HTTPException(status_code=400, detail="A new title is required")
+    run.title = title[:200]
+    _append_audit_event("workflow.run.rename", actor, "allowed", {"run_id": run_id})
+    _persist_store_state()
+    return run.model_dump()
+
+
 @app.get("/workflow-runs/{run_id}")
 def get_workflow_run(run_id: str, request: Request) -> dict[str, Any]:
     actor = _enforce_request_authn(request, action="workflow.run.read")

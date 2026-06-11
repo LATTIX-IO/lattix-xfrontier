@@ -79,3 +79,32 @@ def test_runs_expose_kind_field() -> None:
     assert response.status_code == 200
     for run in response.json():
         assert run.get("kind") in {"individual", "agent", "workflow", "playbook"}
+
+
+def test_rename_run_updates_title() -> None:
+    runs = client.get("/workflow-runs", headers={"x-frontier-actor": "frontier-admin"}).json()
+    if not runs:
+        return
+    run_id = runs[0]["id"]
+    original = store.runs[run_id].title
+    try:
+        response = client.post(
+            f"/workflow-runs/{run_id}/rename",
+            json={"title": "Renamed by test"},
+            headers=ADMIN_HEADERS,
+        )
+        assert response.status_code == 200
+        assert response.json()["title"] == "Renamed by test"
+        assert store.runs[run_id].title == "Renamed by test"
+    finally:
+        store.runs[run_id].title = original
+
+
+def test_rename_run_requires_title() -> None:
+    runs = client.get("/workflow-runs", headers={"x-frontier-actor": "frontier-admin"}).json()
+    if not runs:
+        return
+    response = client.post(
+        f"/workflow-runs/{runs[0]['id']}/rename", json={}, headers=ADMIN_HEADERS
+    )
+    assert response.status_code == 400

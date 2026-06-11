@@ -984,6 +984,13 @@ export async function deleteInboxGroup(id: string): Promise<{ ok: boolean }> {
   return strictFetch(`/inbox/groups/${encodeURIComponent(id)}`, { method: "DELETE" });
 }
 
+export async function renameWorkflowRun(id: string, title: string): Promise<{ id: string; title: string }> {
+  return strictFetch(`/workflow-runs/${encodeURIComponent(id)}/rename`, {
+    method: "POST",
+    body: JSON.stringify({ title }),
+  });
+}
+
 export async function getArtifacts(): Promise<ArtifactSummary[]> {
   return safeFetch<ArtifactSummary[]>("/artifacts", mockArtifacts);
 }
