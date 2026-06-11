@@ -75,9 +75,28 @@ export default function SkillsInventoryPage() {
     }
   }
 
+  async function handleImportFile(file: File | null) {
+    if (!file) {
+      return;
+    }
+    if (file.size > 500_000) {
+      setNotice("File is too large — skills must be under 500 KB.");
+      return;
+    }
+    try {
+      const text = await file.text();
+      setImportContent(text);
+      setImportName((current) => current || file.name.replace(/\.[^.]+$/, ""));
+      setImportUrl("");
+      setNotice(`Loaded "${file.name}" — review and click Import & scan.`);
+    } catch {
+      setNotice("Unable to read the selected file.");
+    }
+  }
+
   async function runImport() {
     if (!importUrl.trim() && !importContent.trim()) {
-      setNotice("Provide a skill URL or paste skill content to import.");
+      setNotice("Provide a skill URL, upload a file, or paste skill content to import.");
       return;
     }
     setBusy("import");
@@ -184,8 +203,17 @@ export default function SkillsInventoryPage() {
             className="fx-field h-8 w-full px-2"
             value={importName}
             onChange={(e) => setImportName(e.target.value)}
-            placeholder="Skill name (optional — derived from the URL when blank)"
+            placeholder="Skill name (optional — derived from the URL or file when blank)"
           />
+          <label className="flex flex-wrap items-center gap-2">
+            <span className="fx-muted">…or upload a file:</span>
+            <input
+              type="file"
+              accept=".md,.markdown,.txt,.skill,text/markdown,text/plain"
+              className="text-[11px] file:mr-2 file:rounded file:border-0 file:bg-[var(--fx-surface-elevated)] file:px-2 file:py-1 file:text-[var(--foreground)]"
+              onChange={(e) => void handleImportFile(e.target.files?.[0] ?? null)}
+            />
+          </label>
           <textarea
             className="fx-field min-h-24 w-full p-2"
             value={importContent}
