@@ -54,6 +54,7 @@ vi.mock("next/link", () => ({
 vi.mock("next/navigation", () => ({
   useRouter: () => ({
     refresh: routerRefreshMock,
+    push: vi.fn(),
   }),
 }));
 
@@ -75,6 +76,7 @@ vi.mock("@/lib/api", () => ({
   getWorkflowRunLive: getWorkflowRunLiveMock,
   getWorkflowRunEventsLive: getWorkflowRunEventsLiveMock,
   streamWorkflowRunEvents: streamWorkflowRunEventsMock,
+  createWorkflowRun: vi.fn(async () => ({ id: "regen-run", status: "started" })),
 }));
 
 describe("RunConversationConsole", () => {

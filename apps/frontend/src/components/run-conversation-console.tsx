@@ -11,6 +11,7 @@ import { ReactFlowCanvas } from "@/components/reactflow-canvas";
 import { RunArchiveButton } from "@/components/run-archive-button";
 import { RunFollowupComposer } from "@/components/run-followup-composer";
 import {
+  createWorkflowRun,
   getAtfAlignmentReport,
   getWorkflowRunEventsLive,
   getWorkflowRunLive,
@@ -18,6 +19,15 @@ import {
   submitApproval,
   type WorkflowRunDetail,
 } from "@/lib/api";
+
+function slugifyAgentName(value: string): string {
+  return String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 80);
+}
 import type { AtfAlignmentReport, WorkflowRunEvent } from "@/types/frontier";
 
 type Props = {
@@ -116,6 +126,7 @@ export function RunConversationConsole({ runId, run: initialRun, events: initial
   const [approvalFeedback, setApprovalFeedback] = useState("");
   const [approvalBusy, setApprovalBusy] = useState<"approved" | "changes_requested" | null>(null);
   const [approvalMessage, setApprovalMessage] = useState<string | null>(null);
+  const [regenerating, setRegenerating] = useState(false);
   // Details flyout: collapsed by default so the chat stays the primary surface.
   const [flyoutOpen, setFlyoutOpen] = useState(false);
   const [atfReport, setAtfReport] = useState<AtfAlignmentReport | null>(null);
@@ -425,6 +436,35 @@ export function RunConversationConsole({ runId, run: initialRun, events: initial
     }
   }
 
+  async function handleRegenerate() {
+    // Re-run the original task as a linked new run (branch). Faithful to the
+    // run-centric model: reuses the agent the original run resolved to.
+    const firstUser = orderedEvents.find((event) => event.type === "user_message");
+    const originalPrompt = (firstUser?.summary ?? "").trim();
+    if (!originalPrompt) {
+      setApprovalMessage("No original prompt found to regenerate.");
+      return;
+    }
+    const agentName = run.agent_traces?.[0]?.agent ?? "";
+    const agentSlug = slugifyAgentName(agentName);
+    setRegenerating(true);
+    setApprovalMessage(null);
+    try {
+      const next = await createWorkflowRun({
+        title: `Regenerated: ${originalPrompt.slice(0, 60)}`,
+        prompt: agentSlug ? `@${agentSlug} ${originalPrompt}` : originalPrompt,
+        tokens: agentSlug ? [{ kind: "agent", value: agentSlug }] : [],
+        context: { source: "regenerate", source_run_id: runId },
+      });
+      router.push(`/runs/${next.id}`);
+      router.refresh();
+    } catch (error) {
+      setApprovalMessage(error instanceof Error ? error.message : "Unable to regenerate the run.");
+    } finally {
+      setRegenerating(false);
+    }
+  }
+
   async function handleApprovalDecision(decision: "approved" | "changes_requested") {
     if (!approvals.required) {
       return;
@@ -485,6 +525,15 @@ export function RunConversationConsole({ runId, run: initialRun, events: initial
             </span>
             <button onClick={() => router.refresh()} className="fx-btn-secondary px-2 py-1 text-xs font-medium" type="button">
               Refresh
+            </button>
+            <button
+              onClick={() => void handleRegenerate()}
+              disabled={regenerating}
+              className="fx-btn-secondary px-2 py-1 text-xs font-medium disabled:opacity-60"
+              type="button"
+              title="Re-run the original task as a new linked run"
+            >
+              {regenerating ? "Regenerating…" : "Regenerate"}
             </button>
             <RunArchiveButton runId={runId} buttonClassName="fx-btn-secondary px-2 py-1 text-xs font-medium" />
             <button
