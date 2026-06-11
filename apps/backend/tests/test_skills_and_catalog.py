@@ -140,6 +140,113 @@ def test_observability_dashboard_includes_skill_metrics() -> None:
     assert {"usage_count", "last_used_at", "status", "version"} <= set(sample.keys())
 
 
+def test_skill_carries_maturity_tier_defaults_and_accepts_overrides() -> None:
+    created = client.post(
+        "/skills",
+        json={
+            "name": "tiered-skill",
+            "content": "## Goal\nDo the thing.",
+            "tier": "tier2",
+            "maturity": "incubating",
+            "owner": "platform-team",
+            "dependencies": ["commit"],
+            "eval_rubric": "Was the thing done correctly?",
+            "eval_dataset": [{"prompt": "Do it", "expectation": "done"}],
+        },
+        headers=ADMIN_HEADERS,
+    )
+    assert created.status_code == 200
+    body = created.json()
+    skill_id = body["id"]
+    try:
+        assert body["tier"] == "tier2"
+        assert body["maturity"] == "incubating"
+        assert body["owner"] == "platform-team"
+        assert body["dependencies"] == ["commit"]
+        assert len(body["eval_dataset"]) == 1
+        # Bundled skills default to tier3/draft.
+        bundled = next(s for s in client.get("/skills", headers=READ_HEADERS).json() if s["name"] == "commit")
+        assert bundled["tier"] == "tier3"
+        assert bundled["maturity"] == "draft"
+    finally:
+        store.skills.pop(skill_id, None)
+
+
+def test_skill_eval_scores_and_sets_validated(monkeypatch) -> None:
+    created = client.post(
+        "/skills",
+        json={
+            "name": "eval-skill",
+            "content": "## Goal\nUppercase replies.",
+            "eval_rubric": "Did it uppercase?",
+            "eval_dataset": [{"prompt": "say hi", "expectation": "HI"}],
+        },
+        headers=ADMIN_HEADERS,
+    )
+    skill_id = created.json()["id"]
+
+    # Skill execution returns text; the judge returns a high score.
+    calls = {"n": 0}
+
+    def _fake_chat(*, system_prompt, user_prompt, model, temperature, **_kwargs):
+        calls["n"] += 1
+        if "grading an AI response" in user_prompt:
+            return '{"score": 0.9, "reason": "uppercased correctly"}', {"mode": "live", "model": model}
+        return "HI", {"mode": "live", "model": model}
+
+    monkeypatch.setattr(main_module, "_run_openai_chat", _fake_chat)
+    try:
+        result = client.post(f"/skills/{skill_id}/eval", json={}, headers=ADMIN_HEADERS)
+        assert result.status_code == 200
+        body = result.json()
+        assert body["score"] == 0.9
+        assert body["passed"] is True
+        assert body["maturity"] == "validated"  # earned by passing eval
+        assert body["cases"][0]["score"] == 0.9
+        assert store.skills[skill_id].last_eval.score == 0.9
+    finally:
+        store.skills.pop(skill_id, None)
+
+
+def test_skill_eval_requires_dataset() -> None:
+    created = client.post(
+        "/skills", json={"name": "no-dataset", "content": "x"}, headers=ADMIN_HEADERS
+    )
+    skill_id = created.json()["id"]
+    try:
+        result = client.post(f"/skills/{skill_id}/eval", json={}, headers=ADMIN_HEADERS)
+        assert result.status_code == 400
+    finally:
+        store.skills.pop(skill_id, None)
+
+
+def test_skill_promote_is_eval_gated(monkeypatch) -> None:
+    created = client.post(
+        "/skills",
+        json={"name": "promote-me", "content": "x", "eval_dataset": [{"prompt": "go"}]},
+        headers=ADMIN_HEADERS,
+    )
+    skill_id = created.json()["id"]
+    try:
+        # No passing eval yet → promotion blocked.
+        blocked = client.post(f"/skills/{skill_id}/promote", json={}, headers=ADMIN_HEADERS)
+        assert blocked.status_code == 400
+
+        def _fake_chat(*, system_prompt, user_prompt, model, temperature, **_kwargs):
+            if "grading an AI response" in user_prompt:
+                return '{"score": 0.95, "reason": "good"}', {"mode": "live", "model": model}
+            return "output", {"mode": "live", "model": model}
+
+        monkeypatch.setattr(main_module, "_run_openai_chat", _fake_chat)
+        client.post(f"/skills/{skill_id}/eval", json={}, headers=ADMIN_HEADERS)
+
+        promoted = client.post(f"/skills/{skill_id}/promote", json={}, headers=ADMIN_HEADERS)
+        assert promoted.status_code == 200
+        assert promoted.json()["tier"] == "tier2"  # tier3 -> tier2
+    finally:
+        store.skills.pop(skill_id, None)
+
+
 def test_integration_catalog_lists_and_installs_entries() -> None:
     catalog = client.get("/integrations/catalog", headers=ADMIN_HEADERS)
     assert catalog.status_code == 200

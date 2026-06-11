@@ -3,6 +3,28 @@
 Status: PROPOSED · 2026-06-11
 Reviewed: `E:\lattix\ref_repos\open-webui`, `E:\lattix\ref_repos\langflow`, `E:\lattix\ref_repos\dify`
 
+## Skills maturity & testing — Savant alignment (2026-06-11)
+
+The skills feature was first modeled on Symphony's SKILL.md format (procedure text
+only). The actual skills testing/maturity solution is **Savant** (`D:\lattix\savant`):
+a governed platform where skills carry a **maturity tier** (tier1 standards /
+tier2 methodology / tier3 personal+workflow), a per-skill **eval harness**
+(rubrics, datasets, fixtures, baselines, runs), **governance** (owners,
+dependencies, routing-policies in registry YAMLs), and a review→release lifecycle,
+with tenant skill packages (`SKILL.md` + `metadata.yaml` + `agents/` + `eval/`)
+living in external Git and indexed into a control-plane DB.
+
+Ported into xFrontier's existing skills (✅ done): `tier`, `maturity`
+(draft→incubating→validated→standard), `owner`, `dependencies`, an `eval_rubric`
++ `eval_dataset`, and `POST /skills/{id}/eval` (runs each case, LLM-judge grades
+vs rubric → averaged score, ≥0.7 passes and earns `validated`) + a promotion-gated
+`POST /skills/{id}/promote`. UI: tier/maturity/eval columns in the inventory and a
+maturity & evaluation panel (rubric, dataset, Run eval, Promote) in the build page.
+
+Deferred Savant pieces (need product decisions): external tenant-Git storage with
+the repo contract + validation, governance registry files, signed bundles, and the
+review/release control-plane workflow.
+
 ## License posture (governs everything below)
 
 | Platform | License | What we may do |

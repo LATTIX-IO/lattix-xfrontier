@@ -77,11 +77,11 @@ export default function SkillsInventoryPage() {
           <thead className="fx-table-head">
             <tr>
               <th className="px-3 py-2 text-left">Skill</th>
-              <th className="px-3 py-2 text-left">Source</th>
+              <th className="px-3 py-2 text-left">Tier</th>
+              <th className="px-3 py-2 text-left">Maturity</th>
+              <th className="px-3 py-2 text-left">Eval</th>
               <th className="px-3 py-2 text-left">Status</th>
-              <th className="px-3 py-2 text-left">Version</th>
               <th className="px-3 py-2 text-left">Uses</th>
-              <th className="px-3 py-2 text-left">Last used</th>
               <th className="px-3 py-2 text-right">Action</th>
             </tr>
           </thead>
@@ -92,7 +92,31 @@ export default function SkillsInventoryPage() {
                   <p className="font-mono font-medium text-[var(--foreground)]">{skill.name}</p>
                   <p className="fx-muted text-xs">{skill.description}</p>
                 </td>
-                <td className="px-3 py-2 text-[var(--foreground)]">{skill.source}</td>
+                <td className="px-3 py-2">
+                  <span className="rounded-full border border-[var(--ui-border)] px-2 py-0.5 text-[10px] uppercase">
+                    {{ tier1: "T1 · Standard", tier2: "T2 · Method", tier3: "T3 · Personal" }[skill.tier] ?? skill.tier}
+                  </span>
+                </td>
+                <td className="px-3 py-2">
+                  <span
+                    className={`text-xs ${
+                      skill.maturity === "standard" || skill.maturity === "validated"
+                        ? "text-[hsl(var(--state-success))]"
+                        : "fx-muted"
+                    }`}
+                  >
+                    {skill.maturity}
+                  </span>
+                </td>
+                <td className="px-3 py-2 text-xs">
+                  {skill.last_eval ? (
+                    <span className={skill.last_eval.passed ? "text-[hsl(var(--state-success))]" : "text-[hsl(var(--state-warning))]"}>
+                      {Math.round(skill.last_eval.score * 100)}%
+                    </span>
+                  ) : (
+                    <span className="fx-muted">—</span>
+                  )}
+                </td>
                 <td className="px-3 py-2">
                   <span
                     className={
@@ -104,9 +128,7 @@ export default function SkillsInventoryPage() {
                     {skill.status}
                   </span>
                 </td>
-                <td className="px-3 py-2 text-[var(--foreground)]">v{skill.version}</td>
                 <td className="px-3 py-2 text-[var(--foreground)]">{skill.usage_count}</td>
-                <td className="fx-muted px-3 py-2 text-xs">{skill.last_used_at || "never"}</td>
                 <td className="px-3 py-2 text-right">
                   <div className="flex justify-end gap-2">
                     <Link className="fx-btn-primary px-2.5 py-1 text-xs font-medium" href={`/builder/skills/${skill.id}`}>

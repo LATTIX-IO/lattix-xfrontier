@@ -253,6 +253,18 @@ _ROUTE_ACCESS_RULES: tuple[RouteAccessRule, ...] = (
         "skill.test",
     ),
     RouteAccessRule(
+        ("POST",),
+        "/skills/{skill_id}/eval",
+        RouteAccessCategory.AUTHENTICATED_MUTATE,
+        "skill.eval",
+    ),
+    RouteAccessRule(
+        ("POST",),
+        "/skills/{skill_id}/promote",
+        RouteAccessCategory.AUTHENTICATED_MUTATE,
+        "skill.promote",
+    ),
+    RouteAccessRule(
         ("GET",),
         "/integrations/catalog",
         RouteAccessCategory.AUTHENTICATED_READ,

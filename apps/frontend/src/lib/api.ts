@@ -524,7 +524,47 @@ export type SkillDefinition = {
   updated_at: string;
   usage_count: number;
   last_used_at: string;
+  tier: "tier1" | "tier2" | "tier3";
+  maturity: "draft" | "incubating" | "validated" | "standard";
+  owner: string;
+  dependencies: string[];
+  eval_rubric: string;
+  eval_dataset: { prompt: string; expectation: string }[];
+  last_eval: {
+    score: number;
+    passed: boolean;
+    summary: string;
+    case_count: number;
+    ran_at: string;
+    model: string;
+  } | null;
 };
+
+export type SkillEvalRunResult = {
+  skill_id: string;
+  score: number;
+  passed: boolean;
+  mode: string;
+  maturity: string;
+  cases: { prompt: string; score: number; reason: string }[];
+};
+
+export async function runSkillEval(
+  id: string,
+  payload?: { model?: string },
+): Promise<SkillEvalRunResult> {
+  return strictFetch<SkillEvalRunResult>(`/skills/${encodeURIComponent(id)}/eval`, {
+    method: "POST",
+    body: JSON.stringify(payload ?? {}),
+  });
+}
+
+export async function promoteSkill(id: string): Promise<SkillDefinition> {
+  return strictFetch<SkillDefinition>(`/skills/${encodeURIComponent(id)}/promote`, {
+    method: "POST",
+    body: JSON.stringify({}),
+  });
+}
 
 export type WorkflowTrigger = {
   id: string;

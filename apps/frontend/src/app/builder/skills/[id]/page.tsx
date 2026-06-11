@@ -4,9 +4,12 @@ import { use, useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import {
   getSkills,
+  promoteSkill,
+  runSkillEval,
   saveSkill,
   testSkill,
   type SkillDefinition,
+  type SkillEvalRunResult,
   type SkillTestResult,
 } from "@/lib/api";
 
@@ -17,6 +20,12 @@ type Draft = {
   tags: string;
   auto_inject: boolean;
   status: "enabled" | "disabled";
+  tier: "tier1" | "tier2" | "tier3";
+  maturity: "draft" | "incubating" | "validated" | "standard";
+  owner: string;
+  dependencies: string;
+  evalRubric: string;
+  evalDataset: string;
 };
 
 const EMPTY_DRAFT: Draft = {
@@ -26,6 +35,12 @@ const EMPTY_DRAFT: Draft = {
   tags: "",
   auto_inject: true,
   status: "enabled",
+  tier: "tier3",
+  maturity: "draft",
+  owner: "",
+  dependencies: "",
+  evalRubric: "",
+  evalDataset: "",
 };
 
 export default function SkillBuilderPage({ params }: { params: Promise<{ id: string }> }) {
@@ -39,6 +54,8 @@ export default function SkillBuilderPage({ params }: { params: Promise<{ id: str
   const [testPrompt, setTestPrompt] = useState("");
   const [testModel, setTestModel] = useState("");
   const [testResult, setTestResult] = useState<SkillTestResult | null>(null);
+  const [evalBusy, setEvalBusy] = useState(false);
+  const [evalResult, setEvalResult] = useState<SkillEvalRunResult | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -53,6 +70,12 @@ export default function SkillBuilderPage({ params }: { params: Promise<{ id: str
           tags: match.tags.join(", "),
           auto_inject: match.auto_inject,
           status: match.status,
+          tier: match.tier,
+          maturity: match.maturity,
+          owner: match.owner,
+          dependencies: match.dependencies.join(", "),
+          evalRubric: match.eval_rubric,
+          evalDataset: match.eval_dataset.map((c) => c.prompt).join("\n"),
         });
         setSaved(true);
       }
@@ -86,6 +109,19 @@ export default function SkillBuilderPage({ params }: { params: Promise<{ id: str
           .split(",")
           .map((tag) => tag.trim())
           .filter(Boolean),
+        tier: draft.tier,
+        maturity: draft.maturity,
+        owner: draft.owner.trim(),
+        dependencies: draft.dependencies
+          .split(",")
+          .map((d) => d.trim())
+          .filter(Boolean),
+        eval_rubric: draft.evalRubric,
+        eval_dataset: draft.evalDataset
+          .split("\n")
+          .map((line) => line.trim())
+          .filter(Boolean)
+          .map((prompt) => ({ prompt, expectation: "" })),
       });
       setSaved(true);
       setNotice("Skill saved.");
@@ -115,6 +151,32 @@ export default function SkillBuilderPage({ params }: { params: Promise<{ id: str
       setNotice(err instanceof Error ? err.message : "Skill test failed.");
     } finally {
       setBusy(null);
+    }
+  }
+
+  async function handleRunEval() {
+    setEvalBusy(true);
+    setNotice(null);
+    setEvalResult(null);
+    try {
+      const result = await runSkillEval(id, { model: testModel.trim() || undefined });
+      setEvalResult(result);
+      await load();
+    } catch (err) {
+      setNotice(err instanceof Error ? err.message : "Eval failed. Save an eval dataset first.");
+    } finally {
+      setEvalBusy(false);
+    }
+  }
+
+  async function handlePromote() {
+    setNotice(null);
+    try {
+      await promoteSkill(id);
+      setNotice("Skill promoted.");
+      await load();
+    } catch (err) {
+      setNotice(err instanceof Error ? err.message : "Promotion requires a passing eval.");
     }
   }
 
@@ -217,6 +279,124 @@ export default function SkillBuilderPage({ params }: { params: Promise<{ id: str
               Auto-inject into agent prompts
             </label>
           </div>
+        </article>
+
+        <article className="fx-panel space-y-2.5 p-3 text-xs">
+          <div className="flex items-center justify-between gap-2">
+            <h2 className="text-sm font-semibold">Maturity &amp; evaluation</h2>
+            {existing?.last_eval ? (
+              <span
+                className={`rounded-full border px-2 py-0.5 text-[11px] font-semibold ${
+                  existing.last_eval.passed
+                    ? "border-[hsl(var(--state-success)/0.45)] text-[hsl(var(--state-success))]"
+                    : "border-[hsl(var(--state-warning)/0.45)] text-[hsl(var(--state-warning))]"
+                }`}
+              >
+                eval {Math.round(existing.last_eval.score * 100)}% · {existing.last_eval.summary}
+              </span>
+            ) : null}
+          </div>
+          <p className="fx-muted leading-5">
+            Tiers and a rubric-graded eval govern skill maturity (Savant model): score the skill
+            against its dataset, then promote it through tiers once it passes.
+          </p>
+          <div className="grid gap-2.5 md:grid-cols-2">
+            <label className="block">
+              <span className="fx-muted mb-1 block text-[11px] uppercase tracking-wide">Tier</span>
+              <select
+                className="fx-field h-8 w-full px-2 text-sm"
+                value={draft.tier}
+                onChange={(e) => setDraft({ ...draft, tier: e.target.value as Draft["tier"] })}
+              >
+                <option value="tier3">Tier 3 · Personal/Workflow</option>
+                <option value="tier2">Tier 2 · Methodology</option>
+                <option value="tier1">Tier 1 · Standard</option>
+              </select>
+            </label>
+            <label className="block">
+              <span className="fx-muted mb-1 block text-[11px] uppercase tracking-wide">Maturity</span>
+              <select
+                className="fx-field h-8 w-full px-2 text-sm"
+                value={draft.maturity}
+                onChange={(e) => setDraft({ ...draft, maturity: e.target.value as Draft["maturity"] })}
+              >
+                <option value="draft">Draft</option>
+                <option value="incubating">Incubating</option>
+                <option value="validated">Validated</option>
+                <option value="standard">Standard</option>
+              </select>
+            </label>
+            <label className="block">
+              <span className="fx-muted mb-1 block text-[11px] uppercase tracking-wide">Owner</span>
+              <input
+                className="fx-field h-8 w-full px-2"
+                value={draft.owner}
+                onChange={(e) => setDraft({ ...draft, owner: e.target.value })}
+                placeholder="team or person"
+              />
+            </label>
+            <label className="block">
+              <span className="fx-muted mb-1 block text-[11px] uppercase tracking-wide">Dependencies</span>
+              <input
+                className="fx-field h-8 w-full px-2"
+                value={draft.dependencies}
+                onChange={(e) => setDraft({ ...draft, dependencies: e.target.value })}
+                placeholder="comma-separated skill names"
+              />
+            </label>
+          </div>
+          <label className="block">
+            <span className="fx-muted mb-1 block text-[11px] uppercase tracking-wide">Eval rubric</span>
+            <textarea
+              value={draft.evalRubric}
+              onChange={(e) => setDraft({ ...draft, evalRubric: e.target.value })}
+              placeholder="How should a graded response be judged?"
+              className="fx-field min-h-16 w-full p-2"
+            />
+          </label>
+          <label className="block">
+            <span className="fx-muted mb-1 block text-[11px] uppercase tracking-wide">Eval dataset (one task per line)</span>
+            <textarea
+              value={draft.evalDataset}
+              onChange={(e) => setDraft({ ...draft, evalDataset: e.target.value })}
+              placeholder={"Commit the staged changes.\nDraft release notes for v1.2."}
+              className="fx-field min-h-16 w-full p-2"
+            />
+          </label>
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              disabled={evalBusy || !saved}
+              onClick={() => void handleRunEval()}
+              className="fx-btn-primary px-3 py-1.5 font-medium disabled:opacity-60"
+              title={saved ? "" : "Save the skill first"}
+            >
+              {evalBusy ? "Running eval…" : "Run eval"}
+            </button>
+            <button
+              type="button"
+              disabled={!existing?.last_eval?.passed}
+              onClick={() => void handlePromote()}
+              className="fx-btn-secondary px-3 py-1.5 font-medium disabled:opacity-60"
+              title={existing?.last_eval?.passed ? "" : "Promotion requires a passing eval"}
+            >
+              Promote tier
+            </button>
+          </div>
+          {evalResult ? (
+            <div className="space-y-1.5 rounded border border-[var(--fx-border)] bg-[var(--fx-surface-elevated)] p-2">
+              <p className={evalResult.passed ? "text-[hsl(var(--state-success))]" : "text-[hsl(var(--state-warning))]"}>
+                Score {Math.round(evalResult.score * 100)}% — {evalResult.passed ? "passed" : "below threshold"}
+                {evalResult.mode !== "live" ? " (simulated — configure a provider)" : ""}
+              </p>
+              {evalResult.cases.map((c, i) => (
+                <div key={i} className="border-t border-[var(--fx-border)] pt-1">
+                  <span className="fx-muted">{Math.round(c.score * 100)}% · {c.prompt}</span>
+                  {c.reason ? <p className="text-[var(--foreground)]">{c.reason}</p> : null}
+                </div>
+              ))}
+            </div>
+          ) : null}
         </article>
 
         <article className="fx-panel space-y-2.5 p-3 text-xs">

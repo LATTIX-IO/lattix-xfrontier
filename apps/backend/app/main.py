@@ -146,11 +146,32 @@ class InboxItem(BaseModel):
     ]
 
 
-class SkillDefinition(BaseModel):
-    """A named, versioned operating procedure injected into agent context.
+class SkillEvalCase(BaseModel):
+    """One graded eval case: a sample task and optional expectation."""
 
-    Modeled on Symphony's SKILL.md format: frontmatter-style name/description
-    plus a markdown body describing goal, steps, and expected output.
+    prompt: str
+    expectation: str = ""
+
+
+class SkillEvalResult(BaseModel):
+    """Outcome of running a skill's eval dataset against its rubric."""
+
+    score: float = 0.0
+    passed: bool = False
+    summary: str = ""
+    case_count: int = 0
+    ran_at: str = ""
+    model: str = ""
+
+
+class SkillDefinition(BaseModel):
+    """A governed, measurable operating procedure injected into agent context.
+
+    The content/markdown model comes from the SKILL.md format; the maturity
+    tiers and eval harness are aligned to the Savant skills maturity solution:
+    a skill carries a tier, a lifecycle maturity, ownership/dependency
+    governance, and a rubric+dataset eval that produces a measurable score used
+    to gate promotion between tiers.
     """
 
     id: str
@@ -165,6 +186,15 @@ class SkillDefinition(BaseModel):
     updated_at: str = ""
     usage_count: int = 0
     last_used_at: str = ""
+    # Savant maturity model
+    tier: Literal["tier1", "tier2", "tier3"] = "tier3"
+    maturity: Literal["draft", "incubating", "validated", "standard"] = "draft"
+    owner: str = ""
+    dependencies: list[str] = Field(default_factory=list)
+    # Eval / testing harness
+    eval_rubric: str = ""
+    eval_dataset: list[SkillEvalCase] = Field(default_factory=list)
+    last_eval: SkillEvalResult | None = None
 
 
 class WorkflowDefinition(BaseModel):
@@ -15020,13 +15050,201 @@ def save_skill(
         ),
         version=(existing.version + 1) if existing else 1,
         updated_at=_now_iso(),
+        tier=str(
+            payload.get("tier") if "tier" in payload else (existing.tier if existing else "tier3")
+        ),
+        maturity=str(
+            payload.get("maturity")
+            if "maturity" in payload
+            else (existing.maturity if existing else "draft")
+        ),
+        owner=str(
+            payload.get("owner") if "owner" in payload else (existing.owner if existing else "")
+        ),
+        dependencies=_normalize_string_list(
+            payload.get("dependencies")
+            if "dependencies" in payload
+            else (existing.dependencies if existing else [])
+        ),
+        eval_rubric=str(
+            payload.get("eval_rubric")
+            if "eval_rubric" in payload
+            else (existing.eval_rubric if existing else "")
+        ),
+        eval_dataset=[
+            SkillEvalCase(
+                prompt=str(case.get("prompt") or ""),
+                expectation=str(case.get("expectation") or ""),
+            )
+            for case in (
+                payload.get("eval_dataset")
+                if isinstance(payload.get("eval_dataset"), list)
+                else ([c.model_dump() for c in existing.eval_dataset] if existing else [])
+            )
+            if isinstance(case, dict) and str(case.get("prompt") or "").strip()
+        ],
+        # last_eval is preserved across edits; only the eval endpoint updates it.
+        last_eval=existing.last_eval if existing else None,
     )
     store.skills[skill_id] = skill
     _append_audit_event(
         "skill.save",
         actor,
         "allowed",
-        {"skill_id": skill_id, "status": skill.status, "version": skill.version},
+        {
+            "skill_id": skill_id,
+            "status": skill.status,
+            "version": skill.version,
+            "tier": skill.tier,
+            "maturity": skill.maturity,
+        },
+    )
+    _persist_store_state()
+    return skill.model_dump()
+
+
+_SKILL_TIER_RANK = {"tier3": 1, "tier2": 2, "tier1": 3}
+_SKILL_MATURITY_ORDER = ["draft", "incubating", "validated", "standard"]
+_SKILL_EVAL_PASS_THRESHOLD = 0.7
+
+
+@app.post("/skills/{skill_id}/eval")
+def run_skill_eval(
+    skill_id: str, request: Request, payload: dict[str, Any] = Body(default_factory=dict)
+) -> dict[str, Any]:
+    """Run the skill's eval dataset against its rubric and record a score.
+
+    Each case executes the skill, then an LLM judge grades the output against
+    the rubric (0–1). The averaged score is stored as the skill's latest eval
+    and drives maturity (validated at/above the pass threshold).
+    """
+    actor = _enforce_builder_access(request, payload=payload, action="skill.eval")
+    skill = store.skills.get(skill_id)
+    if skill is None:
+        raise HTTPException(status_code=404, detail="Skill not found")
+    # Allow ad-hoc cases in the request, else use the saved dataset.
+    raw_cases = (
+        payload.get("eval_dataset")
+        if isinstance(payload.get("eval_dataset"), list)
+        else [c.model_dump() for c in skill.eval_dataset]
+    )
+    cases = [
+        {"prompt": str(c.get("prompt") or ""), "expectation": str(c.get("expectation") or "")}
+        for c in raw_cases
+        if isinstance(c, dict) and str(c.get("prompt") or "").strip()
+    ]
+    if not cases:
+        raise HTTPException(status_code=400, detail="No eval cases — add an eval dataset first")
+    rubric = str(payload.get("eval_rubric") or skill.eval_rubric or "").strip()
+    if not rubric:
+        rubric = "Score how well the response follows the skill's procedure and produces a correct, useful result."
+    model = str(payload.get("model") or "").strip() or _default_openai_model()
+
+    skill_system_prompt = (
+        "You are an agent on the Lattix xFrontier platform. Follow this operating "
+        f"procedure exactly when handling the task:\n\n### Skill: {skill.name}\n{skill.content.strip()}"
+    )
+    case_results: list[dict[str, Any]] = []
+    scores: list[float] = []
+    mode = "live"
+    for case in cases:
+        output, model_meta = _run_openai_chat(
+            system_prompt=skill_system_prompt,
+            user_prompt=case["prompt"],
+            model=model,
+            temperature=0.2,
+        )
+        if str(model_meta.get("mode")) != "live":
+            mode = "simulated"
+        judge_prompt = (
+            "You are grading an AI response against a rubric. Respond with ONLY a JSON object "
+            '{"score": <0.0-1.0>, "reason": "<short>"}.\n\n'
+            f"RUBRIC:\n{rubric}\n\n"
+            f"TASK:\n{case['prompt']}\n\n"
+            + (f"EXPECTATION:\n{case['expectation']}\n\n" if case["expectation"] else "")
+            + f"RESPONSE:\n{output[:4000]}"
+        )
+        judge_text, judge_meta = _run_openai_chat(
+            system_prompt="You are a precise, terse evaluator.",
+            user_prompt=judge_prompt,
+            model=model,
+            temperature=0.0,
+        )
+        case_score = 0.0
+        reason = ""
+        try:
+            parsed = json.loads(re.search(r"\{.*\}", judge_text, re.DOTALL).group(0))
+            case_score = max(0.0, min(1.0, float(parsed.get("score", 0.0))))
+            reason = str(parsed.get("reason") or "")
+        except Exception:  # noqa: BLE001 - ungradeable output scores 0
+            if str(judge_meta.get("mode")) != "live":
+                mode = "simulated"
+            reason = "Judge output could not be parsed."
+        scores.append(case_score)
+        case_results.append(
+            {"prompt": case["prompt"][:200], "score": case_score, "reason": reason[:300]}
+        )
+
+    avg_score = round(sum(scores) / len(scores), 3) if scores else 0.0
+    passed = avg_score >= _SKILL_EVAL_PASS_THRESHOLD
+    skill.last_eval = SkillEvalResult(
+        score=avg_score,
+        passed=passed,
+        summary=f"{len([s for s in scores if s >= _SKILL_EVAL_PASS_THRESHOLD])}/{len(scores)} cases passed",
+        case_count=len(scores),
+        ran_at=_now_iso(),
+        model=model,
+    )
+    # Validated maturity is earned by passing eval; never auto-demote.
+    if passed and _SKILL_MATURITY_ORDER.index(skill.maturity) < _SKILL_MATURITY_ORDER.index(
+        "validated"
+    ):
+        skill.maturity = "validated"
+    _append_audit_event(
+        "skill.eval",
+        actor,
+        "allowed",
+        {"skill_id": skill_id, "score": avg_score, "passed": passed, "mode": mode},
+    )
+    _persist_store_state()
+    return {
+        "skill_id": skill_id,
+        "score": avg_score,
+        "passed": passed,
+        "mode": mode,
+        "maturity": skill.maturity,
+        "cases": case_results,
+        "last_eval": skill.last_eval.model_dump(),
+    }
+
+
+@app.post("/skills/{skill_id}/promote")
+def promote_skill(
+    skill_id: str, request: Request, payload: dict[str, Any] = Body(default_factory=dict)
+) -> dict[str, Any]:
+    """Promote a skill one maturity tier (tier3 → tier2 → tier1).
+
+    Gated: promotion requires a passing eval on record, mirroring Savant's
+    measure-before-graduate model.
+    """
+    actor = _enforce_builder_access(request, payload=payload, action="skill.promote")
+    _enforce_emergency_write_policy("skill.promote", actor)
+    skill = store.skills.get(skill_id)
+    if skill is None:
+        raise HTTPException(status_code=404, detail="Skill not found")
+    if not (skill.last_eval and skill.last_eval.passed):
+        raise HTTPException(
+            status_code=400,
+            detail="Promotion requires a passing eval — run the skill eval first",
+        )
+    current_rank = _SKILL_TIER_RANK.get(skill.tier, 1)
+    if current_rank >= 3:
+        raise HTTPException(status_code=400, detail="Skill is already at the top tier")
+    skill.tier = {1: "tier2", 2: "tier1"}[current_rank]
+    if skill.tier == "tier1":
+        skill.maturity = "standard"
+    _append_audit_event(
+        "skill.promote", actor, "allowed", {"skill_id": skill_id, "tier": skill.tier}
     )
     _persist_store_state()
     return skill.model_dump()
