@@ -79,6 +79,46 @@ def test_create_requires_name() -> None:
     assert response.status_code == 400
 
 
+def test_memory_layers_reports_all_tiers() -> None:
+    response = client.get("/knowledge/memory-layers", headers=ADMIN_HEADERS)
+    assert response.status_code == 200
+    layers = response.json()["layers"]
+    ids = {layer["id"] for layer in layers}
+    assert {"short_term", "long_term", "world_graph", "knowledge"} <= ids
+    for layer in layers:
+        assert {"name", "backend", "scope", "enabled", "healthy", "stats"} <= set(layer)
+
+
+def test_vector_stores_list_includes_builtin_platform() -> None:
+    response = client.get("/knowledge/vector-stores", headers=ADMIN_HEADERS)
+    assert response.status_code == 200
+    stores = response.json()["vector_stores"]
+    platform = next((s for s in stores if s["id"] == "platform"), None)
+    assert platform is not None
+    assert platform["kind"] == "builtin"
+
+
+def test_create_rejects_unknown_vector_store() -> None:
+    response = client.post(
+        "/knowledge/collections",
+        json={"name": "KB", "vector_store_id": "does-not-exist"},
+        headers=ADMIN_HEADERS,
+    )
+    assert response.status_code == 400
+
+
+def test_create_defaults_to_platform_vector_store() -> None:
+    created = client.post(
+        "/knowledge/collections", json={"name": "Default store KB"}, headers=ADMIN_HEADERS
+    )
+    assert created.status_code == 200
+    collection_id = created.json()["id"]
+    try:
+        assert created.json()["vector_store_id"] == "platform"
+    finally:
+        store.knowledge_collections.pop(collection_id, None)
+
+
 def test_document_add_degrades_without_memory_store(monkeypatch) -> None:
     created = client.post(
         "/knowledge/collections", json={"name": "KB"}, headers=ADMIN_HEADERS

@@ -14850,6 +14850,9 @@ def delete_workflow_schedule(schedule_id: str, request: Request) -> dict[str, bo
     return {"ok": True}
 
 
+PLATFORM_VECTOR_STORE_ID = "platform"
+
+
 def _knowledge_collection_view(collection: dict[str, Any]) -> dict[str, Any]:
     return {
         "id": collection.get("id", ""),
@@ -14858,7 +14861,113 @@ def _knowledge_collection_view(collection: dict[str, Any]) -> dict[str, Any]:
         "created_at": collection.get("created_at", ""),
         "document_count": int(collection.get("document_count", 0)),
         "chunk_count": int(collection.get("chunk_count", 0)),
+        "vector_store_id": str(collection.get("vector_store_id") or PLATFORM_VECTOR_STORE_ID),
     }
+
+
+def _platform_vector_store_ready() -> bool:
+    """The built-in pgvector long-term store is the default RAG backend."""
+    return bool(
+        _POSTGRES_MEMORY.enabled
+        and _POSTGRES_MEMORY.healthcheck()
+        and _POSTGRES_MEMORY.vector_enabled
+    )
+
+
+def _knowledge_vector_stores() -> list[dict[str, Any]]:
+    """Vector stores usable to back knowledge collections.
+
+    The platform's own pgvector long-term store is always listed as the built-in
+    backend. Any integration of ``type == "vector"`` configured under
+    builder/integrations is surfaced too, so RAG storage is selected through the
+    integrations system rather than hardcoded. External vector-store drivers are
+    not yet implemented, so they list with ``ready: false`` until one ships.
+    """
+    platform_ready = _platform_vector_store_ready()
+    stores: list[dict[str, Any]] = [
+        {
+            "id": PLATFORM_VECTOR_STORE_ID,
+            "name": "Platform vector store (pgvector)",
+            "kind": "builtin",
+            "ready": platform_ready,
+            "status": "configured" if platform_ready else "unavailable",
+            "embedding_model": _POSTGRES_MEMORY.embedding_model,
+            "note": ""
+            if platform_ready
+            else "Long-term memory store (Postgres + pgvector + embeddings) is not available.",
+        }
+    ]
+    for integration in store.integrations.values():
+        if getattr(integration, "type", "") != "vector":
+            continue
+        stores.append(
+            {
+                "id": integration.id,
+                "name": integration.name,
+                "kind": "integration",
+                "ready": False,
+                "status": integration.status,
+                "embedding_model": "",
+                "note": "External vector-store driver is not yet available; connection is recorded for routing.",
+            }
+        )
+    return stores
+
+
+def _knowledge_vector_store_map() -> dict[str, dict[str, Any]]:
+    return {item["id"]: item for item in _knowledge_vector_stores()}
+
+
+def _knowledge_memory_layers() -> list[dict[str, Any]]:
+    """Honest snapshot of every memory/knowledge tier the platform exposes."""
+    total_docs = sum(int(c.get("document_count", 0)) for c in store.knowledge_collections.values())
+    total_chunks = sum(int(c.get("chunk_count", 0)) for c in store.knowledge_collections.values())
+    long_term_ready = bool(_POSTGRES_MEMORY.enabled and _POSTGRES_MEMORY.healthcheck())
+    return [
+        {
+            "id": "short_term",
+            "name": "Short-term memory",
+            "backend": "Redis",
+            "scope": "Per-session working memory and recent conversation turns.",
+            "enabled": bool(_REDIS_MEMORY.enabled),
+            "healthy": bool(_REDIS_MEMORY.enabled and _REDIS_MEMORY.healthcheck()),
+            "stats": {},
+        },
+        {
+            "id": "long_term",
+            "name": "Long-term memory",
+            "backend": "Postgres + pgvector",
+            "scope": "Durable, embedded memories with semantic recall across sessions.",
+            "enabled": bool(_POSTGRES_MEMORY.enabled),
+            "healthy": long_term_ready,
+            "stats": {
+                "vector_search": bool(_POSTGRES_MEMORY.vector_enabled),
+                "embedding_model": _POSTGRES_MEMORY.embedding_model,
+            },
+        },
+        {
+            "id": "world_graph",
+            "name": "World / knowledge graph",
+            "backend": "Neo4j",
+            "scope": "Entity and relationship graph projected from runs and consolidated memory.",
+            "enabled": bool(_NEO4J_GRAPH.enabled),
+            "healthy": bool(_NEO4J_GRAPH.enabled and _NEO4J_GRAPH.healthcheck()),
+            "stats": {},
+        },
+        {
+            "id": "knowledge",
+            "name": "Knowledge collections",
+            "backend": "pgvector (RAG)",
+            "scope": "Document collections chunked and embedded for retrieval and citation.",
+            "enabled": long_term_ready,
+            "healthy": long_term_ready and bool(_POSTGRES_MEMORY.vector_enabled),
+            "stats": {
+                "collections": len(store.knowledge_collections),
+                "documents": total_docs,
+                "chunks": total_chunks,
+            },
+        },
+    ]
 
 
 @app.get("/knowledge/collections")
@@ -14882,6 +14991,21 @@ def create_knowledge_collection(
     name = str(payload.get("name") or "").strip()
     if not name:
         raise HTTPException(status_code=400, detail="Collection name is required")
+    vector_store_id = str(payload.get("vector_store_id") or "").strip() or PLATFORM_VECTOR_STORE_ID
+    if vector_store_id != PLATFORM_VECTOR_STORE_ID:
+        # The built-in platform store is always bindable (transient health is
+        # enforced at ingest); external vector integrations require a driver.
+        chosen_store = _knowledge_vector_store_map().get(vector_store_id)
+        if chosen_store is None:
+            raise HTTPException(status_code=400, detail="Unknown vector store")
+        if not chosen_store.get("ready"):
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Vector store '{chosen_store.get('name', vector_store_id)}' is not available: "
+                    f"{chosen_store.get('note') or 'no driver available'}"
+                ),
+            )
     collection_id = str(uuid4())
     store.knowledge_collections[collection_id] = {
         "id": collection_id,
@@ -14890,6 +15014,7 @@ def create_knowledge_collection(
         "created_at": _now_iso(),
         "document_count": 0,
         "chunk_count": 0,
+        "vector_store_id": vector_store_id,
     }
     _append_audit_event(
         "knowledge.collection.create", actor, "allowed", {"collection_id": collection_id}
@@ -14920,6 +15045,12 @@ def add_knowledge_document(
     collection = store.knowledge_collections.get(collection_id)
     if collection is None:
         raise HTTPException(status_code=404, detail="Collection not found")
+    vector_store_id = str(collection.get("vector_store_id") or PLATFORM_VECTOR_STORE_ID)
+    if vector_store_id != PLATFORM_VECTOR_STORE_ID:
+        raise HTTPException(
+            status_code=501,
+            detail="The vector store bound to this collection has no available driver yet",
+        )
     if not (_POSTGRES_MEMORY.enabled and _POSTGRES_MEMORY.healthcheck()):
         raise HTTPException(
             status_code=503,
@@ -14997,6 +15128,18 @@ def search_knowledge_collection(
         for entry in entries
     ]
     return {"query": query, "results": results}
+
+
+@app.get("/knowledge/memory-layers")
+def list_knowledge_memory_layers(request: Request) -> dict[str, Any]:
+    _enforce_builder_access(request, action="knowledge.memory.layers")
+    return {"layers": _knowledge_memory_layers()}
+
+
+@app.get("/knowledge/vector-stores")
+def list_knowledge_vector_stores(request: Request) -> dict[str, Any]:
+    _enforce_builder_access(request, action="knowledge.vector.list")
+    return {"vector_stores": _knowledge_vector_stores()}
 
 
 @app.get("/skills")

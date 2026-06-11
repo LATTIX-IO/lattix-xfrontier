@@ -230,6 +230,18 @@ _ROUTE_ACCESS_RULES: tuple[RouteAccessRule, ...] = (
     ),
     RouteAccessRule(
         ("GET",),
+        "/knowledge/memory-layers",
+        RouteAccessCategory.AUTHENTICATED_READ,
+        "knowledge.memory.layers",
+    ),
+    RouteAccessRule(
+        ("GET",),
+        "/knowledge/vector-stores",
+        RouteAccessCategory.AUTHENTICATED_READ,
+        "knowledge.vector.list",
+    ),
+    RouteAccessRule(
+        ("GET",),
         "/skills",
         RouteAccessCategory.AUTHENTICATED_READ,
         "skill.list",

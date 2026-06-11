@@ -462,6 +462,7 @@ export type KnowledgeCollection = {
   created_at: string;
   document_count: number;
   chunk_count: number;
+  vector_store_id: string;
 };
 
 export type KnowledgeSearchResult = {
@@ -471,17 +472,50 @@ export type KnowledgeSearchResult = {
   score: number | null;
 };
 
+export type MemoryLayer = {
+  id: string;
+  name: string;
+  backend: string;
+  scope: string;
+  enabled: boolean;
+  healthy: boolean;
+  stats: Record<string, unknown>;
+};
+
+export type KnowledgeVectorStore = {
+  id: string;
+  name: string;
+  kind: "builtin" | "integration";
+  ready: boolean;
+  status: string;
+  embedding_model: string;
+  note: string;
+};
+
 export async function getKnowledgeCollections(): Promise<KnowledgeCollection[]> {
   return strictFetch<KnowledgeCollection[]>("/knowledge/collections");
+}
+
+export async function getMemoryLayers(): Promise<MemoryLayer[]> {
+  const data = await strictFetch<{ layers: MemoryLayer[] }>("/knowledge/memory-layers");
+  return data.layers;
+}
+
+export async function getKnowledgeVectorStores(): Promise<KnowledgeVectorStore[]> {
+  const data = await strictFetch<{ vector_stores: KnowledgeVectorStore[] }>(
+    "/knowledge/vector-stores",
+  );
+  return data.vector_stores;
 }
 
 export async function createKnowledgeCollection(
   name: string,
   description: string,
+  vectorStoreId?: string,
 ): Promise<KnowledgeCollection> {
   return strictFetch("/knowledge/collections", {
     method: "POST",
-    body: JSON.stringify({ name, description }),
+    body: JSON.stringify({ name, description, vector_store_id: vectorStoreId }),
   });
 }
 

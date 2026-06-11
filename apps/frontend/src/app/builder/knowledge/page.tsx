@@ -1,18 +1,39 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import Link from "next/link";
 import {
   addKnowledgeDocument,
   createKnowledgeCollection,
   deleteKnowledgeCollection,
   getKnowledgeCollections,
+  getKnowledgeVectorStores,
+  getMemoryLayers,
   searchKnowledgeCollection,
   type KnowledgeCollection,
   type KnowledgeSearchResult,
+  type KnowledgeVectorStore,
+  type MemoryLayer,
 } from "@/lib/api";
+
+function StatusChip({ enabled, healthy }: { enabled: boolean; healthy: boolean }) {
+  const tone = !enabled
+    ? "border-[var(--ui-border)] fx-muted"
+    : healthy
+      ? "border-[hsl(var(--state-success)/0.5)] text-[hsl(var(--state-success))]"
+      : "border-[hsl(var(--state-warning)/0.5)] text-[hsl(var(--state-warning))]";
+  const label = !enabled ? "Not configured" : healthy ? "Healthy" : "Degraded";
+  return (
+    <span className={`rounded-full border px-2 py-0.5 text-[10px] uppercase tracking-wide ${tone}`}>
+      {label}
+    </span>
+  );
+}
 
 export default function KnowledgePage() {
   const [collections, setCollections] = useState<KnowledgeCollection[]>([]);
+  const [layers, setLayers] = useState<MemoryLayer[]>([]);
+  const [vectorStores, setVectorStores] = useState<KnowledgeVectorStore[]>([]);
   const [selected, setSelected] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -20,6 +41,7 @@ export default function KnowledgePage() {
 
   const [newName, setNewName] = useState("");
   const [newDescription, setNewDescription] = useState("");
+  const [newVectorStore, setNewVectorStore] = useState("platform");
   const [docName, setDocName] = useState("");
   const [docText, setDocText] = useState("");
   const [query, setQuery] = useState("");
@@ -27,9 +49,15 @@ export default function KnowledgePage() {
 
   const refresh = useCallback(async () => {
     try {
-      const data = await getKnowledgeCollections();
-      setCollections(data);
-      setSelected((current) => current ?? data[0]?.id ?? null);
+      const [cols, lyrs, stores] = await Promise.all([
+        getKnowledgeCollections(),
+        getMemoryLayers().catch(() => [] as MemoryLayer[]),
+        getKnowledgeVectorStores().catch(() => [] as KnowledgeVectorStore[]),
+      ]);
+      setCollections(cols);
+      setLayers(lyrs);
+      setVectorStores(stores);
+      setSelected((current) => current ?? cols[0]?.id ?? null);
       setError(null);
     } catch {
       setError("Unable to load knowledge collections.");
@@ -41,6 +69,7 @@ export default function KnowledgePage() {
   }, [refresh]);
 
   const active = collections.find((c) => c.id === selected) ?? null;
+  const storeFor = (id: string) => vectorStores.find((s) => s.id === id) ?? null;
 
   async function addCollection() {
     if (!newName.trim()) {
@@ -49,7 +78,11 @@ export default function KnowledgePage() {
     }
     setBusy(true);
     try {
-      const created = await createKnowledgeCollection(newName.trim(), newDescription.trim());
+      const created = await createKnowledgeCollection(
+        newName.trim(),
+        newDescription.trim(),
+        newVectorStore,
+      );
       setNewName("");
       setNewDescription("");
       setSelected(created.id);
@@ -104,14 +137,50 @@ export default function KnowledgePage() {
   return (
     <section className="space-y-4">
       <header>
-        <h1 className="text-2xl font-semibold">Knowledge</h1>
+        <h1 className="text-2xl font-semibold">Knowledge &amp; Memory</h1>
         <p className="fx-muted">
-          Document collections chunked and embedded into the platform&apos;s vector store for retrieval and
-          citation. Reuses the long-term memory backend (Postgres + embeddings).
+          The platform&apos;s memory layers and document knowledge base. RAG storage is routed through
+          vector-store connections configured under{" "}
+          <Link className="underline" href="/builder/integrations">
+            integrations
+          </Link>
+          .
         </p>
       </header>
 
       {error ? <div className="fx-panel border-[hsl(var(--state-critical)/0.4)] p-3 text-sm">{error}</div> : null}
+
+      <article className="fx-panel p-3">
+        <h2 className="mb-2 text-sm font-semibold">Memory layers</h2>
+        <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
+          {layers.map((layer) => (
+            <div
+              key={layer.id}
+              className="rounded border border-[var(--fx-border)] bg-[var(--fx-surface-elevated)] p-2.5"
+            >
+              <div className="flex items-start justify-between gap-2">
+                <span className="text-sm font-medium text-[var(--foreground)]">{layer.name}</span>
+                <StatusChip enabled={layer.enabled} healthy={layer.healthy} />
+              </div>
+              <p className="fx-muted mt-0.5 text-[11px]">{layer.backend}</p>
+              <p className="fx-muted mt-1 text-xs">{layer.scope}</p>
+              {Object.keys(layer.stats ?? {}).length > 0 ? (
+                <dl className="mt-2 flex flex-wrap gap-x-3 gap-y-0.5 text-[11px]">
+                  {Object.entries(layer.stats).map(([key, value]) => (
+                    <div key={key} className="flex gap-1">
+                      <dt className="fx-muted">{key.replace(/_/g, " ")}:</dt>
+                      <dd className="text-[var(--foreground)]">{String(value)}</dd>
+                    </div>
+                  ))}
+                </dl>
+              ) : null}
+            </div>
+          ))}
+          {layers.length === 0 ? (
+            <p className="fx-muted text-xs">Memory layer status unavailable.</p>
+          ) : null}
+        </div>
+      </article>
 
       <div className="grid gap-4 xl:grid-cols-[320px_1fr]">
         <aside className="space-y-3">
@@ -156,6 +225,27 @@ export default function KnowledgePage() {
               onChange={(e) => setNewDescription(e.target.value)}
               placeholder="Description (optional)"
             />
+            <label className="fx-muted block">Vector store</label>
+            <select
+              className="fx-field h-8 w-full px-2"
+              value={newVectorStore}
+              onChange={(e) => setNewVectorStore(e.target.value)}
+            >
+              {vectorStores.map((vs) => (
+                <option key={vs.id} value={vs.id} disabled={!vs.ready}>
+                  {vs.name}
+                  {vs.ready ? "" : " — unavailable"}
+                </option>
+              ))}
+            </select>
+            {storeFor(newVectorStore) && !storeFor(newVectorStore)!.ready ? (
+              <p className="text-[11px] text-[hsl(var(--state-warning))]">
+                {storeFor(newVectorStore)!.note}{" "}
+                <Link className="underline" href="/builder/integrations">
+                  Manage integrations
+                </Link>
+              </p>
+            ) : null}
             <button
               type="button"
               disabled={busy}
@@ -190,6 +280,15 @@ export default function KnowledgePage() {
                   </button>
                 </div>
                 <p className="fx-muted mt-1">{active.description || "No description."}</p>
+                <p className="fx-muted mt-1">
+                  Vector store:{" "}
+                  <span className="text-[var(--foreground)]">
+                    {storeFor(active.vector_store_id)?.name ?? active.vector_store_id}
+                  </span>
+                  {storeFor(active.vector_store_id)?.embedding_model
+                    ? ` · ${storeFor(active.vector_store_id)!.embedding_model}`
+                    : ""}
+                </p>
               </article>
 
               <article className="fx-panel space-y-2 p-3 text-xs">
