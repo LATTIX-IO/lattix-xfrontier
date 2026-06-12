@@ -205,29 +205,9 @@ export function RunFollowupComposer({ runId }: Props) {
   }
 
   return (
-    <form onSubmit={handleSubmit} className="space-y-2">
-      <label htmlFor="continue-message" className="sr-only">
-        Message this run
-      </label>
-      <textarea
-        ref={textareaRef}
-        id="continue-message"
-        name="message"
-        required
-        value={draft}
-        onChange={(event) => {
-          setDraft(event.target.value);
-          setCursorPosition(event.target.selectionStart ?? event.target.value.length);
-        }}
-        onClick={(event) => setCursorPosition((event.target as HTMLTextAreaElement).selectionStart ?? draft.length)}
-        onKeyUp={(event) => setCursorPosition((event.target as HTMLTextAreaElement).selectionStart ?? draft.length)}
-        onKeyDown={handleTextareaKeyDown}
-        placeholder="Message this run… (use @agent or /workflow)"
-        className="fx-field min-h-24 w-full rounded-2xl border-[var(--ui-border)] bg-[hsl(var(--card))] p-3 text-sm leading-relaxed"
-      />
-
+    <form onSubmit={handleSubmit} className="relative">
       {activeMention && mentionSuggestions.length > 0 ? (
-        <div className="overflow-hidden rounded-lg border border-[var(--ui-border)] bg-[hsl(var(--card))] shadow-lg">
+        <div className="absolute bottom-full left-0 right-0 z-20 mb-2 overflow-hidden rounded-xl border border-[var(--ui-border)] bg-[hsl(var(--card))] shadow-[0_12px_32px_rgba(0,0,0,0.4)]">
           <div className="px-2 py-1 text-[10px] uppercase tracking-wide text-[var(--fx-muted)]">
             {activeMention.trigger === "@" ? "Published Agents" : "Published Workflows"}
           </div>
@@ -255,16 +235,51 @@ export function RunFollowupComposer({ runId }: Props) {
         </div>
       ) : null}
 
-      <div className="flex items-center justify-between gap-2">
-        <p className="fx-muted text-[11px]">
-          Ctrl+Enter to send · Enter for a new line · @agent to address an agent
-        </p>
-        <button type="submit" disabled={isSubmitting} className="fx-btn-primary rounded-xl px-3 py-2 text-xs font-medium disabled:opacity-60">
-          {isSubmitting ? "Sending…" : "Send"}
-        </button>
+      {/* Single floating input card — the conversation pane shows through around it. */}
+      <div className="rounded-2xl border border-[var(--ui-border)] bg-[hsl(var(--card))] shadow-[0_8px_30px_rgba(0,0,0,0.22)] transition-colors focus-within:border-[hsl(var(--primary)/0.45)]">
+        <label htmlFor="continue-message" className="sr-only">
+          Message this run
+        </label>
+        <textarea
+          ref={textareaRef}
+          id="continue-message"
+          name="message"
+          required
+          rows={2}
+          value={draft}
+          onChange={(event) => {
+            setDraft(event.target.value);
+            setCursorPosition(event.target.selectionStart ?? event.target.value.length);
+          }}
+          onClick={(event) => setCursorPosition((event.target as HTMLTextAreaElement).selectionStart ?? draft.length)}
+          onKeyUp={(event) => setCursorPosition((event.target as HTMLTextAreaElement).selectionStart ?? draft.length)}
+          onKeyDown={handleTextareaKeyDown}
+          placeholder="Message this run… (use @agent or /workflow)"
+          className="max-h-48 min-h-[56px] w-full resize-none bg-transparent px-4 pt-3 text-sm leading-relaxed text-[var(--foreground)] outline-none placeholder:text-[var(--fx-muted)]"
+        />
+        <div className="flex items-center justify-between gap-2 px-3 pb-2.5">
+          <p className="fx-muted text-[11px]">
+            Ctrl+Enter to send · Enter for a new line · @agent to address an agent
+          </p>
+          <button
+            type="submit"
+            disabled={isSubmitting || !draft.trim()}
+            aria-label="Send message"
+            className="fx-btn-primary flex h-8 w-8 items-center justify-center rounded-full disabled:opacity-50"
+          >
+            {isSubmitting ? (
+              <span className="h-3 w-3 animate-pulse rounded-full bg-current" aria-hidden />
+            ) : (
+              <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2.2" aria-hidden>
+                <path d="M12 19V5" />
+                <path d="M5 12l7-7 7 7" />
+              </svg>
+            )}
+          </button>
+        </div>
       </div>
 
-      {submitError ? <p className="text-xs text-[var(--fx-danger)]">{submitError}</p> : null}
+      {submitError ? <p className="mt-1.5 text-xs text-[var(--fx-danger)]">{submitError}</p> : null}
     </form>
   );
 }

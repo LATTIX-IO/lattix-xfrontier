@@ -543,8 +543,8 @@ export function RunConversationConsole({ runId, run: initialRun, events: initial
         </div>
       </header>
 
-      <section className="flex min-h-0 flex-1 flex-col overflow-hidden">
-            <div ref={timelineRef} className="min-h-0 flex-1 space-y-4 overflow-auto bg-[hsl(var(--muted)/0.18)] px-3 py-4">
+      <section className="flex min-h-0 flex-1 flex-col overflow-hidden bg-[hsl(var(--muted)/0.18)]">
+            <div ref={timelineRef} className="min-h-0 flex-1 space-y-4 overflow-auto px-3 pb-2 pt-4">
               {filteredEvents.length === 0 ? (
                 <div className="mx-auto w-full max-w-[880px] rounded-xl border border-dashed border-[var(--ui-border)] bg-[hsl(var(--card)/0.8)] px-3 py-4 text-xs">
                   <p className="font-medium text-[var(--foreground)]">No events match your current filters.</p>
@@ -718,7 +718,7 @@ export function RunConversationConsole({ runId, run: initialRun, events: initial
               ) : null}
             </div>
 
-            <div className="sticky bottom-0 bg-[hsl(var(--background)/0.86)] px-4 py-3 backdrop-blur-md">
+            <div className="px-4 pb-4 pt-1">
               <div className="mx-auto w-full max-w-[880px]">
                 <RunFollowupComposer runId={runId} />
               </div>
