@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import os
 import sys
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+
+from fastapi.testclient import TestClient
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -16,7 +19,10 @@ if not str(os.environ.get("FRONTIER_API_BEARER_TOKEN") or "").strip():
     os.environ["FRONTIER_API_BEARER_TOKEN"] = "unit-test-bearer"
 
 import app.main as main_module
-from app.main import store
+from app.main import app, store
+
+client = TestClient(app)
+ADMIN_HEADERS = {"Authorization": "Bearer unit-test-bearer", "x-frontier-actor": "frontier-admin"}
 
 
 @dataclass
@@ -112,6 +118,73 @@ def test_collaboration_records_decline(monkeypatch) -> None:
         assert declined[0].metadata["decision"]["respond"] is False
     finally:
         store.run_events.pop(run_id, None)
+
+
+def test_endpoint_run_triggers_multi_agent_collaboration(monkeypatch) -> None:
+    """End-to-end: POST /workflow-runs with a multi-agent prompt drives the
+    executor → collaboration loop, producing a threaded second-agent reply.
+
+    The provider is stubbed to behave 'live': the primary agent @-mentions the
+    operations agent, the decide-to-respond gate says yes, and the operations
+    agent replies (then stops). Exercises the real endpoint and run executor.
+    """
+    published = {main_module._slugify(a.name) for a in store.agent_definitions.values() if a.status == "published"}
+    assert {"demo-research-agent", "demo-operations-agent"} <= published, "seeded demo agents required"
+
+    def fake_chat(*_args: Any, **kwargs: Any):
+        system = str(kwargs.get("system_prompt") or "")
+        user = str(kwargs.get("user_prompt") or "")
+        if "routing gate" in system:
+            return '{"respond": true, "reason": "directly asked"}', {"mode": "live", "model": "test"}
+        if "collaborating in a multi-agent run" in user:
+            return "Action item created. Nothing further.", {"mode": "live", "model": "test"}
+        # primary agent response — hand off to the operations agent
+        return (
+            "Research complete. @demo-operations-agent please turn this into an action item.",
+            {"mode": "live", "model": "test"},
+        )
+
+    monkeypatch.setattr(main_module, "_run_openai_chat", fake_chat)
+
+    created = client.post(
+        "/workflow-runs",
+        json={
+            "prompt": "@demo-research-agent research the topic, then @demo-operations-agent act on it.",
+            "tokens": [
+                {"kind": "agent", "value": "demo-research-agent"},
+                {"kind": "agent", "value": "demo-operations-agent"},
+            ],
+        },
+        headers=ADMIN_HEADERS,
+    )
+    assert created.status_code == 200
+    run_id = created.json()["id"]
+    try:
+        # The run executes on a background worker; poll its events.
+        ops_event = None
+        for _ in range(80):
+            events = store.run_events.get(run_id, [])
+            ops_event = next(
+                (
+                    e
+                    for e in events
+                    if e.type == "agent_message"
+                    and (e.metadata or {}).get("selected_agent_name") == "Demo Operations Agent"
+                    and (e.metadata or {}).get("parent_event_id")
+                ),
+                None,
+            )
+            if ops_event is not None:
+                break
+            time.sleep(0.1)
+
+        assert ops_event is not None, "operations agent should have been @-called and threaded a reply"
+        assert ops_event.metadata["thread_id"], "reply should carry a thread id"
+        assert ops_event.metadata["decision"]["respond"] is True
+    finally:
+        store.runs.pop(run_id, None)
+        store.run_events.pop(run_id, None)
+        store.run_details.pop(run_id, None)
 
 
 def test_collaboration_respects_turn_cap(monkeypatch) -> None:
