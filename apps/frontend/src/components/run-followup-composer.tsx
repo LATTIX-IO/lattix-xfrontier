@@ -236,7 +236,7 @@ export function RunFollowupComposer({ runId }: Props) {
       ) : null}
 
       {/* Single floating input card — the conversation pane shows through around it. */}
-      <div className="rounded-2xl border border-[var(--ui-border)] bg-[hsl(var(--card))] shadow-[0_8px_30px_rgba(0,0,0,0.22)] transition-colors focus-within:border-[hsl(var(--primary)/0.55)] focus-within:shadow-[0_8px_30px_rgba(0,0,0,0.22),0_0_0_1px_hsl(var(--primary)/0.25)]">
+      <div className="rounded-2xl border border-[var(--ui-border)] bg-[hsl(var(--card))] shadow-[0_8px_30px_rgba(0,0,0,0.22)] transition-colors focus-within:border-[hsl(var(--primary)/0.4)]">
         <label htmlFor="continue-message" className="sr-only">
           Message this run
         </label>
