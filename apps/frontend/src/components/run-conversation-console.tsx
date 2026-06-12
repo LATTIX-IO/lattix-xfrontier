@@ -157,6 +157,8 @@ function statusColorForRun(status: string): string {
 
 const LIVE_POLL_RUNNING_MS = 3000;
 const LIVE_POLL_IDLE_MS = 8000;
+// Slow heartbeat for terminal runs so externally-triggered wakes still surface.
+const LIVE_POLL_HEARTBEAT_MS = 15000;
 
 export function RunConversationConsole({ runId, run: initialRun, events: initialEvents }: Props) {
   const router = useRouter();
@@ -374,13 +376,20 @@ export function RunConversationConsole({ runId, run: initialRun, events: initial
     };
   }, [liveTransport, runId, runIsLive]);
 
+  // Poll when downgraded from SSE — and keep a slow heartbeat even on terminal
+  // runs: this is a chat session that can wake again at any time (follow-ups
+  // sent from this tab, another tab, or an automation).
   useEffect(() => {
-    if (!runIsLive || liveTransport !== "poll") {
-      return;
+    if (runIsLive && liveTransport === "stream") {
+      return; // the SSE stream owns live updates
     }
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout> | null = null;
-    const intervalMs = run.status === "Running" ? LIVE_POLL_RUNNING_MS : LIVE_POLL_IDLE_MS;
+    const intervalMs = !runIsLive
+      ? LIVE_POLL_HEARTBEAT_MS
+      : run.status === "Running"
+        ? LIVE_POLL_RUNNING_MS
+        : LIVE_POLL_IDLE_MS;
 
     async function tick() {
       if (cancelled) {
@@ -406,6 +415,31 @@ export function RunConversationConsole({ runId, run: initialRun, events: initial
       }
     };
   }, [liveTransport, refreshLiveState, run.status, runIsLive]);
+
+  // Same-tab wake: the composer broadcasts after sending into this run. Re-arm
+  // the SSE stream and refresh now (plus once more shortly after, to catch the
+  // background worker's first write) so the reply streams in without a reload.
+  useEffect(() => {
+    let followupTimer: ReturnType<typeof setTimeout> | null = null;
+    const onRunsChanged = () => {
+      setLiveTransport("stream");
+      void refreshLiveState().catch(() => {});
+      if (followupTimer) {
+        clearTimeout(followupTimer);
+      }
+      followupTimer = setTimeout(() => {
+        followupTimer = null;
+        void refreshLiveState().catch(() => {});
+      }, 1200);
+    };
+    window.addEventListener("frontier:runs-changed", onRunsChanged);
+    return () => {
+      window.removeEventListener("frontier:runs-changed", onRunsChanged);
+      if (followupTimer) {
+        clearTimeout(followupTimer);
+      }
+    };
+  }, [refreshLiveState]);
 
   useEffect(() => {
     if (approvals.required && approvals.pending) {
