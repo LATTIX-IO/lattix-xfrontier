@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { InboxChatTree } from "@/components/navigation/inbox-chat-tree";
 import { getPreferenceNavItem, getPrimaryNavGroups, type NavGroup, type NavIconName, type NavItem, type NavMode } from "@/components/navigation/nav-config";
 import type { PlatformVersionStatus } from "@/types/frontier";
 
@@ -208,6 +209,11 @@ export function LeftNav({ mode, pathname, inAdmin, expanded, platformVersion }: 
         {navGroups.map((group) => (
           <NavSection key={group.title} group={group} pathname={pathname} />
         ))}
+        {mode !== "builder" ? (
+          <div className="mt-1 border-t border-[var(--ui-border)] pt-3">
+            <InboxChatTree />
+          </div>
+        ) : null}
       </div>
 
       <div className="border-t border-[var(--ui-border)] px-2 py-3">
