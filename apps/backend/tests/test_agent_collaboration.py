@@ -70,6 +70,85 @@ def _wire_fakes(monkeypatch, *, gate_respond: bool = True) -> None:
     monkeypatch.setattr(main_module, "_run_openai_chat", fake_chat)
 
 
+def test_resolve_agent_max_iterations_precedence() -> None:
+    agent = _FakeAgent(id="a", name="A", config_json={"max_iterations": 9})
+    assert main_module._resolve_agent_max_iterations(agent, {"max_iterations": 3}) == 3
+    assert main_module._resolve_agent_max_iterations(agent, {}) == 9
+    assert main_module._resolve_agent_max_iterations(_FakeAgent("b", "B"), {}) == 12
+    assert main_module._resolve_agent_max_iterations(agent, {"max_iterations": 999}) == 50
+
+
+def test_run_agent_iterations_loops_until_done_with_progress(monkeypatch) -> None:
+    """The agent iterates (<CONTINUE> → <DONE>), each pass streaming a progress
+    event tagged with the shared work_id; markers never leak into the final."""
+    calls: list[str] = []
+
+    def fake_chat(*, system_prompt: str, user_prompt: str, **_kwargs):
+        calls.append(user_prompt)
+        if len(calls) == 1:
+            return "Gathered the first half of the data. <CONTINUE>", {"mode": "live", "model": "t"}
+        return "Complete answer with all data. <DONE>", {"mode": "live", "model": "t"}
+
+    monkeypatch.setattr(main_module, "_run_openai_chat", fake_chat)
+    run_id = "iterations-test"
+    store.run_events[run_id] = []
+    agent = _FakeAgent(id="a-iter", name="Iterator")
+    try:
+        final, meta = main_module._run_agent_iterations(
+            run_id,
+            agent,
+            system_prompt="sys",
+            user_prompt="do the task",
+            model="m",
+            work_id="work-1",
+            max_iterations=5,
+        )
+        assert len(calls) == 2, "should have iterated exactly twice"
+        assert final == "Complete answer with all data."
+        assert "<CONTINUE>" not in final and "<DONE>" not in final
+        assert meta.get("mode") == "live"
+        # The second pass carries the interim work forward.
+        assert "Gathered the first half" in calls[1]
+
+        progress = [e for e in store.run_events[run_id] if (e.metadata or {}).get("progress")]
+        assert progress, "progress events must stream during the work"
+        assert all((e.metadata or {}).get("work_id") == "work-1" for e in progress)
+        phases = {str((e.metadata or {}).get("phase")) for e in progress}
+        assert "working" in phases
+        assert any(p.startswith("iteration") for p in phases)
+    finally:
+        store.run_events.pop(run_id, None)
+
+
+def test_run_agent_iterations_respects_cap(monkeypatch) -> None:
+    """An agent that always asks to continue is stopped at max_iterations and
+    its last pass becomes the final answer."""
+    calls: list[str] = []
+
+    def fake_chat(*, system_prompt: str, user_prompt: str, **_kwargs):
+        calls.append(user_prompt)
+        return f"More work pass {len(calls)}. <CONTINUE>", {"mode": "live", "model": "t"}
+
+    monkeypatch.setattr(main_module, "_run_openai_chat", fake_chat)
+    run_id = "iterations-cap-test"
+    store.run_events[run_id] = []
+    try:
+        final, _meta = main_module._run_agent_iterations(
+            run_id,
+            _FakeAgent(id="a-cap", name="Capped"),
+            system_prompt="sys",
+            user_prompt="never satisfied",
+            model="m",
+            work_id="work-2",
+            max_iterations=3,
+        )
+        assert len(calls) == 3
+        assert "<CONTINUE>" not in final
+        assert "More work pass 3." in final
+    finally:
+        store.run_events.pop(run_id, None)
+
+
 def test_collaboration_threads_responses_under_parent(monkeypatch) -> None:
     _wire_fakes(monkeypatch, gate_respond=True)
     run_id = "collab-thread-test"
@@ -87,7 +166,11 @@ def test_collaboration_threads_responses_under_parent(monkeypatch) -> None:
         )
         assert turns >= 1
         analyst_events = [
-            e for e in store.run_events[run_id] if e.metadata and e.metadata.get("selected_agent_name") == "Analyst"
+            e
+            for e in store.run_events[run_id]
+            if e.metadata
+            and e.metadata.get("selected_agent_name") == "Analyst"
+            and not e.metadata.get("progress")
         ]
         assert analyst_events, "analyst should have been invoked"
         evt = analyst_events[0]

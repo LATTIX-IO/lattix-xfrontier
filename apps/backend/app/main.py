@@ -13629,6 +13629,171 @@ def _resolve_collaboration_turns(
     return _DEFAULT_COLLABORATION_TURNS
 
 
+# Agents iterate until they judge their answer complete (marker protocol), with
+# a generous safety ceiling. Override per agent via config_json.max_iterations
+# or per run via the kickoff payload.
+_DEFAULT_AGENT_MAX_ITERATIONS = 12
+_AGENT_MAX_ITERATIONS_CEILING = 50
+_AGENT_CONTINUE_MARKER = "<CONTINUE>"
+_AGENT_DONE_MARKER = "<DONE>"
+
+
+def _resolve_agent_max_iterations(agent_def: "AgentDefinition", payload: dict[str, Any]) -> int:
+    config = getattr(agent_def, "config_json", {}) or {}
+    for candidate in (payload.get("max_iterations"), config.get("max_iterations")):
+        try:
+            value = int(candidate)
+        except (TypeError, ValueError):
+            continue
+        if value > 0:
+            return min(value, _AGENT_MAX_ITERATIONS_CEILING)
+    return _DEFAULT_AGENT_MAX_ITERATIONS
+
+
+def _emit_agent_progress(
+    run_id: str,
+    *,
+    work_id: str,
+    agent_def: "AgentDefinition",
+    phase: str,
+    text: str,
+    event_type: str = "step_completed",
+    thread_id: str | None = None,
+    parent_event_id: str | None = None,
+) -> None:
+    """Append a live work-log event (streamed to the console over SSE).
+
+    Progress events share a ``work_id`` with the agent's final message so the
+    UI can fold them into that message's activity log.
+    """
+    metadata: dict[str, Any] = {
+        "selected_agent_id": agent_def.id,
+        "selected_agent_name": agent_def.name,
+        "work_id": work_id,
+        "progress": True,
+        "phase": phase,
+    }
+    if thread_id:
+        metadata["thread_id"] = thread_id
+    if parent_event_id:
+        metadata["parent_event_id"] = parent_event_id
+    store.run_events.setdefault(run_id, []).append(
+        WorkflowRunEvent(
+            id=f"evt-{uuid4()}",
+            type=event_type,  # type: ignore[arg-type]
+            title=f"{agent_def.name} — {phase}",
+            summary=(str(text or "").strip() or "…")[:500],
+            createdAt=_now_iso(),
+            metadata=metadata,
+        )
+    )
+
+
+def _run_agent_iterations(
+    run_id: str,
+    agent_def: "AgentDefinition",
+    *,
+    system_prompt: str,
+    user_prompt: str,
+    model: str,
+    work_id: str,
+    max_iterations: int,
+    temperature: float = 0.3,
+    tools: list[dict[str, Any]] | None = None,
+    tool_executor: Callable[[str, dict[str, Any]], str] | None = None,
+    max_tool_calls: int = 8,
+    on_tool_event: Callable[[str, dict[str, Any], str, bool], None] | None = None,
+    thread_id: str | None = None,
+    parent_event_id: str | None = None,
+) -> tuple[str, dict[str, Any]]:
+    """Run an agent as an iterative work loop with a live progress log.
+
+    Each pass the agent either finishes (``<DONE>``) or asks to keep working
+    (``<CONTINUE>``); interim thoughts, model reasoning summaries, and tool
+    calls stream to the run as progress events so the user can watch the agent
+    work. Returns the final (text, meta) like ``_run_openai_chat``.
+    """
+    _emit_agent_progress(
+        run_id,
+        work_id=work_id,
+        agent_def=agent_def,
+        phase="working",
+        text="Started working on the task.",
+        event_type="step_started",
+        thread_id=thread_id,
+        parent_event_id=parent_event_id,
+    )
+    iteration_instruction = (
+        "\n\nWork iteratively. If you still need more passes to produce a complete, correct "
+        f"answer (more research, tool use, or refinement), end your reply with {_AGENT_CONTINUE_MARKER}. "
+        f"When your answer is final and complete, end it with {_AGENT_DONE_MARKER}."
+    )
+    conversation_prompt = user_prompt + iteration_instruction
+    interim_notes: list[str] = []
+    final_text = ""
+    final_meta: dict[str, Any] = {}
+    for iteration in range(1, max(1, max_iterations) + 1):
+        text, meta = _run_openai_chat(
+            system_prompt=system_prompt,
+            user_prompt=conversation_prompt,
+            model=model,
+            temperature=temperature,
+            tools=tools,
+            tool_executor=tool_executor,
+            max_tool_calls=max_tool_calls,
+            on_tool_event=on_tool_event,
+        )
+        final_meta = meta
+        if str(meta.get("mode")) != "live":
+            final_text = text
+            break
+
+        reasoning = meta.get("reasoning") if isinstance(meta.get("reasoning"), dict) else {}
+        for summary in list(reasoning.get("summaries") or [])[:2]:
+            thought = str(summary or "").strip()
+            if thought:
+                _emit_agent_progress(
+                    run_id,
+                    work_id=work_id,
+                    agent_def=agent_def,
+                    phase="thought",
+                    text=thought,
+                    thread_id=thread_id,
+                    parent_event_id=parent_event_id,
+                )
+
+        stripped = text.strip()
+        wants_continue = _AGENT_CONTINUE_MARKER in stripped[-200:]
+        cleaned = (
+            stripped.replace(_AGENT_CONTINUE_MARKER, "").replace(_AGENT_DONE_MARKER, "").strip()
+        )
+        if wants_continue and iteration < max_iterations:
+            interim_notes.append(cleaned)
+            _emit_agent_progress(
+                run_id,
+                work_id=work_id,
+                agent_def=agent_def,
+                phase=f"iteration {iteration}",
+                text=cleaned or "Continuing…",
+                thread_id=thread_id,
+                parent_event_id=parent_event_id,
+            )
+            conversation_prompt = (
+                user_prompt
+                + "\n\nYour work so far (continue from here, do not repeat it):\n"
+                + "\n---\n".join(interim_notes[-4:])
+                + iteration_instruction
+            )
+            continue
+        final_text = cleaned
+        break
+    final_text = (
+        final_text.replace(_AGENT_CONTINUE_MARKER, "").replace(_AGENT_DONE_MARKER, "").strip()
+        or final_text
+    )
+    return final_text, final_meta
+
+
 def _run_participants(run_id: str) -> dict[str, Any]:
     """Roster of who is in this run's conversation: the human plus every agent
     that has participated (or been invited), with an active flag.
@@ -13794,11 +13959,18 @@ def _run_agent_collaboration(
             "@-mention another agent (by @their-handle) when their input is genuinely required "
             "next; otherwise give your best complete answer for your part."
         )
-        output, meta = _run_openai_chat(
+        work_id = f"work-{uuid4()}"
+        output, meta = _run_agent_iterations(
+            run_id,
+            agent_def,
             system_prompt=agent_system,
             user_prompt=collaboration_prompt,
             model=_resolve_agent_chat_model(agent_def),
+            work_id=work_id,
+            max_iterations=_resolve_agent_max_iterations(agent_def, {}),
             temperature=0.3,
+            thread_id=root_event_id,
+            parent_event_id=parent_event_id,
         )
         if str(meta.get("mode")) != "live":
             break  # provider unavailable — stop rather than emit simulated chatter
@@ -13819,6 +13991,7 @@ def _run_agent_collaboration(
                     "selected_agent_name": agent_def.name,
                     "parent_event_id": parent_event_id,
                     "thread_id": root_event_id,
+                    "work_id": work_id,
                     "decision": decision,
                     # Full, untruncated answer for the chat view (summary is for previews).
                     "full_text": display,
@@ -14194,6 +14367,8 @@ def create_workflow_run(
                 server, real_name = entry
                 return server.call_tool(real_name, arguments)
 
+            primary_work_id = f"work-{uuid4()}"
+
             def _emit_tool_event(
                 name: str, arguments: dict[str, Any], output: str, succeeded: bool
             ) -> None:
@@ -14211,14 +14386,23 @@ def create_workflow_run(
                                 for key, value in (arguments or {}).items()
                             },
                             "succeeded": succeeded,
+                            "selected_agent_id": selected_agent_id,
+                            "selected_agent_name": selected_agent,
+                            "work_id": primary_work_id,
+                            "progress": True,
+                            "phase": "tool",
                         },
                     )
                 )
 
-            response_text, model_meta = _run_openai_chat(
+            response_text, model_meta = _run_agent_iterations(
+                run_id,
+                selected_agent_definition,
                 system_prompt=system_prompt,
                 user_prompt=request_prompt,
                 model=selected_model,
+                work_id=primary_work_id,
+                max_iterations=_resolve_agent_max_iterations(selected_agent_definition, payload),
                 temperature=0.2,
                 tools=tool_schemas or None,
                 tool_executor=_execute_mcp_tool if tool_dispatch else None,
@@ -14458,6 +14642,7 @@ def create_workflow_run(
                             "selected_agent_id": selected_agent_id,
                             "selected_agent_name": selected_agent,
                             "thread_id": primary_agent_event_id,
+                            "work_id": primary_work_id,
                             "system_prompt_source": system_prompt_source,
                             # Full, untruncated answer for the chat view.
                             "full_text": event_response_text,
@@ -14737,10 +14922,15 @@ def send_run_message(
                 "Respond to the user's new message in the context of this conversation. Reason "
                 "about what they are asking before answering; give a complete, self-contained reply."
             )
-            response_text, model_meta = _run_openai_chat(
+            followup_work_id = f"work-{uuid4()}"
+            response_text, model_meta = _run_agent_iterations(
+                run_id,
+                captured_agent,
                 system_prompt=system_prompt,
                 user_prompt=user_prompt,
                 model=_resolve_agent_chat_model(captured_agent),
+                work_id=followup_work_id,
+                max_iterations=_resolve_agent_max_iterations(captured_agent, payload),
                 temperature=0.3,
             )
             display = (
@@ -14762,6 +14952,7 @@ def send_run_message(
                         "selected_agent_id": captured_agent.id,
                         "selected_agent_name": captured_agent.name,
                         "thread_id": event_id,
+                        "work_id": followup_work_id,
                         "full_text": display,
                     },
                 )

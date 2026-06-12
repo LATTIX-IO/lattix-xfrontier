@@ -231,6 +231,48 @@ export function RunConversationConsole({ runId, run: initialRun, events: initial
     });
   }, [events]);
 
+  // Live work-log events (thoughts, iterations, tool calls) grouped by work_id.
+  // In-flight groups render as a live "working" panel; completed groups fold
+  // into their final message's Activity disclosure.
+  const progressByWork = useMemo(() => {
+    const map = new Map<string, WorkflowRunEvent[]>();
+    for (const event of orderedEvents) {
+      const workId = typeof event.metadata?.work_id === "string" ? (event.metadata.work_id as string) : "";
+      if (workId && event.metadata?.progress) {
+        const group = map.get(workId);
+        if (group) group.push(event);
+        else map.set(workId, [event]);
+      }
+    }
+    return map;
+  }, [orderedEvents]);
+
+  const completedWorkIds = useMemo(() => {
+    const done = new Set<string>();
+    for (const event of orderedEvents) {
+      const workId = typeof event.metadata?.work_id === "string" ? (event.metadata.work_id as string) : "";
+      if (workId && event.type === "agent_message" && !event.metadata?.progress) {
+        done.add(workId);
+      }
+    }
+    return done;
+  }, [orderedEvents]);
+
+  const firstProgressEventId = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const [workId, group] of progressByWork) {
+      if (group.length > 0) {
+        map.set(workId, group[0].id);
+      }
+    }
+    return map;
+  }, [progressByWork]);
+
+  const hasInFlightWork = useMemo(
+    () => Array.from(progressByWork.keys()).some((workId) => !completedWorkIds.has(workId)),
+    [progressByWork, completedWorkIds],
+  );
+
   let lastUserIndex = -1;
   let lastAgentIndex = -1;
   orderedEvents.forEach((event, index) => {
@@ -242,7 +284,9 @@ export function RunConversationConsole({ runId, run: initialRun, events: initial
     }
   });
 
-  const showTypingPlaceholder = run.status === "Running" && lastUserIndex > lastAgentIndex;
+  // The live working panel replaces the generic typing placeholder.
+  const showTypingPlaceholder =
+    run.status === "Running" && lastUserIndex > lastAgentIndex && !hasInFlightWork;
 
   const filteredEvents = useMemo(() => {
     const query = searchQuery.trim().toLowerCase();
@@ -639,6 +683,63 @@ export function RunConversationConsole({ runId, run: initialRun, events: initial
                 </div>
               ) : (
                 filteredEvents.map((event) => {
+                  const eventWorkId =
+                    typeof event.metadata?.work_id === "string" ? (event.metadata.work_id as string) : "";
+                  const isProgressEvent = Boolean(event.metadata?.progress) && Boolean(eventWorkId);
+
+                  // Work-log events: fold completed groups into their final
+                  // message; render in-flight groups as one live working panel
+                  // (anchored at the group's first event). The "system" filter
+                  // still lists them raw for debugging.
+                  if (isProgressEvent && eventFilter === "all") {
+                    if (completedWorkIds.has(eventWorkId)) {
+                      return null;
+                    }
+                    if (firstProgressEventId.get(eventWorkId) !== event.id) {
+                      return null;
+                    }
+                    const steps = progressByWork.get(eventWorkId) ?? [];
+                    const latest = steps[steps.length - 1];
+                    const workerName = String(event.metadata?.selected_agent_name ?? "Agent");
+                    const workerHue = agentAccentHue(workerName);
+                    return (
+                      <article key={event.id} className="mx-auto w-full max-w-[880px]">
+                        <details
+                          className="rounded-xl border border-[var(--ui-border)] bg-[hsl(var(--card)/0.85)] px-3 py-2"
+                          style={{ borderLeft: `3px solid hsl(${workerHue} 68% 55%)` }}
+                        >
+                          <summary className="flex cursor-pointer list-none items-center gap-2 text-[11px] text-[hsl(var(--muted-foreground))]">
+                            <span
+                              aria-hidden
+                              className="h-2 w-2 shrink-0 animate-pulse rounded-full"
+                              style={{ background: `hsl(${workerHue} 68% 55%)` }}
+                            />
+                            <span className="shrink-0 font-semibold text-[var(--foreground)]">{workerName}</span>
+                            <span className="shrink-0">working…</span>
+                            <span className="fx-muted min-w-0 flex-1 truncate">
+                              {latest ? `${String(latest.metadata?.phase ?? "step")}: ${latest.summary}` : ""}
+                            </span>
+                            <span className="fx-muted shrink-0">
+                              {steps.length} step{steps.length === 1 ? "" : "s"} ▾
+                            </span>
+                          </summary>
+                          <ol className="mt-2 space-y-1.5 border-t border-[var(--ui-border)] pt-2">
+                            {steps.map((step) => (
+                              <li key={step.id} className="flex gap-2 text-[11px]">
+                                <span className="fx-muted w-20 shrink-0 font-mono text-[10px] uppercase">
+                                  {String(step.metadata?.phase ?? step.type)}
+                                </span>
+                                <span className="min-w-0 flex-1 whitespace-pre-wrap leading-relaxed text-[var(--foreground)]">
+                                  {step.summary}
+                                </span>
+                              </li>
+                            ))}
+                          </ol>
+                        </details>
+                      </article>
+                    );
+                  }
+
                   const trace = event.type === "agent_message" ? tracesByAgent.get(event.title.replace(/\s+response$/i, "")) : undefined;
                   const eventModelMeta =
                     event.metadata && typeof event.metadata === "object" && typeof event.metadata.model === "object"
@@ -744,6 +845,38 @@ export function RunConversationConsole({ runId, run: initialRun, events: initial
                           </p>
                           <span className="fx-muted text-[11px] opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">{event.createdAt}</span>
                         </div>
+                        {(() => {
+                          const workSteps = eventWorkId ? progressByWork.get(eventWorkId) ?? [] : [];
+                          if (workSteps.length === 0) {
+                            return null;
+                          }
+                          const lastStep = workSteps[workSteps.length - 1];
+                          return (
+                            <details className="mb-1.5 rounded-lg border border-[var(--ui-border)] bg-[hsl(var(--muted)/0.28)] px-2 py-1">
+                              <summary className="flex cursor-pointer list-none items-center gap-1.5 text-[10px] text-[hsl(var(--muted-foreground))]">
+                                <span className="font-medium">
+                                  Worked — {workSteps.length} step{workSteps.length === 1 ? "" : "s"}
+                                </span>
+                                <span className="fx-muted min-w-0 flex-1 truncate">
+                                  {lastStep ? lastStep.summary : ""}
+                                </span>
+                                <span aria-hidden>▾</span>
+                              </summary>
+                              <ol className="mt-1.5 space-y-1 border-t border-[var(--ui-border)] pt-1.5">
+                                {workSteps.map((step) => (
+                                  <li key={step.id} className="flex gap-2 text-[10px]">
+                                    <span className="fx-muted w-20 shrink-0 font-mono uppercase">
+                                      {String(step.metadata?.phase ?? step.type)}
+                                    </span>
+                                    <span className="min-w-0 flex-1 whitespace-pre-wrap leading-relaxed text-[var(--foreground)]">
+                                      {step.summary}
+                                    </span>
+                                  </li>
+                                ))}
+                              </ol>
+                            </details>
+                          );
+                        })()}
                         <MarkdownBlock content={messageBody} className="mt-1 leading-relaxed" />
 
                         {trace ? (
