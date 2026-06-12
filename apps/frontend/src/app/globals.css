@@ -346,6 +346,14 @@ textarea:focus-visible {
   outline-offset: 2px;
 }
 
+/* Opt-out for composer-style fields that present focus on their card container
+   instead. Must live here (unlayered): Tailwind v4 utilities sit in a cascade
+   layer, so no utility class can override the unlayered rule above. */
+textarea[data-no-focus-ring]:focus-visible,
+input[data-no-focus-ring]:focus-visible {
+  outline: none;
+}
+
 .fx-btn-primary:disabled,
 .fx-btn-secondary:disabled,
 .fx-btn-success:disabled,

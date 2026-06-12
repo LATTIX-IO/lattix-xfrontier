@@ -244,6 +244,7 @@ export function RunFollowupComposer({ runId }: Props) {
           ref={textareaRef}
           id="continue-message"
           name="message"
+          data-no-focus-ring
           required
           rows={2}
           value={draft}
