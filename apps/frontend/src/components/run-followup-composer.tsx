@@ -236,7 +236,7 @@ export function RunFollowupComposer({ runId }: Props) {
       ) : null}
 
       {/* Single floating input card — the conversation pane shows through around it. */}
-      <div className="rounded-2xl border border-[var(--ui-border)] bg-[hsl(var(--card))] shadow-[0_8px_30px_rgba(0,0,0,0.22)] transition-colors focus-within:border-[hsl(var(--primary)/0.45)]">
+      <div className="rounded-2xl border border-[var(--ui-border)] bg-[hsl(var(--card))] shadow-[0_8px_30px_rgba(0,0,0,0.22)] transition-colors focus-within:border-[hsl(var(--primary)/0.55)] focus-within:shadow-[0_8px_30px_rgba(0,0,0,0.22),0_0_0_1px_hsl(var(--primary)/0.25)]">
         <label htmlFor="continue-message" className="sr-only">
           Message this run
         </label>
@@ -255,7 +255,7 @@ export function RunFollowupComposer({ runId }: Props) {
           onKeyUp={(event) => setCursorPosition((event.target as HTMLTextAreaElement).selectionStart ?? draft.length)}
           onKeyDown={handleTextareaKeyDown}
           placeholder="Message this run… (use @agent or /workflow)"
-          className="max-h-48 min-h-[56px] w-full resize-none bg-transparent px-4 pt-3 text-sm leading-relaxed text-[var(--foreground)] outline-none placeholder:text-[var(--fx-muted)]"
+          className="max-h-48 min-h-[56px] w-full resize-none bg-transparent px-4 pt-3 text-sm leading-relaxed text-[var(--foreground)] outline-none focus:outline-none focus-visible:outline-none placeholder:text-[var(--fx-muted)]"
         />
         <div className="flex items-center justify-between gap-2 px-3 pb-2.5">
           <p className="fx-muted text-[11px]">
