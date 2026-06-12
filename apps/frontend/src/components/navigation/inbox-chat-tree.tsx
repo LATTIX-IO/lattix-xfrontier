@@ -66,7 +66,9 @@ export function InboxChatTree() {
   const [groups, setGroups] = useState<InboxGroup[]>([]);
   const [groupBy, setGroupBy] = useState<GroupBy>("type");
   const [typeFilter, setTypeFilter] = useState<RunKind | null>(null);
-  const [expanded, setExpanded] = useState<Set<string>>(new Set(["__all__"]));
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  // Group sections (Type/Status/Recency buckets) default open; track collapse.
+  const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set());
   const [newGroupName, setNewGroupName] = useState("");
   const [showNewFolder, setShowNewFolder] = useState(false);
   const [menu, setMenu] = useState<ContextMenuState | null>(null);
@@ -137,6 +139,15 @@ export function InboxChatTree() {
 
   function toggle(key: string) {
     setExpanded((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }
+
+  function toggleGroup(key: string) {
+    setCollapsedGroups((prev) => {
       const next = new Set(prev);
       if (next.has(key)) next.delete(key);
       else next.add(key);
@@ -336,14 +347,13 @@ export function InboxChatTree() {
 
         <div className={groups.length > 0 ? "mt-1 border-t border-[var(--fx-border)] pt-1" : ""}>
           {grouped.map(([key, bucket]) => {
-            const expandKey = `all:${key}`;
-            const open = groupBy === "none" ? true : expanded.has(expandKey) || expanded.has("__all__");
+            const open = groupBy === "none" ? true : !collapsedGroups.has(key);
             return (
               <div key={key}>
                 {groupBy !== "none" ? (
                   <button
                     type="button"
-                    onClick={() => toggle(expandKey)}
+                    onClick={() => toggleGroup(key)}
                     className="flex w-full items-center gap-1 rounded px-1.5 py-1 text-left hover:bg-[var(--fx-nav-hover)]"
                   >
                     <span className={`fx-muted text-[9px] transition-transform ${open ? "rotate-90" : ""}`}>▸</span>
