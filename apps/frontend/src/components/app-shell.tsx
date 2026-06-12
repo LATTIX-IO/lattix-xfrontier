@@ -278,11 +278,43 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             >
               Feedback
             </a>
-            <button className="fx-btn-secondary hidden h-7 w-7 px-0 text-[11px] md:inline-flex" aria-label="Docs">
-              ?
+            <button
+              className="fx-btn-secondary hidden h-7 w-7 items-center justify-center px-0 md:inline-flex"
+              aria-label="Docs"
+              title="Docs & help"
+            >
+              <svg
+                viewBox="0 0 24 24"
+                className="h-3.5 w-3.5"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.8"
+                strokeLinecap="round"
+                aria-hidden="true"
+              >
+                <circle cx="12" cy="12" r="9" />
+                <path d="M9.4 9.4a2.7 2.7 0 0 1 5.3.5c0 1.8-2.5 2.1-2.5 3.6" />
+                <circle cx="12.2" cy="16.8" r="0.9" fill="currentColor" stroke="none" />
+              </svg>
             </button>
-            <button className="fx-btn-secondary hidden h-7 w-7 px-0 text-[11px] md:inline-flex" aria-label="Notifications">
-              🔔
+            <button
+              className="fx-btn-secondary hidden h-7 w-7 items-center justify-center px-0 md:inline-flex"
+              aria-label="Notifications"
+              title="Notifications"
+            >
+              <svg
+                viewBox="0 0 24 24"
+                className="h-3.5 w-3.5"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.8"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                aria-hidden="true"
+              >
+                <path d="M6 9.5a6 6 0 0 1 12 0c0 4.2 1.5 5.5 1.5 5.5h-15S6 13.7 6 9.5z" />
+                <path d="M10.3 18.5a1.8 1.8 0 0 0 3.4 0" />
+              </svg>
             </button>
             <span className="fx-db-chip inline-flex items-center gap-1.5 whitespace-nowrap rounded-full border border-[var(--ui-border)] bg-[hsl(var(--card))] px-2 py-[3px] text-[10px] font-medium text-[var(--fx-muted)]">
               <span className="h-1.5 w-1.5 rounded-full bg-[hsl(var(--state-success))]" aria-hidden="true" />
