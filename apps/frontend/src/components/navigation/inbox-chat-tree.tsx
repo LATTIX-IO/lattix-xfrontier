@@ -70,6 +70,7 @@ export function InboxChatTree() {
   const [newGroupName, setNewGroupName] = useState("");
   const [showNewFolder, setShowNewFolder] = useState(false);
   const [menu, setMenu] = useState<ContextMenuState | null>(null);
+  const [dragOverFolder, setDragOverFolder] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
     const [runList, groupList] = await Promise.all([
@@ -183,6 +184,8 @@ export function InboxChatTree() {
 
   async function assignToFolder(runId: string, groupId: string) {
     await updateInboxGroup(groupId, { add_run_id: runId }).catch(() => null);
+    // Expand the target folder so the moved chat is visible immediately.
+    setExpanded((prev) => new Set(prev).add(`folder:${groupId}`));
     await refresh();
   }
 
@@ -195,10 +198,15 @@ export function InboxChatTree() {
     return (
       <button
         type="button"
+        draggable
+        onDragStart={(e) => {
+          e.dataTransfer.setData("application/x-run-id", run.id);
+          e.dataTransfer.effectAllowed = "move";
+        }}
         onClick={() => router.push(`/runs/${run.id}`)}
         onContextMenu={(e) => openMenu(e, { kind: "chat", id: run.id, folderId })}
         className="group flex w-full items-center gap-1.5 rounded px-1.5 py-1 text-left text-[11px] hover:bg-[var(--fx-nav-hover)]"
-        title={run.title}
+        title={`${run.title}\n(drag onto a folder, or right-click)`}
       >
         <span
           aria-hidden
@@ -292,10 +300,25 @@ export function InboxChatTree() {
                 type="button"
                 onClick={() => toggle(key)}
                 onContextMenu={(e) => openMenu(e, { kind: "folder", id: group.id })}
-                className="flex w-full items-center gap-1 rounded px-1.5 py-1 text-left text-[12px] hover:bg-[var(--fx-nav-hover)]"
+                onDragOver={(e) => {
+                  e.preventDefault();
+                  e.dataTransfer.dropEffect = "move";
+                  if (dragOverFolder !== group.id) setDragOverFolder(group.id);
+                }}
+                onDragLeave={() => setDragOverFolder((c) => (c === group.id ? null : c))}
+                onDrop={(e) => {
+                  e.preventDefault();
+                  const runId = e.dataTransfer.getData("application/x-run-id");
+                  setDragOverFolder(null);
+                  if (runId) void assignToFolder(runId, group.id);
+                }}
+                className={`flex w-full items-center gap-1 rounded px-1.5 py-1 text-left text-[12px] hover:bg-[var(--fx-nav-hover)] ${
+                  dragOverFolder === group.id ? "bg-[hsl(var(--accent)/0.16)] ring-1 ring-[hsl(var(--accent)/0.5)]" : ""
+                }`}
               >
                 <span className={`fx-muted text-[9px] transition-transform ${open ? "rotate-90" : ""}`}>▸</span>
-                <span className="min-w-0 flex-1 truncate text-[var(--foreground)]">📁 {group.name}</span>
+                <FolderIcon />
+                <span className="min-w-0 flex-1 truncate text-[var(--foreground)]">{group.name}</span>
                 <span className="fx-muted text-[10px]">{folderRuns.length}</span>
               </button>
               {open ? (
@@ -356,16 +379,16 @@ export function InboxChatTree() {
                 if (!run) return null;
                 return (
                   <>
-                    <MenuItem label="Open" onClick={() => router.push(`/runs/${run.id}`)} />
-                    <MenuItem label="Rename chat" onClick={() => void renameChat(run)} />
+                    <MenuItem label="Open" onClick={() => { setMenu(null); router.push(`/runs/${run.id}`); }} />
+                    <MenuItem label="Rename chat" onClick={() => { setMenu(null); void renameChat(run); }} />
                     <MenuItem
                       label="Copy chat ID"
-                      onClick={() => void navigator.clipboard?.writeText(run.id).catch(() => null)}
+                      onClick={() => { setMenu(null); void navigator.clipboard?.writeText(run.id).catch(() => null); }}
                     />
                     {menu.folderId ? (
                       <MenuItem
                         label="Remove from folder"
-                        onClick={() => void removeFromFolder(run.id, menu.folderId as string)}
+                        onClick={() => { setMenu(null); void removeFromFolder(run.id, menu.folderId as string); }}
                       />
                     ) : null}
                     {groups.length > 0 ? (
@@ -374,10 +397,15 @@ export function InboxChatTree() {
                       </div>
                     ) : null}
                     {groups.map((group) => (
-                      <MenuItem key={group.id} label={group.name} indent onClick={() => void assignToFolder(run.id, group.id)} />
+                      <MenuItem
+                        key={group.id}
+                        label={group.name}
+                        indent
+                        onClick={() => { setMenu(null); void assignToFolder(run.id, group.id); }}
+                      />
                     ))}
                     <div className="my-1 border-t border-[var(--fx-border)]" />
-                    <MenuItem label="Archive" danger onClick={() => void archiveChat(run.id)} />
+                    <MenuItem label="Archive" danger onClick={() => { setMenu(null); void archiveChat(run.id); }} />
                   </>
                 );
               })()
@@ -386,14 +414,29 @@ export function InboxChatTree() {
                 if (!group) return null;
                 return (
                   <>
-                    <MenuItem label="Rename folder" onClick={() => void renameFolder(group)} />
-                    <MenuItem label="Delete folder" danger onClick={() => void removeFolder(group)} />
+                    <MenuItem label="Rename folder" onClick={() => { setMenu(null); void renameFolder(group); }} />
+                    <MenuItem label="Delete folder" danger onClick={() => { setMenu(null); void removeFolder(group); }} />
                   </>
                 );
               })()}
         </div>
       ) : null}
     </section>
+  );
+}
+
+function FolderIcon() {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      className="h-3 w-3 shrink-0 text-[var(--fx-muted)]"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      aria-hidden="true"
+    >
+      <path d="M3 6.5A1.5 1.5 0 0 1 4.5 5h4l2 2h7A1.5 1.5 0 0 1 19 8.5v8A1.5 1.5 0 0 1 17.5 18h-13A1.5 1.5 0 0 1 3 16.5z" />
+    </svg>
   );
 }
 
