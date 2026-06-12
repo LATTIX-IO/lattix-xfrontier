@@ -256,6 +256,76 @@ def test_send_run_message_continues_same_run(monkeypatch) -> None:
         store.run_details.pop(run_id, None)
 
 
+def test_pinned_agents_stay_engaged_on_followups(monkeypatch) -> None:
+    """Agents tagged into a run are PINNED: a follow-up with no @mentions
+    re-engages the whole roster (both agents respond, not just the last one),
+    and the run detail exposes the participant roster."""
+
+    def fake_chat(*_args: Any, **kwargs: Any):
+        system = str(kwargs.get("system_prompt") or "")
+        if "routing gate" in system:
+            return '{"respond": true, "reason": "team follow-up"}', {"mode": "live", "model": "test"}
+        # No @mentions in replies — engagement must come from pinning, not text.
+        return "Contribution recorded. No further handoff needed.", {"mode": "live", "model": "test"}
+
+    monkeypatch.setattr(main_module, "_run_openai_chat", fake_chat)
+
+    created = client.post(
+        "/workflow-runs",
+        json={
+            "prompt": "@demo-research-agent research it, then @demo-operations-agent plan it.",
+            "tokens": [
+                {"kind": "agent", "value": "demo-research-agent"},
+                {"kind": "agent", "value": "demo-operations-agent"},
+            ],
+        },
+        headers=ADMIN_HEADERS,
+    )
+    assert created.status_code == 200
+    run_id = created.json()["id"]
+    try:
+        def agents_since(start_index: int) -> set[str]:
+            return {
+                str((e.metadata or {}).get("selected_agent_name") or "")
+                for e in store.run_events.get(run_id, [])[start_index:]
+                if e.type == "agent_message" and not (e.metadata or {}).get("declined")
+            }
+
+        # Kickoff completes with the synthesis message; both pinned agents spoke.
+        for _ in range(150):
+            if any((e.metadata or {}).get("synthesis") for e in store.run_events.get(run_id, [])):
+                break
+            time.sleep(0.1)
+        assert {"Demo Research Agent", "Demo Operations Agent"} <= agents_since(0)
+        marker = len(store.run_events[run_id])
+
+        sent = client.post(
+            f"/workflow-runs/{run_id}/messages",
+            json={"message": "run it again"},
+            headers=ADMIN_HEADERS,
+        )
+        assert sent.status_code == 200
+
+        for _ in range(150):
+            if {"Demo Research Agent", "Demo Operations Agent"} <= agents_since(marker):
+                break
+            time.sleep(0.1)
+        assert {"Demo Research Agent", "Demo Operations Agent"} <= agents_since(marker), (
+            "a mention-less follow-up must re-engage every pinned agent"
+        )
+
+        detail = client.get(f"/workflow-runs/{run_id}", headers=ADMIN_HEADERS)
+        assert detail.status_code == 200
+        participants = detail.json().get("participants") or {}
+        assert participants.get("user", {}).get("label") == "You"
+        roster_names = {a["name"] for a in participants.get("agents", [])}
+        assert {"Demo Research Agent", "Demo Operations Agent"} <= roster_names
+    finally:
+        store.runs.pop(run_id, None)
+        store.run_events.pop(run_id, None)
+        store.run_details.pop(run_id, None)
+
+
 def test_send_run_message_requires_text() -> None:
     runs = client.get("/workflow-runs", headers={"x-frontier-actor": "frontier-admin"}).json()
     if not runs:

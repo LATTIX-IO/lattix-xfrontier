@@ -246,9 +246,15 @@ export type ObservabilityDashboardResponse = {
   runs: ObservabilityRunTrace[];
 };
 
+export type RunParticipants = {
+  user: { label: string; active: boolean };
+  agents: Array<{ id: string; name: string; active: boolean }>;
+};
+
 export type WorkflowRunDetail = {
   artifacts: ArtifactSummary[];
   status: string;
+  participants?: RunParticipants;
   graph?: {
     nodes: Array<{ id: string; title: string; type: string; x: number; y: number; config?: Record<string, unknown> }>;
     links: Array<{ from: string; to: string; from_port?: string; to_port?: string }>;

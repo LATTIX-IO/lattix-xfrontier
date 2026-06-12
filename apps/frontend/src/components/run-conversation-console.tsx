@@ -16,6 +16,7 @@ import {
   getWorkflowRunLive,
   streamWorkflowRunEvents,
   submitApproval,
+  type RunParticipants,
   type WorkflowRunDetail,
 } from "@/lib/api";
 import type { AtfAlignmentReport, WorkflowRunEvent } from "@/types/frontier";
@@ -29,6 +30,57 @@ function agentAccentHue(name: string): number {
     hash = (hash * 31 + value.charCodeAt(i)) % 360;
   }
   return hash;
+}
+
+const MAX_VISIBLE_PARTICIPANT_AGENTS = 4;
+
+/** Avatar stack of everyone in this chat: the human plus each agent, with a
+ * green (active) / gray (idle) presence dot — modeled on member-stack UIs. */
+function ParticipantStack({ participants }: { participants?: RunParticipants }) {
+  const agents = participants?.agents ?? [];
+  const visible = agents.slice(0, MAX_VISIBLE_PARTICIPANT_AGENTS);
+  const overflow = agents.length - visible.length;
+
+  return (
+    <div className="flex items-center" aria-label="Chat participants">
+      <span
+        title={`${participants?.user.label ?? "You"} (human)`}
+        className="relative z-10 flex h-6 w-6 items-center justify-center rounded-full border border-[var(--ui-border)] bg-[hsl(var(--muted))] text-[hsl(var(--muted-foreground))]"
+      >
+        <svg viewBox="0 0 24 24" className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden>
+          <circle cx="12" cy="8" r="3.4" />
+          <path d="M5 19c1.4-3 4-4.5 7-4.5s5.6 1.5 7 4.5" />
+        </svg>
+        <span className="absolute -bottom-0.5 -left-0.5 h-2 w-2 rounded-full border border-[hsl(var(--background))] bg-[hsl(var(--state-success))]" />
+      </span>
+      {visible.map((agent, index) => {
+        const hue = agentAccentHue(agent.name);
+        return (
+          <span
+            key={agent.id}
+            title={`${agent.name} — ${agent.active ? "active" : "idle"}`}
+            style={{ background: `hsl(${hue} 68% 45%)`, zIndex: 9 - index }}
+            className="relative -ml-1.5 flex h-6 w-6 items-center justify-center rounded-full border border-[hsl(var(--background))] text-[10px] font-bold text-white"
+          >
+            {(agent.name.trim()[0] || "A").toUpperCase()}
+            <span
+              className={`absolute -bottom-0.5 -left-0.5 h-2 w-2 rounded-full border border-[hsl(var(--background))] ${
+                agent.active ? "bg-[hsl(var(--state-success))]" : "bg-[hsl(var(--muted-foreground))]"
+              }`}
+            />
+          </span>
+        );
+      })}
+      {overflow > 0 ? (
+        <span
+          title={`${overflow} more agent(s)`}
+          className="relative -ml-1.5 flex h-6 w-6 items-center justify-center rounded-full border border-[hsl(var(--background))] bg-[hsl(var(--muted))] text-[9px] font-semibold text-[var(--foreground)]"
+        >
+          +{overflow}
+        </span>
+      ) : null}
+    </div>
+  );
 }
 
 type Props = {
@@ -487,6 +539,7 @@ export function RunConversationConsole({ runId, run: initialRun, events: initial
           <span className="truncate text-sm font-semibold text-[var(--foreground)]">
             {kindLabel} <span className="fx-muted font-mono text-xs">· {runId.slice(0, 8)}</span>
           </span>
+          <ParticipantStack participants={run.participants} />
           {run.status === "Running" ? (
             <span className="fx-muted text-[11px]">live</span>
           ) : null}

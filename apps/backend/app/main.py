@@ -13629,14 +13629,62 @@ def _resolve_collaboration_turns(
     return _DEFAULT_COLLABORATION_TURNS
 
 
+def _run_participants(run_id: str) -> dict[str, Any]:
+    """Roster of who is in this run's conversation: the human plus every agent
+    that has participated (or been invited), with an active flag.
+
+    An agent is "active" when it has spoken since the user's latest message, or
+    the run is currently executing. This drives the participant avatar stack.
+    """
+    events = store.run_events.get(run_id, [])
+    last_user_index = -1
+    for index, event in enumerate(events):
+        if event.type == "user_message":
+            last_user_index = index
+
+    run = store.runs.get(run_id)
+    running = bool(run and run.status == "Running")
+
+    agents: list[dict[str, Any]] = []
+    seen: dict[str, dict[str, Any]] = {}
+    for index, event in enumerate(events):
+        meta = event.metadata or {}
+        if event.type != "agent_message" or not meta.get("selected_agent_id"):
+            continue
+        agent_id = str(meta["selected_agent_id"])
+        entry = seen.get(agent_id)
+        if entry is None:
+            entry = {
+                "id": agent_id,
+                "name": str(meta.get("selected_agent_name") or "Agent"),
+                "active": False,
+            }
+            seen[agent_id] = entry
+            agents.append(entry)
+        if index > last_user_index or running:
+            entry["active"] = True
+    return {"user": {"label": "You", "active": True}, "agents": agents}
+
+
 def _agent_decides_to_respond(
-    agent_def: "AgentDefinition", *, from_name: str, message: str, transcript: str
+    agent_def: "AgentDefinition",
+    *,
+    from_name: str,
+    message: str,
+    transcript: str,
+    pinned: bool = False,
 ) -> dict[str, Any]:
     """The mention-gate: a called agent decides whether it needs to respond."""
+    pinned_note = (
+        "You are a pinned member of this run's team — the message is addressed to the whole "
+        "team, so respond with your part unless you genuinely have nothing new to add. "
+        if pinned
+        else ""
+    )
     prompt = (
         f"You are the agent '{agent_def.name}'. In a multi-agent run, {from_name} addressed "
         f'you:\n\n"{message[:1500]}"\n\nRecent conversation:\n{transcript[:2000]}\n\n'
-        "Decide whether YOU specifically need to respond. Respond only if you can add "
+        f"{pinned_note}Decide whether YOU specifically need to respond. Respond if you can add "
         "something the others cannot, or you were asked a direct question. Reply with ONLY a "
         'JSON object: {"respond": true|false, "reason": "<one short sentence>"}.'
     )
@@ -13669,22 +13717,28 @@ def _run_agent_collaboration(
     transcript_seed: str,
     max_turns: int,
     mask_secrets: bool,
+    seed_tokens: list[str] | None = None,
 ) -> int:
     """Mention-driven loop: agents @-call each other and decide whether to respond.
 
     Each invoked agent's message threads under the message that called it
     (``parent_event_id``); all share the opening message's ``thread_id``. Bounded
     by ``max_turns`` and a per-(agent, parent) visited set so it always terminates.
+
+    ``seed_tokens`` are pinned roster members invoked even without an @mention in
+    the seed text — so a run's tagged team stays engaged across follow-ups.
     """
     turns = 0
     transcript_lines = [transcript_seed]
     visited: set[tuple[str, str]] = set()
-    queue: list[tuple[str, str, str, str]] = [
-        (token, root_event_id, initial_agent_name, seed_text)
+    queue: list[tuple[str, str, str, str, bool]] = [
+        (token, root_event_id, initial_agent_name, seed_text, False)
         for token in _extract_agent_mentions(seed_text)
     ]
+    for token in seed_tokens or []:
+        queue.append((token, root_event_id, initial_agent_name, seed_text, True))
     while queue and turns < max_turns:
-        token, parent_event_id, from_name, message_text = queue.pop(0)
+        token, parent_event_id, from_name, message_text, pinned = queue.pop(0)
         agent_def = _resolve_published_agent_definition(token)
         if agent_def is None:
             continue
@@ -13697,7 +13751,11 @@ def _run_agent_collaboration(
 
         transcript = "\n".join(transcript_lines[-8:])
         decision = _agent_decides_to_respond(
-            agent_def, from_name=from_name, message=message_text, transcript=transcript
+            agent_def,
+            from_name=from_name,
+            message=message_text,
+            transcript=transcript,
+            pinned=pinned,
         )
         turns += 1
 
@@ -13769,7 +13827,7 @@ def _run_agent_collaboration(
         )
         transcript_lines.append(f"{agent_def.name}: {output}")
         for next_token in _extract_agent_mentions(output):
-            queue.append((next_token, event_id, agent_def.name, output))
+            queue.append((next_token, event_id, agent_def.name, output, False))
 
     # Final synthesis: the lead agent reasons over the whole exchange and states
     # the conclusion mapped back to the user's intent, so the run converges on a
@@ -14458,6 +14516,9 @@ def create_workflow_run(
                         transcript_seed=f"{selected_agent}: {response_text}",
                         max_turns=_resolve_collaboration_turns(selected_agent_definition, payload),
                         mask_secrets=store.platform_settings.mask_secrets_in_events,
+                        # Every requested agent is pinned to the run's team, even
+                        # if the model's reply doesn't repeat their @mention.
+                        seed_tokens=requested_agents[1:],
                     )
                 except Exception:  # noqa: BLE001 - collaboration is best-effort
                     pass
@@ -14615,23 +14676,38 @@ def send_run_message(
         )
     )
 
-    # The conversation's agent: an explicit @mention wins, else the agent that
-    # has been answering this run, else the default chat agent.
+    # Agents tagged into a run are PINNED: the whole roster stays engaged on
+    # follow-ups instead of reverting to a single responder. Roster = every
+    # agent that has participated, in first-appearance order.
+    roster: list[AgentDefinition] = []
+    roster_ids: set[str] = set()
+    for event in events:
+        meta = event.metadata or {}
+        if event.type == "agent_message" and meta.get("selected_agent_id"):
+            roster_agent = store.agent_definitions.get(str(meta["selected_agent_id"]))
+            if roster_agent is not None and roster_agent.id not in roster_ids:
+                roster_ids.add(roster_agent.id)
+                roster.append(roster_agent)
+
+    # Primary responder: an explicit @mention wins, else the run's original
+    # primary (first roster agent), else the default chat agent.
     agent_def = None
     for token in _extract_agent_mentions(message):
         mentioned = _resolve_published_agent_definition(token)
         if mentioned is not None:
             agent_def = mentioned
+            if mentioned.id not in roster_ids:
+                roster_ids.add(mentioned.id)
+                roster.append(mentioned)
             break
-    if agent_def is None:
-        for event in reversed(events):
-            meta = event.metadata or {}
-            if event.type == "agent_message" and meta.get("selected_agent_id"):
-                agent_def = store.agent_definitions.get(str(meta["selected_agent_id"]))
-                if agent_def is not None:
-                    break
+    if agent_def is None and roster:
+        agent_def = roster[0]
     if agent_def is None:
         agent_def = _ensure_default_chat_agent_present(actor="system/default-chat-agent")
+
+    pinned_seed_tokens = [
+        _slugify(member.name) for member in roster if member.id != agent_def.id
+    ]
 
     run.status = "Running"
     run.progressLabel = "Responding"
@@ -14702,6 +14778,8 @@ def send_run_message(
                         transcript_seed=f"{captured_agent.name}: {response_text}",
                         max_turns=_resolve_collaboration_turns(captured_agent, payload),
                         mask_secrets=store.platform_settings.mask_secrets_in_events,
+                        # The run's pinned roster stays engaged on every follow-up.
+                        seed_tokens=pinned_seed_tokens,
                     )
                 except Exception:  # noqa: BLE001 - collaboration is best-effort
                     pass
@@ -14843,7 +14921,8 @@ def get_workflow_run(run_id: str, request: Request) -> dict[str, Any]:
         if detail_changed:
             store.run_details[run_id] = detail
             _persist_store_state()
-        return detail
+        # Participants are computed fresh per read (active flags change turn to turn).
+        return {**detail, "participants": _run_participants(run_id)}
 
     payload: dict[str, Any] = {}
     for event in store.run_events.get(run_id, []):
@@ -14958,7 +15037,7 @@ def get_workflow_run(run_id: str, request: Request) -> dict[str, Any]:
     }
     store.run_details[run_id] = detail
 
-    return detail
+    return {**detail, "participants": _run_participants(run_id)}
 
 
 @app.get("/workflow-runs/{run_id}/events")
