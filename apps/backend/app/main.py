@@ -14581,6 +14581,158 @@ def get_workflow_runs(request: Request, status: str | None = None) -> list[dict[
     return [item.model_dump() for item in items]
 
 
+@app.post("/workflow-runs/{run_id}/messages")
+def send_run_message(
+    run_id: str, request: Request, payload: dict[str, Any] = Body(default_factory=dict)
+) -> dict[str, Any]:
+    """Continue an existing run: append the user's message to THIS run's
+    conversation and respond in place, instead of spawning a new linked run."""
+    actor = _enforce_request_authn(request, payload=payload, action="workflow.run.message")
+    _enforce_run_access(request, actor, run_id, action="workflow.run.message")
+    _enforce_emergency_write_policy("workflow.run.message", actor)
+    run = store.runs.get(run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="Run not found")
+    message = str(payload.get("message") or "").strip()
+    if not message:
+        raise HTTPException(status_code=400, detail="A message is required")
+
+    blocked_terms = _text_contains_blocked_keywords(
+        message, store.platform_settings.global_blocked_keywords
+    )
+    if blocked_terms:
+        raise HTTPException(status_code=400, detail="Message blocked by keyword policy")
+
+    events = store.run_events.setdefault(run_id, [])
+    events.append(
+        WorkflowRunEvent(
+            id=f"evt-{uuid4()}",
+            type="user_message",
+            title="Message",
+            summary=message,
+            createdAt=_now_iso(),
+            metadata={"actor": actor},
+        )
+    )
+
+    # The conversation's agent: an explicit @mention wins, else the agent that
+    # has been answering this run, else the default chat agent.
+    agent_def = None
+    for token in _extract_agent_mentions(message):
+        mentioned = _resolve_published_agent_definition(token)
+        if mentioned is not None:
+            agent_def = mentioned
+            break
+    if agent_def is None:
+        for event in reversed(events):
+            meta = event.metadata or {}
+            if event.type == "agent_message" and meta.get("selected_agent_id"):
+                agent_def = store.agent_definitions.get(str(meta["selected_agent_id"]))
+                if agent_def is not None:
+                    break
+    if agent_def is None:
+        agent_def = _ensure_default_chat_agent_present(actor="system/default-chat-agent")
+
+    run.status = "Running"
+    run.progressLabel = "Responding"
+    run.updatedAt = "just now"
+
+    # Recent conversation turns give the model the session context.
+    recent: list[str] = []
+    for event in events[-12:]:
+        meta = event.metadata or {}
+        if event.type == "user_message":
+            recent.append(f"User: {meta.get('full_text') or event.summary}")
+        elif event.type == "agent_message" and not meta.get("declined"):
+            speaker = meta.get("selected_agent_name") or "Agent"
+            recent.append(f"{speaker}: {meta.get('full_text') or event.summary}")
+    transcript = "\n".join(recent[-10:])
+    captured_agent = agent_def
+
+    def _respond() -> None:
+        try:
+            system_prompt = _augment_system_prompt_with_skills(
+                _resolve_agent_system_prompt(
+                    captured_agent, requested_token=_slugify(captured_agent.name)
+                )[0]
+            )
+            user_prompt = (
+                f"Conversation so far:\n{transcript}\n\nNew message from the user:\n{message}\n\n"
+                "Respond to the user's new message in the context of this conversation. Reason "
+                "about what they are asking before answering; give a complete, self-contained reply."
+            )
+            response_text, model_meta = _run_openai_chat(
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                model=_resolve_agent_chat_model(captured_agent),
+                temperature=0.3,
+            )
+            display = (
+                _redact_sensitive_text(response_text)
+                if store.platform_settings.mask_secrets_in_events
+                else response_text
+            )
+            summary, _meta = _truncate_text_with_metadata(display)
+            event_id = f"evt-{uuid4()}"
+            store.run_events[run_id].append(
+                WorkflowRunEvent(
+                    id=event_id,
+                    type="agent_message",
+                    title=f"{captured_agent.name} response",
+                    summary=summary,
+                    createdAt=_now_iso(),
+                    metadata={
+                        "model": model_meta,
+                        "selected_agent_id": captured_agent.id,
+                        "selected_agent_name": captured_agent.name,
+                        "thread_id": event_id,
+                        "full_text": display,
+                    },
+                )
+            )
+            live = str(model_meta.get("mode")) == "live"
+            if live:
+                try:
+                    _run_agent_collaboration(
+                        run_id=run_id,
+                        root_event_id=event_id,
+                        initial_agent_id=captured_agent.id,
+                        initial_agent_name=captured_agent.name,
+                        seed_text=f"{message}\n{response_text}",
+                        transcript_seed=f"{captured_agent.name}: {response_text}",
+                        max_turns=_resolve_collaboration_turns(captured_agent, payload),
+                        mask_secrets=store.platform_settings.mask_secrets_in_events,
+                    )
+                except Exception:  # noqa: BLE001 - collaboration is best-effort
+                    pass
+            current = store.runs.get(run_id)
+            if current is not None:
+                current.status = "Done" if live else "Failed"
+                current.progressLabel = "Complete" if live else "Provider unavailable"
+                current.updatedAt = "just now"
+            _persist_store_state()
+        except Exception as exc:  # noqa: BLE001
+            store.run_events.setdefault(run_id, []).append(
+                WorkflowRunEvent(
+                    id=f"evt-{uuid4()}",
+                    type="error",
+                    title="Message handling failed",
+                    summary=str(exc)[:300],
+                    createdAt=_now_iso(),
+                )
+            )
+            current = store.runs.get(run_id)
+            if current is not None:
+                current.status = "Failed"
+                current.progressLabel = "Message error"
+            _persist_store_state()
+
+    _RUN_EXECUTOR.submit(_respond)
+    _append_audit_event("workflow.run.message", actor, "allowed", {"run_id": run_id})
+    _persist_store_state()
+    return {"ok": True, "run_id": run_id}
+
+
 @app.post("/workflow-runs/{run_id}/rename")
 def rename_workflow_run(
     run_id: str, request: Request, payload: dict[str, Any] = Body(default_factory=dict)

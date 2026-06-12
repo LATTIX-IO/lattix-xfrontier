@@ -122,6 +122,12 @@ _ROUTE_ACCESS_RULES: tuple[RouteAccessRule, ...] = (
     ),
     RouteAccessRule(
         ("POST",),
+        "/workflow-runs/{run_id}/messages",
+        RouteAccessCategory.AUTHENTICATED_MUTATE,
+        "workflow.run.message",
+    ),
+    RouteAccessRule(
+        ("POST",),
         "/workflow-runs/{run_id}/rename",
         RouteAccessCategory.AUTHENTICATED_MUTATE,
         "workflow.run.rename",

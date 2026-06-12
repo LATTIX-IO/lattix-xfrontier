@@ -190,14 +190,6 @@ export function RunConversationConsole({ runId, run: initialRun, events: initial
 
   const showTypingPlaceholder = run.status === "Running" && lastUserIndex > lastAgentIndex;
 
-  const recentContext = useMemo(() => {
-    return orderedEvents
-      .filter((event) => event.type === "user_message" || event.type === "agent_message")
-      .slice(-6)
-      .map((event) => `${event.type === "user_message" ? "User" : "Agent"}: ${event.summary}`)
-      .join("\n");
-  }, [orderedEvents]);
-
   const filteredEvents = useMemo(() => {
     const query = searchQuery.trim().toLowerCase();
     return orderedEvents.filter((event) => {
@@ -726,9 +718,9 @@ export function RunConversationConsole({ runId, run: initialRun, events: initial
               ) : null}
             </div>
 
-            <div className="sticky bottom-0 border-t border-[var(--ui-border)] bg-[hsl(var(--background)/0.86)] px-4 py-3 shadow-[0_-8px_24px_rgba(0,0,0,0.08)] backdrop-blur-md">
+            <div className="sticky bottom-0 bg-[hsl(var(--background)/0.86)] px-4 py-3 backdrop-blur-md">
               <div className="mx-auto w-full max-w-[880px]">
-                <RunFollowupComposer runId={runId} recentContext={recentContext} />
+                <RunFollowupComposer runId={runId} />
               </div>
             </div>
           </section>

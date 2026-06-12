@@ -189,6 +189,83 @@ def test_endpoint_run_triggers_multi_agent_collaboration(monkeypatch) -> None:
         store.run_details.pop(run_id, None)
 
 
+def test_send_run_message_continues_same_run(monkeypatch) -> None:
+    """POST /workflow-runs/{id}/messages appends to THIS run's conversation and
+    responds in place — no new run is spawned."""
+
+    def fake_chat(*_args: Any, **kwargs: Any):
+        system = str(kwargs.get("system_prompt") or "")
+        if "routing gate" in system:
+            return '{"respond": false, "reason": "n/a"}', {"mode": "live", "model": "test"}
+        return "Here is my in-run reply.", {"mode": "live", "model": "test"}
+
+    monkeypatch.setattr(main_module, "_run_openai_chat", fake_chat)
+
+    created = client.post(
+        "/workflow-runs",
+        json={"prompt": "Start a simple chat task."},
+        headers=ADMIN_HEADERS,
+    )
+    assert created.status_code == 200
+    run_id = created.json()["id"]
+    try:
+        # Wait for the initial execution to land its agent message.
+        for _ in range(80):
+            if any(e.type == "agent_message" for e in store.run_events.get(run_id, [])):
+                break
+            time.sleep(0.1)
+        before_agent_msgs = sum(
+            1 for e in store.run_events.get(run_id, []) if e.type == "agent_message"
+        )
+        run_count_before = len(store.runs)
+
+        sent = client.post(
+            f"/workflow-runs/{run_id}/messages",
+            json={"message": "Thanks — now summarize that in one line."},
+            headers=ADMIN_HEADERS,
+        )
+        assert sent.status_code == 200
+        assert sent.json()["run_id"] == run_id
+
+        # The user's message lands in this run immediately.
+        assert any(
+            e.type == "user_message" and "summarize" in e.summary
+            for e in store.run_events[run_id]
+        )
+
+        # The agent reply lands in this same run (background worker).
+        reply = None
+        for _ in range(80):
+            agent_msgs = [e for e in store.run_events[run_id] if e.type == "agent_message"]
+            if len(agent_msgs) > before_agent_msgs:
+                reply = agent_msgs[-1]
+                break
+            time.sleep(0.1)
+        assert reply is not None, "in-run reply should be appended to the same run"
+        assert reply.metadata.get("full_text"), "in-run replies must carry full_text"
+        assert len(store.runs) == run_count_before, "no new run should be created"
+
+        for _ in range(50):
+            if store.runs[run_id].status == "Done":
+                break
+            time.sleep(0.1)
+        assert store.runs[run_id].status == "Done"
+    finally:
+        store.runs.pop(run_id, None)
+        store.run_events.pop(run_id, None)
+        store.run_details.pop(run_id, None)
+
+
+def test_send_run_message_requires_text() -> None:
+    runs = client.get("/workflow-runs", headers={"x-frontier-actor": "frontier-admin"}).json()
+    if not runs:
+        return
+    response = client.post(
+        f"/workflow-runs/{runs[0]['id']}/messages", json={}, headers=ADMIN_HEADERS
+    )
+    assert response.status_code == 400
+
+
 def test_collaboration_respects_turn_cap(monkeypatch) -> None:
     _wire_fakes(monkeypatch, gate_respond=True)
     run_id = "collab-cap-test"

@@ -1,37 +1,15 @@
 "use client";
 
 import { FormEvent, KeyboardEvent, useEffect, useMemo, useRef, useState } from "react";
-import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { createWorkflowRun, getAgentDefinitions, getPublishedWorkflows } from "@/lib/api";
+import { getAgentDefinitions, getPublishedWorkflows, sendRunMessage } from "@/lib/api";
 import type { AgentDefinition, WorkflowDefinition } from "@/types/frontier";
-
-type TokenKind = "data" | "tag" | "workflow" | "agent";
-
-type ParsedToken = {
-  kind: TokenKind;
-  value: string;
-};
 
 type MentionSuggestion = {
   trigger: "@" | "/";
   value: string;
   label: string;
 };
-
-function parseTokens(text: string): ParsedToken[] {
-  const matches = text.match(/([$#/@])[^\s$#/@]+/g) ?? [];
-
-  return matches.map((token) => {
-    const prefix = token[0];
-    const value = token.slice(1);
-
-    if (prefix === "$") return { kind: "data", value };
-    if (prefix === "#") return { kind: "tag", value };
-    if (prefix === "/") return { kind: "workflow", value };
-    return { kind: "agent", value };
-  });
-}
 
 function slugify(value: string): string {
   return value
@@ -72,10 +50,9 @@ function getActiveMentionToken(text: string, cursor: number): { trigger: "@" | "
 
 type Props = {
   runId: string;
-  recentContext: string;
 };
 
-export function RunFollowupComposer({ runId, recentContext }: Props) {
+export function RunFollowupComposer({ runId }: Props) {
   const router = useRouter();
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const [draft, setDraft] = useState("");
@@ -85,8 +62,6 @@ export function RunFollowupComposer({ runId, recentContext }: Props) {
   const [publishedWorkflows, setPublishedWorkflows] = useState<WorkflowDefinition[]>([]);
   const [activeSuggestionIndex, setActiveSuggestionIndex] = useState(0);
   const [submitError, setSubmitError] = useState<string | null>(null);
-  const [submitInfo, setSubmitInfo] = useState<string | null>(null);
-  const [createdRunId, setCreatedRunId] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -162,6 +137,13 @@ export function RunFollowupComposer({ runId, recentContext }: Props) {
   }
 
   function handleTextareaKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
+    // Ctrl+Enter (or Cmd+Enter) sends; a plain Enter inserts a newline.
+    if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
+      event.preventDefault();
+      void submitMessage();
+      return;
+    }
+
     if (!activeMention || mentionSuggestions.length === 0) {
       return;
     }
@@ -193,68 +175,33 @@ export function RunFollowupComposer({ runId, recentContext }: Props) {
     }
   }
 
-  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
+  async function submitMessage() {
     const message = draft.trim();
-    if (!message) {
+    if (!message || isSubmitting) {
       return;
     }
     setSubmitError(null);
-    setSubmitInfo(null);
-    setCreatedRunId(null);
-
-    const parsedTokens = parseTokens(message);
-    const publishedAgentSlugs = new Set(publishedAgents.map((agent) => slugify(agent.name) || slugify(agent.id)));
-    const publishedWorkflowSlugs = new Set(publishedWorkflows.map((workflow) => slugify(workflow.name) || slugify(workflow.id)));
-
-    const filteredTokens = parsedTokens.filter((token) => {
-      if (token.kind === "agent") {
-        return publishedAgentSlugs.has(token.value);
-      }
-      if (token.kind === "workflow") {
-        return publishedWorkflowSlugs.has(token.value);
-      }
-      return true;
-    });
-
-    const contextualPrompt = recentContext
-      ? `Previous run context (${runId}):\n${recentContext}\n\nFollow-up request:\n${message}`
-      : message;
-
-    const titleSnippet = message.length > 64 ? `${message.slice(0, 61)}...` : message;
 
     try {
       setIsSubmitting(true);
-      const nextRun = await createWorkflowRun({
-        title: `Follow-up: ${titleSnippet}`,
-        prompt: contextualPrompt,
-        tokens: filteredTokens,
-        context: {
-          source_run_id: runId,
-          mode: "follow_up",
-        },
-        source_run_id: runId,
-        follow_up_to_run_id: runId,
-      }, {
-        timeoutMs: 120000,
-      });
-
-      setCreatedRunId(nextRun.id);
-      if (nextRun.id === runId) {
-        setSubmitInfo("Follow-up sent. Refreshing this run timeline...");
-        router.refresh();
-      } else {
-        setSubmitInfo(`Follow-up sent. Opening run ${nextRun.id}...`);
-        router.push(`/runs/${nextRun.id}`);
-        router.refresh();
-      }
+      // Sends into THIS run's conversation; the live event stream renders the
+      // user message and the agent's reply in place.
+      await sendRunMessage(runId, message);
       setDraft("");
+      window.dispatchEvent(new CustomEvent("frontier:runs-changed"));
+      router.refresh();
+      requestAnimationFrame(() => textareaRef.current?.focus());
     } catch (error) {
-      const messageText = error instanceof Error ? error.message : "Unable to start follow-up run.";
-      setSubmitError(`${messageText} If the run is still processing, wait a few seconds and try again.`);
+      const messageText = error instanceof Error ? error.message : "Unable to send the message.";
+      setSubmitError(messageText);
     } finally {
       setIsSubmitting(false);
     }
+  }
+
+  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    await submitMessage();
   }
 
   return (
@@ -310,19 +257,13 @@ export function RunFollowupComposer({ runId, recentContext }: Props) {
 
       <div className="flex items-center justify-between gap-2">
         <p className="fx-muted text-[11px]">
-          Published @agents and /workflows are supported. Without either, this routes through the default chat agent.
+          Ctrl+Enter to send · Enter for a new line · @agent to address an agent
         </p>
         <button type="submit" disabled={isSubmitting} className="fx-btn-primary rounded-xl px-3 py-2 text-xs font-medium disabled:opacity-60">
           {isSubmitting ? "Sending…" : "Send"}
         </button>
       </div>
 
-      {submitInfo ? <p className="text-xs text-[hsl(var(--state-success))]">{submitInfo}</p> : null}
-      {createdRunId ? (
-        <p className="text-xs text-[var(--foreground)]">
-          Run created: <Link href={`/runs/${createdRunId}`} className="underline decoration-dotted underline-offset-2">{createdRunId}</Link>
-        </p>
-      ) : null}
       {submitError ? <p className="text-xs text-[var(--fx-danger)]">{submitError}</p> : null}
     </form>
   );

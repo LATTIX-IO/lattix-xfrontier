@@ -991,6 +991,16 @@ export async function renameWorkflowRun(id: string, title: string): Promise<{ id
   });
 }
 
+export async function sendRunMessage(
+  runId: string,
+  message: string,
+): Promise<{ ok: boolean; run_id: string }> {
+  return strictFetch(`/workflow-runs/${encodeURIComponent(runId)}/messages`, {
+    method: "POST",
+    body: JSON.stringify({ message }),
+  });
+}
+
 export async function getArtifacts(): Promise<ArtifactSummary[]> {
   return safeFetch<ArtifactSummary[]>("/artifacts", mockArtifacts);
 }
