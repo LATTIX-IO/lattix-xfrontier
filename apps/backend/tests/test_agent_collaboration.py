@@ -94,6 +94,8 @@ def test_collaboration_threads_responses_under_parent(monkeypatch) -> None:
         assert evt.metadata["parent_event_id"] == "root-evt"
         assert evt.metadata["thread_id"] == "root-evt"
         assert evt.metadata["decision"]["respond"] is True
+        # The full, untruncated answer must be carried for the chat view.
+        assert evt.metadata.get("full_text"), "collaboration messages must carry full_text"
     finally:
         store.run_events.pop(run_id, None)
 

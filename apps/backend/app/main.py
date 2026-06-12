@@ -13728,10 +13728,13 @@ def _run_agent_collaboration(
             _resolve_agent_system_prompt(agent_def, requested_token=token)[0]
         )
         collaboration_prompt = (
-            f"You are collaborating in a multi-agent run. {from_name} said:\n\n"
+            f"You are collaborating with other agents on the user's request. {from_name} said:\n\n"
             f"{message_text[:3000]}\n\nConversation so far:\n{transcript}\n\n"
-            "Respond concisely in your area of expertise. If you need another agent, mention "
-            "them with @their-handle."
+            "First reason about what the user actually needs and what the prior turns established. "
+            "Then contribute your specific expertise to move the work toward a correct, complete "
+            "answer — add new substance and address gaps, do not merely agree or restate. Only "
+            "@-mention another agent (by @their-handle) when their input is genuinely required "
+            "next; otherwise give your best complete answer for your part."
         )
         output, meta = _run_openai_chat(
             system_prompt=agent_system,
@@ -13759,12 +13762,61 @@ def _run_agent_collaboration(
                     "parent_event_id": parent_event_id,
                     "thread_id": root_event_id,
                     "decision": decision,
+                    # Full, untruncated answer for the chat view (summary is for previews).
+                    "full_text": display,
                 },
             )
         )
         transcript_lines.append(f"{agent_def.name}: {output}")
         for next_token in _extract_agent_mentions(output):
             queue.append((next_token, event_id, agent_def.name, output))
+
+    # Final synthesis: the lead agent reasons over the whole exchange and states
+    # the conclusion mapped back to the user's intent, so the run converges on a
+    # clear answer instead of trailing off.
+    if turns > 0:
+        primary_def = store.agent_definitions.get(initial_agent_id)
+        if primary_def is not None:
+            transcript = "\n".join(transcript_lines[-12:])
+            synthesis_system = _augment_system_prompt_with_skills(
+                _resolve_agent_system_prompt(primary_def, requested_token=_slugify(primary_def.name))[0]
+            )
+            synthesis_prompt = (
+                "The multi-agent exchange below is complete. As the lead, reason over it and write "
+                "the FINAL answer for the user: state the conclusion, how it maps to the original "
+                "ask, the key supporting points contributed by each agent, and any caveats or open "
+                "items. Be complete and self-contained — this is what the user reads as the result."
+                f"\n\nExchange:\n{transcript}"
+            )
+            synthesis_output, synthesis_meta = _run_openai_chat(
+                system_prompt=synthesis_system,
+                user_prompt=synthesis_prompt,
+                model=_resolve_agent_chat_model(primary_def),
+                temperature=0.3,
+            )
+            if str(synthesis_meta.get("mode")) == "live":
+                synthesis_display = (
+                    _redact_sensitive_text(synthesis_output) if mask_secrets else synthesis_output
+                )
+                synthesis_summary, _ = _truncate_text_with_metadata(synthesis_display)
+                store.run_events[run_id].append(
+                    WorkflowRunEvent(
+                        id=f"evt-{uuid4()}",
+                        type="agent_message",
+                        title=f"{primary_def.name} — conclusion",
+                        summary=synthesis_summary,
+                        createdAt=_now_iso(),
+                        metadata={
+                            "model": synthesis_meta,
+                            "selected_agent_id": primary_def.id,
+                            "selected_agent_name": primary_def.name,
+                            "thread_id": root_event_id,
+                            "full_text": synthesis_display,
+                            "synthesis": True,
+                        },
+                    )
+                )
+                turns += 1
     return turns
 
 
@@ -14349,6 +14401,8 @@ def create_workflow_run(
                             "selected_agent_name": selected_agent,
                             "thread_id": primary_agent_event_id,
                             "system_prompt_source": system_prompt_source,
+                            # Full, untruncated answer for the chat view.
+                            "full_text": event_response_text,
                             "summary_truncated": bool(event_response_meta["truncated"]),
                             "summary_original_length": int(event_response_meta["original_length"]),
                             "summary_max_chars": int(event_response_meta["max_chars"]),

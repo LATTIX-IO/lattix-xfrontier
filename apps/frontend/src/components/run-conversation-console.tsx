@@ -47,10 +47,6 @@ function toStringList(value: unknown): string[] {
   return value.map((item) => String(item ?? "").trim()).filter(Boolean);
 }
 
-function normalizeComparableText(value: string): string {
-  return String(value || "").replace(/\s+/g, " ").trim();
-}
-
 function matchesEventFilter(event: WorkflowRunEvent, filter: EventFilter): boolean {
   if (filter === "all") {
     return true;
@@ -578,10 +574,6 @@ export function RunConversationConsole({ runId, run: initialRun, events: initial
                       ? eventReasoningMeta.summaries.map((item) => String(item ?? "").trim()).filter(Boolean)
                       : [];
 
-                  const showTraceOutput =
-                    Boolean(trace?.output?.trim()) &&
-                    normalizeComparableText(trace?.output ?? "") !== normalizeComparableText(event.summary);
-
                   const isUserMessage = event.type === "user_message";
                   const isAgentMessage = event.type === "agent_message";
                   const isChatTurn = isUserMessage || isAgentMessage;
@@ -617,9 +609,18 @@ export function RunConversationConsole({ runId, run: initialRun, events: initial
                     event.metadata && typeof event.metadata.decision === "object"
                       ? String((event.metadata.decision as Record<string, unknown>).reason ?? "")
                       : "";
+                  const isSynthesis = Boolean(event.metadata?.synthesis);
+                  const fullText =
+                    typeof event.metadata?.full_text === "string"
+                      ? (event.metadata.full_text as string)
+                      : "";
+                  const messageBody = fullText.trim() ? fullText : event.summary;
+                  const avatarInitial = (agentName.trim()[0] || "A").toUpperCase();
                   const bubbleClass = isUserMessage
                     ? "border-[hsl(var(--primary)/0.45)] bg-[hsl(var(--primary)/0.16)]"
-                    : "border-[var(--ui-border)] bg-[hsl(var(--card)/0.98)]";
+                    : isSynthesis
+                      ? "border-[hsl(var(--accent)/0.5)] bg-[hsl(var(--accent)/0.08)]"
+                      : "border-[var(--ui-border)] bg-[hsl(var(--card)/0.98)]";
                   const bubbleStyle =
                     agentHue !== null ? { borderLeft: `3px solid hsl(${agentHue} 68% 55%)` } : undefined;
 
@@ -645,12 +646,18 @@ export function RunConversationConsole({ runId, run: initialRun, events: initial
                             {agentHue !== null ? (
                               <span
                                 aria-hidden
-                                className="inline-block h-2 w-2 rounded-full"
+                                className="inline-flex h-4 w-4 items-center justify-center rounded-full text-[9px] font-bold text-[hsl(var(--card))]"
                                 style={{ background: `hsl(${agentHue} 68% 55%)` }}
-                              />
+                              >
+                                {avatarInitial}
+                              </span>
                             ) : null}
                             {roleLabel}
-                            {isReply ? (
+                            {isSynthesis ? (
+                              <span className="rounded-full border border-[hsl(var(--accent)/0.6)] px-1.5 py-0 text-[9px] uppercase tracking-wide text-[hsl(var(--accent))]">
+                                Conclusion
+                              </span>
+                            ) : isReply ? (
                               <span className="rounded-full border border-[var(--ui-border)] px-1.5 py-0 text-[9px] uppercase tracking-wide fx-muted">
                                 ↳ thread
                               </span>
@@ -658,7 +665,7 @@ export function RunConversationConsole({ runId, run: initialRun, events: initial
                           </p>
                           <span className="fx-muted text-[11px] opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">{event.createdAt}</span>
                         </div>
-                        <MarkdownBlock content={event.summary} className="mt-1" />
+                        <MarkdownBlock content={messageBody} className="mt-1 leading-relaxed" />
 
                         {trace ? (
                           <details open={expandAllReasoning} className="mt-2 rounded-xl border border-[var(--ui-border)] bg-[hsl(var(--muted)/0.32)] px-2 py-1.5">
@@ -692,12 +699,6 @@ export function RunConversationConsole({ runId, run: initialRun, events: initial
                                 </div>
                               ) : null}
 
-                              {showTraceOutput ? (
-                                <div className="rounded-md border border-[var(--ui-border)] bg-[hsl(var(--card)/0.8)] p-2">
-                                  <p className="fx-muted text-[10px] uppercase tracking-wide">Full output</p>
-                                  <MarkdownBlock content={trace.output} className="mt-1" />
-                                </div>
-                              ) : null}
                             </div>
                           </details>
                         ) : null}
