@@ -104,6 +104,22 @@ export function InboxChatTree() {
     };
   }, []);
 
+  // Refetch when a run is created/changed elsewhere (e.g. the task composer),
+  // and poll lightly so new runs and status changes surface without a reload.
+  useEffect(() => {
+    const onChanged = () => {
+      void refresh();
+      // The run summary is written by the background worker; catch it shortly after.
+      window.setTimeout(() => void refresh(), 1200);
+    };
+    window.addEventListener("frontier:runs-changed", onChanged);
+    const interval = window.setInterval(() => void refresh(), 6000);
+    return () => {
+      window.removeEventListener("frontier:runs-changed", onChanged);
+      window.clearInterval(interval);
+    };
+  }, [refresh]);
+
   useEffect(() => {
     if (!menu) return;
     const close = () => setMenu(null);

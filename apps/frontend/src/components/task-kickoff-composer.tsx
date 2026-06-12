@@ -268,6 +268,8 @@ export function TaskKickoffComposer() {
       const result = await createWorkflowRun(payload);
       setCreatedRunId(result.id);
       setDraft("");
+      // Tell the nav chat tree (and any listeners) to refetch the run list.
+      window.dispatchEvent(new CustomEvent("frontier:runs-changed"));
       router.refresh();
     } catch {
       setSubmitError("Unable to start task run. Please verify backend connectivity and try again.");
