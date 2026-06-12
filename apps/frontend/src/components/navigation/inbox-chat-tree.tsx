@@ -73,6 +73,7 @@ export function InboxChatTree() {
   const [showNewFolder, setShowNewFolder] = useState(false);
   const [menu, setMenu] = useState<ContextMenuState | null>(null);
   const [dragOverFolder, setDragOverFolder] = useState<string | null>(null);
+  const [filterOpen, setFilterOpen] = useState(false);
 
   const refresh = useCallback(async () => {
     const [runList, groupList] = await Promise.all([
@@ -130,6 +131,13 @@ export function InboxChatTree() {
       window.removeEventListener("scroll", close, true);
     };
   }, [menu]);
+
+  useEffect(() => {
+    if (!filterOpen) return;
+    const close = () => setFilterOpen(false);
+    window.addEventListener("click", close);
+    return () => window.removeEventListener("click", close);
+  }, [filterOpen]);
 
   const runsById = useMemo(() => {
     const map = new Map<string, WorkflowRunSummary>();
@@ -248,50 +256,81 @@ export function InboxChatTree() {
 
   return (
     <section className="fx-nav-section mb-0">
-      <div className="flex items-center justify-between px-1.5 pb-1">
-        <h3 className="fx-nav-section-title mb-0 pb-0">Chats</h3>
-        <div className="flex items-center gap-1">
-          <select
-            value={groupBy}
-            onChange={(e) => setGroupBy(e.target.value as GroupBy)}
-            title="Group by"
-            className="fx-field h-5 rounded px-1 text-[10px]"
+      <div className="relative flex items-center justify-between px-1.5 pb-1">
+        <h3 className="fx-nav-section-title mb-0 flex items-center gap-1.5 pb-0">
+          Chats
+          {typeFilter !== null ? (
+            <span className="rounded-full border border-[hsl(var(--accent)/0.5)] px-1.5 py-0 text-[8px] normal-case tracking-normal text-[hsl(var(--accent))]">
+              {KIND_LABEL[typeFilter]}
+            </span>
+          ) : null}
+        </h3>
+        <div className="flex items-center gap-0.5">
+          <button
+            type="button"
+            aria-label="Filter and grouping"
+            title="Filter & grouping"
+            onClick={(e) => {
+              e.stopPropagation();
+              setFilterOpen((v) => !v);
+            }}
+            className={`relative rounded p-1 leading-none hover:bg-[var(--fx-nav-hover)] ${filterOpen ? "bg-[var(--fx-nav-hover)]" : ""}`}
           >
-            <option value="type">Type</option>
-            <option value="status">Status</option>
-            <option value="recency">Recency</option>
-            <option value="none">None</option>
-          </select>
+            <svg
+              viewBox="0 0 24 24"
+              className="h-3.5 w-3.5 text-[var(--fx-muted)]"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.8"
+              aria-hidden
+            >
+              <path d="M4 5h16l-6.5 7.5V18l-3 1.5v-7z" />
+            </svg>
+            {typeFilter !== null ? (
+              <span
+                aria-hidden
+                className="absolute -right-0.5 -top-0.5 h-1.5 w-1.5 rounded-full bg-[hsl(var(--accent))]"
+              />
+            ) : null}
+          </button>
           <button
             type="button"
             aria-label="New folder"
             title="New folder"
             onClick={() => setShowNewFolder((v) => !v)}
-            className="fx-btn-secondary rounded px-1.5 py-0.5 text-[11px] leading-none"
+            className="rounded p-1 text-[13px] leading-none text-[var(--fx-muted)] hover:bg-[var(--fx-nav-hover)] hover:text-[var(--foreground)]"
           >
             +
           </button>
         </div>
-      </div>
 
-      <div className="flex flex-wrap gap-1 px-1.5 pb-1">
-        <button
-          type="button"
-          onClick={() => setTypeFilter(null)}
-          className={`rounded-full border px-1.5 py-0.5 text-[9px] uppercase ${typeFilter === null ? "border-[hsl(var(--accent)/0.6)] text-[var(--foreground)]" : "border-[var(--ui-border)] fx-muted"}`}
-        >
-          All
-        </button>
-        {KIND_ORDER.map((kind) => (
-          <button
-            key={kind}
-            type="button"
-            onClick={() => setTypeFilter((c) => (c === kind ? null : kind))}
-            className={`rounded-full border px-1.5 py-0.5 text-[9px] uppercase ${typeFilter === kind ? "border-[hsl(var(--accent)/0.6)] text-[var(--foreground)]" : "border-[var(--ui-border)] fx-muted"}`}
+        {filterOpen ? (
+          <div
+            className="fx-panel absolute right-1 top-full z-40 mt-1 w-44 p-1 text-[11px] shadow-[0_10px_30px_rgba(0,0,0,0.5)]"
+            onClick={(e) => e.stopPropagation()}
           >
-            {KIND_LABEL[kind]}
-          </button>
-        ))}
+            <p className="px-2 pb-0.5 pt-1 text-[9px] font-semibold uppercase tracking-[0.12em] fx-muted">Show</p>
+            <FilterRow label="All types" active={typeFilter === null} onClick={() => setTypeFilter(null)} />
+            {KIND_ORDER.map((kind) => (
+              <FilterRow
+                key={kind}
+                label={KIND_LABEL[kind]}
+                active={typeFilter === kind}
+                onClick={() => setTypeFilter(kind)}
+              />
+            ))}
+            <div className="my-1 border-t border-[var(--fx-border)]" />
+            <p className="px-2 pb-0.5 text-[9px] font-semibold uppercase tracking-[0.12em] fx-muted">Group by</p>
+            {(["type", "status", "recency", "none"] as GroupBy[]).map((value) => (
+              <FilterRow
+                key={value}
+                label={value === "none" ? "None" : value.charAt(0).toUpperCase() + value.slice(1)}
+                active={groupBy === value}
+                onClick={() => setGroupBy(value)}
+              />
+            ))}
+          </div>
+        ) : null}
       </div>
 
       {showNewFolder ? (
@@ -448,6 +487,21 @@ export function InboxChatTree() {
         </div>
       ) : null}
     </section>
+  );
+}
+
+function FilterRow({ label, active, onClick }: { label: string; active: boolean; onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={`flex w-full items-center justify-between rounded px-2 py-1 text-left hover:bg-[var(--fx-nav-hover)] ${
+        active ? "font-medium text-[var(--foreground)]" : "fx-muted"
+      }`}
+    >
+      <span className="truncate">{label}</span>
+      {active ? <span aria-hidden>✓</span> : null}
+    </button>
   );
 }
 
