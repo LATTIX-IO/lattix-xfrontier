@@ -69,7 +69,18 @@ Write-Host "== cargo tauri build =="
 Push-Location $tauri
 try { & cargo tauri build; CheckExit "cargo tauri build" } finally { Pop-Location }
 
-$bundle = Join-Path $tauri "target/$triple/release/bundle"
-Write-Host "`n== DONE. Installers under: $bundle =="
-Get-ChildItem -Recurse $bundle -Include *.msi, *.exe | ForEach-Object { Write-Host "  $($_.FullName)" }
-Write-Host "`nSmartScreen will warn on the unsigned installer: click 'More info' -> 'Run anyway'."
+# cargo tauri build (no --target) writes to target/release/bundle; with a
+# --target it's target/<triple>/release/bundle. Search both.
+$installers = @(
+  (Join-Path $tauri "target/release/bundle"),
+  (Join-Path $tauri "target/$triple/release/bundle")
+) | Where-Object { Test-Path $_ } |
+  ForEach-Object { Get-ChildItem -Recurse $_ -Include *.msi, *.exe -ErrorAction SilentlyContinue }
+
+if ($installers) {
+  Write-Host "`n== DONE. Installers built: =="
+  $installers | ForEach-Object { Write-Host "  $($_.FullName)" }
+  Write-Host "`nSmartScreen will warn on the unsigned installer: click 'More info' -> 'Run anyway'."
+} else {
+  throw "Build finished but no .msi/.exe found under target/**/release/bundle."
+}
