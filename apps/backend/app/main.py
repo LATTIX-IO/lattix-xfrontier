@@ -1553,6 +1553,89 @@ def _mint_operator_session_token_from_casdoor_account(account: dict[str, Any]) -
     )
 
 
+# --------------------------------------------------------------------------- #
+# Native local-password auth (single-user desktop / local-native; no Casdoor).
+# The operator credential is stored under the app home; login/register mint a
+# local operator session token (admin+builder) — the same mechanism Casdoor uses.
+# --------------------------------------------------------------------------- #
+def _native_password_auth_enabled() -> bool:
+    if _local_casdoor_password_auth_enabled():
+        return False  # Casdoor path takes precedence when configured
+    profile = _active_runtime_profile().name
+    return profile in {"local-native"} or _local_authenticated_operator_bootstrap_enabled()
+
+
+def _native_app_home() -> Path:
+    explicit = str(os.getenv("FRONTIER_APP_HOME") or "").strip()
+    if explicit:
+        return Path(explicit)
+    sqlite_path = str(os.getenv("FRONTIER_SQLITE_STATE_PATH") or "").strip()
+    if sqlite_path:
+        try:
+            return Path(sqlite_path).resolve().parents[2]  # <home>/data/state/state.db -> <home>
+        except Exception:  # noqa: BLE001
+            pass
+    home = Path.home()
+    system = platform.system().lower()
+    if system == "windows":
+        base = Path(os.getenv("LOCALAPPDATA") or (home / "AppData" / "Local"))
+        return base / "Lattix" / "xFrontier"
+    if system == "darwin":
+        return home / "Library" / "Application Support" / "Lattix" / "xFrontier"
+    return home / ".local" / "share" / "lattix" / "xfrontier"
+
+
+def _native_account_file() -> Path:
+    return _native_app_home() / ".secrets" / "operator-account.json"
+
+
+def _native_hash_password(password: str, salt: bytes | None = None) -> tuple[str, str]:
+    import hashlib
+
+    salt = salt or os.urandom(16)
+    digest = hashlib.scrypt(password.encode("utf-8"), salt=salt, n=16384, r=8, p=1, dklen=32)
+    return salt.hex(), digest.hex()
+
+
+def _native_load_account() -> dict[str, Any] | None:
+    path = _native_account_file()
+    if not path.exists():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else None
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _native_verify_password(account: dict[str, Any], password: str) -> bool:
+    import hmac as _hmac
+
+    try:
+        salt = bytes.fromhex(str(account.get("salt") or ""))
+        _, computed = _native_hash_password(password, salt)
+        return _hmac.compare_digest(computed, str(account.get("hash") or ""))
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _mint_native_operator_token(username: str, *, display_name: str = "", email: str = "") -> str:
+    username = str(username or "operator").strip() or "operator"
+    claims = {
+        "actor": username,
+        "preferred_username": username,
+        "name": display_name or username,
+        "email": email,
+        "principal_type": "user",
+        "principal_id": f"user:local/{username}",
+        # admin + builder grant full local access (see _request_has_*_access).
+        "roles": ["member", "admin", "builder"],
+    }
+    return mint_runtime_token(
+        username, ttl_seconds=_operator_session_ttl_seconds(), additional_claims=claims
+    )
+
+
 def _bootstrap_default_agent_service_account_id(
     agent_id: str, agent_name: str, current_value: str = ""
 ) -> str:
@@ -13080,6 +13163,28 @@ def get_auth_session(request: Request) -> dict[str, Any]:
 
 @app.post("/auth/login")
 def login_with_local_password(payload: PasswordLoginRequest, request: Request) -> JSONResponse:
+    if _native_password_auth_enabled():
+        account = _native_load_account()
+        if not account:
+            raise HTTPException(
+                status_code=400, detail="No local account yet. Create one to get started."
+            )
+        username = str(payload.username or "").strip()
+        if username.lower() != str(account.get("username") or "").strip().lower() or (
+            not _native_verify_password(account, payload.password)
+        ):
+            raise HTTPException(status_code=401, detail="Invalid username or password.")
+        token = _mint_native_operator_token(
+            account["username"],
+            display_name=str(account.get("display_name") or ""),
+            email=str(account.get("email") or ""),
+        )
+        response = JSONResponse(
+            {"ok": True, "authenticated": True, "provider": "local-native", "mode": "password"}
+        )
+        _set_operator_session_cookie(response, request, token)
+        return response
+
     account = _authenticate_local_casdoor_user(payload.username, payload.password)
     token = _mint_operator_session_token_from_casdoor_account(account)
     response = JSONResponse(
@@ -13098,6 +13203,36 @@ def login_with_local_password(payload: PasswordLoginRequest, request: Request) -
 def register_with_local_password(
     payload: PasswordRegisterRequest, request: Request
 ) -> JSONResponse:
+    if _native_password_auth_enabled():
+        username = str(payload.username or "").strip()
+        if not username or not str(payload.password or "").strip():
+            raise HTTPException(status_code=400, detail="Username and password are required.")
+        salt_hex, hash_hex = _native_hash_password(payload.password)
+        account = {
+            "username": username,
+            "display_name": str(payload.display_name or "").strip() or username,
+            "email": str(payload.email or "").strip(),
+            "salt": salt_hex,
+            "hash": hash_hex,
+        }
+        path = _native_account_file()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(account), encoding="utf-8")
+        token = _mint_native_operator_token(
+            username, display_name=account["display_name"], email=account["email"]
+        )
+        response = JSONResponse(
+            {
+                "ok": True,
+                "authenticated": True,
+                "provider": "local-native",
+                "mode": "password",
+                "created": True,
+            }
+        )
+        _set_operator_session_cookie(response, request, token)
+        return response
+
     account = _provision_local_casdoor_user(
         username=payload.username,
         email=payload.email,

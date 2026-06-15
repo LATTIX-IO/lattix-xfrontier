@@ -57,12 +57,11 @@ if (Test-Path "public") { Copy-Item "public" (Join-Path $dest "public") -Recurse
 Pop-Location
 Copy-Item (Get-Command node).Source (Join-Path $bin "node.exe") -Force
 
-# 3) Icons (generate from the placeholder source if not present)
-if (-not (Test-Path (Join-Path $tauri "icons/icon.ico"))) {
-  Write-Host "== generating icons from icon-source.png =="
-  & cargo tauri icon (Join-Path $root "apps/desktop-tauri/icon-source.png")
-  CheckExit "cargo tauri icon"
-}
+# 3) Icons — ALWAYS regenerate from icon-source.png so logo updates take effect
+#    (the generated icons/ dir is not committed; a stale set would otherwise stick).
+Write-Host "== generating icons from icon-source.png =="
+& cargo tauri icon (Join-Path $root "apps/desktop-tauri/icon-source.png")
+CheckExit "cargo tauri icon"
 
 # 4) Build the installer (unsigned; updater is disabled in tauri.conf for test builds)
 Write-Host "== cargo tauri build =="
