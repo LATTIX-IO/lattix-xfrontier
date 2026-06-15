@@ -17,7 +17,9 @@ import sys
 
 def _prepend_bundled_bin_to_path() -> None:
     """Make bundled binaries (Node, NATS, the backend) discoverable by name."""
-    from .desktop import bundled_bin_dir
+    # Absolute import: as the PyInstaller entry script this module runs as
+    # __main__ (no parent package), so relative imports would fail.
+    from frontier_tooling.desktop import bundled_bin_dir
 
     bundled = str(bundled_bin_dir())
     current = os.environ.get("PATH", "")
@@ -26,7 +28,7 @@ def _prepend_bundled_bin_to_path() -> None:
 
 
 def main() -> None:
-    from .desktop import run_desktop_supervisor
+    from frontier_tooling.desktop import run_desktop_supervisor
 
     _prepend_bundled_bin_to_path()
     # run_desktop_supervisor starts sidecars + frontend, runs first-run

@@ -13,6 +13,7 @@
 
 use std::time::Duration;
 
+use tauri::tray::TrayIconBuilder;
 use tauri::{Emitter, Manager, WebviewUrl};
 use tauri_plugin_shell::process::CommandEvent;
 use tauri_plugin_shell::ShellExt;
@@ -26,6 +27,14 @@ fn main() {
         .plugin(tauri_plugin_shell::init())
         .setup(|app| {
             let handle = app.handle().clone();
+
+            // System-tray icon (uses the bundled app icon — the Lattix logo).
+            if let Some(icon) = app.default_window_icon().cloned() {
+                let _ = TrayIconBuilder::with_id("lattix-tray")
+                    .icon(icon)
+                    .tooltip("Lattix xFrontier")
+                    .build(app);
+            }
 
             // Spawn the packaged supervisor sidecar. The binary is resolved from
             // the bundle's `externalBin` (name + target triple suffix).
@@ -67,15 +76,26 @@ fn main() {
                 }
             });
 
-            // Navigate once the frontend port is accepting connections (the UI
-            // we load). The in-process backend on :8000 comes up first.
+            // Drive visible, staged progress on the splash (independent of the
+            // sidecar's stdout) and navigate once the UI port is reachable.
             tauri::async_runtime::spawn(async move {
-                let _ = wait_for_health(BACKEND_HEALTH_URL, HEALTH_TIMEOUT_SECS).await;
+                let _ = handle.emit("firstrun-progress", "Starting backend…".to_string());
+                let backend_up = wait_for_health(BACKEND_HEALTH_URL, HEALTH_TIMEOUT_SECS).await;
+                let _ = handle.emit(
+                    "firstrun-progress",
+                    if backend_up { "Backend ready — loading interface…" } else { "Loading interface…" }
+                        .to_string(),
+                );
                 if wait_for_health(FRONTEND_URL, HEALTH_TIMEOUT_SECS).await {
                     if let Some(window) = handle.get_webview_window("main") {
                         let _ = window.navigate(FRONTEND_URL.parse().unwrap());
                     }
                 } else {
+                    let _ = handle.emit(
+                        "firstrun-progress",
+                        "⚠ The interface didn't start in time. See logs in %LOCALAPPDATA%\\Lattix\\xFrontier."
+                            .to_string(),
+                    );
                     eprintln!("frontend did not become reachable within {HEALTH_TIMEOUT_SECS}s");
                 }
             });

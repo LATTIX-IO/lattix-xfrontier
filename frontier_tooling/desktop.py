@@ -100,6 +100,8 @@ def run_desktop_supervisor(*, log=print, **overrides: object) -> None:
     import os
     import threading
 
+    from .native_launcher import NativePlan
+
     cfg = desktop_config(**overrides)
     plan = build_native_plan(cfg)
     for warning in plan.warnings:
@@ -108,15 +110,43 @@ def run_desktop_supervisor(*, log=print, **overrides: object) -> None:
     # world-graph flag / bearer token), so set them before importing app.main.
     os.environ.update(plan.env)
 
-    supervisor = NativeSupervisor(plan, log=log)
-    supervisor.start_all()  # sidecars (degrade if absent) + frontend
+    # The backend hard-fails startup if its STATE store can't connect, but
+    # Postgres comes up asynchronously in the background and isn't ready yet.
+    # Pin state to SQLite (no startup DB dependency) so the app boots fast and
+    # reliably; long-term/world-graph memory (Postgres-backed) attaches on a
+    # later launch once Postgres is initialized.
+    sqlite_state = Path(cfg.app_home) / "data" / "state" / "frontier-state.db"
+    sqlite_state.parent.mkdir(parents=True, exist_ok=True)
+    os.environ["FRONTIER_SQLITE_STATE_PATH"] = str(sqlite_state)
+    os.environ.pop("POSTGRES_DSN", None)
+    os.environ["FRONTIER_MEMORY_ENABLE_LONG_TERM"] = "false"
+    os.environ["FRONTIER_MEMORY_GRAPH_PROJECTION_ENABLED"] = "false"
+
+    # FAST PATH: start only the frontend synchronously so the window appears in
+    # seconds. Everything heavy (DB init, Ollama serve + the multi-GB model pull,
+    # first-run binary fetch) runs in the background so it never blocks the UI.
+    fast = NativePlan([s for s in plan.services if s.name == "frontend"], plan.env, [])
+    fast_supervisor = NativeSupervisor(fast, log=log)
+    fast_supervisor.start_all()
 
     from .desktop_firstrun import ensure_sidecars
 
-    threading.Thread(
-        target=lambda: _safe(ensure_sidecars, writable_bin_dir(), progress=log, log=log),
-        daemon=True,
-    ).start()
+    deferred_supervisors: list = []
+
+    def _bring_up_infra() -> None:
+        # Fetch any missing sidecar binaries, then start DB/model services + pull
+        # the model (re-plan so newly-fetched binaries are picked up).
+        ensure_sidecars(writable_bin_dir(), model=None, progress=log)
+        plan2 = build_native_plan(desktop_config(**overrides))
+        deferred = NativePlan(
+            [s for s in plan2.services if s.name != "frontend"], plan2.env, []
+        )
+        sup = NativeSupervisor(deferred, log=log)
+        deferred_supervisors.append(sup)
+        sup.start_all()
+        log("[firstrun] background services ready")
+
+    threading.Thread(target=lambda: _safe(_bring_up_infra, log=log), daemon=True).start()
 
     log("[firstrun] starting backend…")
     try:
@@ -125,4 +155,6 @@ def run_desktop_supervisor(*, log=print, **overrides: object) -> None:
 
         uvicorn.run(fastapi_app, host=cfg.bind_host, port=cfg.backend_port, log_level="warning")
     finally:
-        supervisor.stop_all()
+        fast_supervisor.stop_all()
+        for sup in deferred_supervisors:
+            sup.stop_all()

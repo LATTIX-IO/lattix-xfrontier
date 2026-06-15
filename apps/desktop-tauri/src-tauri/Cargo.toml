@@ -9,7 +9,7 @@ rust-version = "1.77"
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = [] }
+tauri = { version = "2", features = ["tray-icon"] }
 tauri-plugin-shell = "2"
 # Auto-update (tauri-plugin-updater) is deferred — it needs a minisign signing
 # key at build time. Re-add it + a real updater capability + pubkey for releases.
