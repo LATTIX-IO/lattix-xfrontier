@@ -8,8 +8,10 @@ import {
   getAgentDefinitions,
   getPlaybooks,
   getPublishedWorkflows,
+  type ComposerOptions,
 } from "@/lib/api";
 import type { AgentDefinition, PlaybookDefinition, WorkflowDefinition } from "@/types/frontier";
+import { ComposerControls } from "@/components/composer-controls";
 
 type TokenKind = "data" | "tag" | "workflow" | "agent" | "playbook";
 
@@ -109,6 +111,7 @@ export function TaskKickoffComposer() {
   const [activePlaybooks, setActivePlaybooks] = useState<PlaybookDefinition[]>([]);
   const [activeSuggestionIndex, setActiveSuggestionIndex] = useState(0);
   const [submitError, setSubmitError] = useState<string | null>(null);
+  const [composerOpts, setComposerOpts] = useState<ComposerOptions>({});
 
   const tokens = useMemo(() => parseTokens(draft), [draft]);
 
@@ -264,6 +267,7 @@ export function TaskKickoffComposer() {
         prompt: draft,
         tokens: filteredTokens,
         ...(playbooks.length > 0 ? { playbooks } : {}),
+        ...composerOpts,
       };
       const result = await createWorkflowRun(payload);
       setCreatedRunId(result.id);
@@ -299,6 +303,10 @@ export function TaskKickoffComposer() {
           placeholder="Draft outreach sequence for $federal_pipeline #need-review /prospect-outreach @orchestration-agent"
           className="fx-field min-h-24 w-full p-3 text-sm"
         />
+
+        <div className="mt-1 rounded-lg border border-[var(--ui-border)] bg-[hsl(var(--card))] px-3 py-2">
+          <ComposerControls onChange={setComposerOpts} />
+        </div>
 
         {activeMention && mentionSuggestions.length > 0 ? (
           <div className="border border-[var(--fx-border)] bg-[var(--fx-surface-elevated)]">

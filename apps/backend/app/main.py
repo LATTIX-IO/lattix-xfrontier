@@ -47,6 +47,7 @@ from app.platform_services import (
     Neo4jRunGraph,
     PostgresLongTermMemoryStore,
     PostgresStateStore,
+    PostgresWorldGraph,
     RedisMemoryStore,
 )
 from frontier_runtime.cognitive import (
@@ -666,6 +667,9 @@ _RUNTIME_PROFILE_ALIASES = {
     "hosted": "hosted",
     "production": "hosted",
     "prod": "hosted",
+    "local-native": "local-native",
+    "local_native": "local-native",
+    "native": "local-native",
 }
 
 
@@ -690,6 +694,13 @@ _RUNTIME_PROFILES = {
         require_a2a_runtime_headers=True,
         public_health_minimal=True,
         description="Hosted/non-local profile with authenticated operator surfaces and required signed A2A runtime headers.",
+    ),
+    "local-native": RuntimeProfile(
+        name="local-native",
+        require_authenticated_requests=True,
+        require_a2a_runtime_headers=False,
+        public_health_minimal=True,
+        description="Native single-user desktop install (no Docker): kernel/OS sandbox per agent, native sidecars, token auth.",
     ),
 }
 
@@ -3199,11 +3210,26 @@ def _build_state_backends() -> tuple[Any, Any | None]:
 _POSTGRES_STATE, _AUDIT_LOG = _build_state_backends()
 _REDIS_MEMORY = RedisMemoryStore(os.getenv("REDIS_URL", ""))
 _POSTGRES_MEMORY = PostgresLongTermMemoryStore(os.getenv("POSTGRES_DSN", ""))
-_NEO4J_GRAPH = Neo4jRunGraph(
-    os.getenv("NEO4J_URI", ""),
-    os.getenv("NEO4J_USERNAME", ""),
-    os.getenv("NEO4J_PASSWORD", ""),
-)
+def _build_world_graph() -> Any:
+    """Select the world-model graph backend.
+
+    Default is the **Postgres** relational graph (no Java) — the world-graph
+    lives in the same Postgres that backs state + long-term memory. Neo4j stays
+    available only as an explicit legacy opt-in (``NEO4J_URI`` set), e.g. for an
+    existing hosted deployment.
+    """
+    if str(os.getenv("NEO4J_URI", "") or "").strip():
+        return Neo4jRunGraph(
+            os.getenv("NEO4J_URI", ""),
+            os.getenv("NEO4J_USERNAME", ""),
+            os.getenv("NEO4J_PASSWORD", ""),
+        )
+    return PostgresWorldGraph(os.getenv("POSTGRES_DSN", ""))
+
+
+# Name kept for backward compatibility (all call sites use this); the backend is
+# Postgres by default, Neo4j only when NEO4J_URI is explicitly configured.
+_NEO4J_GRAPH = _build_world_graph()
 
 
 def _get_openai_client() -> Any | None:
@@ -4427,6 +4453,7 @@ def _run_openai_chat(
     tool_executor: Callable[[str, dict[str, Any]], str] | None = None,
     max_tool_calls: int = 8,
     on_tool_event: Callable[[str, dict[str, Any], str, bool], None] | None = None,
+    reasoning_effort: str = "",
 ) -> tuple[str, dict[str, Any]]:
     provider, bare_model = _resolve_chat_provider(model)
     client, unavailable_reason = _get_chat_client(provider)
@@ -4510,6 +4537,14 @@ def _run_openai_chat(
                     "temperature": temperature,
                     "messages": conversation,
                 }
+                if reasoning_effort:
+                    # OpenAI reasoning models take a top-level reasoning_effort;
+                    # OpenAI-compatible local servers (Ollama/gpt-oss) take it in
+                    # the request body and ignore it if unsupported.
+                    if provider == "openai":
+                        request_kwargs["reasoning_effort"] = reasoning_effort
+                    else:
+                        request_kwargs["extra_body"] = {"reasoning_effort": reasoning_effort}
                 if tools and tool_executor is not None and not tools_exhausted:
                     request_kwargs["tools"] = tools
                     request_kwargs["tool_choice"] = "auto"
@@ -4778,6 +4813,39 @@ def _load_seeded_agents_from_repo() -> dict[str, AgentDefinition]:
             config_json=canonical_config,
         )
 
+    return seeded
+
+
+def _load_seeded_workflows_from_repo() -> dict[str, "WorkflowDefinition"]:
+    """Load callable workflow definitions shipped in examples/workflows/."""
+    repo_root = _repository_root()
+    root = (repo_root / "examples" / "workflows").resolve()
+    seeded: dict[str, WorkflowDefinition] = {}
+    if not root.is_dir():
+        return seeded
+    for wf_dir in sorted(root.iterdir()):
+        config_path = wf_dir / "workflow.json"
+        if not (wf_dir.is_dir() and config_path.exists()):
+            continue
+        try:
+            config = json.loads(config_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            continue
+        source_id = str(config.get("id") or wf_dir.name)
+        wf_id = (
+            source_id
+            if _is_uuid(source_id)
+            else str(uuid5(NAMESPACE_URL, f"frontier-workflow:{source_id}"))
+        )
+        graph = config.get("graph") if isinstance(config.get("graph"), dict) else {}
+        seeded[wf_id] = WorkflowDefinition(
+            id=wf_id,
+            name=str(config.get("name") or _slug_to_name(wf_dir.name)),
+            description=str(config.get("description") or ""),
+            version=_normalize_version(config.get("version")),
+            status="published",
+            graph_json=graph,
+        )
     return seeded
 
 
@@ -7611,6 +7679,8 @@ class InMemoryStore:
                 status="published",
             ),
         }
+        for _wf_id, _wf in _load_seeded_workflows_from_repo().items():
+            self.workflow_definitions[_wf_id] = _wf
 
         seeded_agents = _load_seeded_agents_from_repo()
         default_chat_agent_id = _default_chat_agent_id()
@@ -8545,6 +8615,15 @@ class InMemoryStore:
         # User-defined inbox folders for organizing historical chats/runs.
         # id -> {id, name, created_at, run_ids: [str]}.
         self.inbox_groups: dict[str, dict[str, Any]] = {}
+
+        # Per-user composer/chat preferences, keyed by actor/principal id.
+        # actor -> {default_working_folder, preferred_model,
+        #           preferred_reasoning_effort, default_mode}.
+        self.user_settings: dict[str, dict[str, Any]] = {}
+
+        # Approved out-of-bounds folder grants, keyed by resolved repo_path.
+        # repo_path -> [extra_path, ...] merged into the workspace on later runs.
+        self.workspace_grants: dict[str, list[str]] = {}
 
         self.collaboration_sessions: dict[str, CollaborationSession] = {}
         self.audit_events: list[AuditEvent] = []
@@ -10982,6 +11061,8 @@ def _serialize_store_state() -> dict[str, Any]:
         "workflow_schedules": store.workflow_schedules,
         "knowledge_collections": store.knowledge_collections,
         "inbox_groups": store.inbox_groups,
+        "user_settings": store.user_settings,
+        "workspace_grants": store.workspace_grants,
     }
     if _AUDIT_LOG is None or not _AUDIT_LOG.enabled:
         # Without the append-only audit table, audit events ride in the state
@@ -11285,6 +11366,22 @@ def _apply_store_state(payload: dict[str, Any]) -> None:
                 }
         store.inbox_groups = hydrated_groups
 
+    user_settings_payload = payload.get("user_settings")
+    if isinstance(user_settings_payload, dict):
+        hydrated_user_settings: dict[str, dict[str, Any]] = {}
+        for actor_key, prefs in user_settings_payload.items():
+            if isinstance(prefs, dict):
+                hydrated_user_settings[str(actor_key)] = _normalize_user_settings(prefs)
+        store.user_settings = hydrated_user_settings
+
+    grants_payload = payload.get("workspace_grants")
+    if isinstance(grants_payload, dict):
+        hydrated_grants: dict[str, list[str]] = {}
+        for repo_path, paths in grants_payload.items():
+            if isinstance(paths, list):
+                hydrated_grants[str(repo_path)] = [str(p) for p in paths if str(p).strip()]
+        store.workspace_grants = hydrated_grants
+
     seen_nonces_payload = payload.get("a2a_seen_nonces")
     if isinstance(seen_nonces_payload, dict):
         normalized_seen: dict[str, str] = {}
@@ -11379,6 +11476,22 @@ def _sync_repo_agents_into_store(*, update_existing: bool = False) -> None:
         store.agent_definitions[agent_id] = existing
 
 
+def _sync_repo_workflows_into_store(*, update_existing: bool = False) -> None:
+    # examples/workflows are repo-canonical templates, so they are refreshed from
+    # the repo on each startup (name/description/graph), unlike DB-authored ones.
+    for wf_id, seeded_wf in _load_seeded_workflows_from_repo().items():
+        existing = store.workflow_definitions.get(wf_id)
+        if existing is None:
+            store.workflow_definitions[wf_id] = seeded_wf
+            continue
+        existing.name = seeded_wf.name
+        existing.description = seeded_wf.description
+        existing.status = "published"
+        existing.graph_json = seeded_wf.graph_json
+        existing.version = max(existing.version, seeded_wf.version)
+        store.workflow_definitions[wf_id] = existing
+
+
 @app.on_event("startup")
 def _startup_initialize_state() -> None:
     _active_runtime_profile()
@@ -11408,6 +11521,7 @@ def _startup_initialize_state() -> None:
     sync_repo_updates_existing = _env_flag("FRONTIER_REPO_AGENTS_UPDATE_EXISTING", False)
     if sync_repo_agents:
         _sync_repo_agents_into_store(update_existing=sync_repo_updates_existing)
+        _sync_repo_workflows_into_store(update_existing=sync_repo_updates_existing)
 
     _canonicalize_all_agent_definitions()
     _ensure_default_chat_agent_present()
@@ -13145,6 +13259,216 @@ def _masked_provider_settings_view(data: dict[str, Any]) -> dict[str, Any]:
     return masked
 
 
+_CHAT_MODES = ("chat", "plan", "execute")
+_REASONING_EFFORTS = ("", "low", "medium", "high")
+
+
+def _normalize_user_settings(prefs: dict[str, Any]) -> dict[str, Any]:
+    """Coerce a per-user settings dict to the known, safe shape."""
+    src = prefs if isinstance(prefs, dict) else {}
+    mode = str(src.get("default_mode") or "execute").strip().lower()
+    if mode not in _CHAT_MODES:
+        mode = "execute"
+    effort = str(src.get("preferred_reasoning_effort") or "").strip().lower()
+    if effort not in _REASONING_EFFORTS:
+        effort = ""
+    return {
+        "default_working_folder": str(src.get("default_working_folder") or "").strip(),
+        "preferred_model": str(src.get("preferred_model") or "").strip(),
+        "preferred_reasoning_effort": effort,
+        "default_mode": mode,
+    }
+
+
+def _user_settings_for(actor: str) -> dict[str, Any]:
+    stored = store.user_settings.get(str(actor or "").strip())
+    return _normalize_user_settings(stored or {})
+
+
+def _composer_options(payload: dict[str, Any]) -> dict[str, Any]:
+    """Extract + normalize the per-chat composer selections from a run payload:
+    model, reasoning_effort, mode, mcp_server_ids, skill_ids, workspace."""
+    src = payload if isinstance(payload, dict) else {}
+    mode = str(src.get("mode") or "execute").strip().lower()
+    if mode not in _CHAT_MODES:
+        mode = "execute"
+    effort = str(src.get("reasoning_effort") or "").strip().lower()
+    if effort not in _REASONING_EFFORTS:
+        effort = ""
+
+    def _idset(key: str) -> set[str] | None:
+        val = src.get(key)
+        if isinstance(val, list):
+            return {str(v).strip().lower() for v in val if str(v).strip()}
+        return None
+
+    return {
+        "model": str(src.get("model") or "").strip(),
+        "reasoning_effort": effort,
+        "mode": mode,
+        "mcp_server_ids": _idset("mcp_server_ids"),
+        "skill_ids": _idset("skill_ids"),
+        "workspace": src.get("workspace") if isinstance(src.get("workspace"), dict) else None,
+    }
+
+
+@app.get("/user/settings")
+def get_user_settings(request: Request) -> dict[str, Any]:
+    actor = _enforce_request_authn(request, action="user.settings.read")
+    return _user_settings_for(actor)
+
+
+@app.put("/user/settings")
+def save_user_settings(
+    request: Request, payload: dict[str, Any] = Body(default_factory=dict)
+) -> dict[str, Any]:
+    actor = _enforce_request_authn(request, payload=payload, action="user.settings.save")
+    normalized = _normalize_user_settings(payload)
+    store.user_settings[str(actor)] = normalized
+    _persist_store_state()
+    _append_audit_event("user.settings.save", actor, "allowed")
+    return normalized
+
+
+# Mounted host projects root (bind-mounted into the backend + agent containers via
+# docker-compose). User "working folders" are subpaths confined to this root so the
+# agents can actually read/edit them from inside the container.
+_PROJECTS_ROOT = os.getenv("FRONTIER_PROJECTS_ROOT", "/projects")
+
+
+def _projects_root_path() -> Path:
+    return Path(_PROJECTS_ROOT)
+
+
+def _path_within(root: Path, target: Path) -> bool:
+    try:
+        target.relative_to(root)
+        return True
+    except ValueError:
+        return False
+
+
+def _resolve_working_folder(value: str) -> str | None:
+    """Resolve a user-supplied working folder to an absolute path confined to the
+    mounted projects root. Returns the resolved path, or None if it escapes the
+    root. Relative values are taken under the root; a leading 'projects/' is
+    tolerated."""
+    raw = str(value or "").strip().replace("\\", "/")
+    if not raw:
+        return None
+    try:
+        root = _projects_root_path().resolve()
+    except Exception:  # noqa: BLE001
+        return None
+    candidate = Path(raw)
+    if candidate.is_absolute():
+        target = candidate
+    else:
+        rel = raw[len("projects/"):] if raw.lower().startswith("projects/") else raw
+        target = root / rel
+    try:
+        target = target.resolve()
+    except Exception:  # noqa: BLE001
+        return None
+    return str(target) if _path_within(root, target) else None
+
+
+@app.get("/workspace/folders")
+def list_workspace_folders(request: Request, path: str = "") -> dict[str, Any]:
+    """List immediate subfolders under the mounted projects root for the
+    working-folder picker. `path` (optional) drills into a subfolder."""
+    actor = _enforce_request_authn(request, action="workspace.folders.list")
+    root = _projects_root_path()
+    base = _resolve_working_folder(path) if path else (str(root.resolve()) if root.exists() else None)
+    result: dict[str, Any] = {
+        "root": str(root),
+        "path": base or "",
+        "exists": False,
+        "is_git": False,
+        "folders": [],
+    }
+    if not base or not Path(base).is_dir():
+        return result
+    base_path = Path(base)
+    result["exists"] = True
+    result["is_git"] = (base_path / ".git").exists()
+    folders: list[dict[str, str]] = []
+    try:
+        for child in sorted(base_path.iterdir(), key=lambda p: p.name.lower()):
+            if child.is_dir() and not child.name.startswith("."):
+                folders.append({"name": child.name, "path": str(child)})
+    except Exception:  # noqa: BLE001
+        pass
+    result["folders"] = folders[:200]
+    return result
+
+
+@app.get("/mcp/servers")
+def list_mcp_servers(request: Request) -> dict[str, Any]:
+    """List MCP integrations for the per-chat tool selector."""
+    _enforce_request_authn(request, action="mcp.servers.list")
+    servers: list[dict[str, Any]] = []
+    for integration in store.integrations.values():
+        metadata = integration.metadata_json if isinstance(integration.metadata_json, dict) else {}
+        if str(metadata.get("protocol") or "").lower() != "mcp":
+            continue
+        servers.append(
+            {
+                "id": integration.id,
+                "slug": _slugify(integration.name),
+                "name": integration.name,
+                "configured": integration.status == "configured",
+                "transport": str(metadata.get("transport") or "http").lower(),
+                "base_url": integration.base_url or "",
+            }
+        )
+    servers.sort(key=lambda s: str(s["name"]).lower())
+    return {"servers": servers}
+
+
+@app.get("/workflow-runs/{run_id}/escalations")
+def list_run_escalations(run_id: str, request: Request) -> dict[str, Any]:
+    """Out-of-folder access requests raised by a run's agents (allow_outside=ask)."""
+    _enforce_request_authn(request, action="workflow.run.escalations.read")
+    details = store.run_details.get(run_id) or {}
+    escalations = details.get("escalations")
+    return {"escalations": escalations if isinstance(escalations, list) else []}
+
+
+@app.post("/workflow-runs/{run_id}/escalations/{escalation_id}/approve")
+def approve_run_escalation(
+    run_id: str, escalation_id: str, request: Request
+) -> dict[str, Any]:
+    """Grant an agent access to a folder outside its bound working folder. The
+    grant is remembered for that repo and merged into extra_paths on later runs."""
+    actor = _enforce_request_authn(
+        request, payload={}, action="workflow.run.escalations.approve"
+    )
+    details = store.run_details.get(run_id) or {}
+    escalations = details.get("escalations")
+    if not isinstance(escalations, list):
+        raise HTTPException(status_code=404, detail="No escalations for this run")
+    target = next(
+        (e for e in escalations if isinstance(e, dict) and e.get("id") == escalation_id), None
+    )
+    if target is None:
+        raise HTTPException(status_code=404, detail="Escalation not found")
+    target["status"] = "approved"
+    target["approved_by"] = actor
+    target["approved_at"] = _now_iso()
+    repo = str(target.get("workspace_root") or "")
+    path = str(target.get("path") or "")
+    if repo and path:
+        grants = store.workspace_grants.setdefault(repo, [])
+        if path not in grants:
+            grants.append(path)
+    _persist_store_state()
+    _append_audit_event(
+        "workflow.run.escalations.approve", actor, "allowed", {"run_id": run_id, "path": path}
+    )
+    return {"ok": True, "escalation": target}
+
+
 @app.get("/platform/settings")
 def get_platform_settings(request: Request) -> dict[str, Any]:
     actor = _enforce_request_authn(request, action="platform.settings.read")
@@ -13483,17 +13807,28 @@ def _mcp_server_allowed(base_url: str) -> bool:
 _MCP_MAX_TOOLS_PER_SERVER = 40
 
 
-def _gather_mcp_run_tools() -> tuple[list[dict[str, Any]], dict[str, tuple[Any, str]], list[str]]:
+def _gather_mcp_run_tools(
+    selected_integration_ids: set[str] | None = None,
+) -> tuple[list[dict[str, Any]], dict[str, tuple[Any, str]], list[str]]:
     """Collect callable tools from configured MCP integrations.
 
     Returns (OpenAI tool schemas, qualified-name dispatch map, source names).
     Gates applied: integration must be `configured` (drafts never expose tools),
     MCP protocol over HTTP/SSE, server allowed by the MCP locality policy,
     credentials resolvable, and tool names clear the high-risk patterns.
+
+    When ``selected_integration_ids`` is provided (non-None), only integrations
+    whose id or name-slug is in the set are exposed (per-chat MCP selection).
+    An empty set therefore exposes no tools.
     """
     platform = store.platform_settings
     if platform.block_tool_calls:
         return [], {}, []
+    selection = (
+        {str(s).strip().lower() for s in selected_integration_ids if str(s).strip()}
+        if selected_integration_ids is not None
+        else None
+    )
     schemas: list[dict[str, Any]] = []
     dispatch: dict[str, tuple[Any, str]] = {}
     sources: list[str] = []
@@ -13505,6 +13840,10 @@ def _gather_mcp_run_tools() -> tuple[list[dict[str, Any]], dict[str, tuple[Any, 
 
     for integration in store.integrations.values():
         if integration.status != "configured":
+            continue
+        if selection is not None and not (
+            integration.id.lower() in selection or _slugify(integration.name) in selection
+        ):
             continue
         metadata = integration.metadata_json if isinstance(integration.metadata_json, dict) else {}
         if str(metadata.get("protocol") or "").lower() != "mcp":
@@ -13558,18 +13897,32 @@ def _gather_mcp_run_tools() -> tuple[list[dict[str, Any]], dict[str, tuple[Any, 
 _SKILLS_PROMPT_CHAR_BUDGET = 6000
 
 
-def _augment_system_prompt_with_skills(system_prompt: str) -> str:
+def _augment_system_prompt_with_skills(
+    system_prompt: str, selected_skill_ids: set[str] | None = None
+) -> str:
     """Append enabled auto-inject skills to the agent system prompt.
 
     Symphony-style skills are operating procedures the agent should follow;
     the total injected size is bounded so skills can never crowd out the
     agent's own prompt.
     """
+    selection = (
+        {str(s).strip().lower() for s in selected_skill_ids if str(s).strip()}
+        if selected_skill_ids is not None
+        else None
+    )
     sections: list[str] = []
     used = 0
     injected: list[SkillDefinition] = []
     for skill in sorted(store.skills.values(), key=lambda item: item.name.lower()):
-        if skill.status != "enabled" or not skill.auto_inject:
+        if skill.status != "enabled":
+            continue
+        if selection is not None:
+            # explicit per-chat selection: include the chosen skills regardless
+            # of auto_inject; skip everything not selected.
+            if not (skill.id.lower() in selection or _slugify(skill.name) in selection):
+                continue
+        elif not skill.auto_inject:
             continue
         if skill.quarantine_status in {"pending", "blocked"}:
             # Imported skills that have not cleared the blast chamber never reach context.
@@ -13611,6 +13964,44 @@ def _extract_agent_mentions(text: str) -> list[str]:
         if token not in seen:
             seen.append(token)
     return seen
+
+
+# /workflow and !playbook mentions (word-boundary; false positives are harmless
+# because dispatch only fires when the token resolves to a published target).
+_WORKFLOW_MENTION_RE = re.compile(r"(?:^|\s)/([a-z0-9][a-z0-9_-]{1,79})", re.IGNORECASE)
+_PLAYBOOK_MENTION_RE = re.compile(r"(?:^|\s)!([a-z0-9][a-z0-9_-]{1,79})", re.IGNORECASE)
+
+
+def _extract_mentions(pattern: re.Pattern[str], text: str) -> list[str]:
+    seen: list[str] = []
+    for match in pattern.finditer(str(text or "")):
+        token = match.group(1).lower()
+        if token not in seen:
+            seen.append(token)
+    return seen
+
+
+def _resolve_active_playbook(token: str) -> "PlaybookDefinition | None":
+    requested = str(token or "").strip().lower()
+    if not requested:
+        return None
+    slug = _slugify(requested)
+    for playbook in store.playbooks.values():
+        if getattr(playbook, "status", "active") != "active":
+            continue
+        keys = {playbook.id.lower(), _slugify(playbook.name)}
+        if requested in keys or (slug and slug in keys):
+            return playbook
+    return None
+
+
+def _graph_json_has_nodes(graph_json: Any) -> bool:
+    if not isinstance(graph_json, dict):
+        return False
+    try:
+        return bool(_graph_payload_from_json(graph_json).nodes)
+    except Exception:  # noqa: BLE001
+        return False
 
 
 def _resolve_collaboration_turns(
@@ -13705,6 +14096,7 @@ def _run_agent_iterations(
     on_tool_event: Callable[[str, dict[str, Any], str, bool], None] | None = None,
     thread_id: str | None = None,
     parent_event_id: str | None = None,
+    reasoning_effort: str = "",
 ) -> tuple[str, dict[str, Any]]:
     """Run an agent as an iterative work loop with a live progress log.
 
@@ -13742,6 +14134,7 @@ def _run_agent_iterations(
             tool_executor=tool_executor,
             max_tool_calls=max_tool_calls,
             on_tool_event=on_tool_event,
+            reasoning_effort=reasoning_effort,
         )
         final_meta = meta
         if str(meta.get("mode")) != "live":
@@ -13794,6 +14187,49 @@ def _run_agent_iterations(
     return final_text, final_meta
 
 
+def _workflow_member_agents(graph_json: dict[str, Any]) -> list[dict[str, str]]:
+    """Resolve the distinct agents a workflow/playbook graph employs (its
+    ``frontier/agent`` nodes), mapped to canonical published definitions."""
+    members: list[dict[str, str]] = []
+    seen: set[str] = set()
+    try:
+        payload = _graph_payload_from_json(graph_json)
+    except Exception:  # noqa: BLE001
+        return members
+    for node in payload.nodes:
+        if not _normalize_node_type(node.type).startswith("frontier/agent"):
+            continue
+        cfg = node.config if isinstance(node.config, dict) else {}
+        token = str(cfg.get("agent_id") or "").strip()
+        if not token:
+            continue
+        defn = _resolve_published_agent_definition(token)
+        agent_id = defn.id if defn else token
+        if agent_id in seen:
+            continue
+        seen.add(agent_id)
+        members.append({"id": agent_id, "name": defn.name if defn else token})
+    return members
+
+
+def _assign_agents_to_run(run_id: str, members: list[dict[str, str]]) -> None:
+    """Persist agents as 'assigned' to a chat (deduped by id). Drives the
+    participant roster even before/without those agents posting a message."""
+    if not members:
+        return
+    details = store.run_details.setdefault(run_id, {})
+    existing = details.get("assigned_agents")
+    by_id: dict[str, dict[str, str]] = {}
+    if isinstance(existing, list):
+        for item in existing:
+            if isinstance(item, dict) and item.get("id"):
+                by_id[str(item["id"])] = {"id": str(item["id"]), "name": str(item.get("name") or "Agent")}
+    for member in members:
+        if member.get("id"):
+            by_id[str(member["id"])] = {"id": str(member["id"]), "name": str(member.get("name") or "Agent")}
+    details["assigned_agents"] = list(by_id.values())
+
+
 def _run_participants(run_id: str) -> dict[str, Any]:
     """Roster of who is in this run's conversation: the human plus every agent
     that has participated (or been invited), with an active flag.
@@ -13812,6 +14248,18 @@ def _run_participants(run_id: str) -> dict[str, Any]:
 
     agents: list[dict[str, Any]] = []
     seen: dict[str, dict[str, Any]] = {}
+    # Persistently-assigned agents (from @mention / workflow / playbook) are part
+    # of the roster even if they have not yet posted a message.
+    details = store.run_details.get(run_id) or {}
+    for assigned in details.get("assigned_agents") or []:
+        if not isinstance(assigned, dict) or not assigned.get("id"):
+            continue
+        agent_id = str(assigned["id"])
+        if agent_id in seen:
+            continue
+        entry = {"id": agent_id, "name": str(assigned.get("name") or "Agent"), "active": running}
+        seen[agent_id] = entry
+        agents.append(entry)
     for index, event in enumerate(events):
         meta = event.metadata or {}
         if event.type != "agent_message" or not meta.get("selected_agent_id"):
@@ -14286,21 +14734,46 @@ def create_workflow_run(
         )
         return {"id": run_id, "status": "blocked"}
 
+    composer_opts = _composer_options(payload)
+
     system_prompt, system_prompt_source = _resolve_agent_system_prompt(
         selected_agent_definition,
         requested_token=selected_agent_token or _DEFAULT_CHAT_AGENT_SOURCE_ID,
     )
-    system_prompt = _augment_system_prompt_with_skills(system_prompt)
+    system_prompt = _augment_system_prompt_with_skills(
+        system_prompt, selected_skill_ids=composer_opts["skill_ids"]
+    )
 
-    selected_model = _resolve_agent_chat_model(selected_agent_definition)
+    selected_model = composer_opts["model"] or _resolve_agent_chat_model(selected_agent_definition)
     request_prompt = _with_architecture_contract(
         model_prompt or "Execute the requested workflow task.",
         enabled=_should_enforce_architecture_contract(
             selected_agent=selected_agent_definition, prompt_text=model_prompt
         ),
     )
+    if composer_opts["mode"] == "plan":
+        request_prompt += (
+            "\n\nFocus: PLAN ONLY. Produce a concrete, step-by-step execution plan "
+            "(approach, files/components, tests, risks). Do not execute tools or modify files."
+        )
 
     access_context = _build_run_access_context(request, actor)
+
+    # If this run targets a published multi-agent workflow (cyclic or >=2 agent
+    # nodes), execute the real graph through the LangGraph compiler instead of
+    # the single-agent fast path.
+    workflow_graph_json: dict[str, Any] | None = None
+    if run_kind == "workflow" and requested_workflows:
+        _wf_def = _resolve_published_workflow_definition(requested_workflows[0])
+        if (
+            _wf_def is not None
+            and isinstance(_wf_def.graph_json, dict)
+            and _workflow_graph_qualifies_for_compiler(_wf_def.graph_json)
+        ):
+            workflow_graph_json = _wf_def.graph_json
+            if title == "Workflow Run" or title.startswith("Workflow Run —"):
+                title = _wf_def.name or title
+
     graph_nodes = [
         {"id": "n-trigger", "title": "Trigger", "type": "trigger", "x": 80, "y": 110},
         {
@@ -14346,10 +14819,12 @@ def create_workflow_run(
     store.run_details[run_id] = {
         "artifacts": [],
         "status": "Running",
-        "graph": {"nodes": graph_nodes, "links": graph_links},
+        "graph": workflow_graph_json or {"nodes": graph_nodes, "links": graph_links},
         "agent_traces": [],
         "approvals": {"required": False, "pending": False},
         "access": access_context,
+        "mode": composer_opts["mode"],
+        "working_folder": (composer_opts["workspace"] or {}).get("repo_path", ""),
     }
     _append_audit_event(
         "workflow.run.create", actor, "allowed", {"run_id": run_id, "status": "started"}
@@ -14358,7 +14833,25 @@ def create_workflow_run(
 
     def _execute_run() -> None:
         try:
-            tool_schemas, tool_dispatch, tool_sources = _gather_mcp_run_tools()
+            if workflow_graph_json is not None:
+                _run_compiled_workflow_run(
+                    run_id=run_id,
+                    title=title,
+                    run_kind=run_kind,
+                    graph_json=workflow_graph_json,
+                    prompt=request_prompt,
+                    payload=payload,
+                    access_context=access_context,
+                )
+                return
+            # Mode gate: only "execute" exposes MCP tools; "plan"/"chat" are
+            # analysis/conversation only. MCP selection filters the set.
+            if composer_opts["mode"] == "execute":
+                tool_schemas, tool_dispatch, tool_sources = _gather_mcp_run_tools(
+                    selected_integration_ids=composer_opts["mcp_server_ids"]
+                )
+            else:
+                tool_schemas, tool_dispatch, tool_sources = [], {}, []
 
             def _execute_mcp_tool(name: str, arguments: dict[str, Any]) -> str:
                 entry = tool_dispatch.get(name)
@@ -14410,6 +14903,7 @@ def create_workflow_run(
                     1, int(store.platform_settings.max_tool_calls_per_run or 8)
                 ),
                 on_tool_event=_emit_tool_event,
+                reasoning_effort=composer_opts["reasoning_effort"],
             )
             if tool_sources:
                 model_meta = {**model_meta, "tool_sources": tool_sources}
@@ -14827,6 +15321,166 @@ def get_workflow_runs(request: Request, status: str | None = None) -> list[dict[
     return [item.model_dump() for item in items]
 
 
+def _dispatch_graph_target_in_chat(
+    run_id: str,
+    *,
+    target_name: str,
+    graph_json: dict[str, Any],
+    message: str,
+    transcript: str,
+    composer_opts: dict[str, Any],
+) -> None:
+    """Run a workflow/playbook graph mid-chat, passing the chat context + the
+    user's latest message as the spec, and fold its events + handback into the
+    existing chat stream (without clobbering the chat run's details)."""
+    spec = (f"Conversation context so far:\n{transcript}\n\nUser request:\n{message}").strip()
+    workspace = composer_opts.get("workspace")
+    if not workspace:
+        stored = (store.run_details.get(run_id) or {}).get("working_folder")
+        if stored:
+            workspace = {"repo_path": stored, "allow_outside": "ask"}
+    run_payload: dict[str, Any] = {
+        "message": spec,
+        "spec": spec,
+        "mode": composer_opts.get("mode") or "execute",
+    }
+    if composer_opts.get("model"):
+        run_payload["model"] = composer_opts["model"]
+    if composer_opts.get("reasoning_effort"):
+        run_payload["reasoning_effort"] = composer_opts["reasoning_effort"]
+    if workspace:
+        run_payload["workspace"] = workspace
+
+    base = _graph_payload_from_json(graph_json)
+    gp = GraphPayload(schema_version=base.schema_version, nodes=base.nodes, links=base.links, input=run_payload)
+
+    store.run_events.setdefault(run_id, []).append(
+        WorkflowRunEvent(
+            id=f"evt-{uuid4()}",
+            type="step_started",
+            title=f"Calling {target_name}",
+            summary=f"Running '{target_name}' with the chat context + your request.",
+            createdAt=_now_iso(),
+            metadata={"phase": "workflow", "target": target_name},
+        )
+    )
+    def _chat_sink(kind: str, data: dict[str, Any]) -> None:
+        """Stream each agent's reasoning + message (and the implementer's tool
+        work) into the chat as it happens, so the user sees the back-and-forth."""
+        if kind == "node_completed" and data.get("agent_id"):
+            defn = _resolve_published_agent_definition(str(data.get("agent_id") or ""))
+            agent_id = defn.id if defn else str(data.get("agent_id") or "")
+            agent_name = defn.name if defn else str(data.get("title") or "Agent")
+            node_label = str(data.get("title") or agent_name)
+            work_id = f"work-{uuid4()}"
+            reasoning = str(data.get("reasoning") or "").strip()
+            if reasoning:
+                store.run_events.setdefault(run_id, []).append(
+                    WorkflowRunEvent(
+                        id=f"evt-{uuid4()}",
+                        type="step_completed",
+                        title=f"{agent_name} — reasoning",
+                        summary=reasoning[:500],
+                        createdAt=_now_iso(),
+                        metadata={
+                            "selected_agent_id": agent_id,
+                            "selected_agent_name": agent_name,
+                            "work_id": work_id,
+                            "progress": True,
+                            "phase": "thought",
+                            "full_text": reasoning,
+                        },
+                    )
+                )
+            response = str(data.get("response") or "").strip()
+            if response:
+                display = (
+                    _redact_sensitive_text(response)
+                    if store.platform_settings.mask_secrets_in_events
+                    else response
+                )
+                msg_summary, _m = _truncate_text_with_metadata(display)
+                ev_id = f"evt-{uuid4()}"
+                store.run_events.setdefault(run_id, []).append(
+                    WorkflowRunEvent(
+                        id=ev_id,
+                        type="agent_message",
+                        title=f"{agent_name} · {node_label}",
+                        summary=msg_summary,
+                        createdAt=_now_iso(),
+                        metadata={
+                            "selected_agent_id": agent_id,
+                            "selected_agent_name": agent_name,
+                            "thread_id": ev_id,
+                            "work_id": work_id,
+                            "full_text": display,
+                            "phase": "workflow",
+                            "target": target_name,
+                        },
+                    )
+                )
+            if str(data.get("patch") or "").strip():
+                store.run_events.setdefault(run_id, []).append(
+                    WorkflowRunEvent(
+                        id=f"evt-{uuid4()}",
+                        type="step_completed",
+                        title=f"{agent_name} — produced a patch",
+                        summary=str(data.get("patch"))[:500],
+                        createdAt=_now_iso(),
+                        metadata={
+                            "selected_agent_id": agent_id,
+                            "selected_agent_name": agent_name,
+                            "phase": "workflow",
+                            "full_text": str(data.get("patch")),
+                        },
+                    )
+                )
+        elif kind == "node_failed":
+            store.run_events.setdefault(run_id, []).append(
+                WorkflowRunEvent(
+                    id=f"evt-{uuid4()}",
+                    type="error",
+                    title=f"{data.get('title') or 'Node'} failed",
+                    summary=str(data.get("error") or "")[:300],
+                    createdAt=_now_iso(),
+                    metadata={"phase": "workflow"},
+                )
+            )
+        elif kind.startswith(("swe.", "codex.", "analyze.")) or kind in {
+            "loop_bound",
+            "workspace_provisioned",
+            "code_node_degraded",
+            "team_node_started",
+            "code_node_started",
+            "codex_node_started",
+            "codex_unavailable",
+            "analyze_node_started",
+        }:
+            detail = {k: v for k, v in data.items() if k != "node_id"}
+            store.run_events.setdefault(run_id, []).append(
+                WorkflowRunEvent(
+                    id=f"evt-{uuid4()}",
+                    type="step_completed",
+                    title=kind.replace("swe.", "build · ").replace("_", " ").strip().title(),
+                    summary=(str(detail)[:300] if detail else "ok"),
+                    createdAt=_now_iso(),
+                    metadata={"phase": "workflow", "progress": True},
+                )
+            )
+
+    _node_results, _events, changed_files = _compile_and_run_frontier_graph(
+        gp, run_id=run_id, on_event=_chat_sink
+    )
+    _merge_changed_files(run_id, changed_files)
+
+    current = store.runs.get(run_id)
+    if current is not None:
+        current.status = "Needs Review"
+        current.progressLabel = f"{target_name} — team handed back"
+        current.updatedAt = "just now"
+    _persist_store_state()
+
+
 @app.post("/workflow-runs/{run_id}/messages")
 def send_run_message(
     run_id: str, request: Request, payload: dict[str, Any] = Body(default_factory=dict)
@@ -14909,18 +15563,64 @@ def send_run_message(
             recent.append(f"{speaker}: {meta.get('full_text') or event.summary}")
     transcript = "\n".join(recent[-10:])
     captured_agent = agent_def
+    composer_opts = _composer_options(payload)
+
+    # Remember the working folder for the session so later turns inherit it.
+    if (composer_opts.get("workspace") or {}).get("repo_path"):
+        details = store.run_details.setdefault(run_id, {})
+        details["working_folder"] = composer_opts["workspace"]["repo_path"]
+
+    # Mid-chat dispatch target: a /workflow or !playbook mention runs that target
+    # (with chat context + the user's message) instead of a plain chat reply.
+    dispatch_name: str | None = None
+    dispatch_graph: dict[str, Any] | None = None
+    for tok in _extract_mentions(_WORKFLOW_MENTION_RE, message):
+        wf_cand = _resolve_published_workflow_definition(tok)
+        if wf_cand is not None and _graph_json_has_nodes(wf_cand.graph_json):
+            dispatch_name, dispatch_graph = wf_cand.name, wf_cand.graph_json
+            break
+    if dispatch_graph is None:
+        for tok in _extract_mentions(_PLAYBOOK_MENTION_RE, message):
+            pb_cand = _resolve_active_playbook(tok)
+            if pb_cand is not None and _graph_json_has_nodes(pb_cand.graph_json):
+                dispatch_name, dispatch_graph = pb_cand.name, pb_cand.graph_json
+                break
+
+    # Keep the chat's assigned-agent roster in sync: a /workflow or !playbook
+    # adds all of its member agents; a plain/@mention turn adds the responder.
+    if dispatch_graph is not None:
+        _assign_agents_to_run(run_id, _workflow_member_agents(dispatch_graph))
+    else:
+        _assign_agents_to_run(run_id, [{"id": captured_agent.id, "name": captured_agent.name}])
 
     def _respond() -> None:
         try:
+            if dispatch_graph is not None and dispatch_name is not None:
+                _dispatch_graph_target_in_chat(
+                    run_id,
+                    target_name=dispatch_name,
+                    graph_json=dispatch_graph,
+                    message=message,
+                    transcript=transcript,
+                    composer_opts=composer_opts,
+                )
+                return
             system_prompt = _augment_system_prompt_with_skills(
                 _resolve_agent_system_prompt(
                     captured_agent, requested_token=_slugify(captured_agent.name)
-                )[0]
+                )[0],
+                selected_skill_ids=composer_opts["skill_ids"],
+            )
+            plan_directive = (
+                "\n\nFocus: PLAN ONLY — produce an execution plan, do not execute or modify files."
+                if composer_opts["mode"] == "plan"
+                else ""
             )
             user_prompt = (
                 f"Conversation so far:\n{transcript}\n\nNew message from the user:\n{message}\n\n"
                 "Respond to the user's new message in the context of this conversation. Reason "
                 "about what they are asking before answering; give a complete, self-contained reply."
+                + plan_directive
             )
             followup_work_id = f"work-{uuid4()}"
             response_text, model_meta = _run_agent_iterations(
@@ -14928,10 +15628,11 @@ def send_run_message(
                 captured_agent,
                 system_prompt=system_prompt,
                 user_prompt=user_prompt,
-                model=_resolve_agent_chat_model(captured_agent),
+                model=composer_opts["model"] or _resolve_agent_chat_model(captured_agent),
                 work_id=followup_work_id,
                 max_iterations=_resolve_agent_max_iterations(captured_agent, payload),
                 temperature=0.3,
+                reasoning_effort=composer_opts["reasoning_effort"],
             )
             display = (
                 _redact_sensitive_text(response_text)
@@ -19193,6 +19894,427 @@ def validate_graph(payload: GraphPayload) -> dict[str, Any]:
     return result.model_dump()
 
 
+def _agent_resolution_for_node(config: dict[str, Any]) -> Any:
+    """Resolve a ``frontier/agent`` node's ``config`` to the studio agent's real
+    system prompt + model (gpt-oss:20b on local Ollama) for the graph compiler."""
+    from app.graph_compiler import AgentResolution
+
+    cfg = config if isinstance(config, dict) else {}
+    agent_id = str(cfg.get("agent_id") or "").strip()
+    base_url = local_models.ollama_openai_base_url()
+
+    mode = str(cfg.get("harness_mode") or cfg.get("execution_mode") or "").strip().lower()
+    if mode not in {"chat", "code", "team", "analyze"}:
+        phase = str(cfg.get("phase") or "").strip().lower()
+        if cfg.get("harness") is True or phase in {"build", "implement", "code"}:
+            mode = "code"
+        elif cfg.get("team") is True or phase in {"cross-functional", "team"}:
+            mode = "team"
+        elif phase in {"verify", "audit", "security", "qa", "performance", "perf", "review"}:
+            mode = "analyze"
+        else:
+            mode = "chat"
+
+    # Coding backend for code nodes: native SweAgent (default) or the Codex
+    # subprocess backend. Node config wins, else the platform env default.
+    backend = str(cfg.get("harness_backend") or os.getenv("FRONTIER_HARNESS_BACKEND") or "native").strip().lower()
+    if backend not in {"native", "codex"}:
+        backend = "native"
+
+    defn = _resolve_published_agent_definition(agent_id) if agent_id else None
+    if defn is None:
+        fallback_prompt = (
+            "You are a specialist engineer in a collaborative workflow. Reason in your "
+            "discipline, be concrete and minimal, and respond to your teammates."
+        )
+        return AgentResolution(
+            agent_id=agent_id or "agent",
+            system_prompt=fallback_prompt,
+            model=_default_ollama_model(),
+            provider="ollama",
+            base_url=base_url,
+            execution_mode=mode,
+            harness_backend=backend,
+            found=False,
+        )
+
+    config_json = defn.config_json if isinstance(defn.config_json, dict) else {}
+    model_defaults = (
+        config_json.get("model_defaults")
+        if isinstance(config_json.get("model_defaults"), dict)
+        else {}
+    )
+    system_prompt, _src = _resolve_agent_system_prompt(defn, requested_token=agent_id)
+    model = str(model_defaults.get("model") or "").strip() or _default_ollama_model()
+    provider = str(model_defaults.get("provider") or "ollama").strip() or "ollama"
+
+    def _as_float(value: Any, default: float) -> float:
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return default
+
+    return AgentResolution(
+        agent_id=agent_id,
+        system_prompt=system_prompt,
+        model=model,
+        provider=provider,
+        base_url=base_url,
+        temperature=_as_float(model_defaults.get("temperature"), 0.2),
+        top_p=_as_float(model_defaults.get("top_p"), 0.95),
+        capability_profile=str(model_defaults.get("capability_profile") or ""),
+        execution_mode=mode,
+        harness_backend=backend,
+        found=True,
+    )
+
+
+def _make_harness_chat_client(resolution: Any) -> Any:
+    """Build the harness OpenAI-compatible client pointed at the local model
+    endpoint (Ollama by default). One client type serves chat, code (SweAgent)
+    and team (CollaborativeTeam) nodes."""
+    from frontier_runtime.harness.llm import OpenAIChatClient
+
+    base = resolution.base_url or local_models.ollama_openai_base_url()
+    return OpenAIChatClient(
+        model=resolution.model,
+        base_url=base,
+        api_key="ollama",
+        provider="openai-compatible",
+        request_timeout=600.0,
+    )
+
+
+def _should_use_compiler(payload: GraphPayload) -> bool:
+    """Use the LangGraph compiler when the native sequential executor cannot
+    faithfully run the canvas: cyclic graphs (consensus/fix loops) or genuine
+    multi-agent graphs (>=2 agent nodes). Single-agent acyclic graphs keep the
+    native path (and its runtime-engine metadata) unchanged."""
+    has_cycle = _topological_order([node.id for node in payload.nodes], payload.links) is None
+    agent_nodes = sum(
+        1
+        for node in payload.nodes
+        if _normalize_node_type(node.type).startswith("frontier/agent")
+    )
+    return has_cycle or agent_nodes >= 2
+
+
+def _compile_and_run_frontier_graph(
+    payload: GraphPayload,
+    *,
+    run_id: str,
+    on_event: Callable[[str, dict[str, Any]], None] | None = None,
+) -> tuple[dict[str, dict[str, Any]], list[GraphRunEvent]]:
+    """Compile the canvas graph into a real LangGraph StateGraph and run it.
+
+    Agent nodes use their studio system prompt + gpt-oss:20b; named output ports
+    become conditional edges; consensus/fix loops are bounded; build/implementer
+    nodes delegate to the harness coding loop in the bound workspace. Returns
+    ``(node_results, events)`` shaped like the native path so the response model
+    and UI are unchanged.
+    """
+    from app import graph_compiler as gc
+
+    events: list[GraphRunEvent] = []
+
+    def emit(kind: str, data: dict[str, Any]) -> None:
+        if on_event is not None:
+            try:
+                on_event(kind, data)
+            except Exception:  # noqa: BLE001 - event sink must never break a run
+                pass
+        node_id = str(data.get("node_id") or kind)
+        etype = kind if kind in {"node_started", "node_completed", "node_failed"} else "node_completed"
+        title = str(data.get("title") or kind.replace("_", " ").title())
+        detail = {k: v for k, v in data.items() if k not in {"node_id", "title"}}
+        events.append(
+            GraphRunEvent(
+                id=f"evt-{uuid4()}",
+                node_id=node_id,
+                type=etype,  # type: ignore[arg-type]
+                title=title[:120],
+                summary=(str(detail)[:300] if detail else "")
+                or "ok",
+                created_at=_now_iso(),
+            )
+        )
+
+    run_input = payload.input if isinstance(payload.input, dict) else {}
+    runtime = run_input.get("runtime") if isinstance(run_input.get("runtime"), dict) else {}
+    session_id = str(runtime.get("session_id") or run_input.get("session_id") or f"session:{run_id}")
+    execution_state: dict[str, Any] = {
+        "run_id": run_id,
+        "runtime": runtime,
+        "session_id": session_id,
+        "runtime_info": _resolve_runtime_engine(run_input, store.platform_settings),
+        "effective_security_policy": _resolve_execution_security_policy(run_input),
+    }
+
+    def execute_native(
+        node: Any,
+        incoming: list[dict[str, Any]],
+        incoming_by_port: dict[str, list[dict[str, Any]]],
+    ) -> dict[str, Any]:
+        return _execute_node(
+            node=node,
+            incoming=incoming,
+            incoming_by_port=incoming_by_port,
+            run_input=run_input,
+            execution_state=execution_state,
+            mem_store=store.memory_by_session,
+        )
+
+    # Resolve the bound working folder to a real path under the mounted projects
+    # root (escape-safe). An unresolved/escaping path is dropped (no binding).
+    workspace = None
+    ws = run_input.get("workspace")
+    if isinstance(ws, dict) and ws.get("repo_path"):
+        resolved = _resolve_working_folder(str(ws.get("repo_path")))
+        if resolved:
+            # merge previously-approved out-of-bounds grants for this repo
+            granted = list(store.workspace_grants.get(resolved, []))
+            extra = [str(p) for p in (ws.get("extra_paths") or [])] + granted
+            workspace = {**ws, "repo_path": resolved, "extra_paths": extra}
+
+    def _record_escalation(request_obj: dict[str, Any]) -> None:
+        details = store.run_details.setdefault(run_id, {})
+        escalations = details.setdefault("escalations", [])
+        if not isinstance(escalations, list):
+            escalations = []
+            details["escalations"] = escalations
+        entry = {
+            "id": f"esc-{uuid4()}",
+            "path": str(request_obj.get("path") or ""),
+            "workspace_root": str(request_obj.get("workspace_root") or ""),
+            "policy": str(request_obj.get("policy") or "ask"),
+            "status": "pending",
+            "created_at": _now_iso(),
+        }
+        escalations.append(entry)
+        emit("permission_required", {"node_id": "workspace", "path": entry["path"]})
+
+    try:
+        max_loops = int(run_input.get("max_loop_iterations") or 4)
+    except (TypeError, ValueError):
+        max_loops = 4
+
+    run_mode = str(run_input.get("mode") or "execute").strip().lower()
+    if run_mode not in _CHAT_MODES:
+        run_mode = "execute"
+    override_model = str(run_input.get("model") or "").strip()
+    override_effort = str(run_input.get("reasoning_effort") or "").strip().lower()
+    if override_effort not in _REASONING_EFFORTS:
+        override_effort = ""
+
+    def resolve_agent(cfg: dict[str, Any]) -> Any:
+        res = _agent_resolution_for_node(cfg)
+        if override_model:
+            provider, bare = _resolve_chat_provider(override_model)
+            res.model = bare or res.model
+            res.provider = provider or res.provider
+            if res.provider == "ollama":
+                res.base_url = local_models.ollama_openai_base_url()
+        if override_effort:
+            res.reasoning_effort = override_effort
+        return res
+
+    deps = gc.CompilerDeps(
+        resolve_agent=resolve_agent,
+        make_chat_client=_make_harness_chat_client,
+        execute_native=execute_native,
+        run_id=run_id,
+        repo_root=str(_repository_root()),
+        workspace=workspace,
+        emit=emit,
+        on_escalation=_record_escalation,
+        max_loop_iterations=max(1, min(max_loops, 12)),
+        node_timeout_s=600,
+        mode=run_mode,
+    )
+
+    compiled = gc.compile_frontier_graph(list(payload.nodes), list(payload.links), deps)
+    result = gc.run_compiled_graph(compiled, run_input, deps)
+    node_results = result.get("node_results", {})
+    if not isinstance(node_results, dict):
+        node_results = {}
+    changed_files = result.get("changed_files") if isinstance(result.get("changed_files"), list) else []
+    return node_results, events, changed_files
+
+
+def _merge_changed_files(run_id: str, changed: list[dict[str, Any]]) -> None:
+    """Persist files-touched + per-file diffs on the run (merged by path)."""
+    if not changed:
+        return
+    details = store.run_details.setdefault(run_id, {})
+    existing = details.get("changed_files")
+    by_path: dict[str, dict[str, Any]] = {}
+    if isinstance(existing, list):
+        for item in existing:
+            if isinstance(item, dict) and item.get("path"):
+                by_path[str(item["path"])] = item
+    for item in changed:
+        if isinstance(item, dict) and item.get("path"):
+            by_path[str(item["path"])] = item
+    details["changed_files"] = list(by_path.values())
+
+
+def _resolve_published_workflow_definition(token: str) -> WorkflowDefinition | None:
+    requested = str(token or "").strip().lower()
+    if not requested:
+        return None
+    requested_slug = _slugify(requested)
+    for workflow in _iter_active_runtime_definitions("workflow_definition"):
+        if not isinstance(workflow, WorkflowDefinition):
+            continue
+        keys = {workflow.id.lower(), _slugify(workflow.name)}
+        if requested in keys or (requested_slug and requested_slug in keys):
+            return workflow
+    return None
+
+
+def _workflow_graph_qualifies_for_compiler(graph_json: dict[str, Any]) -> bool:
+    """A workflow definition runs through the multi-agent compiler when its graph
+    is cyclic or has >=2 agent nodes (otherwise the single-agent fast path runs)."""
+    if not isinstance(graph_json, dict):
+        return False
+    try:
+        payload = _graph_payload_from_json(graph_json)
+    except Exception:  # noqa: BLE001
+        return False
+    if not payload.nodes:
+        return False
+    return _should_use_compiler(payload)
+
+
+def _run_compiled_workflow_run(
+    *,
+    run_id: str,
+    title: str,
+    run_kind: str,
+    graph_json: dict[str, Any],
+    prompt: str,
+    payload: dict[str, Any],
+    access_context: dict[str, Any],
+) -> None:
+    """Execute a published multi-agent workflow definition through the LangGraph
+    compiler in the background run thread, translating its node results + events
+    into the inbox run's events/artifacts/graph view."""
+    gp = _graph_payload_from_json(graph_json)
+    workspace = payload.get("workspace") if isinstance(payload.get("workspace"), dict) else None
+    gp_input: dict[str, Any] = {
+        "message": prompt,
+        "spec": prompt,
+        "session_id": f"session:{run_id}",
+        "mode": str(payload.get("mode") or "execute"),
+    }
+    if workspace:
+        gp_input["workspace"] = workspace
+    if str(payload.get("model") or "").strip():
+        gp_input["model"] = str(payload.get("model")).strip()
+    if str(payload.get("reasoning_effort") or "").strip():
+        gp_input["reasoning_effort"] = str(payload.get("reasoning_effort")).strip()
+    gp = GraphPayload(
+        schema_version=gp.schema_version, nodes=gp.nodes, links=gp.links, input=gp_input
+    )
+
+    try:
+        node_results, compiled_events, changed_files = _compile_and_run_frontier_graph(gp, run_id=run_id)
+    except Exception as exc:  # noqa: BLE001
+        store.runs[run_id] = WorkflowRunSummary(
+            id=run_id, title=title, status="Failed", updatedAt="just now",
+            progressLabel="Multi-agent run failed", kind=run_kind,  # type: ignore[arg-type]
+        )
+        store.run_events.setdefault(run_id, []).append(
+            WorkflowRunEvent(
+                id=f"evt-{uuid4()}", type="error", title="Multi-agent workflow failed",
+                summary=_sanitize_runtime_error_message(exc), createdAt=_now_iso(), metadata={},
+            )
+        )
+        store.run_details[run_id] = {
+            "artifacts": [], "status": "Failed", "graph": graph_json,
+            "agent_traces": [], "response_text": _sanitize_runtime_error_message(exc),
+            "approvals": {"required": False, "pending": False}, "access": access_context,
+        }
+        _persist_store_state()
+        return
+
+    # translate compiler events -> inbox run events
+    for ev in compiled_events:
+        store.run_events.setdefault(run_id, []).append(
+            WorkflowRunEvent(
+                id=ev.id,
+                type=("error" if ev.type == "node_failed" else "agent_message"),
+                title=ev.title,
+                summary=ev.summary,
+                createdAt=ev.created_at,
+                metadata={"node_id": ev.node_id, "phase": "graph"},
+            )
+        )
+
+    # final response = the most downstream human-facing message
+    response_text = "Multi-agent workflow completed."
+    for key in ("output", "gate", "build", "consensus"):
+        candidate = node_results.get(key)
+        if isinstance(candidate, dict) and (candidate.get("response") or candidate.get("message")):
+            response_text = str(candidate.get("response") or candidate.get("message"))
+            break
+    else:
+        for candidate in node_results.values():
+            if isinstance(candidate, dict) and candidate.get("response"):
+                response_text = str(candidate["response"])
+                break
+
+    agent_traces = [
+        {
+            "agent": str(res.get("title") or res.get("agent_id") or node_id),
+            "reasoningSummary": str(res.get("summary") or "")[:300],
+            "actions": [f"mode={res.get('mode', 'chat')}", f"route={res.get('route', '')}"],
+            "output": str(res.get("response") or res.get("message") or "")[:2000],
+        }
+        for node_id, res in node_results.items()
+        if isinstance(res, dict)
+    ]
+
+    artifacts: list[ArtifactSummary] = []
+    main_artifact = ArtifactSummary(
+        id=str(uuid4()), name="Completed Feature — Team Handback", status="Needs Review", version=1
+    )
+    _upsert_artifact_summary(main_artifact)
+    artifacts.append(main_artifact)
+    for node_id, res in node_results.items():
+        if isinstance(res, dict) and str(res.get("patch") or "").strip():
+            patch_artifact = ArtifactSummary(
+                id=str(uuid4()), name=f"Patch — {res.get('title') or node_id}",
+                status="Needs Review", version=1,
+            )
+            _upsert_artifact_summary(patch_artifact)
+            artifacts.append(patch_artifact)
+
+    store.runs[run_id] = WorkflowRunSummary(
+        id=run_id, title=title, status="Needs Review", updatedAt="just now",
+        progressLabel="Team handed back a completed feature", kind=run_kind,  # type: ignore[arg-type]
+    )
+    store.run_events.setdefault(run_id, []).append(
+        WorkflowRunEvent(
+            id=f"evt-{uuid4()}", type="artifact_created", title="Team handback ready",
+            summary=response_text[:500], createdAt=_now_iso(),
+            metadata={"artifact_id": main_artifact.id},
+        )
+    )
+    store.run_details[run_id] = {
+        "artifacts": [a.model_dump() for a in artifacts],
+        "status": "Needs Review",
+        "graph": graph_json,
+        "agent_traces": agent_traces,
+        "response_text": response_text,
+        "node_results": node_results,
+        "changed_files": changed_files,
+        "approvals": {"required": True, "pending": True},
+        "access": access_context,
+    }
+    _persist_store_state()
+
+
 @app.post("/graph/runs")
 def run_graph(request: Request, payload: GraphPayload) -> dict[str, Any]:
     actor = _enforce_request_authn(
@@ -19246,6 +20368,62 @@ def run_graph(request: Request, payload: GraphPayload) -> dict[str, Any]:
                 "max_collaborators": max_collaborators,
             },
         )
+
+    # Multi-agent / cyclic graphs (e.g. the cross-functional development team)
+    # compile to a real LangGraph StateGraph; the native sequential executor
+    # below cannot run cycles and ignores per-agent prompts/models.
+    if _should_use_compiler(payload):
+        try:
+            compiled_results, compiled_events, compiled_changed = _compile_and_run_frontier_graph(
+                payload, run_id=run_id
+            )
+            _merge_changed_files(run_id, compiled_changed)
+            runtime_snapshot = {
+                "selected_engine": "langgraph",
+                "executed_engine": "langgraph",
+                "mode": "native",
+                "strategy": "single",
+                "engine": "frontier-graph-compiler",
+            }
+            result = GraphRunResult(
+                run_id=run_id,
+                status="completed",
+                execution_order=list(compiled_results.keys()),
+                node_results=compiled_results,
+                events=compiled_events,
+                validation=validation,
+                runtime=runtime_snapshot,
+            )
+            _append_audit_event(
+                "graph.run",
+                actor,
+                "allowed",
+                {"run_id": run_id, "status": result.status, "engine": "compiler"},
+            )
+            return result.model_dump()
+        except Exception as exc:  # noqa: BLE001
+            result = GraphRunResult(
+                run_id=run_id,
+                status="failed",
+                execution_order=[],
+                node_results={},
+                events=[
+                    GraphRunEvent(
+                        id=f"evt-{uuid4()}",
+                        node_id="compiler",
+                        type="node_failed",
+                        title="Graph compilation/run failed",
+                        summary=_sanitize_runtime_error_message(exc),
+                        created_at=_now_iso(),
+                    )
+                ],
+                validation=validation,
+                runtime={"engine": "frontier-graph-compiler"},
+            )
+            _append_audit_event(
+                "graph.run", actor, "error", {"run_id": run_id, "status": result.status}
+            )
+            return result.model_dump()
 
     order = _topological_order([node.id for node in payload.nodes], payload.links) or []
     node_by_id = {node.id: node for node in payload.nodes}

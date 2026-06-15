@@ -1521,3 +1521,236 @@ class Neo4jRunGraph:
             "topics": topic_rows,
             "relations": relations,
         }
+
+
+class PostgresWorldGraph(_BasePostgresService):
+    """World-model graph hosted in the bundled Postgres (no Java / no Neo4j).
+
+    Drop-in for :class:`Neo4jRunGraph` — same methods + return shapes — backed by
+    two relational tables (``frontier_kg_nodes`` / ``frontier_kg_edges``) queried
+    with plain SQL. Node labels and edge relation names mirror the Cypher model
+    (KnowledgeOwner / KnowledgeMemory / KnowledgeTopic / MemoryEvidence /
+    WorkflowRun / Agent / Workflow; OWNS_MEMORY / DERIVED_FROM / MENTIONS_TOPIC /
+    RELATES_TO_TOPIC / EXECUTED_BY / PART_OF) so the projection + retrieval code is
+    unchanged.
+    """
+
+    def _ensure(self) -> None:
+        if self._initialized or not self.enabled:
+            return
+        with self._connect() as connection, connection.cursor() as cursor:
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS frontier_kg_nodes (
+                    id TEXT PRIMARY KEY,
+                    label TEXT NOT NULL,
+                    memory_scope TEXT NOT NULL DEFAULT '',
+                    props JSONB NOT NULL DEFAULT '{}'::jsonb,
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+                )
+                """
+            )
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS frontier_kg_edges (
+                    src TEXT NOT NULL,
+                    dst TEXT NOT NULL,
+                    rel TEXT NOT NULL,
+                    props JSONB NOT NULL DEFAULT '{}'::jsonb,
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                    PRIMARY KEY (src, dst, rel)
+                )
+                """
+            )
+            cursor.execute(
+                "CREATE INDEX IF NOT EXISTS frontier_kg_nodes_label_scope "
+                "ON frontier_kg_nodes(label, memory_scope)"
+            )
+            cursor.execute(
+                "CREATE INDEX IF NOT EXISTS frontier_kg_edges_src_rel "
+                "ON frontier_kg_edges(src, rel)"
+            )
+        self._initialized = True
+
+    def _merge_node(self, cursor: Any, *, node_id: str, label: str, props: dict[str, Any], memory_scope: str = "") -> None:
+        if not node_id:
+            return
+        cursor.execute(
+            """
+            INSERT INTO frontier_kg_nodes (id, label, memory_scope, props)
+            VALUES (%s, %s, %s, %s::jsonb)
+            ON CONFLICT (id) DO UPDATE SET
+                label = EXCLUDED.label,
+                memory_scope = EXCLUDED.memory_scope,
+                props = frontier_kg_nodes.props || EXCLUDED.props,
+                updated_at = now()
+            """,
+            (node_id, label, memory_scope, json.dumps(props, default=_json_default)),
+        )
+
+    def _merge_edge(self, cursor: Any, *, src: str, dst: str, rel: str, props: dict[str, Any] | None = None) -> None:
+        if not src or not dst:
+            return
+        cursor.execute(
+            """
+            INSERT INTO frontier_kg_edges (src, dst, rel, props)
+            VALUES (%s, %s, %s, %s::jsonb)
+            ON CONFLICT (src, dst, rel) DO UPDATE SET
+                props = frontier_kg_edges.props || EXCLUDED.props,
+                updated_at = now()
+            """,
+            (src, dst, rel, json.dumps(props or {}, default=_json_default)),
+        )
+
+    def record_run(self, *, run_id: str, title: str, agent: str | None, workflow: str | None) -> None:
+        if not self.enabled:
+            return
+        try:
+            self._ensure()
+            with self._connect() as connection, connection.cursor() as cursor:
+                self._merge_node(cursor, node_id=run_id, label="WorkflowRun", props={"title": title})
+                if agent:
+                    self._merge_node(cursor, node_id=f"agent:{agent}", label="Agent", props={"name": agent})
+                    self._merge_edge(cursor, src=run_id, dst=f"agent:{agent}", rel="EXECUTED_BY")
+                if workflow:
+                    self._merge_node(cursor, node_id=f"workflow:{workflow}", label="Workflow", props={"name": workflow})
+                    self._merge_edge(cursor, src=run_id, dst=f"workflow:{workflow}", rel="PART_OF")
+        except Exception:  # noqa: BLE001
+            return
+
+    def project_memory_summary(self, *, projection: dict[str, Any]) -> None:
+        if not self.enabled:
+            return
+        owner = projection.get("owner") if isinstance(projection.get("owner"), dict) else {}
+        memory = projection.get("memory") if isinstance(projection.get("memory"), dict) else {}
+        topics = projection.get("topics") if isinstance(projection.get("topics"), list) else []
+        evidences = projection.get("evidences") if isinstance(projection.get("evidences"), list) else []
+        if not owner or not memory:
+            return
+        owner_id = str(owner.get("id") or "")
+        memory_id = str(memory.get("id") or "")
+        scope = str(memory.get("memory_scope") or "session")
+        try:
+            self._ensure()
+            with self._connect() as connection, connection.cursor() as cursor:
+                self._merge_node(
+                    cursor, node_id=owner_id, label="KnowledgeOwner",
+                    memory_scope=str(owner.get("memory_scope") or scope),
+                    props={
+                        "name": str(owner.get("name") or ""),
+                        "owner_type": str(owner.get("type") or "Owner"),
+                        "memory_scope": str(owner.get("memory_scope") or scope),
+                    },
+                )
+                self._merge_node(
+                    cursor, node_id=memory_id, label="KnowledgeMemory", memory_scope=scope,
+                    props={
+                        "content": str(memory.get("content") or ""),
+                        "kind": str(memory.get("kind") or "memory-consolidation"),
+                        "bucket_id": str(memory.get("bucket_id") or ""),
+                        "session_id": str(memory.get("session_id") or ""),
+                        "memory_scope": scope,
+                        "candidate_kind": str(memory.get("candidate_kind") or "promotion"),
+                        "source_count": int(memory.get("source_count") or 0),
+                        "created_at": str(memory.get("at") or memory.get("created_at") or ""),
+                    },
+                )
+                self._merge_edge(cursor, src=owner_id, dst=memory_id, rel="OWNS_MEMORY", props={"memory_scope": scope})
+                for item in evidences:
+                    if not isinstance(item, dict) or not str(item.get("id") or ""):
+                        continue
+                    ev_id = str(item.get("id"))
+                    self._merge_node(
+                        cursor, node_id=ev_id, label="MemoryEvidence", memory_scope=scope,
+                        props={
+                            "name": str(item.get("name") or item.get("id") or ""),
+                            "bucket_id": str(item.get("bucket_id") or memory.get("bucket_id") or ""),
+                            "memory_scope": str(item.get("memory_scope") or scope),
+                        },
+                    )
+                    self._merge_edge(cursor, src=memory_id, dst=ev_id, rel="DERIVED_FROM")
+                for item in topics:
+                    if not isinstance(item, dict) or not str(item.get("id") or ""):
+                        continue
+                    t_id = str(item.get("id"))
+                    weight = int(item.get("weight") or 0)
+                    self._merge_node(
+                        cursor, node_id=t_id, label="KnowledgeTopic",
+                        props={"name": str(item.get("name") or ""), "weight": weight},
+                    )
+                    self._merge_edge(cursor, src=memory_id, dst=t_id, rel="MENTIONS_TOPIC", props={"weight": weight})
+                    self._merge_edge(cursor, src=owner_id, dst=t_id, rel="RELATES_TO_TOPIC")
+        except Exception:  # noqa: BLE001
+            return
+
+    def query_memory_context(
+        self, *, bucket_id: str, memory_scope: str, query_text: str = "", limit: int = 10
+    ) -> dict[str, Any]:
+        if not self.enabled:
+            return {"memories": [], "topics": [], "relations": []}
+        owner_id = f"owner:{str(bucket_id or '').strip()}"
+        bounded = max(1, int(limit))
+        query = str(query_text or "").strip().lower()
+        memory_rows: list[dict[str, Any]] = []
+        topic_rows: list[dict[str, Any]] = []
+        try:
+            self._ensure()
+            with self._connect() as connection, connection.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT n.id, n.props
+                    FROM frontier_kg_edges e
+                    JOIN frontier_kg_nodes n ON n.id = e.dst
+                    WHERE e.src = %s AND e.rel = 'OWNS_MEMORY'
+                      AND n.label = 'KnowledgeMemory'
+                      AND n.props->>'memory_scope' = %s
+                      AND (%s = '' OR lower(n.props->>'content') LIKE %s)
+                    ORDER BY n.props->>'created_at' DESC
+                    LIMIT %s
+                    """,
+                    (owner_id, str(memory_scope or "session"), query, f"%{query}%", bounded),
+                )
+                for node_id, props in cursor.fetchall():
+                    props = _safe_json_loads(props) or {}
+                    memory_rows.append(
+                        {
+                            "id": str(node_id or ""),
+                            "content": str(props.get("content") or ""),
+                            "kind": str(props.get("kind") or "memory-consolidation"),
+                            "candidate_kind": str(props.get("candidate_kind") or "promotion"),
+                            "bucket_id": str(props.get("bucket_id") or bucket_id),
+                            "session_id": str(props.get("session_id") or bucket_id),
+                            "source_count": int(props.get("source_count") or 0),
+                            "tier": "world-graph",
+                            "at": str(props.get("created_at") or ""),
+                        }
+                    )
+                cursor.execute(
+                    """
+                    SELECT n.id, n.props
+                    FROM frontier_kg_edges e
+                    JOIN frontier_kg_nodes n ON n.id = e.dst
+                    WHERE e.src = %s AND e.rel = 'RELATES_TO_TOPIC'
+                      AND n.label = 'KnowledgeTopic'
+                    ORDER BY (n.props->>'weight')::int DESC NULLS LAST, n.props->>'name' ASC
+                    LIMIT %s
+                    """,
+                    (owner_id, bounded),
+                )
+                for node_id, props in cursor.fetchall():
+                    props = _safe_json_loads(props) or {}
+                    topic_rows.append(
+                        {
+                            "id": str(node_id or ""),
+                            "name": str(props.get("name") or ""),
+                            "weight": int(props.get("weight") or 0),
+                        }
+                    )
+        except Exception:  # noqa: BLE001
+            return {"memories": [], "topics": [], "relations": []}
+        relations = [
+            {"type": "RELATES_TO_TOPIC", "from": owner_id, "to": str(t.get("id") or "")}
+            for t in topic_rows
+            if str(t.get("id") or "")
+        ]
+        return {"memories": memory_rows, "topics": topic_rows, "relations": relations}

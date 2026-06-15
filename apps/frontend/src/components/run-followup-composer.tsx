@@ -2,11 +2,14 @@
 
 import { FormEvent, KeyboardEvent, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { getAgentDefinitions, getPublishedWorkflows, sendRunMessage } from "@/lib/api";
-import type { AgentDefinition, WorkflowDefinition } from "@/types/frontier";
+import { getAgentDefinitions, getPlaybooks, getPublishedWorkflows, sendRunMessage, type ComposerOptions } from "@/lib/api";
+import type { AgentDefinition, PlaybookDefinition, WorkflowDefinition } from "@/types/frontier";
+import { ComposerControls } from "@/components/composer-controls";
+
+type MentionTrigger = "@" | "/" | "!";
 
 type MentionSuggestion = {
-  trigger: "@" | "/";
+  trigger: MentionTrigger;
   value: string;
   label: string;
 };
@@ -20,7 +23,7 @@ function slugify(value: string): string {
     .slice(0, 80);
 }
 
-function getActiveMentionToken(text: string, cursor: number): { trigger: "@" | "/"; query: string; start: number; end: number } | null {
+function getActiveMentionToken(text: string, cursor: number): { trigger: MentionTrigger; query: string; start: number; end: number } | null {
   if (cursor < 0 || cursor > text.length) {
     return null;
   }
@@ -32,16 +35,16 @@ function getActiveMentionToken(text: string, cursor: number): { trigger: "@" | "
   start += 1;
 
   const token = text.slice(start, cursor);
-  if (!token || (token[0] !== "@" && token[0] !== "/")) {
+  if (!token || (token[0] !== "@" && token[0] !== "/" && token[0] !== "!")) {
     return null;
   }
 
-  if (token.length > 1 && /[@/]/.test(token.slice(1))) {
+  if (token.length > 1 && /[@/!]/.test(token.slice(1))) {
     return null;
   }
 
   return {
-    trigger: token[0] as "@" | "/",
+    trigger: token[0] as MentionTrigger,
     query: token.slice(1),
     start,
     end: cursor,
@@ -60,19 +63,26 @@ export function RunFollowupComposer({ runId }: Props) {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [publishedAgents, setPublishedAgents] = useState<AgentDefinition[]>([]);
   const [publishedWorkflows, setPublishedWorkflows] = useState<WorkflowDefinition[]>([]);
+  const [activePlaybooks, setActivePlaybooks] = useState<PlaybookDefinition[]>([]);
   const [activeSuggestionIndex, setActiveSuggestionIndex] = useState(0);
   const [submitError, setSubmitError] = useState<string | null>(null);
+  const [composerOpts, setComposerOpts] = useState<ComposerOptions>({});
 
   useEffect(() => {
     let cancelled = false;
 
     async function loadMentions() {
-      const [agentDefs, workflowDefs] = await Promise.all([getAgentDefinitions(), getPublishedWorkflows()]);
+      const [agentDefs, workflowDefs, playbookDefs] = await Promise.all([
+        getAgentDefinitions(),
+        getPublishedWorkflows(),
+        getPlaybooks().catch(() => []),
+      ]);
       if (cancelled) {
         return;
       }
       setPublishedAgents(agentDefs.filter((agent) => agent.status === "published"));
       setPublishedWorkflows(workflowDefs.filter((workflow) => workflow.status === "published"));
+      setActivePlaybooks((playbookDefs as PlaybookDefinition[]).filter((p) => p.status === "active"));
     }
 
     void loadMentions();
@@ -104,6 +114,17 @@ export function RunFollowupComposer({ runId }: Props) {
         .slice(0, 8);
     }
 
+    if (activeMention.trigger === "!") {
+      return activePlaybooks
+        .map((playbook) => ({
+          trigger: "!" as const,
+          value: slugify(playbook.name) || slugify(playbook.id),
+          label: playbook.name,
+        }))
+        .filter((item) => item.value.includes(query) || item.label.toLowerCase().includes(query))
+        .slice(0, 8);
+    }
+
     return publishedWorkflows
       .map((workflow) => ({
         trigger: "/" as const,
@@ -112,7 +133,7 @@ export function RunFollowupComposer({ runId }: Props) {
       }))
       .filter((item) => item.value.includes(query) || item.label.toLowerCase().includes(query))
       .slice(0, 8);
-  }, [activeMention, publishedAgents, publishedWorkflows]);
+  }, [activeMention, publishedAgents, publishedWorkflows, activePlaybooks]);
 
   useEffect(() => {
     setActiveSuggestionIndex(0);
@@ -186,7 +207,7 @@ export function RunFollowupComposer({ runId }: Props) {
       setIsSubmitting(true);
       // Sends into THIS run's conversation; the live event stream renders the
       // user message and the agent's reply in place.
-      await sendRunMessage(runId, message);
+      await sendRunMessage(runId, message, composerOpts as Record<string, unknown>);
       setDraft("");
       window.dispatchEvent(new CustomEvent("frontier:runs-changed"));
       router.refresh();
@@ -209,7 +230,11 @@ export function RunFollowupComposer({ runId }: Props) {
       {activeMention && mentionSuggestions.length > 0 ? (
         <div className="absolute bottom-full left-0 right-0 z-20 mb-2 overflow-hidden rounded-xl border border-[var(--ui-border)] bg-[hsl(var(--card))] shadow-[0_12px_32px_rgba(0,0,0,0.4)]">
           <div className="px-2 py-1 text-[10px] uppercase tracking-wide text-[var(--fx-muted)]">
-            {activeMention.trigger === "@" ? "Published Agents" : "Published Workflows"}
+            {activeMention.trigger === "@"
+              ? "Published Agents"
+              : activeMention.trigger === "!"
+                ? "Active Playbooks"
+                : "Published Workflows"}
           </div>
           <ul className="max-h-40 overflow-auto text-xs">
             {mentionSuggestions.map((suggestion, index) => (
@@ -255,13 +280,13 @@ export function RunFollowupComposer({ runId }: Props) {
           onClick={(event) => setCursorPosition((event.target as HTMLTextAreaElement).selectionStart ?? draft.length)}
           onKeyUp={(event) => setCursorPosition((event.target as HTMLTextAreaElement).selectionStart ?? draft.length)}
           onKeyDown={handleTextareaKeyDown}
-          placeholder="Message this run… (use @agent or /workflow)"
+          placeholder="Message this run… (use @agent, /workflow, or !playbook)"
           className="max-h-48 min-h-[56px] w-full resize-none bg-transparent px-4 pt-3 text-sm leading-relaxed text-[var(--foreground)] outline-none focus:outline-none focus-visible:outline-none placeholder:text-[var(--fx-muted)]"
         />
-        <div className="flex items-center justify-between gap-2 px-3 pb-2.5">
-          <p className="fx-muted text-[11px]">
-            Ctrl+Enter to send · Enter for a new line · @agent to address an agent
-          </p>
+        <div className="flex items-center justify-between gap-2 px-3 pb-2.5 pt-1">
+          <div className="min-w-0 flex-1">
+            <ComposerControls onChange={setComposerOpts} />
+          </div>
           <button
             type="submit"
             disabled={isSubmitting || !draft.trim()}

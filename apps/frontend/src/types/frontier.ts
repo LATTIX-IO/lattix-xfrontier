@@ -118,6 +118,11 @@ export type WorkflowDefinition = {
   version: number;
   status: "draft" | "published" | "archived";
   security_config?: SecurityScopeConfig;
+  graph_json?: {
+    schema_version?: string;
+    nodes?: Array<{ id: string; title: string; type: string; x: number; y: number; config?: Record<string, unknown> }>;
+    links?: Array<{ from: string; to: string; from_port?: string; to_port?: string }>;
+  };
 };
 
 export type SecurityClassification = "public" | "internal" | "confidential" | "restricted";

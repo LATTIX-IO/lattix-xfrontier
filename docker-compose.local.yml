@@ -67,11 +67,10 @@ services:
       FRONTIER_MEMORY_ENABLE_LONG_TERM: ${FRONTIER_MEMORY_ENABLE_LONG_TERM:-1}
       FRONTIER_MEMORY_LEARNING_ENABLED: ${FRONTIER_MEMORY_LEARNING_ENABLED:-1}
       OPENAI_EMBEDDING_MODEL: ${OPENAI_EMBEDDING_MODEL:-text-embedding-3-small}
-      # Neo4j ships on by default for world-model / knowledge-graph capabilities.
-      # The backend connects to the bolt endpoint of the neo4j service below.
-      NEO4J_URI: ${NEO4J_URI:-bolt://neo4j:7687}
-      NEO4J_USERNAME: ${NEO4J_USERNAME:-neo4j}
-      NEO4J_PASSWORD: ${NEO4J_PASSWORD:-frontier123}
+      # World-models / knowledge graph live in Postgres (PostgresWorldGraph) — no
+      # Neo4j, no JVM. With NEO4J_URI unset the backend uses the relational
+      # world-graph (frontier_kg_nodes/frontier_kg_edges) in the pgvector Postgres.
+      FRONTIER_MEMORY_GRAPH_PROJECTION_ENABLED: ${FRONTIER_MEMORY_GRAPH_PROJECTION_ENABLED:-1}
     ports:
       - "127.0.0.1:8000:8000"
     volumes:
@@ -81,8 +80,6 @@ services:
       postgres:
         condition: service_healthy
       redis:
-        condition: service_started
-      neo4j:
         condition: service_started
 
   postgres:
@@ -143,27 +140,9 @@ services:
     #           count: all
     #           capabilities: [gpu]
 
-  # Knowledge graph for world-model capabilities — on by default. The JVM is
-  # capped (heap 512m + pagecache 256m → ~1 GB RSS) to stay within the
-  # local-first budget. To run without it on a very constrained host, override
-  # NEO4J_URI="" and start with: docker compose up --scale neo4j=0.
-  neo4j:
-    logging:
-      driver: json-file
-      options:
-        max-size: "10m"
-        max-file: "3"
-    image: neo4j:5.23-community
-    mem_limit: 1536m
-    environment:
-      NEO4J_AUTH: ${NEO4J_USERNAME:-neo4j}/${NEO4J_PASSWORD:-frontier123}
-      NEO4J_server_memory_heap_max__size: 512m
-      NEO4J_server_memory_pagecache_size: 256m
-    ports:
-      - "127.0.0.1:7474:7474"
-      - "127.0.0.1:7687:7687"
-    volumes:
-      - frontier_neo4j_data:/data
+  # World-model / knowledge-graph capabilities are hosted in the pgvector
+  # Postgres above (PostgresWorldGraph → frontier_kg_nodes/frontier_kg_edges) —
+  # no Neo4j, no JVM. Frees ~1 GB RSS vs the old Neo4j sidecar.
 
   # Optional workers profile for integration runs.
   # Enable with: docker compose --profile stack -f docker-compose.local.yml up
@@ -191,4 +170,3 @@ volumes:
   frontier_ollama_models:
   frontier_postgres_data:
   frontier_redis_data:
-  frontier_neo4j_data:

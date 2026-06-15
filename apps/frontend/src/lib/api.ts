@@ -58,6 +58,26 @@ function getRequestIdentityHeaders(): Record<string, string> {
   return headers;
 }
 
+/**
+ * Server-side only: forward the incoming request's cookies (including the
+ * `frontier_operator_session` casdoor session) to the backend, so server
+ * components authenticate as the logged-in user instead of anonymously.
+ * Without this, server-side calls hit the backend with no session → 401 →
+ * the UI silently falls back to mock data. Dynamically imports `next/headers`
+ * so the client bundle is unaffected.
+ */
+async function getServerAuthHeaders(): Promise<Record<string, string>> {
+  if (typeof window !== "undefined") return {};
+  try {
+    const { headers } = await import("next/headers");
+    const incoming = await headers();
+    const cookie = incoming.get("cookie");
+    return cookie ? { cookie } : {};
+  } catch {
+    return {};
+  }
+}
+
 /* ------------------------------------------------------------------ */
 /*  Retry with exponential backoff                                     */
 /* ------------------------------------------------------------------ */
@@ -251,10 +271,20 @@ export type RunParticipants = {
   agents: Array<{ id: string; name: string; active: boolean }>;
 };
 
+export type ChangedFile = {
+  path: string;
+  status: string;
+  additions: number;
+  deletions: number;
+  diff: string;
+};
+
 export type WorkflowRunDetail = {
   artifacts: ArtifactSummary[];
   status: string;
   participants?: RunParticipants;
+  changed_files?: ChangedFile[];
+  working_folder?: string;
   graph?: {
     nodes: Array<{ id: string; title: string; type: string; x: number; y: number; config?: Record<string, unknown> }>;
     links: Array<{ from: string; to: string; from_port?: string; to_port?: string }>;
@@ -320,6 +350,7 @@ async function safeFetch<T>(path: string, fallback: T, init?: RequestInit): Prom
         headers: {
           "Content-Type": "application/json",
           ...getRequestIdentityHeaders(),
+          ...(await getServerAuthHeaders()),
           ...(init?.headers ?? {}),
         },
         cache: "no-store",
@@ -353,6 +384,7 @@ async function strictFetch<T>(path: string, init?: RequestInit): Promise<T> {
       headers: {
         "Content-Type": "application/json",
         ...getRequestIdentityHeaders(),
+        ...(await getServerAuthHeaders()),
         ...(init?.headers ?? {}),
       },
       cache: "no-store",
@@ -1000,11 +1032,105 @@ export async function renameWorkflowRun(id: string, title: string): Promise<{ id
 export async function sendRunMessage(
   runId: string,
   message: string,
+  options?: Record<string, unknown>,
 ): Promise<{ ok: boolean; run_id: string }> {
   return strictFetch(`/workflow-runs/${encodeURIComponent(runId)}/messages`, {
     method: "POST",
-    body: JSON.stringify({ message }),
+    body: JSON.stringify({ message, ...(options ?? {}) }),
   });
+}
+
+// --- Composer capabilities (working folder, model/reasoning, mode, MCP/skills) ---
+
+export type ComposerOptions = {
+  workspace?: { repo_path: string; allow_outside?: "ask" | "deny" | "allow" };
+  model?: string;
+  reasoning_effort?: "" | "low" | "medium" | "high";
+  mode?: "chat" | "plan" | "execute";
+  mcp_server_ids?: string[];
+  skill_ids?: string[];
+};
+
+export type UserSettings = {
+  default_working_folder: string;
+  preferred_model: string;
+  preferred_reasoning_effort: "" | "low" | "medium" | "high";
+  default_mode: "chat" | "plan" | "execute";
+};
+
+export async function getUserSettings(): Promise<UserSettings> {
+  return safeFetch<UserSettings>("/user/settings", {
+    default_working_folder: "",
+    preferred_model: "",
+    preferred_reasoning_effort: "",
+    default_mode: "execute",
+  });
+}
+
+export async function saveUserSettings(payload: Partial<UserSettings>): Promise<UserSettings> {
+  return strictFetch<UserSettings>("/user/settings", {
+    method: "PUT",
+    body: JSON.stringify(payload),
+  });
+}
+
+export type WorkspaceFolders = {
+  root: string;
+  path: string;
+  exists: boolean;
+  is_git: boolean;
+  folders: { name: string; path: string }[];
+};
+
+export async function getWorkspaceFolders(path?: string): Promise<WorkspaceFolders> {
+  const suffix = path ? `?path=${encodeURIComponent(path)}` : "";
+  return safeFetch<WorkspaceFolders>(`/workspace/folders${suffix}`, {
+    root: "/projects",
+    path: "",
+    exists: false,
+    is_git: false,
+    folders: [],
+  });
+}
+
+export type McpServer = {
+  id: string;
+  slug: string;
+  name: string;
+  configured: boolean;
+  transport: string;
+  base_url: string;
+};
+
+export async function getMcpServers(): Promise<McpServer[]> {
+  const res = await safeFetch<{ servers: McpServer[] }>("/mcp/servers", { servers: [] });
+  return res.servers ?? [];
+}
+
+export type RunEscalation = {
+  id: string;
+  path: string;
+  workspace_root: string;
+  policy: string;
+  status: string;
+};
+
+export async function getRunEscalations(runId: string): Promise<RunEscalation[]> {
+  const res = await safeFetch<{ escalations: RunEscalation[] }>(
+    `/workflow-runs/${encodeURIComponent(runId)}/escalations`,
+    { escalations: [] },
+  );
+  return res.escalations ?? [];
+}
+
+export async function approveRunEscalation(
+  runId: string,
+  escalationId: string,
+): Promise<{ ok: boolean }> {
+  return strictFetch(
+    `/workflow-runs/${encodeURIComponent(runId)}/escalations/${encodeURIComponent(escalationId)}/approve`,
+    { method: "POST", body: JSON.stringify({}) },
+  );
 }
 
 export async function getArtifacts(): Promise<ArtifactSummary[]> {
@@ -1018,6 +1144,11 @@ export async function getArtifact(id: string): Promise<ArtifactDetail | null> {
 // Builder mode endpoints
 export async function getWorkflowDefinitions(): Promise<WorkflowDefinition[]> {
   return safeFetch<WorkflowDefinition[]>("/workflow-definitions", mockWorkflowDefinitions);
+}
+
+export async function getWorkflowDefinition(id: string): Promise<WorkflowDefinition | null> {
+  // single-definition fetch includes graph_json (the list endpoint excludes it)
+  return safeFetch<WorkflowDefinition | null>(`/workflow-definitions/${id}`, null);
 }
 
 export async function saveWorkflowDefinition(payload: Json): Promise<{ ok: boolean }> {

@@ -690,7 +690,7 @@ export function StudioFullCanvas({
   const backHref = entityType === "agent" ? "/builder/agents" : "/builder/workflows";
 
   return (
-    <section className="-m-4 h-[calc(100vh-57px-2rem)] overflow-hidden md:-m-6 md:h-[calc(100vh-57px-3rem)]">
+    <section className="-m-5 h-[calc(100vh-57px)] overflow-hidden md:-m-6">
       <div className="relative h-full w-full">
         <ReactFlowCanvas
           className="h-full border-0"

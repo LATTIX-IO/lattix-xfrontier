@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { FormEvent, type MouseEvent as ReactMouseEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import dynamic from "next/dynamic";
@@ -10,6 +10,7 @@ import remarkGfm from "remark-gfm";
 import { RunGraphView } from "@/components/run-graph-view";
 import { RunArchiveButton } from "@/components/run-archive-button";
 import { RunFollowupComposer } from "@/components/run-followup-composer";
+import { RunChangesPane } from "@/components/run-changes-pane";
 import {
   getAtfAlignmentReport,
   getWorkflowRunEventsLive,
@@ -177,10 +178,52 @@ export function RunConversationConsole({ runId, run: initialRun, events: initial
   const [approvalFeedback, setApprovalFeedback] = useState("");
   const [approvalBusy, setApprovalBusy] = useState<"approved" | "changes_requested" | null>(null);
   const [approvalMessage, setApprovalMessage] = useState<string | null>(null);
-  // Details flyout: collapsed by default so the chat stays the primary surface.
+  // Pinnable side panels (Details + Files) — collapsed by default so the chat
+  // stays the primary surface; both pin beside content and are width-resizable.
   const [flyoutOpen, setFlyoutOpen] = useState(false);
+  const [filesOpen, setFilesOpen] = useState(false);
+  const [detailsWidth, setDetailsWidth] = useState(460);
+  const [filesWidth, setFilesWidth] = useState(440);
   const [atfReport, setAtfReport] = useState<AtfAlignmentReport | null>(null);
   const [atfReportError, setAtfReportError] = useState<string | null>(null);
+
+  // Restore persisted panel widths.
+  useEffect(() => {
+    const d = Number(window.localStorage.getItem("fx.run.detailsWidth"));
+    if (d >= 320 && d <= 900) setDetailsWidth(d);
+    const f = Number(window.localStorage.getItem("fx.run.filesWidth"));
+    if (f >= 320 && f <= 900) setFilesWidth(f);
+  }, []);
+
+  // Drag-to-resize: a left-edge handle grows the panel as the cursor moves left.
+  const startResize = useCallback(
+    (key: "details" | "files", current: number) => (event: ReactMouseEvent) => {
+      event.preventDefault();
+      const startX = event.clientX;
+      const setter = key === "details" ? setDetailsWidth : setFilesWidth;
+      const storageKey = key === "details" ? "fx.run.detailsWidth" : "fx.run.filesWidth";
+      const onMove = (e: MouseEvent) => {
+        const next = Math.max(320, Math.min(900, current + (startX - e.clientX)));
+        setter(next);
+      };
+      const onUp = (e: MouseEvent) => {
+        const next = Math.max(320, Math.min(900, current + (startX - e.clientX)));
+        try {
+          window.localStorage.setItem(storageKey, String(next));
+        } catch {
+          /* ignore */
+        }
+        document.removeEventListener("mousemove", onMove);
+        document.removeEventListener("mouseup", onUp);
+        document.body.style.userSelect = "";
+      };
+      document.body.style.userSelect = "none";
+      document.addEventListener("mousemove", onMove);
+      document.addEventListener("mouseup", onUp);
+    },
+    [],
+  );
+  const changedFiles = Array.isArray(run.changed_files) ? run.changed_files : [];
 
   const rawGraphNodes = Array.isArray(run.graph?.nodes) ? run.graph.nodes : [];
   const graphNodes = rawGraphNodes
@@ -671,9 +714,18 @@ export function RunConversationConsole({ runId, run: initialRun, events: initial
               />
             ) : null}
           </button>
+          <button
+            type="button"
+            onClick={() => setFilesOpen((prev) => !prev)}
+            aria-label="Toggle files changed"
+            className={`fx-btn-secondary px-2 py-1 text-[11px] font-medium ${filesOpen ? "bg-[hsl(var(--primary)/0.18)]" : ""}`}
+          >
+            Files{changedFiles.length ? ` (${changedFiles.length})` : ""}
+          </button>
         </div>
       </header>
 
+      <div className="flex min-h-0 flex-1 overflow-hidden">
       <section className="flex min-h-0 flex-1 flex-col overflow-hidden bg-[hsl(var(--muted)/0.18)]">
             <div ref={timelineRef} className="min-h-0 flex-1 space-y-4 overflow-auto px-3 pb-2 pt-4">
               {filteredEvents.length === 0 ? (
@@ -948,14 +1000,15 @@ export function RunConversationConsole({ runId, run: initialRun, events: initial
         {flyoutOpen ? (
           <>
             <div
-              className="fixed inset-0 z-40 bg-black/40"
-              onClick={() => setFlyoutOpen(false)}
+              onMouseDown={startResize("details", detailsWidth)}
+              className="w-1 shrink-0 cursor-col-resize bg-[var(--ui-border)] transition-colors hover:bg-[hsl(var(--primary))]"
               aria-hidden="true"
             />
             <aside
               role="dialog"
               aria-label="Run details"
-              className="fixed right-0 top-0 z-50 flex h-full w-full max-w-[620px] flex-col gap-3 overflow-y-auto border-l border-[var(--ui-border)] bg-[hsl(var(--background))] p-4 shadow-2xl"
+              style={{ width: detailsWidth }}
+              className="flex h-full shrink-0 flex-col gap-3 overflow-y-auto border-l border-[var(--ui-border)] bg-[hsl(var(--background))] p-4"
             >
               <div className="flex items-center justify-between">
                 <h2 className="text-sm font-semibold">Run details</h2>
@@ -1280,6 +1333,32 @@ export function RunConversationConsole({ runId, run: initialRun, events: initial
             </aside>
           </>
         ) : null}
+
+        {filesOpen ? (
+          <>
+            <div
+              onMouseDown={startResize("files", filesWidth)}
+              className="w-1 shrink-0 cursor-col-resize bg-[var(--ui-border)] transition-colors hover:bg-[hsl(var(--primary))]"
+              aria-hidden="true"
+            />
+            <aside
+              aria-label="Files changed"
+              style={{ width: filesWidth }}
+              className="flex h-full shrink-0 flex-col overflow-hidden border-l border-[var(--ui-border)] bg-[hsl(var(--background))]"
+            >
+              <div className="flex items-center justify-between border-b border-[var(--ui-border)] px-3 py-2">
+                <h2 className="text-sm font-semibold">Files changed</h2>
+                <button type="button" onClick={() => setFilesOpen(false)} className="fx-btn-secondary px-2 py-0.5 text-xs">
+                  Close
+                </button>
+              </div>
+              <div className="min-h-0 flex-1 overflow-hidden">
+                <RunChangesPane changedFiles={changedFiles} />
+              </div>
+            </aside>
+          </>
+        ) : null}
+      </div>
     </div>
   );
 }

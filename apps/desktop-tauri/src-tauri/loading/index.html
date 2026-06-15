@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Lattix xFrontier</title>
+    <style>
+      :root { color-scheme: dark; }
+      html, body {
+        margin: 0; height: 100%;
+        background: #0b0d12; color: #e6e8ee;
+        font: 15px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+      }
+      .wrap { height: 100%; display: flex; flex-direction: column;
+        align-items: center; justify-content: center; gap: 20px; }
+      .spinner { width: 38px; height: 38px; border-radius: 50%;
+        border: 3px solid #2a2f3a; border-top-color: #6ea8fe; animation: spin 0.9s linear infinite; }
+      .muted { color: #8b93a7; font-size: 13px; }
+      @keyframes spin { to { transform: rotate(360deg); } }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <div class="spinner"></div>
+      <div>Starting Lattix xFrontier…</div>
+      <div class="muted" id="status">Bringing up local services (database, world-model graph, models, agents)</div>
+    </div>
+    <script>
+      // Live first-run progress: the Rust shell forwards the supervisor's
+      // "[firstrun]" lines as a `firstrun-progress` event (withGlobalTauri).
+      (function () {
+        var status = document.getElementById("status");
+        var api = window.__TAURI__ && window.__TAURI__.event;
+        if (!api || !status) return;
+        api.listen("firstrun-progress", function (e) {
+          if (e && typeof e.payload === "string" && e.payload.length) {
+            status.textContent = e.payload;
+          }
+        });
+      })();
+    </script>
+  </body>
+</html>

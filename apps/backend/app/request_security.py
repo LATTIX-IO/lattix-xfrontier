@@ -81,6 +81,34 @@ _ROUTE_ACCESS_RULES: tuple[RouteAccessRule, ...] = (
         RouteAccessCategory.AUTHENTICATED_MUTATE,
         "platform.settings.save",
     ),
+    # Composer capabilities (per-user settings, working folders, MCP, escalations).
+    RouteAccessRule(
+        ("GET",), "/user/settings", RouteAccessCategory.AUTHENTICATED_READ, "user.settings.read"
+    ),
+    RouteAccessRule(
+        ("PUT",), "/user/settings", RouteAccessCategory.AUTHENTICATED_MUTATE, "user.settings.save"
+    ),
+    RouteAccessRule(
+        ("GET",),
+        "/workspace/folders",
+        RouteAccessCategory.AUTHENTICATED_READ,
+        "workspace.folders.list",
+    ),
+    RouteAccessRule(
+        ("GET",), "/mcp/servers", RouteAccessCategory.AUTHENTICATED_READ, "mcp.servers.list"
+    ),
+    RouteAccessRule(
+        ("GET",),
+        "/workflow-runs/{run_id}/escalations",
+        RouteAccessCategory.AUTHENTICATED_READ,
+        "workflow.run.escalations.read",
+    ),
+    RouteAccessRule(
+        ("POST",),
+        "/workflow-runs/{run_id}/escalations/{escalation_id}/approve",
+        RouteAccessCategory.AUTHENTICATED_MUTATE,
+        "workflow.run.escalations.approve",
+    ),
     RouteAccessRule(
         ("GET",), "/memory/{session_id}", RouteAccessCategory.AUTHENTICATED_READ, "memory.read"
     ),
