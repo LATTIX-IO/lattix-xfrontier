@@ -11,7 +11,8 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 tauri = { version = "2", features = [] }
 tauri-plugin-shell = "2"
-tauri-plugin-updater = "2"
+# Auto-update (tauri-plugin-updater) is deferred — it needs a minisign signing
+# key at build time. Re-add it + a real updater capability + pubkey for releases.
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 

@@ -40,13 +40,14 @@ Write-Host "== target triple: $triple =="
 # 1) Backend sidecar (PyInstaller) -> bin/frontier-backend-<triple>.exe
 Write-Host "== building backend sidecar (PyInstaller) =="
 & python -m PyInstaller --noconfirm (Join-Path $root "packaging/frontier-backend.spec")
+CheckExit "PyInstaller backend build"
 Copy-Item (Join-Path $root "dist/frontier-backend.exe") (Join-Path $bin "frontier-backend-$triple.exe") -Force
 
 # 2) Frontend standalone + vendored Node
 Write-Host "== building frontend (Next.js standalone) =="
 Push-Location (Join-Path $root "apps/frontend")
-& npm ci
-& npm run build
+& npm ci; CheckExit "npm ci"
+& npm run build; CheckExit "next build"
 $dest = Join-Path $tauri "resources/frontend"
 New-Item -ItemType Directory -Force -Path $dest | Out-Null
 Copy-Item ".next/standalone/*" $dest -Recurse -Force
@@ -60,13 +61,13 @@ Copy-Item (Get-Command node).Source (Join-Path $bin "node.exe") -Force
 if (-not (Test-Path (Join-Path $tauri "icons/icon.ico"))) {
   Write-Host "== generating icons from icon-source.png =="
   & cargo tauri icon (Join-Path $root "apps/desktop-tauri/icon-source.png")
+  CheckExit "cargo tauri icon"
 }
 
 # 4) Build the installer (unsigned; updater is disabled in tauri.conf for test builds)
 Write-Host "== cargo tauri build =="
 Push-Location $tauri
-& cargo tauri build
-Pop-Location
+try { & cargo tauri build; CheckExit "cargo tauri build" } finally { Pop-Location }
 
 $bundle = Join-Path $tauri "target/$triple/release/bundle"
 Write-Host "`n== DONE. Installers under: $bundle =="

@@ -53,14 +53,5 @@
       "hardenedRuntime": true
     }
   },
-  "plugins": {
-    "updater": {
-      "active": false,
-      "dialog": true,
-      "pubkey": "",
-      "endpoints": [
-        "https://releases.lattix.io/xfrontier/{{target}}/{{arch}}/{{current_version}}"
-      ]
-    }
-  }
+  "plugins": {}
 }

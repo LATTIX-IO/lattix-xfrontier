@@ -130,9 +130,9 @@ def test_tauri_conf_is_valid_and_complete():
     conf = json.loads((_TAURI_DIR / "tauri.conf.json").read_text(encoding="utf-8"))
     assert conf["identifier"] == "com.lattix.xfrontier"
     assert conf["bundle"]["externalBin"] == ["bin/frontier-backend"]
-    # Updater is off by default so test builds need no signing key; the release
-    # flow flips it on with a real minisign pubkey.
-    assert conf["plugins"]["updater"]["active"] is False
+    # Auto-update is deferred (no signing key needed for test builds); the
+    # updater plugin is intentionally absent until release.
+    assert "updater" not in conf.get("plugins", {})
     # macOS hardened runtime + Windows timestamp server are configured for signing.
     assert conf["bundle"]["macOS"]["hardenedRuntime"] is True
     assert conf["bundle"]["windows"]["timestampUrl"]
