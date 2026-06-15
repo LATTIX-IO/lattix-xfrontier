@@ -21,7 +21,17 @@ $bin = Join-Path $tauri "bin"
 New-Item -ItemType Directory -Force -Path $bin | Out-Null
 
 function Need($name) { if (-not (Get-Command $name -ErrorAction SilentlyContinue)) { throw "Missing prerequisite on PATH: $name" } }
+function CheckExit($what) { if ($LASTEXITCODE -ne 0) { throw "$what failed (exit $LASTEXITCODE) — see output above." } }
 Need python; Need node; Need cargo
+
+# Preflight: the project needs Python 3.12 and PyInstaller in THIS interpreter.
+$pyExe = (Get-Command python).Source
+$pyVer = (& python -c "import sys;print('%d.%d'%sys.version_info[:2])")
+if ($pyVer -ne "3.12") {
+  throw "python on PATH is $pyVer ($pyExe). This project requires Python 3.12 (3.13/3.14 lack wheels for some deps). Create a 3.12 venv and re-run, or use the CI build (Actions -> desktop-release)."
+}
+& python -c "import PyInstaller" 2>$null
+if ($LASTEXITCODE -ne 0) { throw "PyInstaller not installed for $pyExe. Run:  python -m pip install pyinstaller -e ." }
 
 # Resolve the Rust target triple (Tauri externalBin needs the suffix).
 $triple = (& rustc -vV | Select-String "^host:").ToString().Split(":")[1].Trim()
