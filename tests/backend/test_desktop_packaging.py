@@ -25,11 +25,13 @@ def test_is_frozen_default_false():
     assert dt.is_frozen() is False
 
 
-def test_bundled_root_uses_meipass_when_set(monkeypatch, tmp_path):
+def test_bundled_root_frozen_is_exe_dir(monkeypatch):
+    # Tauri resources/bin sit next to the installed exe (not in _MEIPASS).
     monkeypatch.setattr(sys, "frozen", True, raising=False)
-    monkeypatch.setattr(sys, "_MEIPASS", str(tmp_path), raising=False)
-    assert dt.bundled_root() == tmp_path
-    assert dt.bundled_bin_dir() == tmp_path / "bin"
+    monkeypatch.setattr(sys, "_MEIPASS", "C:/some/meipass/temp", raising=False)
+    exe_parent = Path(sys.executable).resolve().parent
+    assert dt.bundled_root() == exe_parent
+    assert dt.bundled_bin_dir() == exe_parent / "bin"
 
 
 def test_bundled_root_from_checkout_is_repo_root(monkeypatch):
@@ -59,6 +61,24 @@ def test_desktop_config_overrides_pass_through(monkeypatch, tmp_path):
     monkeypatch.setenv("FRONTIER_APP_HOME", str(tmp_path))
     cfg = dt.desktop_config(enable_world_models=False)
     assert cfg.enable_world_models is False
+
+
+def test_desktop_config_serves_backend_in_process(monkeypatch, tmp_path):
+    # The frozen exe IS the backend (in-proc uvicorn) and runs agents in-proc,
+    # so the supervisor must not spawn `python -m uvicorn` subprocesses.
+    monkeypatch.setattr(sys, "frozen", False, raising=False)
+    monkeypatch.setenv("FRONTIER_APP_HOME", str(tmp_path))
+    cfg = dt.desktop_config()
+    assert cfg.manage_backend is False
+    assert cfg.enable_agents is False
+
+
+def test_desktop_plan_excludes_backend_and_agent_services(monkeypatch, tmp_path):
+    monkeypatch.setattr(sys, "frozen", False, raising=False)
+    monkeypatch.setenv("FRONTIER_APP_HOME", str(tmp_path))
+    plan = dt.build_desktop_plan()  # degrade mode → no raise even with no sidecars present
+    assert "backend" not in plan.service_names()
+    assert not any(n.startswith("agent-") for n in plan.service_names())
 
 
 # --- supervisor serve() lifecycle -------------------------------------------

@@ -64,6 +64,14 @@ class NativeConfig:
     agent_roster: list[tuple[str, int]] = field(
         default_factory=lambda: [("research", 8081), ("code", 8082), ("review", 8083)]
     )
+    # Desktop/frozen mode: the packaged exe IS the backend and serves uvicorn
+    # in-process, so the supervisor must NOT spawn a separate `python -m uvicorn`
+    # backend (there's no python interpreter in a PyInstaller bundle → it would
+    # re-spawn the exe → startup loop). False ⇒ no backend ServiceSpec.
+    manage_backend: bool = True
+    # Override where the Next.js standalone (server.js) lives. In a bundle this is
+    # the staged resources dir; empty ⇒ the source checkout's .next/standalone.
+    frontend_dir: str = ""
     # Desktop/first-run mode: instead of raising when a sidecar binary is absent,
     # degrade so the app still boots (Postgres missing → SQLite state; NATS
     # missing → A2A bus off / agents in-proc). The strict `native-up` path leaves
@@ -334,32 +342,39 @@ def build_native_plan(config: NativeConfig, *, which: WhichFn = _which) -> Nativ
         else:
             warnings.append("opa not found; policy evaluation will be skipped locally.")
 
-    # --- Backend (REQUIRED): the FastAPI control plane ------------------------
+    # --- Backend: the FastAPI control plane -----------------------------------
+    # Skipped in desktop/frozen mode (manage_backend=False) — the packaged exe
+    # serves uvicorn in-process instead (see desktop_main).
     root = source_repo_root()
     python = which(["python", "python3"], bin_dir) or sys.executable
     backend_dir = root / "apps" / "backend"
-    services.append(
-        ServiceSpec(
-            name="backend",
-            argv=[
-                python, "-m", "uvicorn", "app.main:app",
-                "--host", host, "--port", str(config.backend_port),
-            ],
-            cwd=str(backend_dir),
-            env={
-                "PYTHONPATH": os.pathsep.join(
-                    p for p in (str(backend_dir), str(root), os.getenv("PYTHONPATH", "")) if p
-                )
-            },
-            health=HealthCheck("http", host, config.backend_port, path="/healthz", timeout_s=120),
-            required=True,
+    if config.manage_backend:
+        services.append(
+            ServiceSpec(
+                name="backend",
+                argv=[
+                    python, "-m", "uvicorn", "app.main:app",
+                    "--host", host, "--port", str(config.backend_port),
+                ],
+                cwd=str(backend_dir),
+                env={
+                    "PYTHONPATH": os.pathsep.join(
+                        p for p in (str(backend_dir), str(root), os.getenv("PYTHONPATH", "")) if p
+                    )
+                },
+                health=HealthCheck("http", host, config.backend_port, path="/healthz", timeout_s=120),
+                required=True,
+            )
         )
-    )
 
     # --- Frontend (OPTIONAL): Next.js standalone build ------------------------
     if config.serve_frontend:
         node = which(["node"], bin_dir)
-        standalone = root / "apps" / "frontend" / ".next" / "standalone" / "server.js"
+        standalone = (
+            Path(config.frontend_dir) / "server.js"
+            if config.frontend_dir
+            else root / "apps" / "frontend" / ".next" / "standalone" / "server.js"
+        )
         if node and standalone.exists():
             services.append(
                 ServiceSpec(

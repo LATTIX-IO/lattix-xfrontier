@@ -26,14 +26,11 @@ def _prepend_bundled_bin_to_path() -> None:
 
 
 def main() -> None:
-    from .desktop import run_desktop_supervisor, writable_bin_dir
-    from .desktop_firstrun import ensure_sidecars
+    from .desktop import run_desktop_supervisor
 
     _prepend_bundled_bin_to_path()
-    try:
-        ensure_sidecars(writable_bin_dir())
-    except Exception as exc:  # noqa: BLE001 - never block boot on provisioning
-        print(f"[firstrun] provisioning error (continuing degraded): {exc}", flush=True)
+    # run_desktop_supervisor starts sidecars + frontend, runs first-run
+    # provisioning in the background, and serves the backend in-process.
     run_desktop_supervisor()
 
 

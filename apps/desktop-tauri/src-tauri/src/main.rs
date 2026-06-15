@@ -67,14 +67,16 @@ fn main() {
                 }
             });
 
-            // Once the backend is healthy, navigate the main window to the UI.
+            // Navigate once the frontend port is accepting connections (the UI
+            // we load). The in-process backend on :8000 comes up first.
             tauri::async_runtime::spawn(async move {
-                if wait_for_health(BACKEND_HEALTH_URL, HEALTH_TIMEOUT_SECS).await {
+                let _ = wait_for_health(BACKEND_HEALTH_URL, HEALTH_TIMEOUT_SECS).await;
+                if wait_for_health(FRONTEND_URL, HEALTH_TIMEOUT_SECS).await {
                     if let Some(window) = handle.get_webview_window("main") {
                         let _ = window.navigate(FRONTEND_URL.parse().unwrap());
                     }
                 } else {
-                    eprintln!("backend did not become healthy within {HEALTH_TIMEOUT_SECS}s");
+                    eprintln!("frontend did not become reachable within {HEALTH_TIMEOUT_SECS}s");
                 }
             });
 
