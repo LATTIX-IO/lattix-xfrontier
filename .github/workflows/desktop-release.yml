@@ -100,6 +100,13 @@ jobs:
         with:
           targets: ${{ matrix.triple }}
 
+      - name: Generate app icons
+        working-directory: apps/desktop-tauri/src-tauri
+        shell: bash
+        run: |
+          cargo install tauri-cli --version "^2" --locked
+          cargo tauri icon ../icon-source.png
+
       - uses: tauri-apps/tauri-action@v0
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
