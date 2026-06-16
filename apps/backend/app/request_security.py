@@ -33,6 +33,43 @@ _ROUTE_ACCESS_RULES: tuple[RouteAccessRule, ...] = (
     ),
     RouteAccessRule(("POST",), "/auth/logout", RouteAccessCategory.PUBLIC_MINIMAL, "auth.logout"),
     RouteAccessRule(
+        ("GET",), "/system/active-agents", RouteAccessCategory.AUTHENTICATED_READ,
+        "system.active_agents.read",
+    ),
+    RouteAccessRule(
+        ("POST",), "/system/shutdown", RouteAccessCategory.AUTHENTICATED_MUTATE, "system.shutdown",
+    ),
+    # Export / import (agents, workflows, playbooks, bundle) — JSON/YAML.
+    RouteAccessRule(
+        ("GET",), "/agent-definitions/{item_id}/export", RouteAccessCategory.AUTHENTICATED_READ,
+        "agent.definition.export",
+    ),
+    RouteAccessRule(
+        ("POST",), "/agent-definitions/import", RouteAccessCategory.AUTHENTICATED_MUTATE,
+        "agent.definition.import",
+    ),
+    RouteAccessRule(
+        ("GET",), "/workflow-definitions/{item_id}/export", RouteAccessCategory.AUTHENTICATED_READ,
+        "workflow.definition.export",
+    ),
+    RouteAccessRule(
+        ("POST",), "/workflow-definitions/import", RouteAccessCategory.AUTHENTICATED_MUTATE,
+        "workflow.definition.import",
+    ),
+    RouteAccessRule(
+        ("GET",), "/playbooks/{playbook_id}/export", RouteAccessCategory.AUTHENTICATED_READ,
+        "playbook.export",
+    ),
+    RouteAccessRule(
+        ("POST",), "/playbooks/import", RouteAccessCategory.AUTHENTICATED_MUTATE, "playbook.import",
+    ),
+    RouteAccessRule(
+        ("GET",), "/bundle/export", RouteAccessCategory.AUTHENTICATED_READ, "bundle.export",
+    ),
+    RouteAccessRule(
+        ("POST",), "/bundle/import", RouteAccessCategory.AUTHENTICATED_MUTATE, "bundle.import",
+    ),
+    RouteAccessRule(
         ("GET",), "/auth/session", RouteAccessCategory.AUTHENTICATED_READ, "auth.session.read"
     ),
     RouteAccessRule(("GET",), "/platform/version", RouteAccessCategory.PUBLIC_MINIMAL),

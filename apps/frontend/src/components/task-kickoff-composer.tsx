@@ -28,12 +28,12 @@ type MentionSuggestion = {
   label: string;
 };
 
-const delimiterLegend: Array<{ symbol: string; meaning: string; example: string }> = [
-  { symbol: "$", meaning: "Bring in data/source", example: "$crm_q1_pipeline" },
-  { symbol: "#", meaning: "Task tag/priority", example: "#need-review" },
-  { symbol: "/", meaning: "Call workflow", example: "/investor-pack" },
-  { symbol: "@", meaning: "Assign agent", example: "@orchestration-agent" },
-  { symbol: "!", meaning: "Call playbook", example: "!incident-response" },
+const delimiterLegend: Array<{ symbol: string; kind: TokenKind; meaning: string; example: string }> = [
+  { symbol: "$", kind: "data", meaning: "Bring in data/source", example: "$crm_q1_pipeline" },
+  { symbol: "#", kind: "tag", meaning: "Task tag/priority", example: "#need-review" },
+  { symbol: "/", kind: "workflow", meaning: "Call workflow", example: "/investor-pack" },
+  { symbol: "@", kind: "agent", meaning: "Assign agent", example: "@orchestration-agent" },
+  { symbol: "!", kind: "playbook", meaning: "Call playbook", example: "!incident-response" },
 ];
 
 function parseTokens(text: string): ParsedToken[] {
@@ -99,7 +99,12 @@ function getActiveMentionToken(
   };
 }
 
-export function TaskKickoffComposer() {
+export function TaskKickoffComposer({
+  prefill,
+}: {
+  /** Bump `nonce` (with new `text`) to load a suggested draft from outside. */
+  prefill?: { text: string; nonce: number };
+} = {}) {
   const router = useRouter();
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const [draft, setDraft] = useState("");
@@ -138,6 +143,22 @@ export function TaskKickoffComposer() {
       cancelled = true;
     };
   }, []);
+
+  // Load an externally-supplied suggested draft (inbox quick-starts) when its
+  // nonce changes, then focus the caret at the end so the user keeps typing.
+  useEffect(() => {
+    if (!prefill || !prefill.text) return;
+    setDraft(prefill.text);
+    setCursorPosition(prefill.text.length);
+    requestAnimationFrame(() => {
+      const element = textareaRef.current;
+      if (element) {
+        element.focus();
+        element.setSelectionRange(prefill.text.length, prefill.text.length);
+      }
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [prefill?.nonce]);
 
   const activeMention = useMemo(() => getActiveMentionToken(draft, cursorPosition), [draft, cursorPosition]);
 
@@ -196,6 +217,28 @@ export function TaskKickoffComposer() {
     setDraft(nextDraft);
     setCursorPosition(nextCursor);
 
+    requestAnimationFrame(() => {
+      if (textareaRef.current) {
+        textareaRef.current.focus();
+        textareaRef.current.setSelectionRange(nextCursor, nextCursor);
+      }
+    });
+  }
+
+  // Clicking a legend card inserts its delimiter at the caret (with a leading
+  // space when needed) and refocuses — for @ / ! this also opens the suggestion
+  // list, turning the reference into a one-click helper.
+  function insertDelimiter(symbol: string) {
+    const element = textareaRef.current;
+    const caret = element?.selectionStart ?? draft.length;
+    const before = draft.slice(0, caret);
+    const after = draft.slice(caret);
+    const needsSpace = before.length > 0 && !/\s$/.test(before);
+    const insertion = `${needsSpace ? " " : ""}${symbol}`;
+    const nextDraft = `${before}${insertion}${after}`;
+    const nextCursor = before.length + insertion.length;
+    setDraft(nextDraft);
+    setCursorPosition(nextCursor);
     requestAnimationFrame(() => {
       if (textareaRef.current) {
         textareaRef.current.focus();
@@ -353,15 +396,36 @@ export function TaskKickoffComposer() {
           )}
         </div>
 
-        <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
-          {delimiterLegend.map((item) => (
-            <div key={item.symbol} className="border border-[var(--fx-border)] bg-[var(--fx-surface-elevated)] p-2 text-xs">
-              <p className="font-semibold text-[var(--foreground)]">
-                {item.symbol} {item.meaning}
-              </p>
-              <p className="fx-muted mt-1 font-mono">{item.example}</p>
-            </div>
-          ))}
+        <div>
+          <p className="mb-1.5 text-[10px] font-semibold uppercase tracking-wide text-[var(--fx-muted)]">
+            Delimiter reference — click to insert
+          </p>
+          <div className="grid gap-2 [grid-template-columns:repeat(auto-fit,minmax(148px,1fr))]">
+            {delimiterLegend.map((item) => (
+              <button
+                key={item.symbol}
+                type="button"
+                onClick={() => insertDelimiter(item.symbol)}
+                aria-label={`Insert ${item.symbol} — ${item.meaning}`}
+                className="group flex min-w-0 items-start gap-2 rounded-lg border border-[var(--fx-border)] bg-[var(--fx-surface-elevated)] p-2 text-left transition-colors hover:border-[var(--fx-primary)] hover:bg-[var(--fx-nav-hover)]"
+              >
+                <span
+                  className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-md font-mono text-sm font-bold ${tokenClass(item.kind)}`}
+                  aria-hidden="true"
+                >
+                  {item.symbol}
+                </span>
+                <span className="min-w-0 flex-1">
+                  <span className="block text-xs font-semibold leading-tight text-[var(--foreground)]">
+                    {item.meaning}
+                  </span>
+                  <span className="mt-0.5 block break-words font-mono text-[11px] leading-tight text-[var(--fx-muted)]">
+                    {item.example}
+                  </span>
+                </span>
+              </button>
+            ))}
+          </div>
         </div>
 
         <div className="flex items-center gap-3">

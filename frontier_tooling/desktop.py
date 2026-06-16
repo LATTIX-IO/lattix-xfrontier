@@ -14,12 +14,47 @@ binary dir and app-home, builds the desktop :class:`NativeConfig`, and exposes
 
 from __future__ import annotations
 
+import atexit
 import os
+import signal
 import sys
 from pathlib import Path
 
 from .common import default_app_home, source_repo_root
 from .native_launcher import NativeConfig, NativePlan, NativeSupervisor, build_native_plan
+
+# Live supervisors so the backend's /system/shutdown (and signal/atexit hooks)
+# can tear down every spawned child process (frontend, DB, model, agents).
+_LIVE_SUPERVISORS: list[NativeSupervisor] = []
+_SHUTDOWN_HOOKS_INSTALLED = False
+
+
+def shutdown_supervisors() -> None:
+    """Stop every running supervisor — kills the whole child-process tree."""
+    for supervisor in list(_LIVE_SUPERVISORS):
+        try:
+            supervisor.stop_all()
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def _install_shutdown_hooks() -> None:
+    global _SHUTDOWN_HOOKS_INSTALLED  # noqa: PLW0603
+    if _SHUTDOWN_HOOKS_INSTALLED:
+        return
+    _SHUTDOWN_HOOKS_INSTALLED = True
+    atexit.register(shutdown_supervisors)
+
+    def _handler(signum, _frame):  # noqa: ANN001
+        shutdown_supervisors()
+        os._exit(0)
+
+    for sig in (getattr(signal, "SIGTERM", None), getattr(signal, "SIGINT", None)):
+        if sig is not None:
+            try:
+                signal.signal(sig, _handler)
+            except Exception:  # noqa: BLE001 - not all signals are settable everywhere
+                pass
 
 
 def is_frozen() -> bool:
@@ -125,9 +160,11 @@ def run_desktop_supervisor(*, log=print, **overrides: object) -> None:
     # FAST PATH: start only the frontend synchronously so the window appears in
     # seconds. Everything heavy (DB init, Ollama serve + the multi-GB model pull,
     # first-run binary fetch) runs in the background so it never blocks the UI.
+    _install_shutdown_hooks()
     fast = NativePlan([s for s in plan.services if s.name == "frontend"], plan.env, [])
     fast_supervisor = NativeSupervisor(fast, log=log)
     fast_supervisor.start_all()
+    _LIVE_SUPERVISORS.append(fast_supervisor)
 
     from .desktop_firstrun import ensure_sidecars
 
@@ -143,6 +180,7 @@ def run_desktop_supervisor(*, log=print, **overrides: object) -> None:
         )
         sup = NativeSupervisor(deferred, log=log)
         deferred_supervisors.append(sup)
+        _LIVE_SUPERVISORS.append(sup)
         sup.start_all()
         log("[firstrun] background services ready")
 

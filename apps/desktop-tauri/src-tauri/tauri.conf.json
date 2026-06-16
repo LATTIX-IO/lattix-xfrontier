@@ -53,5 +53,12 @@
       "hardenedRuntime": true
     }
   },
-  "plugins": {}
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEIxODJDNDQ4NzlFRTFCMjcKUldRbkcrNTVTTVNDc1pHWFFEcGFwWjB0TmVRZUU1eFlPSDBVVkhTM3VOYUdPT2pCR2Vva2M4ZWcK",
+      "endpoints": [
+        "https://github.com/LATTIX-IO/lattix-xfrontier/releases/latest/download/latest.json"
+      ]
+    }
+  }
 }

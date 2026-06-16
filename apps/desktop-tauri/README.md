@@ -60,12 +60,38 @@ cargo tauri build       # produces MSI/NSIS (Win), .dmg/.app (mac), .deb/AppImag
   ID Application identity and provide notarization creds via env
   (`APPLE_ID`, `APPLE_PASSWORD`, `APPLE_TEAM_ID`); `hardenedRuntime` is on.
 
-## Auto-update
+## Auto-update (one-click "Update & Restart")
 
-`plugins.updater` is enabled. Replace `pubkey` with your **minisign** public key
-(`cargo tauri signer generate`) and host signed update manifests at the
-`endpoints` URL. Releases are signed with the matching private key
-(`TAURI_SIGNING_PRIVATE_KEY`).
+UX: when an update is available the app shows a slim banner → **Update &
+Restart** → a confirm ("the app will close, install, and restart") → the shell
+silently downloads + installs the signed update and relaunches. Wiring:
+`UpdateBanner` (frontend) calls the Rust commands `check_for_update` /
+`install_update_and_restart` (`src-tauri/src/main.rs`), which use the
+`tauri-plugin-updater` (`update.download_and_install()` → `app.restart()`).
+
+The updater plugin is **always compiled in but inactive by default**, so a
+keyless dev build still works (the check just errors → no banner). To enable it:
+
+1. **Generate a signing keypair** (once):
+   ```bash
+   cargo tauri signer generate -w "$HOME/.tauri/lattix-updater.key"
+   ```
+   This prints a **public key** and writes the private key. The public key is
+   safe to commit.
+2. **Put the public key** in `src-tauri/updater.conf.json` → `plugins.updater.pubkey`
+   (replace `REPLACE_WITH_MINISIGN_PUBLIC_KEY`) and set `endpoints` to where you
+   host `latest.json`.
+3. **Build with it enabled**:
+   - Local: set `TAURI_SIGNING_PRIVATE_KEY` (+ `_PASSWORD`) and re-run
+     `scripts/build-desktop.ps1` — it auto-applies `--config updater.conf.json`
+     when both the pubkey and the signing key are present.
+   - CI: `desktop-release.yml` already builds with `--config updater.conf.json`
+     and the `TAURI_SIGNING_PRIVATE_KEY` secret, emitting the signed
+     `latest.json` update manifest. Host it (or the GitHub release) at the
+     `endpoints` URL.
+
+Until you do this, the app simply never shows the update banner — everything
+else works.
 
 ## Icons
 

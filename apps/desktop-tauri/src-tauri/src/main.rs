@@ -13,27 +13,121 @@
 
 use std::time::Duration;
 
-use tauri::tray::TrayIconBuilder;
-use tauri::{Emitter, Manager, WebviewUrl};
+use tauri::menu::{Menu, MenuItem};
+use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+use tauri::{include_image, Emitter, Manager, WebviewUrl, WindowEvent};
 use tauri_plugin_shell::process::CommandEvent;
 use tauri_plugin_shell::ShellExt;
+use tauri_plugin_updater::UpdaterExt;
 
 const BACKEND_HEALTH_URL: &str = "http://127.0.0.1:8000/healthz";
 const FRONTEND_URL: &str = "http://127.0.0.1:3000";
 const HEALTH_TIMEOUT_SECS: u64 = 180;
 
+/// Show + focus the main window (from the tray).
+fn show_main(app: &tauri::AppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.show();
+        let _ = window.set_focus();
+    }
+}
+
+/// Exit the whole app — invoked by the frontend after it has confirmed quit and
+/// asked the backend to tear down its child processes (/api/system/shutdown).
+#[tauri::command]
+fn quit_now(app: tauri::AppHandle) {
+    app.exit(0);
+}
+
+/// Returns the available update version (or None). Errors are mapped to a string;
+/// the UI treats "no updater configured" as simply "no update".
+#[tauri::command]
+async fn check_for_update(app: tauri::AppHandle) -> Result<Option<String>, String> {
+    let updater = app.updater().map_err(|e| e.to_string())?;
+    match updater.check().await {
+        Ok(Some(update)) => Ok(Some(update.version)),
+        Ok(None) => Ok(None),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+/// Silently download + install the pending update, then relaunch the app. The
+/// UI confirms with the user (and warns about the restart) before calling this.
+#[tauri::command]
+async fn install_update_and_restart(app: tauri::AppHandle) -> Result<(), String> {
+    let updater = app.updater().map_err(|e| e.to_string())?;
+    let update = updater
+        .check()
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "No update available".to_string())?;
+    update
+        .download_and_install(|_chunk, _total| {}, || {})
+        .await
+        .map_err(|e| e.to_string())?;
+    app.restart();
+}
+
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .invoke_handler(tauri::generate_handler![
+            quit_now,
+            check_for_update,
+            install_update_and_restart
+        ])
+        // Closing the window hides to the tray instead of quitting; real quit is
+        // the tray "Quit" item, which runs the agent-running validation first.
+        .on_window_event(|window, event| {
+            if let WindowEvent::CloseRequested { api, .. } = event {
+                api.prevent_close();
+                let _ = window.hide();
+            }
+        })
         .setup(|app| {
             let handle = app.handle().clone();
 
-            // System-tray icon (uses the bundled app icon — the Lattix logo).
-            if let Some(icon) = app.default_window_icon().cloned() {
-                let _ = TrayIconBuilder::with_id("lattix-tray")
-                    .icon(icon)
-                    .tooltip("Lattix xFrontier")
-                    .build(app);
+            // System tray: logo icon + a menu (Open / Quit). Left-click opens the
+            // window; "Quit" asks the UI to validate running agents, then exits.
+            //
+            // The tray is the ONLY way to fully quit the app (closing the window
+            // just hides it). So the tray MUST always be created — we embed the
+            // icon at compile time (`include_image!`) rather than relying on
+            // `default_window_icon()`, which can be None and would otherwise leave
+            // the user with a hidden, unquittable process holding files in use.
+            let open_item = MenuItem::with_id(app, "open", "Open Lattix xFrontier", true, None::<&str>)?;
+            let quit_item = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
+            let tray_menu = Menu::with_items(app, &[&open_item, &quit_item])?;
+            let tray_icon = include_image!("icons/32x32.png");
+            if let Err(e) = TrayIconBuilder::with_id("lattix-tray")
+                .icon(tray_icon)
+                .tooltip("Lattix xFrontier")
+                .menu(&tray_menu)
+                .show_menu_on_left_click(false)
+                .on_menu_event(|app, event| match event.id.as_ref() {
+                    "open" => show_main(app),
+                    "quit" => {
+                        show_main(app);
+                        // The frontend confirms (if agents are running) and
+                        // calls /api/system/shutdown + the quit_now command.
+                        let _ = app.emit("app-quit-requested", ());
+                    }
+                    _ => {}
+                })
+                .on_tray_icon_event(|tray, event| {
+                    if let TrayIconEvent::Click {
+                        button: MouseButton::Left,
+                        button_state: MouseButtonState::Up,
+                        ..
+                    } = event
+                    {
+                        show_main(&tray.app_handle().clone());
+                    }
+                })
+                .build(app)
+            {
+                eprintln!("failed to create system tray icon: {e}");
             }
 
             // Spawn the packaged supervisor sidecar. The binary is resolved from

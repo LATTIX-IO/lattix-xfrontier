@@ -37,6 +37,7 @@ _DYNAMIC_PKGS = [
     "neo4j",
     "structlog",
     "pydantic",
+    "yaml",
 ]
 
 datas, binaries, hiddenimports = [], [], []

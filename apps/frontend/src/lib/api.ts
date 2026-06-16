@@ -1575,6 +1575,82 @@ export async function instantiatePlaybook(playbookId: string, payload: Json): Pr
   });
 }
 
+/* ------------------------------------------------------------------ */
+/*  Export / import — agents, workflows, playbooks (JSON or YAML)       */
+/* ------------------------------------------------------------------ */
+
+export type ExportKind = "agent-definitions" | "workflow-definitions" | "playbooks" | "bundle";
+export type ExportFormat = "json" | "yaml";
+
+/** Download a definition (or the full bundle) as a JSON/YAML file. */
+export async function downloadDefinitionExport(
+  kind: ExportKind,
+  id: string | null,
+  format: ExportFormat = "json",
+): Promise<void> {
+  const base = getApiBase();
+  const url =
+    kind === "bundle"
+      ? `${base}/bundle/export?format=${format}`
+      : `${base}/${kind}/${id}/export?format=${format}`;
+  const res = await fetchWithRetry(url, {
+    credentials: "include",
+    headers: { ...getRequestIdentityHeaders() },
+  });
+  if (!res.ok) throw new Error(`Export failed (${res.status})`);
+  const blob = await res.blob();
+  const disposition = res.headers.get("content-disposition") ?? "";
+  const match = /filename="?([^"]+)"?/.exec(disposition);
+  const filename = match?.[1] ?? `lattix-${kind}.${format}`;
+  const objectUrl = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = objectUrl;
+  anchor.download = filename;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  URL.revokeObjectURL(objectUrl);
+}
+
+/** Read a JSON/YAML file and apply it to the platform. */
+export async function importDefinitionFile(
+  kind: ExportKind,
+  file: File,
+): Promise<{ ok: boolean; id?: string; errors?: string[]; [k: string]: unknown }> {
+  const content = await file.text();
+  const format: "json" | "yaml" | "auto" = /\.ya?ml$/i.test(file.name)
+    ? "yaml"
+    : /\.json$/i.test(file.name)
+      ? "json"
+      : "auto";
+  const path = kind === "bundle" ? "/bundle/import" : `/${kind}/import`;
+  const res = await fetchWithRetry(`${getApiBase()}${path}`, {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json", ...getRequestIdentityHeaders() },
+    body: JSON.stringify({ format, content }),
+  });
+  if (!res.ok) {
+    let detail = `Import failed (${res.status})`;
+    try {
+      const data = await res.json();
+      const raw = (data as { detail?: unknown })?.detail;
+      if (typeof raw === "string") {
+        detail = raw;
+      } else if (raw && typeof raw === "object" && typeof (raw as { message?: unknown }).message === "string") {
+        // Structured validation errors (e.g. missing agent/workflow references).
+        detail = (raw as { message: string }).message;
+      } else if (Array.isArray((data as { errors?: unknown })?.errors)) {
+        detail = ((data as { errors: string[] }).errors).join("; ");
+      }
+    } catch {
+      /* keep default */
+    }
+    throw new Error(detail);
+  }
+  return res.json();
+}
+
 export async function getObservabilityRunTrace(runId: string): Promise<ObservabilityRunTrace | null> {
   return safeFetch<ObservabilityRunTrace | null>(`/observability/runs/${runId}/trace`, null);
 }

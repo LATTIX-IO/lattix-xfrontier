@@ -383,7 +383,13 @@ def build_native_plan(config: NativeConfig, *, which: WhichFn = _which) -> Nativ
                     env={
                         "PORT": str(config.frontend_port),
                         "HOSTNAME": host,
-                        "NEXT_PUBLIC_API_BASE_URL": env["NEXT_PUBLIC_API_BASE_URL"],
+                        # Client uses same-origin /api (baked at build); the Next
+                        # rewrite proxies it to the backend so the session cookie
+                        # is first-party. Server-side SSR talks to the backend
+                        # directly via the absolute internal URL.
+                        "NEXT_PUBLIC_API_BASE_URL": "/api",
+                        "API_BASE_URL_INTERNAL": f"http://{host}:{config.backend_port}",
+                        "FRONTIER_BACKEND_PROXY_URL": f"http://{host}:{config.backend_port}",
                     },
                     health=HealthCheck("http", host, config.frontend_port, path="/", timeout_s=60),
                     required=False,
@@ -588,12 +594,39 @@ class NativeSupervisor:
             proc = self._procs.pop(name, None)
             if proc is None:
                 continue
+            self._terminate_tree(proc)
+
+    @staticmethod
+    def _terminate_tree(proc: Any) -> None:
+        """Kill a child AND its descendants (node/ollama/postgres spawn their own
+        children, so a bare terminate() would orphan them)."""
+        pid = getattr(proc, "pid", None)
+        if os.name == "nt" and pid:
             try:
-                terminate = getattr(proc, "terminate", None)
-                if callable(terminate):
-                    terminate()
+                import subprocess
+
+                subprocess.run(
+                    ["taskkill", "/F", "/T", "/PID", str(pid)],
+                    check=False, capture_output=True,
+                )
+                return
             except Exception:  # noqa: BLE001
                 pass
+        # POSIX / fallback: terminate the process (kill the group if possible).
+        try:
+            if os.name != "nt" and pid:
+                import signal as _signal
+
+                os.killpg(os.getpgid(pid), _signal.SIGTERM)
+                return
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            terminate = getattr(proc, "terminate", None)
+            if callable(terminate):
+                terminate()
+        except Exception:  # noqa: BLE001
+            pass
 
     def status(self) -> dict[str, str]:
         out: dict[str, str] = {}

@@ -6,6 +6,7 @@ import {
   getPlaybooks,
   instantiatePlaybook,
 } from "@/lib/api";
+import { ImportExportControls } from "@/components/import-export-controls";
 import type { PlaybookDefinition } from "@/types/frontier";
 
 export default function PlaybooksPage() {
@@ -38,6 +39,14 @@ export default function PlaybooksPage() {
     };
   }, []);
 
+  async function reloadPlaybooks() {
+    try {
+      setPlaybooks(await getPlaybooks());
+    } catch {
+      setError("Unable to load playbooks.");
+    }
+  }
+
   async function handleCreateFromPlaybook(playbook: PlaybookDefinition) {
     setBusyKey(`playbook:${playbook.id}`);
     setError(null);
@@ -60,13 +69,16 @@ export default function PlaybooksPage() {
           <h1 className="text-2xl font-semibold">Playbooks</h1>
           <p className="fx-muted">Playbooks are collaborations of workflows designed to achieve high-level outcomes.</p>
         </div>
-        <button
-          type="button"
-          className="fx-btn-primary px-3 py-2 text-sm font-medium"
-          onClick={() => router.push(`/builder/workflows/${crypto.randomUUID()}`)}
-        >
-          New Workflow
-        </button>
+        <div className="flex items-center gap-3">
+          <ImportExportControls kind="playbooks" onImported={() => void reloadPlaybooks()} />
+          <button
+            type="button"
+            className="fx-btn-primary px-3 py-2 text-sm font-medium"
+            onClick={() => router.push(`/builder/workflows/${crypto.randomUUID()}`)}
+          >
+            New Workflow
+          </button>
+        </div>
       </header>
 
       {error && (
@@ -87,13 +99,16 @@ export default function PlaybooksPage() {
                     <div className="fx-muted">{playbook.description}</div>
                     <div className="mt-1 text-xs fx-muted">category={playbook.category} · status={playbook.status}</div>
                   </div>
-                  <button
-                    className="fx-btn-secondary px-2 py-1 text-xs"
-                    disabled={busyKey === `playbook:${playbook.id}` || playbook.status !== "active"}
-                    onClick={() => void handleCreateFromPlaybook(playbook)}
-                  >
-                    {busyKey === `playbook:${playbook.id}` ? "Creating..." : "Launch Playbook"}
-                  </button>
+                  <div className="flex items-center gap-2">
+                    <ImportExportControls kind="playbooks" id={playbook.id} compact />
+                    <button
+                      className="fx-btn-secondary px-2 py-1 text-xs"
+                      disabled={busyKey === `playbook:${playbook.id}` || playbook.status !== "active"}
+                      onClick={() => void handleCreateFromPlaybook(playbook)}
+                    >
+                      {busyKey === `playbook:${playbook.id}` ? "Creating..." : "Launch Playbook"}
+                    </button>
+                  </div>
                 </div>
               </li>
             ))}

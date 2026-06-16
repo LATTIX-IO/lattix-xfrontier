@@ -37,7 +37,12 @@ from concurrent.futures import ThreadPoolExecutor
 
 from fastapi import Body, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse, Response, StreamingResponse
+
+try:  # optional — YAML export/import; JSON always works without it
+    import yaml as _yaml
+except Exception:  # noqa: BLE001
+    _yaml = None
 from pydantic import BaseModel, Field, ValidationError
 from app import cron as app_cron
 from app import knowledge as app_knowledge
@@ -8798,6 +8803,7 @@ def _cors_allowed_headers() -> list[str]:
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_cors_allowed_origins(),
+    allow_credentials=True,  # required so the operator session cookie flows cross-origin
     allow_methods=_cors_allowed_methods(),
     allow_headers=_cors_allowed_headers(),
 )
@@ -9678,6 +9684,28 @@ def _enforce_request_authn(
             used_bearer_token = True
             if bearer_auth_kind == "none":
                 bearer_auth_kind = "jwt"
+
+    if (
+        not used_bearer_token
+        and _local_authenticated_operator_bootstrap_enabled()
+        and _active_runtime_profile().name == "local-native"
+    ):
+        # Single-user desktop install (binds 127.0.0.1 only): the local operator
+        # is implicitly authenticated as admin+builder — no login wall, no cookie.
+        runtime_token_claims = {
+            "actor": "operator",
+            "preferred_username": "operator",
+            "name": "Operator",
+            "principal_id": "user:local/operator",
+            "principal_type": "user",
+            "roles": ["member", "admin", "builder"],
+        }
+        try:
+            runtime_token_identity = token_identity_from_claims(runtime_token_claims)
+        except Exception:  # noqa: BLE001
+            runtime_token_identity = None
+        used_bearer_token = True
+        bearer_auth_kind = "bootstrap"
 
     resolved_actor = actor
     if runtime_token_identity is not None:
@@ -13258,6 +13286,369 @@ def logout_operator(request: Request) -> JSONResponse:
     response = JSONResponse({"ok": True})
     _clear_operator_session_cookie(response, request)
     return response
+
+
+@app.get("/system/active-agents")
+def system_active_agents() -> dict[str, Any]:
+    """How many agent runs are currently in progress (for the desktop quit guard)."""
+    try:
+        active = sum(
+            1 for run in store.runs.values() if str(getattr(run, "status", "")) == "Running"
+        )
+    except Exception:  # noqa: BLE001
+        active = 0
+    return {"active": int(active)}
+
+
+@app.post("/system/shutdown")
+def system_shutdown(request: Request) -> JSONResponse:
+    """Desktop only: tear down every spawned child process (frontend, DB, model,
+    agents), then exit. Restricted to the native desktop profile."""
+    if (
+        _active_runtime_profile().name not in {"local-native"}
+        and not _local_authenticated_operator_bootstrap_enabled()
+    ):
+        raise HTTPException(status_code=404, detail="Not found")
+    try:
+        from frontier_tooling.desktop import shutdown_supervisors
+
+        shutdown_supervisors()
+    except Exception:  # noqa: BLE001
+        pass
+    # Exit just after responding so the caller gets a clean 200 first.
+    threading.Timer(0.4, lambda: os._exit(0)).start()
+    return JSONResponse({"ok": True, "shutting_down": True})
+
+
+# ---------------------------------------------------------------------------
+# Export / import — agents, workflows, playbooks as JSON or YAML. Exports stream
+# a downloadable document; imports parse JSON/YAML and apply via the existing
+# create/update handlers so all validation + persistence is reused.
+# ---------------------------------------------------------------------------
+def _dump_definition_document(payload: Any, fmt: str) -> tuple[bytes, str]:
+    normalized = (fmt or "json").strip().lower()
+    if normalized in {"yaml", "yml"}:
+        if _yaml is None:
+            raise HTTPException(status_code=400, detail="YAML support is not available on this server.")
+        text = _yaml.safe_dump(payload, sort_keys=False, default_flow_style=False, allow_unicode=True)
+        return text.encode("utf-8"), "application/x-yaml"
+    return (json.dumps(payload, indent=2, sort_keys=False) + "\n").encode("utf-8"), "application/json"
+
+
+def _parse_definition_document(content: str, fmt: str) -> Any:
+    normalized = (fmt or "auto").strip().lower()
+    text = content if isinstance(content, str) else str(content or "")
+    looks_json = text.lstrip()[:1] in {"{", "["}
+    if normalized in {"yaml", "yml"} or (normalized == "auto" and not looks_json):
+        if _yaml is not None:
+            try:
+                return _yaml.safe_load(text)
+            except Exception as exc:  # noqa: BLE001
+                raise HTTPException(status_code=400, detail=f"Invalid YAML: {exc}")
+    try:
+        return json.loads(text)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=400, detail=f"Could not parse import document: {exc}")
+
+
+def _export_response(payload: Any, *, fmt: str, filename_stem: str) -> Response:
+    body, media_type = _dump_definition_document(payload, fmt)
+    ext = "yaml" if (fmt or "").strip().lower() in {"yaml", "yml"} else "json"
+    safe = "".join(ch if (ch.isalnum() or ch in "._-") else "-" for ch in filename_stem) or "export"
+    return Response(
+        content=body,
+        media_type=media_type,
+        headers={"Content-Disposition": f'attachment; filename="{safe}.{ext}"'},
+    )
+
+
+def _import_request_document(payload: dict[str, Any]) -> Any:
+    # Accept either {"format","content":"<raw file text>"} (the UI reads the file
+    # and posts its text) or a raw definition object posted directly.
+    if (
+        isinstance(payload, dict)
+        and isinstance(payload.get("content"), str)
+        and ("format" in payload or set(payload.keys()) <= {"content", "format"})
+    ):
+        return _parse_definition_document(payload["content"], str(payload.get("format") or "auto"))
+    return payload
+
+
+def _agent_id_for_reference(token: str) -> str | None:
+    """Canonical agent id for a node reference that may be an id, a name, or a
+    source slug. Matches across ALL agent definitions (published or draft)."""
+    requested = str(token or "").strip().lower()
+    if not requested:
+        return None
+    requested_slug = _slugify(requested)
+    for agent in store.agent_definitions.values():
+        keys = _agent_lookup_keys(agent)
+        if requested in keys or (requested_slug and requested_slug in keys):
+            return agent.id
+    return None
+
+
+def _workflow_id_for_reference(token: str) -> str | None:
+    """Canonical workflow id for a reference that may be an id or a name."""
+    requested = str(token or "").strip().lower()
+    if not requested:
+        return None
+    requested_slug = _slugify(requested)
+    for workflow in store.workflow_definitions.values():
+        keys = {workflow.id.strip().lower(), _slugify(workflow.name)}
+        if requested in keys or (requested_slug and requested_slug in keys):
+            return workflow.id
+    return None
+
+
+def _resolve_graph_definition_refs(graph_json: Any, *, context: str) -> dict[str, Any]:
+    """Resolve agent/workflow references in an imported graph to canonical stored
+    ids (matching by id OR name), rewriting each node's config. If any reference
+    does not match an existing definition, raise 400 telling the user which
+    agents/workflows must be created first — the import does not partially apply."""
+    normalized = _normalize_graph_json_payload(graph_json)
+    nodes = normalized.get("nodes") if isinstance(normalized.get("nodes"), list) else []
+    missing_agents: list[str] = []
+    missing_workflows: list[str] = []
+    rewritten: list[Any] = []
+    for node in nodes:
+        if not isinstance(node, dict):
+            rewritten.append(node)
+            continue
+        node = dict(node)
+        ntype = str(node.get("type") or "").lower()
+        cfg = dict(node.get("config")) if isinstance(node.get("config"), dict) else {}
+        agent_token = str(cfg.get("agent_id") or cfg.get("agent_name") or "").strip()
+        if "agent" in ntype and agent_token:
+            resolved = _agent_id_for_reference(agent_token)
+            if resolved is None:
+                missing_agents.append(agent_token)
+            else:
+                cfg["agent_id"] = resolved
+                cfg.pop("agent_name", None)
+        wf_token = str(
+            cfg.get("workflow_definition_id") or cfg.get("workflow_id") or cfg.get("workflow") or ""
+        ).strip()
+        if wf_token and ("workflow" in ntype or "workflow_definition_id" in cfg or "workflow_id" in cfg):
+            resolved_wf = _workflow_id_for_reference(wf_token)
+            if resolved_wf is None:
+                missing_workflows.append(wf_token)
+            else:
+                cfg["workflow_definition_id"] = resolved_wf
+        node["config"] = cfg
+        rewritten.append(node)
+    if missing_agents or missing_workflows:
+        missing_agents = sorted(set(missing_agents))
+        missing_workflows = sorted(set(missing_workflows))
+        bits: list[str] = []
+        if missing_agents:
+            bits.append(f"agents [{', '.join(missing_agents)}]")
+        if missing_workflows:
+            bits.append(f"workflows [{', '.join(missing_workflows)}]")
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "message": (
+                    f"This {context.lower()} references {' and '.join(bits)} that do not exist yet. "
+                    f"Create or import those first, then re-import this {context.lower()}."
+                ),
+                "missing_agents": missing_agents,
+                "missing_workflows": missing_workflows,
+            },
+        )
+    normalized["nodes"] = rewritten
+    return normalized
+
+
+def _prepare_imported_graph_doc(doc: dict[str, Any], *, context: str) -> dict[str, Any]:
+    """Map a seed-format ``graph`` to ``graph_json`` and resolve+validate its
+    agent/workflow references for an imported workflow or playbook document."""
+    graph_src = (
+        doc.get("graph_json")
+        or doc.get("graph")
+        or (doc.get("config_json", {}) if isinstance(doc.get("config_json"), dict) else {}).get("graph_json")
+        or {}
+    )
+    resolved_graph = _resolve_graph_definition_refs(graph_src, context=context)
+    new_doc = {key: value for key, value in doc.items() if key != "graph"}
+    new_doc["graph_json"] = resolved_graph
+    return new_doc
+
+
+@app.get("/agent-definitions/{item_id}/export")
+def export_agent_definition(item_id: str, request: Request, format: str = "json") -> Response:
+    _enforce_request_authn(request, action="agent.definition.export")
+    item = store.agent_definitions.get(item_id)
+    if item is None:
+        raise HTTPException(status_code=404, detail="Agent not found")
+    return _export_response(item.model_dump(), fmt=format, filename_stem=f"agent-{item.name or item_id}")
+
+
+@app.post("/agent-definitions/import")
+def import_agent_definition(
+    request: Request, payload: dict[str, Any] = Body(default_factory=dict)
+) -> dict[str, Any]:
+    doc = _import_request_document(payload)
+    if not isinstance(doc, dict):
+        raise HTTPException(status_code=400, detail="Agent import must be a single definition object.")
+    requested_status = str(doc.get("status") or "").strip().lower()
+    save_agent_definition(request, doc)  # enforces admin + validates + persists
+    agent_id = str(doc.get("id") or "")
+    # Publish on import so the agent resolves at runtime with its real system
+    # prompt, model, and tools. Otherwise multi-agent workflow nodes that
+    # reference it fall back to a generic specialist persona (found=False),
+    # degrading the team. Agent seed files mark themselves "active"/"published".
+    published = False
+    publish_warning: str | None = None
+    if agent_id and requested_status in {"published", "active"}:
+        try:
+            publish_agent_definition(agent_id, request)
+            published = True
+        except HTTPException as exc:
+            publish_warning = str(getattr(exc, "detail", "") or "publish failed")
+    result: dict[str, Any] = {"ok": True, "id": agent_id, "published": published}
+    if publish_warning:
+        result["publish_warning"] = publish_warning
+    return result
+
+
+@app.get("/workflow-definitions/{item_id}/export")
+def export_workflow_definition_doc(item_id: str, request: Request, format: str = "json") -> Response:
+    _enforce_request_authn(request, action="workflow.definition.export")
+    item = store.workflow_definitions.get(item_id)
+    if item is None:
+        raise HTTPException(status_code=404, detail="Workflow not found")
+    return _export_response(item.model_dump(), fmt=format, filename_stem=f"workflow-{item.name or item_id}")
+
+
+@app.post("/workflow-definitions/import")
+def import_workflow_definition(
+    request: Request, payload: dict[str, Any] = Body(default_factory=dict)
+) -> dict[str, Any]:
+    doc = _import_request_document(payload)
+    if not isinstance(doc, dict):
+        raise HTTPException(status_code=400, detail="Workflow import must be a single definition object.")
+    # Resolve agent references by name→id and fail if any referenced agent is
+    # missing (tells the user to create those agents first).
+    doc = _prepare_imported_graph_doc(doc, context="Workflow")
+    requested_status = str(doc.get("status") or "").strip().lower()
+    save_workflow_definition(request, doc)  # enforces builder + validates + persists (as draft)
+    wf_id = str(doc.get("id") or "")
+    # Honor a "published" import so the workflow is immediately runnable as its
+    # full multi-agent graph: the run dispatcher only sends PUBLISHED workflows
+    # through the LangGraph compiler — a draft silently falls back to a single
+    # agent, dropping consensus/fan-out/gate/team behavior. Seeded examples are
+    # published the same way, so importing them should match.
+    published = False
+    publish_warning: str | None = None
+    if wf_id and requested_status == "published":
+        try:
+            publish_workflow_definition(wf_id, request)
+            published = True
+        except HTTPException as exc:  # graph validation etc. — keep the draft, report why
+            publish_warning = str(getattr(exc, "detail", "") or "publish failed")
+    result: dict[str, Any] = {"ok": True, "id": wf_id, "published": published}
+    if publish_warning:
+        result["publish_warning"] = publish_warning
+    return result
+
+
+def _upsert_playbook_from_doc(request: Request, doc: dict[str, Any]) -> str:
+    actor = _enforce_builder_access(request, action="playbook.import")
+    _enforce_emergency_write_policy("playbook.import", actor)
+    if not isinstance(doc, dict):
+        raise HTTPException(status_code=400, detail="Playbook import must be a single definition object.")
+    if not str(doc.get("id") or "").strip():
+        doc = {**doc, "id": str(uuid4())}
+    # Resolve agent/workflow references by name→id and fail if any are missing.
+    doc = _prepare_imported_graph_doc(doc, context="Playbook")
+    try:
+        playbook = PlaybookDefinition.model_validate(doc)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=400, detail=f"Invalid playbook definition: {exc}")
+    store.playbooks[playbook.id] = playbook
+    return playbook.id
+
+
+@app.get("/playbooks/{playbook_id}/export")
+def export_playbook(playbook_id: str, request: Request, format: str = "json") -> Response:
+    _enforce_request_authn(request, action="playbook.export")
+    item = store.playbooks.get(playbook_id)
+    if item is None:
+        raise HTTPException(status_code=404, detail="Playbook not found")
+    return _export_response(item.model_dump(), fmt=format, filename_stem=f"playbook-{item.name or playbook_id}")
+
+
+@app.post("/playbooks/import")
+def import_playbook(
+    request: Request, payload: dict[str, Any] = Body(default_factory=dict)
+) -> dict[str, Any]:
+    doc = _import_request_document(payload)
+    pid = _upsert_playbook_from_doc(request, doc if isinstance(doc, dict) else {})
+    _persist_store_state()
+    return {"ok": True, "id": pid}
+
+
+@app.get("/bundle/export")
+def export_bundle(request: Request, format: str = "json") -> Response:
+    _enforce_request_authn(request, action="bundle.export")
+    bundle = {
+        "schema": "frontier-bundle/1.0",
+        "exported_at": _now_iso(),
+        "agents": [a.model_dump() for a in store.agent_definitions.values()],
+        "workflows": [w.model_dump() for w in store.workflow_definitions.values()],
+        "playbooks": [p.model_dump() for p in store.playbooks.values()],
+    }
+    return _export_response(bundle, fmt=format, filename_stem="lattix-bundle")
+
+
+@app.post("/bundle/import")
+def import_bundle(
+    request: Request, payload: dict[str, Any] = Body(default_factory=dict)
+) -> dict[str, Any]:
+    doc = _import_request_document(payload)
+    if not isinstance(doc, dict):
+        raise HTTPException(status_code=400, detail="Bundle import must be an object with agents/workflows/playbooks.")
+    counts = {"agents": 0, "workflows": 0, "playbooks": 0}
+    errors: list[str] = []
+    # Mirror the single-item import: publish definitions that declare a live
+    # status so bundle-imported workflows run as full multi-agent graphs and
+    # their agents resolve with real prompts/models/tools (not generic fallbacks).
+    for entry in doc.get("agents") or []:
+        try:
+            save_agent_definition(request, entry)
+            counts["agents"] += 1
+            aid = str(entry.get("id") or "") if isinstance(entry, dict) else ""
+            if aid and str(entry.get("status") or "").strip().lower() in {"published", "active"}:
+                try:
+                    publish_agent_definition(aid, request)
+                except HTTPException as exc:
+                    errors.append(f"agent {aid} publish: {getattr(exc, 'detail', exc)}")
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"agent {entry.get('id', '?') if isinstance(entry, dict) else '?'}: {exc}")
+    for entry in doc.get("workflows") or []:
+        try:
+            if isinstance(entry, dict):
+                # Agents were imported above, so name→id refs resolve here.
+                entry = _prepare_imported_graph_doc(entry, context="Workflow")
+            save_workflow_definition(request, entry)
+            counts["workflows"] += 1
+            wid = str(entry.get("id") or "") if isinstance(entry, dict) else ""
+            if wid and str(entry.get("status") or "").strip().lower() == "published":
+                try:
+                    publish_workflow_definition(wid, request)
+                except HTTPException as exc:
+                    errors.append(f"workflow {wid} publish: {getattr(exc, 'detail', exc)}")
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"workflow {entry.get('id', '?') if isinstance(entry, dict) else '?'}: {exc}")
+    for entry in doc.get("playbooks") or []:
+        try:
+            _upsert_playbook_from_doc(request, entry if isinstance(entry, dict) else {})
+            counts["playbooks"] += 1
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"playbook {entry.get('id', '?') if isinstance(entry, dict) else '?'}: {exc}")
+    _persist_store_state()
+    return {"ok": not errors, **counts, "errors": errors}
 
 
 def _build_health_payload() -> dict[str, str]:
@@ -18772,8 +19163,14 @@ def save_workflow_definition(
         payload.get("description") or (existing.description if existing else "")
     )
     _validate_security_guardrail_reference(security_config, label="Workflow security policy")
+    # Accept the graph under `graph_json` (export/UI format) OR the top-level
+    # `graph` key used by the seed-format example files (examples/workflows/*/
+    # workflow.json) so those import without silently dropping the canvas graph.
     normalized_graph_json = _ensure_supported_graph_json(
-        payload.get("graph_json") or payload.get("config_json", {}).get("graph_json") or {},
+        payload.get("graph_json")
+        or payload.get("graph")
+        or payload.get("config_json", {}).get("graph_json")
+        or {},
         context_label="Workflow definition",
     )
     store.workflow_definitions[item_id] = WorkflowDefinition(
@@ -20029,13 +20426,29 @@ def validate_graph(payload: GraphPayload) -> dict[str, Any]:
     return result.model_dump()
 
 
+def _augment_node_system_prompt(base: str, node_instructions: str) -> str:
+    """A workflow agent node may carry its own ``system_prompt``/``instructions``
+    in its config. That text is ADDITIVE: it is appended to the agent's base
+    system prompt (from the Agent Builder) so the same agent can be specialized
+    per workflow step without forking the agent definition."""
+    extra = str(node_instructions or "").strip()
+    if not extra:
+        return base
+    return f"{base}\n\n## Step instructions (this workflow node)\n{extra}"
+
+
 def _agent_resolution_for_node(config: dict[str, Any]) -> Any:
     """Resolve a ``frontier/agent`` node's ``config`` to the studio agent's real
-    system prompt + model (gpt-oss:20b on local Ollama) for the graph compiler."""
+    system prompt + model (gpt-oss:20b on local Ollama) for the graph compiler.
+
+    The node's ``agent_id`` selects the agent and its full config (prompt, model,
+    tools); an optional node-level ``system_prompt``/``instructions`` is appended
+    on top (additive), it does not replace the agent's own prompt."""
     from app.graph_compiler import AgentResolution
 
     cfg = config if isinstance(config, dict) else {}
     agent_id = str(cfg.get("agent_id") or "").strip()
+    node_instructions = str(cfg.get("system_prompt") or cfg.get("instructions") or "").strip()
     base_url = local_models.ollama_openai_base_url()
 
     mode = str(cfg.get("harness_mode") or cfg.get("execution_mode") or "").strip().lower()
@@ -20064,7 +20477,7 @@ def _agent_resolution_for_node(config: dict[str, Any]) -> Any:
         )
         return AgentResolution(
             agent_id=agent_id or "agent",
-            system_prompt=fallback_prompt,
+            system_prompt=_augment_node_system_prompt(fallback_prompt, node_instructions),
             model=_default_ollama_model(),
             provider="ollama",
             base_url=base_url,
@@ -20080,6 +20493,7 @@ def _agent_resolution_for_node(config: dict[str, Any]) -> Any:
         else {}
     )
     system_prompt, _src = _resolve_agent_system_prompt(defn, requested_token=agent_id)
+    system_prompt = _augment_node_system_prompt(system_prompt, node_instructions)
     model = str(model_defaults.get("model") or "").strip() or _default_ollama_model()
     provider = str(model_defaults.get("provider") or "ollama").strip() or "ollama"
 

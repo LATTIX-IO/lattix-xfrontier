@@ -109,10 +109,21 @@ jobs:
 
       - uses: tauri-apps/tauri-action@v0
         env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Signs the auto-update artifacts (latest.json + .sig). The matching
+          # public key is committed in tauri.conf.json (public keys are safe).
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           projectPath: apps/desktop-tauri/src-tauri
+          # Create/attach to a GitHub Release so the signed installers AND the
+          # generated latest.json land as release assets — that manifest is what
+          # the in-app one-click updater reads from
+          # github.com/.../releases/latest/download/latest.json.
+          tagName: ${{ github.event.inputs.version && format('v{0}', github.event.inputs.version) || github.ref_name }}
+          releaseName: "Lattix xFrontier ${{ github.event.inputs.version || github.ref_name }}"
+          releaseDraft: true
+          prerelease: false
           args: --target ${{ matrix.triple }}
 
       # --- 4) Windows: Authenticode-sign the produced installers ----------
