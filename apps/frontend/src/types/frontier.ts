@@ -47,12 +47,15 @@ export type RunStatus =
   | "Done"
   | "Failed";
 
+export type RunKind = "individual" | "agent" | "workflow" | "playbook";
+
 export type WorkflowRunSummary = {
   id: string;
   title: string;
   status: RunStatus;
   updatedAt: string;
   progressLabel: string;
+  kind?: RunKind;
 };
 
 export type WorkflowRunEvent = {
@@ -66,6 +69,7 @@ export type WorkflowRunEvent = {
     | "artifact_created"
     | "approval_required"
     | "approval_decision"
+    | "tool_call"
     | "error";
   title: string;
   summary: string;
@@ -114,6 +118,11 @@ export type WorkflowDefinition = {
   version: number;
   status: "draft" | "published" | "archived";
   security_config?: SecurityScopeConfig;
+  graph_json?: {
+    schema_version?: string;
+    nodes?: Array<{ id: string; title: string; type: string; x: number; y: number; config?: Record<string, unknown> }>;
+    links?: Array<{ from: string; to: string; from_port?: string; to_port?: string }>;
+  };
 };
 
 export type SecurityClassification = "public" | "internal" | "confidential" | "restricted";
@@ -261,7 +270,7 @@ export type PlatformSettings = {
   enforce_egress_allowlist?: boolean;
   allowed_egress_hosts?: string[];
   enforce_local_network_only?: boolean;
-  allow_local_network_hostnames?: boolean;
+  allow_local_network_hostnames?: string[];
   allowed_retrieval_sources?: string[];
   retrieval_require_local_source_url?: boolean;
   allowed_mcp_server_urls?: string[];
@@ -273,6 +282,24 @@ export type PlatformSettings = {
   require_signed_integrations?: boolean;
   require_sandbox_for_third_party?: boolean;
   allow_local_unsigned_integrations?: boolean;
+  // AI inference providers (secret fields are write-only; *_configured flags
+  // report whether a key is stored server-side).
+  openai_api_key?: string;
+  openai_api_key_configured?: boolean;
+  openai_model?: string;
+  openai_fallback_model?: string;
+  nim_api_key?: string;
+  nim_api_key_configured?: boolean;
+  nim_base_url?: string;
+  nim_default_model?: string;
+  ollama_base_url?: string;
+  ollama_default_model?: string;
+  // Unified provider map (canonical). Secret api_key values are write-only;
+  // the masked read adds api_key_configured per provider.
+  ai_providers?: Record<
+    string,
+    { api_key?: string; api_key_configured?: boolean; base_url?: string; default_model?: string }
+  >;
 };
 
 export type IntegrationDefinition = {

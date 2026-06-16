@@ -3,10 +3,19 @@
 import Link from "next/link";
 import { FormEvent, KeyboardEvent, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { createWorkflowRun, getAgentDefinitions, getPublishedWorkflows } from "@/lib/api";
-import type { AgentDefinition, WorkflowDefinition } from "@/types/frontier";
+import {
+  createWorkflowRun,
+  getAgentDefinitions,
+  getPlaybooks,
+  getPublishedWorkflows,
+  type ComposerOptions,
+} from "@/lib/api";
+import type { AgentDefinition, PlaybookDefinition, WorkflowDefinition } from "@/types/frontier";
+import { ComposerControls } from "@/components/composer-controls";
 
-type TokenKind = "data" | "tag" | "workflow" | "agent";
+type TokenKind = "data" | "tag" | "workflow" | "agent" | "playbook";
+
+type MentionTrigger = "@" | "/" | "!";
 
 type ParsedToken = {
   kind: TokenKind;
@@ -14,20 +23,21 @@ type ParsedToken = {
 };
 
 type MentionSuggestion = {
-  trigger: "@" | "/";
+  trigger: MentionTrigger;
   value: string;
   label: string;
 };
 
-const delimiterLegend: Array<{ symbol: string; meaning: string; example: string }> = [
-  { symbol: "$", meaning: "Bring in data/source", example: "$crm_q1_pipeline" },
-  { symbol: "#", meaning: "Task tag/priority", example: "#need-review" },
-  { symbol: "/", meaning: "Call workflow", example: "/investor-pack" },
-  { symbol: "@", meaning: "Assign agent", example: "@orchestration-agent" },
+const delimiterLegend: Array<{ symbol: string; kind: TokenKind; meaning: string; example: string }> = [
+  { symbol: "$", kind: "data", meaning: "Bring in data/source", example: "$crm_q1_pipeline" },
+  { symbol: "#", kind: "tag", meaning: "Task tag/priority", example: "#need-review" },
+  { symbol: "/", kind: "workflow", meaning: "Call workflow", example: "/investor-pack" },
+  { symbol: "@", kind: "agent", meaning: "Assign agent", example: "@orchestration-agent" },
+  { symbol: "!", kind: "playbook", meaning: "Call playbook", example: "!incident-response" },
 ];
 
 function parseTokens(text: string): ParsedToken[] {
-  const matches = text.match(/([$#/@])[^\s$#/@]+/g) ?? [];
+  const matches = text.match(/([$#/@!])[^\s$#/@!]+/g) ?? [];
 
   return matches.map((token) => {
     const prefix = token[0];
@@ -36,6 +46,7 @@ function parseTokens(text: string): ParsedToken[] {
     if (prefix === "$") return { kind: "data", value };
     if (prefix === "#") return { kind: "tag", value };
     if (prefix === "/") return { kind: "workflow", value };
+    if (prefix === "!") return { kind: "playbook", value };
     return { kind: "agent", value };
   });
 }
@@ -44,6 +55,7 @@ function tokenClass(kind: TokenKind): string {
   if (kind === "data") return "border border-[var(--fx-border)] bg-[var(--fx-surface-elevated)] text-[var(--foreground)]";
   if (kind === "tag") return "border border-[var(--fx-warning)] bg-[color-mix(in_srgb,var(--fx-warning)_20%,transparent)] text-[var(--foreground)]";
   if (kind === "workflow") return "border border-[var(--fx-primary)] bg-[color-mix(in_srgb,var(--fx-primary)_20%,transparent)] text-[var(--foreground)]";
+  if (kind === "playbook") return "border border-[var(--fx-warning)] bg-[color-mix(in_srgb,var(--fx-warning)_28%,transparent)] text-[var(--foreground)]";
   return "border border-[var(--fx-success)] bg-[color-mix(in_srgb,var(--fx-success)_20%,transparent)] text-[var(--foreground)]";
 }
 
@@ -56,7 +68,10 @@ function slugify(value: string): string {
     .slice(0, 80);
 }
 
-function getActiveMentionToken(text: string, cursor: number): { trigger: "@" | "/"; query: string; start: number; end: number } | null {
+function getActiveMentionToken(
+  text: string,
+  cursor: number,
+): { trigger: MentionTrigger; query: string; start: number; end: number } | null {
   if (cursor < 0 || cursor > text.length) {
     return null;
   }
@@ -68,23 +83,28 @@ function getActiveMentionToken(text: string, cursor: number): { trigger: "@" | "
   start += 1;
 
   const token = text.slice(start, cursor);
-  if (!token || (token[0] !== "@" && token[0] !== "/")) {
+  if (!token || (token[0] !== "@" && token[0] !== "/" && token[0] !== "!")) {
     return null;
   }
 
-  if (token.length > 1 && /[@/]/.test(token.slice(1))) {
+  if (token.length > 1 && /[@/!]/.test(token.slice(1))) {
     return null;
   }
 
   return {
-    trigger: token[0] as "@" | "/",
+    trigger: token[0] as MentionTrigger,
     query: token.slice(1),
     start,
     end: cursor,
   };
 }
 
-export function TaskKickoffComposer() {
+export function TaskKickoffComposer({
+  prefill,
+}: {
+  /** Bump `nonce` (with new `text`) to load a suggested draft from outside. */
+  prefill?: { text: string; nonce: number };
+} = {}) {
   const router = useRouter();
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const [draft, setDraft] = useState("");
@@ -93,8 +113,10 @@ export function TaskKickoffComposer() {
   const [cursorPosition, setCursorPosition] = useState(0);
   const [publishedAgents, setPublishedAgents] = useState<AgentDefinition[]>([]);
   const [publishedWorkflows, setPublishedWorkflows] = useState<WorkflowDefinition[]>([]);
+  const [activePlaybooks, setActivePlaybooks] = useState<PlaybookDefinition[]>([]);
   const [activeSuggestionIndex, setActiveSuggestionIndex] = useState(0);
   const [submitError, setSubmitError] = useState<string | null>(null);
+  const [composerOpts, setComposerOpts] = useState<ComposerOptions>({});
 
   const tokens = useMemo(() => parseTokens(draft), [draft]);
 
@@ -102,12 +124,17 @@ export function TaskKickoffComposer() {
     let cancelled = false;
 
     async function loadMentions() {
-      const [agentDefs, workflowDefs] = await Promise.all([getAgentDefinitions(), getPublishedWorkflows()]);
+      const [agentDefs, workflowDefs, playbookDefs] = await Promise.all([
+        getAgentDefinitions(),
+        getPublishedWorkflows(),
+        getPlaybooks().catch(() => [] as PlaybookDefinition[]),
+      ]);
       if (cancelled) {
         return;
       }
       setPublishedAgents(agentDefs.filter((agent) => agent.status === "published"));
       setPublishedWorkflows(workflowDefs.filter((workflow) => workflow.status === "published"));
+      setActivePlaybooks(playbookDefs.filter((playbook) => playbook.status === "active"));
     }
 
     void loadMentions();
@@ -116,6 +143,22 @@ export function TaskKickoffComposer() {
       cancelled = true;
     };
   }, []);
+
+  // Load an externally-supplied suggested draft (inbox quick-starts) when its
+  // nonce changes, then focus the caret at the end so the user keeps typing.
+  useEffect(() => {
+    if (!prefill || !prefill.text) return;
+    setDraft(prefill.text);
+    setCursorPosition(prefill.text.length);
+    requestAnimationFrame(() => {
+      const element = textareaRef.current;
+      if (element) {
+        element.focus();
+        element.setSelectionRange(prefill.text.length, prefill.text.length);
+      }
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [prefill?.nonce]);
 
   const activeMention = useMemo(() => getActiveMentionToken(draft, cursorPosition), [draft, cursorPosition]);
 
@@ -139,6 +182,17 @@ export function TaskKickoffComposer() {
         .slice(0, 8);
     }
 
+    if (activeMention.trigger === "!") {
+      return activePlaybooks
+        .map((playbook) => ({
+          trigger: "!" as const,
+          value: slugify(playbook.name) || slugify(playbook.id),
+          label: playbook.name,
+        }))
+        .filter((item) => item.value.includes(query) || item.label.toLowerCase().includes(query))
+        .slice(0, 8);
+    }
+
     return publishedWorkflows
       .map((workflow) => ({
         trigger: "/" as const,
@@ -147,7 +201,7 @@ export function TaskKickoffComposer() {
       }))
       .filter((item) => item.value.includes(query) || item.label.toLowerCase().includes(query))
       .slice(0, 8);
-  }, [activeMention, publishedAgents, publishedWorkflows]);
+  }, [activeMention, publishedAgents, publishedWorkflows, activePlaybooks]);
 
   useEffect(() => {
     setActiveSuggestionIndex(0);
@@ -163,6 +217,28 @@ export function TaskKickoffComposer() {
     setDraft(nextDraft);
     setCursorPosition(nextCursor);
 
+    requestAnimationFrame(() => {
+      if (textareaRef.current) {
+        textareaRef.current.focus();
+        textareaRef.current.setSelectionRange(nextCursor, nextCursor);
+      }
+    });
+  }
+
+  // Clicking a legend card inserts its delimiter at the caret (with a leading
+  // space when needed) and refocuses — for @ / ! this also opens the suggestion
+  // list, turning the reference into a one-click helper.
+  function insertDelimiter(symbol: string) {
+    const element = textareaRef.current;
+    const caret = element?.selectionStart ?? draft.length;
+    const before = draft.slice(0, caret);
+    const after = draft.slice(caret);
+    const needsSpace = before.length > 0 && !/\s$/.test(before);
+    const insertion = `${needsSpace ? " " : ""}${symbol}`;
+    const nextDraft = `${before}${insertion}${after}`;
+    const nextCursor = before.length + insertion.length;
+    setDraft(nextDraft);
+    setCursorPosition(nextCursor);
     requestAnimationFrame(() => {
       if (textareaRef.current) {
         textareaRef.current.focus();
@@ -212,6 +288,7 @@ export function TaskKickoffComposer() {
       setIsSubmitting(true);
       const publishedAgentSlugs = new Set(publishedAgents.map((agent) => slugify(agent.name) || slugify(agent.id)));
       const publishedWorkflowSlugs = new Set(publishedWorkflows.map((workflow) => slugify(workflow.name) || slugify(workflow.id)));
+      const activePlaybookSlugs = new Set(activePlaybooks.map((playbook) => slugify(playbook.name) || slugify(playbook.id)));
       const filteredTokens = tokens.filter((token) => {
         if (token.kind === "agent") {
           return publishedAgentSlugs.has(token.value);
@@ -219,16 +296,27 @@ export function TaskKickoffComposer() {
         if (token.kind === "workflow") {
           return publishedWorkflowSlugs.has(token.value);
         }
+        if (token.kind === "playbook") {
+          return activePlaybookSlugs.has(token.value);
+        }
         return true;
       });
+
+      const playbooks = filteredTokens
+        .filter((token) => token.kind === "playbook")
+        .map((token) => token.value);
 
       const payload = {
         prompt: draft,
         tokens: filteredTokens,
+        ...(playbooks.length > 0 ? { playbooks } : {}),
+        ...composerOpts,
       };
       const result = await createWorkflowRun(payload);
       setCreatedRunId(result.id);
       setDraft("");
+      // Tell the nav chat tree (and any listeners) to refetch the run list.
+      window.dispatchEvent(new CustomEvent("frontier:runs-changed"));
       router.refresh();
     } catch {
       setSubmitError("Unable to start task run. Please verify backend connectivity and try again.");
@@ -259,10 +347,18 @@ export function TaskKickoffComposer() {
           className="fx-field min-h-24 w-full p-3 text-sm"
         />
 
+        <div className="mt-1 rounded-lg border border-[var(--ui-border)] bg-[hsl(var(--card))] px-3 py-2">
+          <ComposerControls onChange={setComposerOpts} />
+        </div>
+
         {activeMention && mentionSuggestions.length > 0 ? (
           <div className="border border-[var(--fx-border)] bg-[var(--fx-surface-elevated)]">
             <div className="px-2 py-1 text-[10px] uppercase tracking-wide text-[var(--fx-muted)]">
-              {activeMention.trigger === "@" ? "Published Agents" : "Published Workflows"}
+              {activeMention.trigger === "@"
+                ? "Published Agents"
+                : activeMention.trigger === "!"
+                  ? "Active Playbooks"
+                  : "Published Workflows"}
             </div>
             <ul className="max-h-40 overflow-auto text-xs">
               {mentionSuggestions.map((suggestion, index) => (
@@ -300,15 +396,36 @@ export function TaskKickoffComposer() {
           )}
         </div>
 
-        <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
-          {delimiterLegend.map((item) => (
-            <div key={item.symbol} className="border border-[var(--fx-border)] bg-[var(--fx-surface-elevated)] p-2 text-xs">
-              <p className="font-semibold text-[var(--foreground)]">
-                {item.symbol} {item.meaning}
-              </p>
-              <p className="fx-muted mt-1 font-mono">{item.example}</p>
-            </div>
-          ))}
+        <div>
+          <p className="mb-1.5 text-[10px] font-semibold uppercase tracking-wide text-[var(--fx-muted)]">
+            Delimiter reference — click to insert
+          </p>
+          <div className="grid gap-2 [grid-template-columns:repeat(auto-fit,minmax(148px,1fr))]">
+            {delimiterLegend.map((item) => (
+              <button
+                key={item.symbol}
+                type="button"
+                onClick={() => insertDelimiter(item.symbol)}
+                aria-label={`Insert ${item.symbol} — ${item.meaning}`}
+                className="group flex min-w-0 items-start gap-2 rounded-lg border border-[var(--fx-border)] bg-[var(--fx-surface-elevated)] p-2 text-left transition-colors hover:border-[var(--fx-primary)] hover:bg-[var(--fx-nav-hover)]"
+              >
+                <span
+                  className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-md font-mono text-sm font-bold ${tokenClass(item.kind)}`}
+                  aria-hidden="true"
+                >
+                  {item.symbol}
+                </span>
+                <span className="min-w-0 flex-1">
+                  <span className="block text-xs font-semibold leading-tight text-[var(--foreground)]">
+                    {item.meaning}
+                  </span>
+                  <span className="mt-0.5 block break-words font-mono text-[11px] leading-tight text-[var(--fx-muted)]">
+                    {item.example}
+                  </span>
+                </span>
+              </button>
+            ))}
+          </div>
         </div>
 
         <div className="flex items-center gap-3">

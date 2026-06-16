@@ -1,11 +1,42 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
-import { getPlatformSecurityPolicy, getPlatformSettings, savePlatformSettings } from "@/lib/api";
+import { useEffect, useState } from "react";
+import {
+  getModelsOverview,
+  getPlatformSecurityPolicy,
+  getPlatformSettings,
+  getProviderModels,
+  savePlatformSettings,
+  type ModelsOverview,
+} from "@/lib/api";
 import { useToast } from "@/components/toast";
 import type { PlatformSettings, PlatformSignalEnforcement, SecurityPolicyResponse } from "@/types/frontier";
 
 const runtimeEngineOptions = ["native", "langgraph", "langchain", "semantic-kernel", "autogen"] as const;
+
+type SettingsTab = "providers" | "guardrails" | "network" | "runtime";
+
+const settingsTabs: Array<{ id: SettingsTab; label: string }> = [
+  { id: "providers", label: "AI Providers" },
+  { id: "guardrails", label: "Guardrails & Approvals" },
+  { id: "network", label: "Network & Retrieval" },
+  { id: "runtime", label: "Runtime & Limits" },
+];
+
+type ProviderDraft = { api_key: string; base_url: string; default_model: string };
+
+// Stable provider list (mirrors the backend registry); status/badges enrich
+// from /models/overview when available.
+const providerList: Array<{ id: string; label: string; keyHint: string; baseHint: string; modelHint: string; keyRequired: boolean }> = [
+  { id: "openai", label: "OpenAI", keyHint: "sk-...", baseHint: "default endpoint", modelHint: "gpt-5.2", keyRequired: true },
+  { id: "anthropic", label: "Anthropic Claude", keyHint: "sk-ant-...", baseHint: "https://api.anthropic.com/v1", modelHint: "claude-sonnet-4-6", keyRequired: true },
+  { id: "azure", label: "Microsoft Azure OpenAI", keyHint: "Azure API key", baseHint: "https://<resource>.openai.azure.com/openai/v1", modelHint: "your deployment name", keyRequired: true },
+  { id: "google", label: "Google Gemini", keyHint: "AIza...", baseHint: "Gemini OpenAI-compat endpoint", modelHint: "gemini-2.5-pro", keyRequired: true },
+  { id: "mistral", label: "Mistral", keyHint: "Mistral API key", baseHint: "https://api.mistral.ai/v1", modelHint: "mistral-large-latest", keyRequired: true },
+  { id: "xai", label: "xAI Grok", keyHint: "xai-...", baseHint: "https://api.x.ai/v1", modelHint: "grok-4", keyRequired: true },
+  { id: "nim", label: "NVIDIA NIM", keyHint: "nvapi-...", baseHint: "blank = NVIDIA-hosted; set for self-hosted NIM", modelHint: "meta/llama-3.3-70b-instruct", keyRequired: true },
+  { id: "ollama", label: "Local (Ollama)", keyHint: "", baseHint: "http://ollama:11434", modelHint: "llama3.2:3b", keyRequired: false },
+];
 const signalEnforcementOptions: Array<{ value: PlatformSignalEnforcement; label: string }> = [
   { value: "off", label: "Off" },
   { value: "audit", label: "Audit only" },
@@ -84,6 +115,7 @@ export default function BuilderSettingsPage() {
   const [saving, setSaving] = useState(false);
   const [settings, setSettings] = useState<PlatformSettings | null>(null);
   const [policy, setPolicy] = useState<SecurityPolicyResponse | null>(null);
+  const [providerOverview, setProviderOverview] = useState<ModelsOverview | null>(null);
   const [guardrailRulesetId, setGuardrailRulesetId] = useState("");
   const [blockedKeywords, setBlockedKeywords] = useState("");
   const [allowedEgressHosts, setAllowedEgressHosts] = useState("");
@@ -94,6 +126,21 @@ export default function BuilderSettingsPage() {
   const [maxToolCalls, setMaxToolCalls] = useState("8");
   const [maxRetrievalItems, setMaxRetrievalItems] = useState("8");
   const [maxCollaborationAgents, setMaxCollaborationAgents] = useState("8");
+  // AI providers — unified map; key fields are write-only (blank keeps stored).
+  const [activeTab, setActiveTab] = useState<SettingsTab>("providers");
+  const [providerDrafts, setProviderDrafts] = useState<Record<string, ProviderDraft>>({});
+  const [providerModels, setProviderModels] = useState<Record<string, string[]>>({});
+  const [providerTests, setProviderTests] = useState<Record<string, string>>({});
+  const [openaiFallbackModel, setOpenaiFallbackModel] = useState("");
+  const [allowLocalHostnames, setAllowLocalHostnames] = useState("");
+
+  // Deep-link support: /builder/settings?tab=providers|guardrails|network|runtime
+  useEffect(() => {
+    const requested = new URLSearchParams(window.location.search).get("tab");
+    if (requested && settingsTabs.some((tab) => tab.id === requested)) {
+      setActiveTab(requested as SettingsTab);
+    }
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -106,6 +153,31 @@ export default function BuilderSettingsPage() {
         }
         setSettings(settingsResponse);
         setPolicy(policyResponse);
+        void getModelsOverview()
+          .then((overview) => {
+            if (cancelled) {
+              return;
+            }
+            setProviderOverview(overview);
+            // Populate default-model dropdowns for connected providers.
+            for (const entry of overview.external ?? []) {
+              if (!entry.configured) {
+                continue;
+              }
+              void getProviderModels(entry.id)
+                .then((listing) => {
+                  if (!cancelled && listing.models.length > 0) {
+                    setProviderModels((current) => ({ ...current, [entry.id]: listing.models }));
+                  }
+                })
+                .catch(() => {
+                  // Best-effort; the model field stays free-text.
+                });
+            }
+          })
+          .catch(() => {
+            // Provider status is informational; the form remains editable.
+          });
         setGuardrailRulesetId(settingsResponse.default_guardrail_ruleset_id ?? "");
         setBlockedKeywords(toListString(settingsResponse.global_blocked_keywords));
         setAllowedEgressHosts(toListString(settingsResponse.allowed_egress_hosts));
@@ -116,6 +188,18 @@ export default function BuilderSettingsPage() {
         setMaxToolCalls(String(settingsResponse.max_tool_calls_per_run ?? 8));
         setMaxRetrievalItems(String(settingsResponse.max_retrieval_items ?? 8));
         setMaxCollaborationAgents(String(settingsResponse.collaboration_max_agents ?? 8));
+        setOpenaiFallbackModel(settingsResponse.openai_fallback_model ?? "");
+        setAllowLocalHostnames(toListString(settingsResponse.allow_local_network_hostnames));
+        const drafts: Record<string, ProviderDraft> = {};
+        for (const provider of providerList) {
+          const stored = settingsResponse.ai_providers?.[provider.id] ?? {};
+          drafts[provider.id] = {
+            api_key: "",
+            base_url: stored.base_url ?? "",
+            default_model: stored.default_model ?? "",
+          };
+        }
+        setProviderDrafts(drafts);
         setLoaded(true);
       } catch {
         if (!cancelled) {
@@ -129,19 +213,6 @@ export default function BuilderSettingsPage() {
       cancelled = true;
     };
   }, [addToast]);
-
-  const effectiveSummary = useMemo(() => {
-    if (!policy) {
-      return [] as string[];
-    }
-    return [
-      `Classification: ${policy.effective.classification}`,
-      `Tool calls capped at ${policy.effective.max_tool_calls_per_run} per run`,
-      `Retrieval capped at ${policy.effective.max_retrieval_items} items`,
-      `Runtime engines: ${policy.effective.allowed_runtime_engines.join(", ") || "none"}`,
-      `Platform signals: ${policy.effective.enable_platform_signals ? policy.effective.platform_signal_enforcement : "off"}`,
-    ];
-  }, [policy]);
 
   async function handleSave() {
     if (!settings) {
@@ -165,7 +236,9 @@ export default function BuilderSettingsPage() {
         require_human_approval_for_high_risk_tools: Boolean(settings.require_human_approval_for_high_risk_tools ?? true),
         enforce_egress_allowlist: Boolean(settings.enforce_egress_allowlist),
         enforce_local_network_only: Boolean(settings.enforce_local_network_only),
-        allow_local_network_hostnames: Boolean(settings.allow_local_network_hostnames),
+        // This field is a hostname list, not a flag — sending a Boolean made
+        // pydantic reject the whole settings save.
+        allow_local_network_hostnames: parseList(allowLocalHostnames),
         retrieval_require_local_source_url: Boolean(settings.retrieval_require_local_source_url),
         mcp_require_local_server: Boolean(settings.mcp_require_local_server),
         default_runtime_engine: settings.default_runtime_engine ?? "native",
@@ -176,9 +249,27 @@ export default function BuilderSettingsPage() {
         a2a_replay_protection: Boolean(settings.a2a_replay_protection ?? true),
         enable_foss_guardrail_signals: Boolean(settings.enable_foss_guardrail_signals ?? true),
         foss_guardrail_signal_enforcement: settings.foss_guardrail_signal_enforcement ?? "block_high",
+        // Unified provider map. API keys are write-only server-side: blank
+        // submissions keep the stored key; "__clear__" removes it.
+        ai_providers: Object.fromEntries(
+          Object.entries(providerDrafts).map(([providerId, draft]) => [
+            providerId,
+            {
+              api_key: draft.api_key.trim(),
+              base_url: draft.base_url.trim(),
+              default_model: draft.default_model.trim(),
+            },
+          ]),
+        ),
+        openai_fallback_model: openaiFallbackModel.trim(),
       };
 
       await savePlatformSettings(payload);
+      setProviderDrafts((current) =>
+        Object.fromEntries(
+          Object.entries(current).map(([providerId, draft]) => [providerId, { ...draft, api_key: "" }]),
+        ),
+      );
       const [settingsResponse, policyResponse] = await Promise.all([getPlatformSettings(), getPlatformSecurityPolicy()]);
       setSettings(settingsResponse);
       setPolicy(policyResponse);
@@ -205,30 +296,167 @@ export default function BuilderSettingsPage() {
         </button>
       </div>
 
-      <article className="fx-panel p-3">
-        <div className="flex flex-wrap items-start justify-between gap-3">
-          <div>
-            <h2 className="text-sm font-semibold">Immutable backend baseline</h2>
-            <p className="fx-muted text-xs leading-5">These controls are enforced below the UI and cannot be disabled from builder settings.</p>
-          </div>
-          <div className="rounded border border-[var(--fx-border)] px-2 py-1 text-xs text-[var(--foreground)]">
-            Default classification: <span className="font-semibold">{policy?.platform_defaults.classification ?? "internal"}</span>
-          </div>
-        </div>
+      <div className="flex items-center gap-1 rounded-lg border border-[var(--ui-border)] bg-[hsl(var(--card))] p-1 text-sm">
+        {settingsTabs.map((tab) => (
+          <button
+            key={tab.id}
+            type="button"
+            onClick={() => setActiveTab(tab.id)}
+            className={`rounded px-3 py-1.5 ${
+              activeTab === tab.id
+                ? "bg-[hsl(var(--primary)/0.18)] font-medium text-[var(--foreground)]"
+                : "text-[hsl(var(--muted-foreground))]"
+            }`}
+          >
+            {tab.label}
+          </button>
+        ))}
+      </div>
 
-        <div className="mt-3 grid gap-2 md:grid-cols-2 xl:grid-cols-3">
-          {Object.entries(policy?.immutable_baseline ?? {}).map(([key, value]) => (
-            <div key={key} className="rounded border border-[var(--fx-border)] bg-[hsl(var(--card))] px-3 py-2 text-xs">
-              <p className="font-medium text-[var(--foreground)] break-words">{key.replace(/_/g, " ")}</p>
-              <p className="mt-1 fx-muted">{value ? "Enforced" : "Not exposed"}</p>
+      <div className="space-y-4">
+          <article hidden={activeTab !== "providers"} className="fx-panel p-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <h2 className="text-sm font-semibold">AI inference providers</h2>
+              <div className="flex flex-wrap gap-1.5 text-[10px]">
+                {(providerOverview?.external ?? []).map((entry) => (
+                  <span
+                    key={entry.id}
+                    className={`rounded-full border px-2 py-0.5 font-semibold ${
+                      entry.configured
+                        ? "border-[hsl(var(--state-success)/0.45)] text-[hsl(var(--state-success))]"
+                        : "border-[hsl(var(--state-warning)/0.45)] text-[hsl(var(--state-warning))]"
+                    }`}
+                  >
+                    {entry.label}: {entry.configured ? "ready" : "not configured"}
+                  </span>
+                ))}
+              </div>
             </div>
-          ))}
-        </div>
-      </article>
+            <p className="fx-muted text-xs leading-5">
+              All providers speak OpenAI-compatible chat completions; reference models from agents as{" "}
+              <code className="font-mono">&lt;provider&gt;/&lt;model&gt;</code> (bare ids default to OpenAI).
+              Settings override environment variables and apply immediately to new runs. API keys are
+              write-only: blank keeps the stored value, <code className="font-mono">__clear__</code> removes
+              it. Local model downloads are managed on the{" "}
+              <a href="/builder/models" className="underline decoration-dotted underline-offset-2">Models page</a>.
+            </p>
 
-      <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_320px]">
-        <div className="space-y-4">
-          <article className="fx-panel p-3">
+            <div className="mt-3 grid gap-3 lg:grid-cols-2 xl:grid-cols-3">
+              {providerList.map((provider) => {
+                const draft = providerDrafts[provider.id] ?? { api_key: "", base_url: "", default_model: "" };
+                const storedKey = Boolean(settings?.ai_providers?.[provider.id]?.api_key_configured);
+                const updateDraft = (field: keyof ProviderDraft, value: string) =>
+                  setProviderDrafts((current) => ({
+                    ...current,
+                    [provider.id]: { ...draft, ...current[provider.id], [field]: value },
+                  }));
+                const runProviderTest = async () => {
+                  setProviderTests((current) => ({ ...current, [provider.id]: "Testing..." }));
+                  try {
+                    const listing = await getProviderModels(provider.id);
+                    if (!listing.configured) {
+                      setProviderTests((current) => ({
+                        ...current,
+                        [provider.id]: listing.reason || "Not configured — save a key first.",
+                      }));
+                    } else if (listing.models.length > 0) {
+                      setProviderTests((current) => ({
+                        ...current,
+                        [provider.id]: `Connected — ${listing.models.length} models available.`,
+                      }));
+                      setProviderModels((current) => ({ ...current, [provider.id]: listing.models }));
+                    } else {
+                      setProviderTests((current) => ({
+                        ...current,
+                        [provider.id]: listing.reason
+                          ? `Connection failed: ${listing.reason}`
+                          : "Connected, but no models reported.",
+                      }));
+                    }
+                  } catch {
+                    setProviderTests((current) => ({
+                      ...current,
+                      [provider.id]: "Test failed — backend unreachable.",
+                    }));
+                  }
+                };
+                return (
+                  <div key={provider.id} className="space-y-2 rounded border border-[var(--fx-border)] p-3">
+                    <div className="flex items-center justify-between gap-2">
+                      <p className="text-xs font-semibold text-[var(--foreground)]">{provider.label}</p>
+                      <button
+                        type="button"
+                        onClick={() => void runProviderTest()}
+                        className="fx-btn-secondary px-2 py-0.5 text-[11px] font-medium"
+                      >
+                        Test
+                      </button>
+                    </div>
+                    {providerTests[provider.id] ? (
+                      <p className="fx-muted text-[11px] leading-4">{providerTests[provider.id]}</p>
+                    ) : null}
+                    {provider.keyRequired ? (
+                      <label className="block text-xs">
+                        <span className="fx-muted">
+                          API key {storedKey ? "(stored — blank keeps it)" : "(not stored; env may apply)"}
+                        </span>
+                        <input
+                          type="password"
+                          autoComplete="off"
+                          className="fx-field mt-1 w-full px-2 py-1.5 text-sm"
+                          value={draft.api_key}
+                          onChange={(e) => updateDraft("api_key", e.target.value)}
+                          placeholder={storedKey ? "••••••••" : provider.keyHint}
+                        />
+                      </label>
+                    ) : null}
+                    <label className="block text-xs">
+                      <span className="fx-muted">Endpoint (blank = default)</span>
+                      <input
+                        className="fx-field mt-1 w-full px-2 py-1.5 text-sm"
+                        value={draft.base_url}
+                        onChange={(e) => updateDraft("base_url", e.target.value)}
+                        placeholder={provider.baseHint}
+                      />
+                    </label>
+                    <label className="block text-xs">
+                      <span className="fx-muted">
+                        Default model
+                        {providerModels[provider.id]?.length
+                          ? ` (${providerModels[provider.id].length} available)`
+                          : ""}
+                      </span>
+                      <input
+                        className="fx-field mt-1 w-full px-2 py-1.5 text-sm"
+                        value={draft.default_model}
+                        onChange={(e) => updateDraft("default_model", e.target.value)}
+                        placeholder={provider.modelHint}
+                        list={`provider-models-${provider.id}`}
+                      />
+                      <datalist id={`provider-models-${provider.id}`}>
+                        {(providerModels[provider.id] ?? []).map((modelId) => (
+                          <option key={modelId} value={modelId} />
+                        ))}
+                      </datalist>
+                    </label>
+                    {provider.id === "openai" ? (
+                      <label className="block text-xs">
+                        <span className="fx-muted">Fallback model</span>
+                        <input
+                          className="fx-field mt-1 w-full px-2 py-1.5 text-sm"
+                          value={openaiFallbackModel}
+                          onChange={(e) => setOpenaiFallbackModel(e.target.value)}
+                          placeholder="gpt-5.1"
+                        />
+                      </label>
+                    ) : null}
+                  </div>
+                );
+              })}
+            </div>
+          </article>
+
+          <article hidden={activeTab !== "guardrails"} className="fx-panel p-3">
             <h2 className="text-sm font-semibold">Guardrails and approvals</h2>
             <p className="fx-muted text-xs leading-5">Set the default safety envelope that workflows and agents may only tighten.</p>
             <div className="mt-3 grid gap-3 lg:grid-cols-2">
@@ -297,7 +525,7 @@ export default function BuilderSettingsPage() {
             </div>
           </article>
 
-          <article className="fx-panel p-3">
+          <article hidden={activeTab !== "network"} className="fx-panel p-3">
             <h2 className="text-sm font-semibold">Network and retrieval boundaries</h2>
             <p className="fx-muted text-xs leading-5">Shape the maximum egress and data-source surface area available to workflows and agents.</p>
             <div className="mt-3 grid gap-2 lg:grid-cols-2">
@@ -312,12 +540,6 @@ export default function BuilderSettingsPage() {
                 description="Restricts runtime calls to local or approved private-network destinations."
                 checked={Boolean(settings?.enforce_local_network_only)}
                 onChange={(next) => setSettings((current) => (current ? { ...current, enforce_local_network_only: next } : current))}
-              />
-              <ToggleField
-                label="Allow local hostnames"
-                description="Permits localhost-style hostnames when local-network mode is active."
-                checked={Boolean(settings?.allow_local_network_hostnames)}
-                onChange={(next) => setSettings((current) => (current ? { ...current, allow_local_network_hostnames: next } : current))}
               />
               <ToggleField
                 label="Require local retrieval sources"
@@ -353,6 +575,13 @@ export default function BuilderSettingsPage() {
 
             <div className="mt-3 grid gap-3 lg:grid-cols-3">
               <ListField
+                label="Allowed local hostnames"
+                description="Localhost-style hostnames permitted when local-network mode is active. Comma-separated."
+                value={allowLocalHostnames}
+                onChange={setAllowLocalHostnames}
+                placeholder="localhost, .local"
+              />
+              <ListField
                 label="Allowed egress hosts"
                 description="Explicit destinations builders may reach when allowlist enforcement is on."
                 value={allowedEgressHosts}
@@ -376,7 +605,7 @@ export default function BuilderSettingsPage() {
             </div>
           </article>
 
-          <article className="fx-panel p-3">
+          <article hidden={activeTab !== "runtime"} className="fx-panel p-3">
             <h2 className="text-sm font-semibold">Runtime and collaboration ceilings</h2>
             <p className="fx-muted text-xs leading-5">Cap how far builders can stretch engines, tools, retrieval, and collaboration at lower scopes.</p>
             <div className="mt-3 grid gap-3 lg:grid-cols-2 xl:grid-cols-4">
@@ -430,41 +659,6 @@ export default function BuilderSettingsPage() {
             </div>
           </article>
         </div>
-
-        <aside className="space-y-4">
-          <article className="fx-panel p-3">
-            <h2 className="text-sm font-semibold">Effective platform summary</h2>
-            <p className="fx-muted text-xs leading-5">What lower scopes inherit before they add tighter overrides.</p>
-            <ul className="mt-3 space-y-2 text-sm text-[var(--foreground)]">
-              {effectiveSummary.map((item) => (
-                <li key={item} className="rounded border border-[var(--fx-border)] px-3 py-2 break-words">{item}</li>
-              ))}
-            </ul>
-          </article>
-
-          <article className="fx-panel p-3">
-            <h2 className="text-sm font-semibold">Server-owned controls</h2>
-            <p className="fx-muted text-xs leading-5">The UI can tune inputs, but these safety rails remain backend-owned.</p>
-            <ul className="mt-3 space-y-2 text-xs">
-              {(policy?.backend_enforced_controls ?? []).map((item) => (
-                <li key={item} className="rounded border border-[var(--fx-border)] px-3 py-2 text-[var(--foreground)] break-words">
-                  {item.replace(/_/g, " ")}
-                </li>
-              ))}
-            </ul>
-          </article>
-
-          <article className="fx-panel p-3">
-            <h2 className="text-sm font-semibold">Builder contract</h2>
-            <p className="fx-muted text-xs leading-5">Workflows and agents may only tighten these settings; they cannot widen the platform envelope.</p>
-            <ul className="mt-3 list-disc space-y-2 pl-4 text-xs text-[var(--foreground)]">
-              {(policy?.configurable_controls ?? []).map((item) => (
-                <li key={item} className="break-words">{item.replace(/_/g, " ")}</li>
-              ))}
-            </ul>
-          </article>
-        </aside>
-      </div>
     </section>
   );
 }

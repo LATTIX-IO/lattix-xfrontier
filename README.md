@@ -50,6 +50,32 @@ Lattix xFrontier is built around four layers:
 └──────────────────────────────────────────────────────────┘
 ```
 
+## Cognitive MVP status
+
+xFrontier now ships an additive **cognitive MVP** path on top of the existing graph runtime. This is the first bounded slice of the broader columnar architecture and is intentionally narrow: it adds structured goal, evidence, assembly, and commitment behavior without replacing the current agent-centric runtime.
+
+Currently implemented cognitive node types:
+
+- `frontier/goal`
+- `frontier/evidence`
+- `frontier/assembly`
+- `frontier/commitment`
+
+The shipped MVP supports:
+
+- explicit goal framing
+- evidence capture and missing-evidence detection
+- bounded weighted-support assembly fusion
+- commitment generation with confidence, blockers, dissent, and next actions
+- backend graph validation and execution coverage
+- frontend schema support and operator-facing cognition inspection
+
+This slice is additive:
+
+- legacy graphs continue to validate and run
+- `frontier/agent` semantics are unchanged
+- advanced cognitive columns such as Evaluation, Uncertainty, State, Decomposition, Prediction, and Adaptation are not part of the shipped slice yet
+
 ## Quick start
 
 1. Run the public bootstrap installer.
@@ -220,6 +246,15 @@ Windows PowerShell equivalents:
 .\scripts\frontier.ps1 policy-test
 .\scripts\frontier.ps1 helm-validate
 .\scripts\frontier.ps1 test
+```
+
+Focused validation for the cognitive MVP can be run with:
+
+```text
+d:/lattix/lattix-xfrontier/.venv/Scripts/python.exe -m pytest apps/backend/tests/test_cognitive_graph.py tests/unit/test_cognitive_runtime.py tests/e2e/test_full_pipeline.py -q
+
+cd apps/frontend
+npm test -- --run src/lib/frontier-node-schema.spec.ts src/components/run-conversation-console.spec.tsx
 ```
 
 ## Deployment

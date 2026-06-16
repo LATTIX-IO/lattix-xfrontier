@@ -4,7 +4,30 @@
       "Bash(npm run:*)",
       "Bash(npm test:*)",
       "Bash(docker compose:*)",
-      "mcp__Claude_Preview__preview_start"
+      "mcp__Claude_Preview__preview_start",
+      "WebFetch(domain:api.anthropic.com)",
+      "Bash(mkdir -p /tmp/design)",
+      "Bash(cp \"C:/Users/JamesBooth/.claude/projects/D--lattix-lattix-xfrontier/bea78dfa-bdd4-4c93-b032-e58499ac56ce/tool-results/webfetch-1777049261422-s1jx9s.bin\" /tmp/design/design.gz)",
+      "Read(//tmp/**)",
+      "Bash(gunzip -f design.gz)",
+      "Bash(tar -xf design)",
+      "Bash(npx tsc *)",
+      "Bash(npx vitest *)",
+      "Bash(npx eslint *)",
+      "Bash(curl -s http://localhost:3001/auth)",
+      "Bash(curl -s \"http://localhost:3001/auth?_bust=$\\(date +%s\\)\")",
+      "Bash(curl -s \"http://localhost:3001/auth?auth_error=invalid_credentials\")",
+      "Bash(GIT_DIR=/d/lattix/lattix-xfrontier/.git GIT_WORK_TREE=/d/lattix/lattix-xfrontier git status)",
+      "Bash(env)",
+      "Bash(git --git-dir=/d/lattix/lattix-xfrontier/.git --work-tree=/d/lattix/lattix-xfrontier status)",
+      "Bash(git config *)",
+      "Bash(GIT_TRACE=1 git status)",
+      "Bash(GIT_TRACE_SETUP=1 git status)",
+      "Bash(GIT_TRACE_SETUP=1 git rev-parse --show-toplevel)",
+      "Bash(git status *)",
+      "Bash(git add *)",
+      "Bash(tasklist //FI \"IMAGENAME eq git.exe\")",
+      "PowerShell(Set-Location E:\\\\lattix\\\\lattix-xfrontier; Test-Path apps\\\\backend\\\\requirements.txt; Get-ChildItem apps\\\\backend | Select-Object Name -First 12; \"--- container view of /workspace ---\"; docker run --rm -v \"${PWD}:/workspace\" alpine ls /workspace/apps/backend 2>&1 | Select-Object -First 12)"
     ]
   }
 }

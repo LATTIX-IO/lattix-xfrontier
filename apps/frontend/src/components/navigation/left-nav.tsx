@@ -1,7 +1,9 @@
 "use client";
 
 import Link from "next/link";
+import { InboxChatTree } from "@/components/navigation/inbox-chat-tree";
 import { getPreferenceNavItem, getPrimaryNavGroups, type NavGroup, type NavIconName, type NavItem, type NavMode } from "@/components/navigation/nav-config";
+import { PlatformUpdatePanel } from "@/components/navigation/platform-update-panel";
 import type { PlatformVersionStatus } from "@/types/frontier";
 
 type LeftNavProps = {
@@ -155,25 +157,48 @@ export function LeftNav({ mode, pathname, inAdmin, expanded, platformVersion }: 
   const preferenceItem = getPreferenceNavItem(mode);
   const modeLabel = mode === "builder" ? "Builder Console" : "Operational Console";
   const workspaceLabel = mode === "builder" ? "Builder workspace" : "Workspace";
-  const versionLabel = platformVersion?.current_version ? `v${platformVersion.current_version}` : "Version unavailable";
-  const latestVersionLabel = platformVersion?.latest_version ? `v${platformVersion.latest_version}` : "";
-  const versionStatus = platformVersion?.status ?? "unknown";
-  const updateVersionDetails = versionStatus === "update_available" && platformVersion ? platformVersion : null;
 
   if (!expanded) {
     return null;
   }
 
+  const roleLabel = mode === "builder" ? "Builder" : "Operator";
+
   return (
     <div className="flex h-full flex-col">
       <div className="border-b border-[var(--ui-border)] px-3 pb-3 pt-3">
-        <button type="button" className="fx-workspace-switcher w-full text-left" aria-label="Workspace switcher">
-          <span className="fx-workspace-switcher-kicker">{workspaceLabel}</span>
-          <span className="mt-1 block truncate text-[0.92rem] font-semibold text-[hsl(var(--foreground))]">Lattix Corporation</span>
-          <span className="mt-1 flex items-center justify-between gap-2 text-[0.72rem] text-[var(--fx-muted)]">
-            <span className="truncate">{modeLabel}</span>
-            <span aria-hidden="true">⌄</span>
+        <button
+          type="button"
+          className="fx-workspace-switcher flex w-full items-center gap-2.5 text-left"
+          aria-label="Workspace switcher"
+          title={`${workspaceLabel} · ${modeLabel}`}
+        >
+          <span
+            className="flex h-[22px] w-[22px] shrink-0 items-center justify-center rounded-[4px] bg-[hsl(var(--foreground))] font-mono text-[10px] font-bold tracking-[0.04em] text-[hsl(var(--card))]"
+            aria-hidden="true"
+          >
+            LX
           </span>
+          <span className="flex min-w-0 flex-1 flex-col leading-tight">
+            <span className="truncate text-[12px] font-semibold text-[hsl(var(--foreground))]">
+              Lattix Corporation
+            </span>
+            <span className="truncate font-mono text-[10px] uppercase tracking-[0.08em] text-[var(--fx-muted)]">
+              {roleLabel}
+            </span>
+          </span>
+          <svg
+            width="10"
+            height="10"
+            viewBox="0 0 10 10"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.5"
+            className="shrink-0 text-[var(--fx-muted)]"
+            aria-hidden="true"
+          >
+            <path d="M2 4l3 3 3-3" />
+          </svg>
         </button>
       </div>
 
@@ -181,6 +206,11 @@ export function LeftNav({ mode, pathname, inAdmin, expanded, platformVersion }: 
         {navGroups.map((group) => (
           <NavSection key={group.title} group={group} pathname={pathname} />
         ))}
+        {mode !== "builder" ? (
+          <div className="mt-1 border-t border-[var(--ui-border)] pt-3">
+            <InboxChatTree />
+          </div>
+        ) : null}
       </div>
 
       <div className="border-t border-[var(--ui-border)] px-2 py-3">
@@ -199,49 +229,7 @@ export function LeftNav({ mode, pathname, inAdmin, expanded, platformVersion }: 
           </nav>
         </section>
 
-        <div className="mt-3 border-t border-[var(--ui-border)] px-2 pt-3">
-          <div className="flex items-center justify-between gap-3 text-[0.68rem] uppercase tracking-[0.12em] text-[var(--fx-muted)]">
-            <span>Platform version</span>
-            <span className="rounded-full border border-[var(--ui-border)] bg-[hsl(var(--card))] px-2 py-1 text-[0.72rem] font-semibold normal-case text-[hsl(var(--foreground))]">
-              {versionLabel}
-            </span>
-          </div>
-
-          {updateVersionDetails ? (
-            <div className="mt-3 rounded-2xl border border-[color-mix(in_srgb,var(--fx-primary-strong)_28%,var(--ui-border))] bg-[color-mix(in_srgb,var(--fx-primary)_12%,var(--fx-sidebar))] p-3 shadow-[0_10px_24px_rgba(0,0,0,0.16)]">
-              <p className="text-[0.68rem] font-semibold uppercase tracking-[0.12em] text-[var(--fx-primary-strong)]">Update available</p>
-              <p className="mt-1 text-[0.9rem] font-semibold text-[hsl(var(--foreground))]">
-                {versionLabel} → {latestVersionLabel}
-              </p>
-              <p className="mt-2 text-[0.74rem] leading-5 text-[var(--fx-muted)]">
-                Refresh the local app in place. Workflows, agents, settings, and installer state stay intact.
-              </p>
-              <details className="mt-3 rounded-xl border border-[var(--ui-border)] bg-[hsl(var(--card))] p-2 text-[0.74rem] text-[var(--foreground)]">
-                <summary className="cursor-pointer list-none font-medium text-[var(--foreground)] marker:hidden">
-                  How to update
-                </summary>
-                <p className="mt-2 leading-5 text-[var(--fx-muted)]">Open a terminal on this machine and run the updater command below.</p>
-                <div className="mt-2 rounded-lg border border-[var(--ui-border)] bg-[var(--fx-sidebar)] px-2 py-2 font-mono text-[0.72rem] text-[hsl(var(--foreground))]">
-                  {updateVersionDetails.update_command}
-                </div>
-                {updateVersionDetails.release_notes_url ? (
-                  <a
-                    href={updateVersionDetails.release_notes_url}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="mt-2 inline-flex text-[0.72rem] font-medium text-[var(--fx-primary-strong)] no-underline hover:underline"
-                  >
-                    View release source ↗
-                  </a>
-                ) : null}
-              </details>
-            </div>
-          ) : versionStatus === "up_to_date" ? (
-            <p className="mt-3 text-[0.74rem] leading-5 text-[var(--fx-muted)]">Current build is up to date.</p>
-          ) : (
-            <p className="mt-3 text-[0.74rem] leading-5 text-[var(--fx-muted)]">Update status is unavailable right now.</p>
-          )}
-        </div>
+        <PlatformUpdatePanel platformVersion={platformVersion} />
       </div>
     </div>
   );
