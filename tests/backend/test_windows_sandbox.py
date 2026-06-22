@@ -68,6 +68,63 @@ def test_build_wsb_config():
     )
 
 
+# --- fail-closed tier selection (pure; cross-platform) -----------------------
+def test_select_tier_defaults_to_appcontainer_with_fallback():
+    tier, allow_fallback = ws.select_confinement_tier(forced=None, require_appcontainer=False)
+    assert tier == "appcontainer"
+    assert allow_fallback is True
+
+
+def test_select_tier_require_appcontainer_disables_fallback():
+    # The strong tier is demanded → no silent drop to the resource-only Job tier.
+    tier, allow_fallback = ws.select_confinement_tier(forced=None, require_appcontainer=True)
+    assert tier == "appcontainer"
+    assert allow_fallback is False
+
+
+def test_select_tier_explicit_job_ignores_require():
+    # Operator deliberately chose the baseline tier; require flag does not apply.
+    tier, allow_fallback = ws.select_confinement_tier(forced="job", require_appcontainer=True)
+    assert tier == "job"
+    assert allow_fallback is True
+
+
+def test_select_tier_unknown_value_defaults_to_appcontainer():
+    tier, _ = ws.select_confinement_tier(forced="bogus", require_appcontainer=False)
+    assert tier == "appcontainer"
+
+
+def test_run_confined_fails_closed_when_appcontainer_required(monkeypatch):
+    # Hostile-code posture: if AppContainer can't be established and it's required,
+    # run_confined must raise — never silently degrade to the Job-Object tier.
+    monkeypatch.setattr(ws, "_is_windows", lambda: True)
+    monkeypatch.setenv("FRONTIER_WIN_SANDBOX_REQUIRE_APPCONTAINER", "1")
+    monkeypatch.delenv("FRONTIER_WIN_SANDBOX_TIER", raising=False)
+
+    def _boom(*_a, **_k):
+        raise OSError("appcontainer unavailable")
+
+    monkeypatch.setattr(ws, "_run_in_appcontainer", _boom)
+    with pytest.raises(RuntimeError, match="required"):
+        ws.run_confined(["cmd", "/c", "echo hi"])
+
+
+def test_run_confined_falls_back_when_not_required(monkeypatch):
+    # Default posture (flag unset): AppContainer failure degrades to the Job tier.
+    monkeypatch.setattr(ws, "_is_windows", lambda: True)
+    monkeypatch.delenv("FRONTIER_WIN_SANDBOX_REQUIRE_APPCONTAINER", raising=False)
+    monkeypatch.delenv("FRONTIER_WIN_SANDBOX_TIER", raising=False)
+
+    def _boom(*_a, **_k):
+        raise OSError("appcontainer unavailable")
+
+    monkeypatch.setattr(ws, "_run_in_appcontainer", _boom)
+    monkeypatch.setattr(ws, "_run_with_job_object", lambda *_a, **_k: 0)
+    result = ws.run_confined(["cmd", "/c", "echo hi"])
+    assert result.tier == "job-object"
+    assert result.exit_code == 0
+
+
 def test_parse_args_strips_double_dash():
     parsed = ws._parse_args(["run", "--memory", "256m", "--pids", "8", "--", "echo", "hi"])
     assert parsed.memory == "256m" and parsed.pids == 8
