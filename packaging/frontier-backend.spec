@@ -51,6 +51,14 @@ for pkg in _DYNAMIC_PKGS:
         # Optional/absent package — keep going; build warnings will flag gaps.
         hiddenimports += collect_submodules(pkg) if pkg in {"app", "frontier_runtime"} else []
 
+# Ship the seed agents + workflows so they auto-seed (published, with inlined
+# prompts and full graphs) on first launch — no manual import needed. The backend
+# resolves these under _MEIPASS via _repository_root() when frozen.
+for _sub in ("agents", "workflows"):
+    _src = _ROOT / "examples" / _sub
+    if _src.is_dir():
+        datas.append((str(_src), f"examples/{_sub}"))
+
 block_cipher = None
 
 a = Analysis(

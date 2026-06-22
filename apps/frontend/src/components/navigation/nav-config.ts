@@ -41,9 +41,9 @@ const builderNavGroups: NavGroup[] = [
   {
     title: "Build",
     items: [
+      { href: "/builder/templates", label: "Templates", icon: "templates" },
       { href: "/builder/agents", label: "Agent Studio", icon: "agent" },
       { href: "/builder/workflows", label: "Workflow Studio", icon: "studio" },
-      { href: "/builder/templates", label: "Templates", icon: "templates" },
       { href: "/builder/playbooks", label: "Playbooks", icon: "playbooks" },
     ],
   },

@@ -4,6 +4,7 @@ import json
 import math
 import os
 import re
+import sys
 import asyncio
 import hashlib
 import secrets as secrets_module
@@ -99,6 +100,8 @@ class WorkflowRunSummary(BaseModel):
     progressLabel: str
     # The surface that started the run, used for inbox/console categorization.
     kind: Literal["individual", "agent", "workflow", "playbook"] = "individual"
+    # Archived runs are hidden from the default run list / inbox nav.
+    archived: bool = False
 
 
 class WorkflowRunEvent(BaseModel):
@@ -4749,6 +4752,18 @@ def _configured_agent_assets_root(repo_root: Path) -> Path | None:
 
 
 def _repository_root() -> Path:
+    # Frozen desktop build (PyInstaller): bundled data — including examples/agents
+    # and examples/workflows — is unpacked under _MEIPASS (onefile) or sits next
+    # to the executable (onedir). Resolve there so the seed loaders find them.
+    if getattr(sys, "frozen", False):
+        meipass = getattr(sys, "_MEIPASS", None)
+        if meipass and (Path(meipass) / "examples").is_dir():
+            return Path(meipass)
+        exe_dir = Path(sys.executable).resolve().parent
+        if (exe_dir / "examples").is_dir():
+            return exe_dir
+        if meipass:
+            return Path(meipass)
     current = Path(__file__).resolve()
     for parent in current.parents:
         if (parent / "pyproject.toml").exists() or (parent / "docker-compose.yml").exists():
@@ -5455,7 +5470,8 @@ def _validate_graph(payload: GraphPayload) -> GraphValidationResult:
                 )
 
         if normalized_type.startswith("frontier/agent"):
-            if not str(node.config.get("agent_id") or "").strip():
+            has_agent_id = bool(str(node.config.get("agent_id") or "").strip())
+            if not has_agent_id:
                 issues.append(
                     GraphValidationIssue(
                         code="AGENT_ID_REQUIRED",
@@ -5463,11 +5479,16 @@ def _validate_graph(payload: GraphPayload) -> GraphValidationResult:
                         path=f"{node_path}.config.agent_id",
                     )
                 )
-            if not str(node.config.get("model") or "").strip():
+            # When the node is bound to an agent (agent_id), its model and system
+            # prompt are resolved from that agent definition at runtime, so they
+            # need NOT be set inline on the node. Only an UNBOUND agent node must
+            # carry its own model/prompt. (Previously these were always required,
+            # which made every agent-referencing workflow fail to publish.)
+            if not has_agent_id and not str(node.config.get("model") or "").strip():
                 issues.append(
                     GraphValidationIssue(
                         code="AGENT_MODEL_REQUIRED",
-                        message="Agent nodes require config.model.",
+                        message="Agent nodes without an agent_id require config.model.",
                         path=f"{node_path}.config.model",
                     )
                 )
@@ -5484,11 +5505,11 @@ def _validate_graph(payload: GraphPayload) -> GraphValidationResult:
 
             has_prompt_input = len(_incoming_to_port(node_id, "prompt")) > 0
             has_inline_prompt = bool(str(node.config.get("system_prompt") or "").strip())
-            if not has_prompt_input and not has_inline_prompt:
+            if not has_agent_id and not has_prompt_input and not has_inline_prompt:
                 issues.append(
                     GraphValidationIssue(
                         code="AGENT_PROMPT_REQUIRED",
-                        message="Agent nodes require either a prompt connection to port 'prompt' or config.system_prompt.",
+                        message="Agent nodes without an agent_id require a prompt connection to port 'prompt' or config.system_prompt.",
                         path=f"{node_path}.inputs.prompt",
                     )
                 )
@@ -5626,6 +5647,10 @@ def _validate_graph(payload: GraphPayload) -> GraphValidationResult:
                 or len(_incoming_to_port(node_id, "approved")) > 0
                 or len(_incoming_to_port(node_id, "approved_output")) > 0
                 or len(_incoming_to_port(node_id, "payload")) > 0
+                # A flow connection into 'in' also carries the upstream result —
+                # multi-agent workflows wire gate/approve -> output via 'in', and
+                # the runtime treats that incoming as the payload.
+                or len(_incoming_to_port(node_id, "in")) > 0
             )
             if not has_result_input:
                 issues.append(
@@ -5664,7 +5689,11 @@ def _validate_graph(payload: GraphPayload) -> GraphValidationResult:
 
     if not issues:
         order = _topological_order(node_ids, payload.links)
-        if order is None:
+        # A cycle is only invalid for the native sequential executor. Multi-agent
+        # graphs are intentionally cyclic (consensus/gate fix loops) and route to
+        # the LangGraph compiler, which bounds those loops via loop_counts — so a
+        # cycle is valid exactly when the graph qualifies for the compiler.
+        if order is None and not _should_use_compiler(payload):
             issues.append(
                 GraphValidationIssue(
                     code="GRAPH_CYCLE",
@@ -11595,11 +11624,35 @@ def _sync_repo_workflows_into_store(*, update_existing: bool = False) -> None:
         if existing is None:
             store.workflow_definitions[wf_id] = seeded_wf
             continue
+        graph_changed = existing.graph_json != seeded_wf.graph_json
+        had_pointer = bool(str(getattr(existing, "published_revision_id", "") or "").strip())
         existing.name = seeded_wf.name
         existing.description = seeded_wf.description
         existing.status = "published"
         existing.graph_json = seeded_wf.graph_json
         existing.version = max(existing.version, seeded_wf.version)
+        # The runtime resolves the PUBLISHED revision snapshot via the pointer, not
+        # the current graph_json. If the graph changed (or a stale empty snapshot is
+        # still pointed at), record a fresh published revision and repoint to it —
+        # otherwise a workflow published earlier while empty keeps running as a
+        # single agent even after its graph is restored from the seed.
+        if graph_changed or not had_pointer:
+            try:
+                revision = _record_definition_revision(
+                    entity_type="workflow_definition",
+                    entity_id=wf_id,
+                    actor="system/seed-sync",
+                    action="seed-sync",
+                    snapshot=existing,
+                    metadata={"seeded": True, "published_pointer": True},
+                )
+                existing.published_revision_id = revision.id
+                existing.published_at = revision.created_at
+                existing.active_revision_id = revision.id
+                existing.active_at = revision.created_at
+                revision.snapshot = existing.model_dump()
+            except Exception:  # noqa: BLE001 — re-snapshot is best-effort
+                pass
         store.workflow_definitions[wf_id] = existing
 
 
@@ -14833,8 +14886,12 @@ def _agent_decides_to_respond(
         model=_resolve_agent_chat_model(agent_def),
         temperature=0.0,
     )
-    respond = str(meta.get("mode")) == "live"
-    reason = "Defaulted (gate output unparsable)."
+    # Fail OPEN: if the gate can't get a clean decision (the local model didn't
+    # run "live", timed out, or returned non-JSON), the agent should still
+    # participate — a missing teammate is worse than an extra contribution. Only
+    # an explicit {"respond": false} from the model declines.
+    respond = True
+    reason = "Participating (gate decision defaulted)."
     try:
         match = re.search(r"\{.*\}", text, re.DOTALL)
         if match:
@@ -15837,11 +15894,16 @@ def create_workflow_run(
 
 
 @app.get("/workflow-runs")
-def get_workflow_runs(request: Request, status: str | None = None) -> list[dict[str, Any]]:
+def get_workflow_runs(
+    request: Request, status: str | None = None, include_archived: bool = False
+) -> list[dict[str, Any]]:
     actor = _enforce_request_authn(request, action="workflow.run.list")
     items = list(store.runs.values())
     visible_run_ids = _visible_run_ids(request, actor)
     items = [item for item in items if item.id in visible_run_ids]
+    # Archived runs are hidden from the inbox/nav unless explicitly requested.
+    if not include_archived:
+        items = [item for item in items if not getattr(item, "archived", False)]
     if status:
         items = [item for item in items if item.status.lower() == status.lower()]
     return [item.model_dump() for item in items]
@@ -15983,12 +16045,13 @@ def _dispatch_graph_target_in_chat(
             "analyze_node_started",
         }:
             detail = {k: v for k, v in data.items() if k != "node_id"}
+            note = str(data.get("note") or "").strip()
             store.run_events.setdefault(run_id, []).append(
                 WorkflowRunEvent(
                     id=f"evt-{uuid4()}",
                     type="step_completed",
                     title=kind.replace("swe.", "build · ").replace("_", " ").strip().title(),
-                    summary=(str(detail)[:300] if detail else "ok"),
+                    summary=(note[:300] if note else (str(detail)[:300] if detail else "ok")),
                     createdAt=_now_iso(),
                     metadata={"phase": "workflow", "progress": True},
                 )
@@ -17902,6 +17965,7 @@ def archive_workflow_run(run_id: str, request: Request) -> dict[str, bool]:
     run.status = "Done"
     run.progressLabel = "Archived"
     run.updatedAt = "just now"
+    run.archived = True  # hides it from the default run list / inbox nav
     store.runs[run_id] = run
 
     if run_id in store.run_details and isinstance(store.run_details[run_id], dict):
@@ -19267,9 +19331,12 @@ def publish_workflow_definition(item_id: str, request: Request) -> dict[str, Any
     )
     item.published_revision_id = published_revision.id
     item.published_at = published_revision.created_at
-    if not str(item.active_revision_id or "").strip():
-        item.active_revision_id = published_revision.id
-        item.active_at = published_revision.created_at
+    # Publishing promotes the new revision to ACTIVE (the version the runtime
+    # serves). This must advance on EVERY publish — previously it only set active
+    # on the first publish, so re-publishing left runs resolving the old/empty
+    # revision. The activate/rollback endpoint can still re-pin active afterward.
+    item.active_revision_id = published_revision.id
+    item.active_at = published_revision.created_at
     published_revision.metadata["published_pointer"] = True
     published_revision.snapshot = item.model_dump()
     store.workflow_definitions[item_id] = item
@@ -19665,9 +19732,12 @@ def publish_agent_definition(item_id: str, request: Request) -> dict[str, Any]:
     )
     item.published_revision_id = published_revision.id
     item.published_at = published_revision.created_at
-    if not str(item.active_revision_id or "").strip():
-        item.active_revision_id = published_revision.id
-        item.active_at = published_revision.created_at
+    # Publishing promotes the new revision to ACTIVE (the version the runtime
+    # serves). This must advance on EVERY publish — previously it only set active
+    # on the first publish, so re-publishing left runs resolving the old/empty
+    # revision. The activate/rollback endpoint can still re-pin active afterward.
+    item.active_revision_id = published_revision.id
+    item.active_at = published_revision.created_at
     published_revision.metadata["published_pointer"] = True
     published_revision.snapshot = item.model_dump()
     store.agent_definitions[item_id] = item
@@ -20217,9 +20287,12 @@ def publish_guardrail_ruleset(item_id: str, request: Request) -> dict[str, bool]
     )
     item.published_revision_id = published_revision.id
     item.published_at = published_revision.created_at
-    if not str(item.active_revision_id or "").strip():
-        item.active_revision_id = published_revision.id
-        item.active_at = published_revision.created_at
+    # Publishing promotes the new revision to ACTIVE (the version the runtime
+    # serves). This must advance on EVERY publish — previously it only set active
+    # on the first publish, so re-publishing left runs resolving the old/empty
+    # revision. The activate/rollback endpoint can still re-pin active afterward.
+    item.active_revision_id = published_revision.id
+    item.active_at = published_revision.created_at
     published_revision.metadata["published_pointer"] = True
     published_revision.snapshot = item.model_dump()
     store.guardrail_rulesets[item_id] = item
@@ -20582,8 +20655,9 @@ def _compile_and_run_frontier_graph(
                 node_id=node_id,
                 type=etype,  # type: ignore[arg-type]
                 title=title[:120],
-                summary=(str(detail)[:300] if detail else "")
-                or "ok",
+                summary=(str(data.get("note") or "").strip()[:300]
+                         or (str(detail)[:300] if detail else "")
+                         or "ok"),
                 created_at=_now_iso(),
             )
         )

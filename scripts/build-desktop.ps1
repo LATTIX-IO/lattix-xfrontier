@@ -22,16 +22,40 @@ New-Item -ItemType Directory -Force -Path $bin | Out-Null
 
 function Need($name) { if (-not (Get-Command $name -ErrorAction SilentlyContinue)) { throw "Missing prerequisite on PATH: $name" } }
 function CheckExit($what) { if ($LASTEXITCODE -ne 0) { throw "$what failed (exit $LASTEXITCODE) — see output above." } }
-Need python; Need node; Need cargo
+Need node; Need cargo
 
-# Preflight: the project needs Python 3.12 and PyInstaller in THIS interpreter.
-$pyExe = (Get-Command python).Source
-$pyVer = (& python -c "import sys;print('%d.%d'%sys.version_info[:2])")
-if ($pyVer -ne "3.12") {
-  throw "python on PATH is $pyVer ($pyExe). This project requires Python 3.12 (3.13/3.14 lack wheels for some deps). Create a 3.12 venv and re-run, or use the CI build (Actions -> desktop-release)."
+# Preflight: the backend sidecar needs Python 3.12 (3.13/3.14 lack wheels for some
+# deps). Auto-resolve a 3.12 interpreter instead of forcing whatever `python` is on
+# PATH — prefer the project's .venv-desktop (already has PyInstaller + deps), then
+# the py -3.12 launcher target, then a 3.12 on PATH.
+function Test-Py312($exe) {
+  if (-not $exe -or -not (Test-Path $exe)) { return $false }
+  $v = (& $exe -c "import sys;print('%d.%d'%sys.version_info[:2])" 2>$null)
+  return ($v -eq "3.12")
 }
-& python -c "import PyInstaller" 2>$null
-if ($LASTEXITCODE -ne 0) { throw "PyInstaller not installed for $pyExe. Run:  python -m pip install pyinstaller -e ." }
+$Py = $null
+$venvPy = Join-Path $root ".venv-desktop/Scripts/python.exe"
+if (Test-Py312 $venvPy) { $Py = $venvPy }
+if (-not $Py -and (Get-Command py -ErrorAction SilentlyContinue)) {
+  $launcherPy = (& py -3.12 -c "import sys;print(sys.executable)" 2>$null)
+  if ($LASTEXITCODE -eq 0 -and (Test-Py312 $launcherPy)) { $Py = $launcherPy.Trim() }
+}
+if (-not $Py) {
+  $pathPy = (Get-Command python -ErrorAction SilentlyContinue).Source
+  if (Test-Py312 $pathPy) { $Py = $pathPy }
+}
+if (-not $Py) {
+  throw "No Python 3.12 found. Create one and re-run:  py -3.12 -m venv .venv-desktop ; .venv-desktop\Scripts\python -m pip install pyinstaller -e .   (or use the CI build: Actions -> desktop-release)."
+}
+Write-Host "== using Python 3.12: $Py =="
+
+# Ensure PyInstaller is present in the chosen interpreter (install into it if not).
+& $Py -c "import PyInstaller" 2>$null
+if ($LASTEXITCODE -ne 0) {
+  Write-Host "== installing PyInstaller + project deps into $Py =="
+  & $Py -m pip install --upgrade pip pyinstaller -e $root
+  CheckExit "pip install pyinstaller -e ."
+}
 
 # Resolve the Rust target triple (Tauri externalBin needs the suffix).
 $triple = (& rustc -vV | Select-String "^host:").ToString().Split(":")[1].Trim()
@@ -39,7 +63,7 @@ Write-Host "== target triple: $triple =="
 
 # 1) Backend sidecar (PyInstaller) -> bin/frontier-backend-<triple>.exe
 Write-Host "== building backend sidecar (PyInstaller) =="
-& python -m PyInstaller --noconfirm (Join-Path $root "packaging/frontier-backend.spec")
+& $Py -m PyInstaller --noconfirm (Join-Path $root "packaging/frontier-backend.spec")
 CheckExit "PyInstaller backend build"
 Copy-Item (Join-Path $root "dist/frontier-backend.exe") (Join-Path $bin "frontier-backend-$triple.exe") -Force
 
@@ -49,6 +73,9 @@ Push-Location (Join-Path $root "apps/frontend")
 & npm ci; CheckExit "npm ci"
 & npm run build; CheckExit "next build"
 $dest = Join-Path $tauri "resources/frontend"
+# Wipe the staged frontend first — Next content-hashes chunk filenames, so a plain
+# copy-over leaves STALE old chunks behind (bundle bloat / mixed assets). Clean each build.
+if (Test-Path $dest) { Remove-Item $dest -Recurse -Force }
 New-Item -ItemType Directory -Force -Path $dest | Out-Null
 Copy-Item ".next/standalone/*" $dest -Recurse -Force
 New-Item -ItemType Directory -Force -Path (Join-Path $dest ".next/static") | Out-Null

@@ -213,23 +213,18 @@ export function LeftNav({ mode, pathname, inAdmin, expanded, platformVersion }: 
         ) : null}
       </div>
 
-      <div className="border-t border-[var(--ui-border)] px-2 py-3">
-        <section className="fx-nav-section mb-0">
-          <h3 className="fx-nav-section-title">Preferences</h3>
-          <nav aria-label="Preferences">
-            <Link
-              href={preferenceItem.href}
-              className={isActive(pathname, preferenceItem) ? "fx-nav-item fx-nav-item-active" : "fx-nav-item"}
-            >
-              <span className="fx-nav-item-icon" aria-hidden="true">
-                <NavIcon name={preferenceItem.icon} active={isActive(pathname, preferenceItem)} />
-              </span>
-              <span className="truncate">{preferenceItem.label}</span>
-            </Link>
-          </nav>
-        </section>
-
+      <div className="space-y-1 border-t border-[var(--ui-border)] px-2 py-2.5">
         <PlatformUpdatePanel platformVersion={platformVersion} />
+        <Link
+          href={preferenceItem.href}
+          aria-label="Settings"
+          className={isActive(pathname, preferenceItem) ? "fx-nav-item fx-nav-item-active" : "fx-nav-item"}
+        >
+          <span className="fx-nav-item-icon" aria-hidden="true">
+            <NavIcon name={preferenceItem.icon} active={isActive(pathname, preferenceItem)} />
+          </span>
+          <span className="truncate">{preferenceItem.label}</span>
+        </Link>
       </div>
     </div>
   );

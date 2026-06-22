@@ -95,91 +95,45 @@ export function PlatformUpdatePanel({
 
   const backendUpdate =
     !isDesktop && platformVersion?.status === "update_available" ? platformVersion : null;
-  const backendStatus = platformVersion?.status ?? "unknown";
+  const desktopUpdate = isDesktop && typeof tauriUpdate === "string" ? tauriUpdate : null;
+
+  // Compact bottom-of-nav control: a single muted version line, or a one-click
+  // "Update & Restart" row when an update is available (Claude-Code style).
+  if (desktopUpdate) {
+    return (
+      <button
+        type="button"
+        onClick={() => updateNow(desktopUpdate)}
+        disabled={busy}
+        title={`Update to v${desktopUpdate} — the app restarts and applies it silently`}
+        className="flex w-full items-center gap-2 rounded-lg border border-[color-mix(in_srgb,var(--fx-primary-strong)_45%,var(--ui-border))] bg-[color-mix(in_srgb,var(--fx-primary)_14%,var(--fx-sidebar))] px-2.5 py-2 text-left transition-colors hover:bg-[color-mix(in_srgb,var(--fx-primary)_22%,var(--fx-sidebar))] disabled:opacity-60"
+      >
+        <svg viewBox="0 0 24 24" className="h-4 w-4 shrink-0 text-[var(--fx-primary-strong)]" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true">
+          <path d="M12 4v10M8 10l4 4 4-4M5 19h14" />
+        </svg>
+        <span className="min-w-0 flex-1 leading-tight">
+          <span className="block text-[11px] font-semibold text-[var(--foreground)]">
+            {busy ? "Updating…" : "Update & Restart"}
+          </span>
+          <span className="block truncate text-[10px] text-[var(--fx-muted)]">
+            {currentLabel} → v{desktopUpdate}
+          </span>
+        </span>
+      </button>
+    );
+  }
 
   return (
-    <div className="mt-3 border-t border-[var(--ui-border)] px-2 pt-3">
-      <div className="flex items-center justify-between gap-3 text-[0.68rem] uppercase tracking-[0.12em] text-[var(--fx-muted)]">
-        <span>Platform version</span>
-        <span className="rounded-full border border-[var(--ui-border)] bg-[hsl(var(--card))] px-2 py-1 text-[0.72rem] font-semibold normal-case text-[hsl(var(--foreground))]">
-          {currentLabel}
-        </span>
-      </div>
-
-      {isDesktop ? (
-        typeof tauriUpdate === "string" ? (
-          <div className="mt-3 rounded-2xl border border-[color-mix(in_srgb,var(--fx-primary-strong)_28%,var(--ui-border))] bg-[color-mix(in_srgb,var(--fx-primary)_12%,var(--fx-sidebar))] p-3 shadow-[0_10px_24px_rgba(0,0,0,0.16)]">
-            <p className="text-[0.68rem] font-semibold uppercase tracking-[0.12em] text-[var(--fx-primary-strong)]">
-              Update available
-            </p>
-            <p className="mt-1 text-[0.9rem] font-semibold text-[hsl(var(--foreground))]">
-              {currentLabel} → v{tauriUpdate}
-            </p>
-            <p className="mt-2 text-[0.74rem] leading-5 text-[var(--fx-muted)]">
-              One click — the app verifies, restarts, and applies the update silently. Workflows,
-              agents, settings, and installer state stay intact.
-            </p>
-            <button
-              type="button"
-              onClick={() => updateNow(tauriUpdate)}
-              disabled={busy}
-              className="mt-3 inline-flex w-full items-center justify-center rounded-xl bg-[var(--fx-primary-strong)] px-3 py-2 text-[0.78rem] font-semibold text-[hsl(var(--card))] transition-opacity hover:opacity-90 disabled:cursor-default disabled:opacity-60"
-            >
-              {busy ? "Updating…" : "Update & Restart"}
-            </button>
-          </div>
-        ) : tauriUpdate === null ? (
-          <p className="mt-3 text-[0.74rem] leading-5 text-[var(--fx-muted)]">
-            Current build is up to date.
-          </p>
-        ) : (
-          <p className="mt-3 text-[0.74rem] leading-5 text-[var(--fx-muted)]">
-            Checking for updates…
-          </p>
-        )
-      ) : backendUpdate ? (
-        <div className="mt-3 rounded-2xl border border-[color-mix(in_srgb,var(--fx-primary-strong)_28%,var(--ui-border))] bg-[color-mix(in_srgb,var(--fx-primary)_12%,var(--fx-sidebar))] p-3 shadow-[0_10px_24px_rgba(0,0,0,0.16)]">
-          <p className="text-[0.68rem] font-semibold uppercase tracking-[0.12em] text-[var(--fx-primary-strong)]">
-            Update available
-          </p>
-          <p className="mt-1 text-[0.9rem] font-semibold text-[hsl(var(--foreground))]">
-            {currentLabel} → v{backendUpdate.latest_version}
-          </p>
-          <p className="mt-2 text-[0.74rem] leading-5 text-[var(--fx-muted)]">
-            Refresh the local app in place. Workflows, agents, settings, and installer state stay
-            intact.
-          </p>
-          <details className="mt-3 rounded-xl border border-[var(--ui-border)] bg-[hsl(var(--card))] p-2 text-[0.74rem] text-[var(--foreground)]">
-            <summary className="cursor-pointer list-none font-medium text-[var(--foreground)] marker:hidden">
-              How to update
-            </summary>
-            <p className="mt-2 leading-5 text-[var(--fx-muted)]">
-              Open a terminal on this machine and run the updater command below.
-            </p>
-            <div className="mt-2 rounded-lg border border-[var(--ui-border)] bg-[var(--fx-sidebar)] px-2 py-2 font-mono text-[0.72rem] text-[hsl(var(--foreground))]">
-              {backendUpdate.update_command}
-            </div>
-            {backendUpdate.release_notes_url ? (
-              <a
-                href={backendUpdate.release_notes_url}
-                target="_blank"
-                rel="noreferrer"
-                className="mt-2 inline-flex text-[0.72rem] font-medium text-[var(--fx-primary-strong)] no-underline hover:underline"
-              >
-                View release source ↗
-              </a>
-            ) : null}
-          </details>
-        </div>
-      ) : backendStatus === "up_to_date" ? (
-        <p className="mt-3 text-[0.74rem] leading-5 text-[var(--fx-muted)]">
-          Current build is up to date.
-        </p>
-      ) : (
-        <p className="mt-3 text-[0.74rem] leading-5 text-[var(--fx-muted)]">
-          Update status is unavailable right now.
-        </p>
-      )}
+    <div className="flex items-center justify-between gap-2 px-1.5 py-1">
+      <span className="truncate text-[11px] text-[var(--fx-muted)]">
+        {backendUpdate ? `Update v${backendUpdate.latest_version} available` : "Lattix xFrontier"}
+      </span>
+      <span
+        className="shrink-0 rounded-full border border-[var(--ui-border)] bg-[hsl(var(--card))] px-1.5 py-0.5 font-mono text-[10px] font-semibold text-[var(--foreground)]"
+        title={backendUpdate ? `Run: ${backendUpdate.update_command}` : "Current build"}
+      >
+        {currentLabel}
+      </span>
     </div>
   );
 }

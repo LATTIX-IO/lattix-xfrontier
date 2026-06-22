@@ -1656,16 +1656,10 @@ export async function getObservabilityRunTrace(runId: string): Promise<Observabi
 }
 
 export async function getObservabilityDashboard(): Promise<ObservabilityDashboardResponse> {
-  return safeFetch<ObservabilityDashboardResponse>("/observability/dashboard", {
-    summary: {
-      total_runs: 0,
-      failed_or_blocked_runs: 0,
-      token_estimate: 0,
-      cost_estimate_usd: 0,
-      average_latency_ms: 0,
-    },
-    runs: [],
-  });
+  // Strict (throws on failure) so the page surfaces a real outage as an error
+  // instead of silently rendering all-zeros. A genuinely empty platform still
+  // returns 200 with total_runs: 0, which the page shows legitimately.
+  return strictFetch<ObservabilityDashboardResponse>("/observability/dashboard");
 }
 
 export async function getAuditEvents(limit = 200): Promise<{ count: number; events: AuditEvent[] }> {

@@ -59,6 +59,14 @@ function tokenClass(kind: TokenKind): string {
   return "border border-[var(--fx-success)] bg-[color-mix(in_srgb,var(--fx-success)_20%,transparent)] text-[var(--foreground)]";
 }
 
+function tokenAccent(kind: TokenKind): string {
+  if (kind === "tag") return "text-[var(--fx-warning)]";
+  if (kind === "workflow") return "text-[var(--fx-primary)]";
+  if (kind === "playbook") return "text-[var(--fx-warning)]";
+  if (kind === "agent") return "text-[var(--fx-success)]";
+  return "text-[var(--foreground)]";
+}
+
 function slugify(value: string): string {
   return value
     .trim()
@@ -327,11 +335,6 @@ export function TaskKickoffComposer({
 
   return (
     <div className="fx-panel p-4">
-      <h2 className="mb-2 text-sm font-semibold uppercase tracking-wide">Kick off new task</h2>
-      <p className="fx-muted mb-3 text-sm">
-        Use delimiters to structure intent: data, tags, workflow routing, and agent assignment.
-      </p>
-
       <form onSubmit={onSubmit} className="space-y-3">
         <textarea
           ref={textareaRef}
@@ -384,51 +387,20 @@ export function TaskKickoffComposer({
           </div>
         ) : null}
 
-        <div className="flex flex-wrap gap-2 text-xs">
-          {tokens.length === 0 ? (
-            <span className="fx-muted">No delimiters detected yet.</span>
-          ) : (
-            tokens.map((token, index) => (
-              <span key={`${token.kind}-${token.value}-${index}`} className={`px-2 py-1 ${tokenClass(token.kind)}`}>
+        {tokens.length > 0 ? (
+          <div className="flex flex-wrap gap-1.5 text-[11px]">
+            {tokens.map((token, index) => (
+              <span
+                key={`${token.kind}-${token.value}-${index}`}
+                className={`rounded px-1.5 py-0.5 ${tokenClass(token.kind)}`}
+              >
                 {token.kind}:{token.value}
               </span>
-            ))
-          )}
-        </div>
-
-        <div>
-          <p className="mb-1.5 text-[10px] font-semibold uppercase tracking-wide text-[var(--fx-muted)]">
-            Delimiter reference — click to insert
-          </p>
-          <div className="grid gap-2 [grid-template-columns:repeat(auto-fit,minmax(148px,1fr))]">
-            {delimiterLegend.map((item) => (
-              <button
-                key={item.symbol}
-                type="button"
-                onClick={() => insertDelimiter(item.symbol)}
-                aria-label={`Insert ${item.symbol} — ${item.meaning}`}
-                className="group flex min-w-0 items-start gap-2 rounded-lg border border-[var(--fx-border)] bg-[var(--fx-surface-elevated)] p-2 text-left transition-colors hover:border-[var(--fx-primary)] hover:bg-[var(--fx-nav-hover)]"
-              >
-                <span
-                  className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-md font-mono text-sm font-bold ${tokenClass(item.kind)}`}
-                  aria-hidden="true"
-                >
-                  {item.symbol}
-                </span>
-                <span className="min-w-0 flex-1">
-                  <span className="block text-xs font-semibold leading-tight text-[var(--foreground)]">
-                    {item.meaning}
-                  </span>
-                  <span className="mt-0.5 block break-words font-mono text-[11px] leading-tight text-[var(--fx-muted)]">
-                    {item.example}
-                  </span>
-                </span>
-              </button>
             ))}
           </div>
-        </div>
+        ) : null}
 
-        <div className="flex items-center gap-3">
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
           <button type="submit" disabled={isSubmitting} className="fx-btn-primary px-3 py-2 text-sm font-medium disabled:opacity-60">
             {isSubmitting ? "Starting..." : "Start task"}
           </button>
@@ -437,6 +409,27 @@ export function TaskKickoffComposer({
               Open run
             </Link>
           ) : null}
+
+          {/* Compact, click-to-insert delimiter reference — full meaning + example in the tooltip. */}
+          <span className="mx-0.5 hidden h-5 w-px bg-[var(--ui-border)] sm:block" aria-hidden="true" />
+          <div className="flex flex-wrap items-center gap-1">
+            <span className="fx-muted mr-0.5 text-[11px]">Insert</span>
+            {delimiterLegend.map((item) => (
+              <button
+                key={item.symbol}
+                type="button"
+                onClick={() => insertDelimiter(item.symbol)}
+                title={`${item.meaning} — e.g. ${item.example}`}
+                aria-label={`Insert ${item.symbol} (${item.meaning})`}
+                className="inline-flex items-center gap-1 rounded-full border border-[var(--fx-border)] px-2 py-0.5 text-[11px] text-[var(--fx-muted)] transition-colors hover:border-[var(--fx-primary)] hover:bg-[var(--fx-nav-hover)] hover:text-[var(--foreground)]"
+              >
+                <span className={`font-mono font-bold ${tokenAccent(item.kind)}`} aria-hidden="true">
+                  {item.symbol}
+                </span>
+                {item.kind}
+              </button>
+            ))}
+          </div>
         </div>
 
         {submitError ? <p className="text-xs text-[var(--fx-danger)]">{submitError}</p> : null}

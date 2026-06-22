@@ -87,34 +87,49 @@ export default function PlaybooksPage() {
         </div>
       )}
 
-      <div className="grid gap-4">
-        <article className="fx-panel p-4">
-          <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide fx-muted">Available Playbooks</h2>
-          <ul className="space-y-2 text-sm">
+      <div className="fx-panel overflow-hidden">
+        <table className="w-full text-sm">
+          <thead className="fx-table-head">
+            <tr>
+              <th className="px-3 py-2 text-left">Playbook</th>
+              <th className="px-3 py-2 text-left">Category</th>
+              <th className="px-3 py-2 text-left">Status</th>
+              <th className="px-3 py-2 text-left">Description</th>
+              <th className="px-3 py-2 text-right">Action</th>
+            </tr>
+          </thead>
+          <tbody>
             {playbooks.map((playbook) => (
-              <li key={playbook.id} className="border border-[var(--fx-border)] bg-[var(--fx-surface-elevated)] p-3">
-                <div className="flex items-start justify-between gap-3">
-                  <div>
-                    <div className="font-semibold text-[var(--foreground)]">{playbook.name}</div>
-                    <div className="fx-muted">{playbook.description}</div>
-                    <div className="mt-1 text-xs fx-muted">category={playbook.category} · status={playbook.status}</div>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <ImportExportControls kind="playbooks" id={playbook.id} compact />
+              <tr key={playbook.id} className="border-t border-[var(--fx-border)]">
+                <td className="px-3 py-2 align-top font-medium text-[var(--foreground)]">{playbook.name}</td>
+                <td className="px-3 py-2 align-top text-[var(--foreground)]">{playbook.category}</td>
+                <td className="px-3 py-2 align-top text-[var(--foreground)]">{playbook.status}</td>
+                <td className="fx-muted px-3 py-2 align-top">
+                  <p className="max-w-[34rem] leading-snug line-clamp-3" title={playbook.description}>
+                    {playbook.description}
+                  </p>
+                </td>
+                <td className="px-3 py-2 align-top text-right whitespace-nowrap">
+                  <div className="flex flex-nowrap items-center justify-end gap-2">
+                    <ImportExportControls kind="playbooks" id={playbook.id} compact onImported={() => void reloadPlaybooks()} />
                     <button
-                      className="fx-btn-secondary px-2 py-1 text-xs"
+                      className="fx-btn-secondary px-2.5 py-1 text-xs font-medium"
                       disabled={busyKey === `playbook:${playbook.id}` || playbook.status !== "active"}
                       onClick={() => void handleCreateFromPlaybook(playbook)}
                     >
-                      {busyKey === `playbook:${playbook.id}` ? "Creating..." : "Launch Playbook"}
+                      {busyKey === `playbook:${playbook.id}` ? "Creating…" : "Launch Playbook"}
                     </button>
                   </div>
-                </div>
-              </li>
+                </td>
+              </tr>
             ))}
-            {playbooks.length === 0 && <li className="fx-muted">No playbooks available.</li>}
-          </ul>
-        </article>
+            {playbooks.length === 0 ? (
+              <tr className="border-t border-[var(--fx-border)]">
+                <td className="fx-muted px-3 py-3" colSpan={5}>No playbooks available.</td>
+              </tr>
+            ) : null}
+          </tbody>
+        </table>
       </div>
     </section>
   );
