@@ -685,7 +685,15 @@ def _delegate_to_collaborative_team(node: Any, r: AgentResolution, user_prompt: 
 def _plan_only_fallback(node: Any, r: AgentResolution, user_prompt: str, deps: CompilerDeps, *, reason: str) -> dict[str, Any]:
     """When real code execution can't run (no bound repo / harness error), have
     the agent produce an implementation plan instead of editing files."""
-    deps._emit("code_node_degraded", node_id=node.id, reason=reason)
+    note = (
+        "No repository was bound to this run, so the implementer produced a plan instead of "
+        "editing files. Pick a target folder with the composer's folder selector (next to the "
+        "model), then re-run so code nodes write real code. (A path typed in the prompt is not a "
+        "binding.)"
+        if reason == "no_workspace_bound"
+        else f"Code execution degraded ({reason}); produced an implementation plan instead."
+    )
+    deps._emit("code_node_degraded", node_id=node.id, reason=reason, note=note)
     prompt = (
         user_prompt
         + "\n\nNote: no writable workspace is bound for this run, so produce a concrete "

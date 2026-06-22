@@ -38,12 +38,16 @@ export default async function BuilderWorkflowsPage() {
           <tbody>
             {workflows.map((workflow) => (
               <tr key={workflow.id} className="border-t border-[var(--fx-border)]">
-                <td className="px-3 py-2 text-[var(--foreground)]">{workflow.name}</td>
-                <td className="px-3 py-2 text-[var(--foreground)]">{workflow.status}</td>
-                <td className="px-3 py-2 text-[var(--foreground)]">v{workflow.version}</td>
-                <td className="fx-muted px-3 py-2">{workflow.description}</td>
-                <td className="px-3 py-2 text-right">
-                  <div className="flex justify-end gap-2">
+                <td className="px-3 py-2 align-top font-medium text-[var(--foreground)]">{workflow.name}</td>
+                <td className="px-3 py-2 align-top text-[var(--foreground)]">{workflow.status}</td>
+                <td className="px-3 py-2 align-top text-[var(--foreground)]">v{workflow.version}</td>
+                <td className="fx-muted px-3 py-2 align-top">
+                  <p className="max-w-[34rem] leading-snug line-clamp-3" title={workflow.description}>
+                    {workflow.description}
+                  </p>
+                </td>
+                <td className="px-3 py-2 align-top text-right whitespace-nowrap">
+                  <div className="flex flex-nowrap items-center justify-end gap-2">
                     <ImportExportControls kind="workflow-definitions" id={workflow.id} compact />
                     <Link className="fx-btn-primary px-2.5 py-1 text-xs font-medium" href={`/builder/workflows/${workflow.id}`}>
                       Open

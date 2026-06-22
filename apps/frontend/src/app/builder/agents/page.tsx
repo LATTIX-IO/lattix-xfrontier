@@ -41,8 +41,8 @@ export default async function BuilderAgentsPage() {
                 <td className="px-3 py-2 text-[var(--foreground)]">{agent.type}</td>
                 <td className="px-3 py-2 text-[var(--foreground)]">{agent.status}</td>
                 <td className="px-3 py-2 text-[var(--foreground)]">v{agent.version}</td>
-                <td className="px-3 py-2 text-right">
-                  <div className="flex justify-end gap-2">
+                <td className="px-3 py-2 text-right whitespace-nowrap">
+                  <div className="flex flex-nowrap items-center justify-end gap-2">
                     <ImportExportControls kind="agent-definitions" id={agent.id} compact />
                     <Link className="fx-btn-primary px-2.5 py-1 text-xs font-medium" href={`/builder/agents/${agent.id}`}>
                       Open

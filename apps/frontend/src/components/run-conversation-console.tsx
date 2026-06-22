@@ -135,6 +135,20 @@ function MarkdownBlock({ content, className = "" }: { content: string; className
           blockquote: ({ children }) => (
             <blockquote className="mb-2 border-l-2 border-[var(--ui-border)] pl-2 text-xs text-[hsl(var(--muted-foreground))]">{children}</blockquote>
           ),
+          // Wide tables scroll horizontally INSIDE the message (the wrapper is the
+          // only thing that scrolls) instead of overflowing the bubble / the page.
+          table: ({ children }) => (
+            <div className="mb-2 max-w-full overflow-x-auto rounded-md border border-[var(--ui-border)]">
+              <table className="w-max min-w-full border-collapse text-[11px]">{children}</table>
+            </div>
+          ),
+          thead: ({ children }) => <thead className="bg-[hsl(var(--muted)/0.5)]">{children}</thead>,
+          th: ({ children }) => (
+            <th className="border border-[var(--ui-border)] px-2 py-1 text-left align-top font-semibold text-[var(--foreground)]">{children}</th>
+          ),
+          td: ({ children }) => (
+            <td className="border border-[var(--ui-border)] px-2 py-1 align-top text-[var(--foreground)]">{children}</td>
+          ),
         }}
       >
         {content}
@@ -647,7 +661,7 @@ export function RunConversationConsole({ runId, run: initialRun, events: initial
     ] ?? "Run";
 
   return (
-    <div className="-m-6 flex h-[calc(100vh-57px)] flex-col">
+    <div className="-m-6 flex h-[calc(100vh-var(--fx-content-top,57px))] flex-col">
       {/* Slim top toolbar — the chat owns the rest of the page */}
       <header className="flex flex-wrap items-center justify-between gap-2 border-b border-[var(--ui-border)] bg-[hsl(var(--background)/0.9)] px-4 py-2 backdrop-blur">
         <div className="flex min-w-0 items-center gap-2">
@@ -727,7 +741,7 @@ export function RunConversationConsole({ runId, run: initialRun, events: initial
 
       <div className="flex min-h-0 flex-1 overflow-hidden">
       <section className="flex min-h-0 flex-1 flex-col overflow-hidden bg-[hsl(var(--muted)/0.18)]">
-            <div ref={timelineRef} className="min-h-0 flex-1 space-y-4 overflow-auto px-3 pb-2 pt-4">
+            <div ref={timelineRef} className="min-h-0 flex-1 space-y-4 overflow-y-auto overflow-x-hidden px-3 pb-2 pt-4">
               {filteredEvents.length === 0 ? (
                 <div className="mx-auto w-full max-w-[880px] rounded-xl border border-dashed border-[var(--ui-border)] bg-[hsl(var(--card)/0.8)] px-3 py-4 text-xs">
                   <p className="font-medium text-[var(--foreground)]">No events match your current filters.</p>
@@ -872,7 +886,7 @@ export function RunConversationConsole({ runId, run: initialRun, events: initial
 
                   return (
                     <article key={event.id} className={`group mx-auto flex w-full max-w-[880px] ${containerClass} ${isReply ? "pl-10" : ""}`}>
-                      <div className={`w-full max-w-[760px] rounded-2xl border px-3 py-2.5 shadow-sm ${bubbleClass}`} style={bubbleStyle}>
+                      <div className={`w-full min-w-0 overflow-hidden rounded-2xl border px-3 py-2.5 shadow-sm ${bubbleClass}`} style={bubbleStyle}>
                         <div className="mb-1 flex items-center justify-between gap-2">
                           <p className="flex items-center gap-1.5 text-[11px] font-semibold text-[hsl(var(--muted-foreground))]">
                             {agentHue !== null ? (
@@ -974,7 +988,7 @@ export function RunConversationConsole({ runId, run: initialRun, events: initial
 
               {showTypingPlaceholder ? (
                 <article className="mx-auto flex w-full max-w-[880px] justify-start">
-                  <div className="w-full max-w-[760px] rounded-2xl border border-[var(--ui-border)] bg-[hsl(var(--card)/0.98)] px-3 py-2.5 shadow-sm">
+                  <div className="w-full min-w-0 overflow-hidden rounded-2xl border border-[var(--ui-border)] bg-[hsl(var(--card)/0.98)] px-3 py-2.5 shadow-sm">
                     <div className="mb-1 flex items-center justify-between gap-2">
                       <p className="text-[11px] font-semibold text-[hsl(var(--muted-foreground))]">Assistant</p>
                       <span className="fx-muted text-[11px]">streaming</span>

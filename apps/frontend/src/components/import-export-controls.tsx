@@ -70,11 +70,13 @@ export function ImportExportControls({
     background: "transparent",
     color: "inherit",
     fontSize: 12,
+    lineHeight: 1.2,
+    whiteSpace: "nowrap",
     cursor: busy ? "default" : "pointer",
   };
 
   return (
-    <div style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+    <div style={{ display: "inline-flex", alignItems: "center", gap: 6, whiteSpace: "nowrap" }}>
       <button type="button" style={btn} disabled={busy || !canExport} onClick={() => onExport("json")}>
         Export JSON
       </button>

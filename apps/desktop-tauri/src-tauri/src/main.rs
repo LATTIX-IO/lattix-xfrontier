@@ -11,6 +11,7 @@
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
 use tauri::menu::{Menu, MenuItem};
@@ -24,6 +25,36 @@ const BACKEND_HEALTH_URL: &str = "http://127.0.0.1:8000/healthz";
 const FRONTEND_URL: &str = "http://127.0.0.1:3000";
 const HEALTH_TIMEOUT_SECS: u64 = 180;
 
+/// PID of the spawned backend supervisor sidecar. The supervisor in turn spawns
+/// every native service (Postgres, NATS, Node, …), so killing its process TREE
+/// reaps them all.
+static BACKEND_PID: AtomicU32 = AtomicU32::new(0);
+
+/// Force-kill the backend supervisor sidecar AND its entire process subtree.
+/// Idempotent (clears the PID), so it's safe to call from both the quit command
+/// and the app's Exit event. Without this, quitting from the tray could leave
+/// orphaned Postgres/Node/sidecar processes holding files — which blocks reinstall.
+fn kill_backend_tree() {
+    let pid = BACKEND_PID.swap(0, Ordering::SeqCst);
+    if pid == 0 {
+        return;
+    }
+    #[cfg(windows)]
+    {
+        // /T = whole tree (supervisor + its children), /F = force.
+        let _ = std::process::Command::new("taskkill")
+            .args(["/F", "/T", "/PID", &pid.to_string()])
+            .output();
+    }
+    #[cfg(not(windows))]
+    {
+        // SIGTERM the supervisor; its signal handlers tear down the child group.
+        let _ = std::process::Command::new("kill")
+            .args(["-TERM", &pid.to_string()])
+            .output();
+    }
+}
+
 /// Show + focus the main window (from the tray).
 fn show_main(app: &tauri::AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
@@ -34,8 +65,12 @@ fn show_main(app: &tauri::AppHandle) {
 
 /// Exit the whole app — invoked by the frontend after it has confirmed quit and
 /// asked the backend to tear down its child processes (/api/system/shutdown).
+/// We force-kill the backend tree here as a deterministic backstop (in case the
+/// graceful /system/shutdown didn't run or the backend was unreachable), then the
+/// Exit event runs the same kill once more (idempotent).
 #[tauri::command]
 fn quit_now(app: tauri::AppHandle) {
+    kill_backend_tree();
     app.exit(0);
 }
 
@@ -108,10 +143,14 @@ fn main() {
                 .on_menu_event(|app, event| match event.id.as_ref() {
                     "open" => show_main(app),
                     "quit" => {
-                        show_main(app);
-                        // The frontend confirms (if agents are running) and
-                        // calls /api/system/shutdown + the quit_now command.
+                        // Quit MUST always work and must NOT depend on a frontend
+                        // round-trip (the webview may be on the loading page or
+                        // unresponsive). Notify the UI (best-effort), then force-kill
+                        // the backend process tree and exit. RunEvent::Exit reaps the
+                        // tree again (idempotent) as a final backstop.
                         let _ = app.emit("app-quit-requested", ());
+                        kill_backend_tree();
+                        app.exit(0);
                     }
                     _ => {}
                 })
@@ -135,10 +174,16 @@ fn main() {
             let sidecar = app
                 .shell()
                 .sidecar("frontier-backend")
-                .expect("frontier-backend sidecar is missing from the bundle");
+                .expect("frontier-backend sidecar is missing from the bundle")
+                // Single source of truth for the version: the Tauri app/package
+                // version. The backend reports this (FRONTIER_APP_VERSION wins in
+                // _platform_version), so the UI no longer shows a stale 0.0.0.
+                .env("FRONTIER_APP_VERSION", app.package_info().version.to_string());
             let (mut rx, _child) = sidecar
                 .spawn()
                 .expect("failed to spawn the frontier-backend sidecar");
+            // Remember the supervisor PID so we can kill its whole tree on quit.
+            BACKEND_PID.store(_child.pid(), Ordering::SeqCst);
 
             // Drain sidecar stdout/stderr; surface first-run progress to the splash.
             let drain_handle = app.handle().clone();
@@ -198,8 +243,16 @@ fn main() {
             let _ = WebviewUrl::default();
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("error while running the Lattix xFrontier desktop shell");
+        .build(tauri::generate_context!())
+        .expect("error while building the Lattix xFrontier desktop shell")
+        .run(|_app_handle, event| {
+            // Final backstop: whenever the app exits (tray Quit, window-driven
+            // quit, OS signal, updater restart), reap the backend supervisor and
+            // every process it spawned so nothing is left holding files.
+            if let tauri::RunEvent::Exit = event {
+                kill_backend_tree();
+            }
+        });
 }
 
 /// Poll the backend health endpoint until it responds or the timeout elapses.

@@ -409,7 +409,10 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         </div>
       ) : null}
 
-      <div className="min-h-screen" style={{ paddingTop: `${contentTopOffset}px` }}>
+      <div
+        className="min-h-screen"
+        style={{ paddingTop: `${contentTopOffset}px`, ["--fx-content-top" as string]: `${contentTopOffset}px` } as React.CSSProperties}
+      >
         <aside
           className="fixed left-0 overflow-hidden border-r border-[var(--ui-border)] bg-[var(--fx-sidebar)] transition-[width] duration-200 ease-out"
           style={{
@@ -430,7 +433,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
         <main
           id="main-content"
-          className="min-h-[calc(100vh-57px)] transition-[margin-left] duration-200"
+          className="min-h-[calc(100vh-var(--fx-content-top,57px))] transition-[margin-left] duration-200"
           style={{ marginLeft: `${sidebarExpanded ? sidebarWidthExpanded : sidebarWidthCollapsed}px` }}
         >
           <ApiStatusBanner />
