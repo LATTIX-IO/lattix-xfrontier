@@ -17,9 +17,25 @@ import urllib.error
 import urllib.request
 from typing import Any
 
-# Curated pick list. Sizes are approximate download sizes for the default
-# quantization; min_ram_gb is a practical host-memory guide for CPU inference.
+# Curated pick list, ordered smallest→largest. Sizes are approximate download
+# sizes for the default quantization; min_ram_gb is a practical host-memory guide
+# for CPU inference. Tags are exact Ollama registry references (this list is an
+# allowlist — every id must be a real `ollama pull` target). Catalog reviewed
+# against the Ollama library in July 2026.
+#
+# NOTE on MoE entries (Qwen3 30B/235B, Qwen3-Coder, Llama 4): all weights must be
+# resident in RAM/VRAM, so min_ram_gb tracks the full download size — but only a
+# few billion parameters are active per token, so inference is far faster than a
+# dense model of the same footprint.
 LOCAL_MODEL_CATALOG: list[dict[str, Any]] = [
+    {
+        "id": "gemma3:270m",
+        "label": "Gemma 3 270M (ultra-tiny)",
+        "family": "Google Gemma",
+        "size_gb": 0.3,
+        "min_ram_gb": 2,
+        "notes": "Smallest in the catalog; smoke tests, embedded, draft/speculative decoding.",
+    },
     {
         "id": "qwen2.5:0.5b",
         "label": "Qwen 2.5 0.5B (tiny)",
@@ -27,6 +43,14 @@ LOCAL_MODEL_CATALOG: list[dict[str, Any]] = [
         "size_gb": 0.4,
         "min_ram_gb": 4,
         "notes": "Smallest footprint; smoke tests and constrained hosts.",
+    },
+    {
+        "id": "gemma3:1b",
+        "label": "Gemma 3 1B",
+        "family": "Google Gemma",
+        "size_gb": 0.8,
+        "min_ram_gb": 4,
+        "notes": "Tiny, fast; 32K context. Current-gen replacement for tiny Gemma 2.",
     },
     {
         "id": "llama3.2:1b",
@@ -37,6 +61,14 @@ LOCAL_MODEL_CATALOG: list[dict[str, Any]] = [
         "notes": "Very fast on CPU; light assistant tasks.",
     },
     {
+        "id": "qwen3:1.7b",
+        "label": "Qwen 3 1.7B",
+        "family": "Qwen",
+        "size_gb": 1.4,
+        "min_ram_gb": 4,
+        "notes": "Latest-gen tiny with a toggleable thinking mode.",
+    },
+    {
         "id": "llama3.2:3b",
         "label": "Llama 3.2 3B",
         "family": "Meta Llama",
@@ -45,28 +77,20 @@ LOCAL_MODEL_CATALOG: list[dict[str, Any]] = [
         "notes": "Good default for local-first assistants.",
     },
     {
-        "id": "llama3.1:8b",
-        "label": "Llama 3.1 8B",
-        "family": "Meta Llama",
-        "size_gb": 4.9,
-        "min_ram_gb": 16,
-        "notes": "Strong general model; 16 GB+ host or GPU recommended.",
+        "id": "qwen3:4b",
+        "label": "Qwen 3 4B",
+        "family": "Qwen",
+        "size_gb": 2.5,
+        "min_ram_gb": 8,
+        "notes": "Strong small generalist with toggleable reasoning; recommended local-first default.",
     },
     {
-        "id": "qwen2.5:7b",
-        "label": "Qwen 2.5 7B",
-        "family": "Qwen",
-        "size_gb": 4.7,
-        "min_ram_gb": 16,
-        "notes": "Strong multilingual generalist.",
-    },
-    {
-        "id": "qwen2.5-coder:7b",
-        "label": "Qwen 2.5 Coder 7B",
-        "family": "Qwen",
-        "size_gb": 4.7,
-        "min_ram_gb": 16,
-        "notes": "Code-focused variant.",
+        "id": "gemma3:4b",
+        "label": "Gemma 3 4B (multimodal)",
+        "family": "Google Gemma",
+        "size_gb": 3.3,
+        "min_ram_gb": 8,
+        "notes": "Vision-capable; 128K context. Good small multimodal option.",
     },
     {
         "id": "mistral:7b",
@@ -77,12 +101,36 @@ LOCAL_MODEL_CATALOG: list[dict[str, Any]] = [
         "notes": "Efficient generalist.",
     },
     {
-        "id": "gemma2:9b",
-        "label": "Gemma 2 9B",
-        "family": "Google Gemma",
-        "size_gb": 5.4,
+        "id": "qwen2.5:7b",
+        "label": "Qwen 2.5 7B",
+        "family": "Qwen",
+        "size_gb": 4.7,
         "min_ram_gb": 16,
-        "notes": "Strong quality for size.",
+        "notes": "Strong multilingual generalist (prior gen; see Qwen 3 8B).",
+    },
+    {
+        "id": "qwen2.5-coder:7b",
+        "label": "Qwen 2.5 Coder 7B",
+        "family": "Qwen",
+        "size_gb": 4.7,
+        "min_ram_gb": 16,
+        "notes": "Compact code-focused model; light coding on 16 GB hosts.",
+    },
+    {
+        "id": "llama3.1:8b",
+        "label": "Llama 3.1 8B",
+        "family": "Meta Llama",
+        "size_gb": 4.9,
+        "min_ram_gb": 16,
+        "notes": "Strong general model; 16 GB+ host or GPU recommended.",
+    },
+    {
+        "id": "qwen3:8b",
+        "label": "Qwen 3 8B",
+        "family": "Qwen",
+        "size_gb": 5.2,
+        "min_ram_gb": 16,
+        "notes": "Current-gen 8B generalist with hybrid thinking; strong quality for size.",
     },
     {
         "id": "deepseek-r1:8b",
@@ -90,7 +138,39 @@ LOCAL_MODEL_CATALOG: list[dict[str, Any]] = [
         "family": "DeepSeek",
         "size_gb": 5.2,
         "min_ram_gb": 16,
-        "notes": "Reasoning-tuned distillation.",
+        "notes": "Reasoning-tuned distillation (R1-0528 revision).",
+    },
+    {
+        "id": "gemma2:9b",
+        "label": "Gemma 2 9B",
+        "family": "Google Gemma",
+        "size_gb": 5.4,
+        "min_ram_gb": 16,
+        "notes": "Prior-gen; strong quality for size (see Gemma 3 12B).",
+    },
+    {
+        "id": "gemma3:12b",
+        "label": "Gemma 3 12B (multimodal)",
+        "family": "Google Gemma",
+        "size_gb": 8.1,
+        "min_ram_gb": 16,
+        "notes": "Vision-capable; 128K context. Strong mid-size generalist.",
+    },
+    {
+        "id": "deepseek-r1:14b",
+        "label": "DeepSeek R1 14B",
+        "family": "DeepSeek",
+        "size_gb": 9.0,
+        "min_ram_gb": 24,
+        "notes": "Larger reasoning distillation; stronger math/logic than 8B.",
+    },
+    {
+        "id": "qwen3:14b",
+        "label": "Qwen 3 14B",
+        "family": "Qwen",
+        "size_gb": 9.3,
+        "min_ram_gb": 24,
+        "notes": "Dense mid-size generalist with reasoning mode.",
     },
     {
         "id": "gpt-oss:20b",
@@ -101,12 +181,76 @@ LOCAL_MODEL_CATALOG: list[dict[str, Any]] = [
         "notes": "OpenAI open-weight reasoning model (MXFP4); fits 16 GB hosts or a single consumer GPU.",
     },
     {
+        "id": "gemma3:27b",
+        "label": "Gemma 3 27B (multimodal)",
+        "family": "Google Gemma",
+        "size_gb": 17.0,
+        "min_ram_gb": 32,
+        "notes": "Vision-capable flagship Gemma; 128K context. 24 GB+ GPU or large host.",
+    },
+    {
+        "id": "qwen3:30b",
+        "label": "Qwen 3 30B-A3B (MoE)",
+        "family": "Qwen",
+        "size_gb": 19.0,
+        "min_ram_gb": 32,
+        "notes": "MoE: ~3B active params — near-14B speed at higher quality. Efficient all-rounder.",
+    },
+    {
+        "id": "qwen3-coder:30b",
+        "label": "Qwen 3 Coder 30B-A3B (MoE)",
+        "family": "Qwen",
+        "size_gb": 19.0,
+        "min_ram_gb": 32,
+        "notes": "Code-specialized MoE (~3.3B active); 256K context. Current-gen coding default.",
+    },
+    {
+        "id": "qwen3:32b",
+        "label": "Qwen 3 32B",
+        "family": "Qwen",
+        "size_gb": 20.0,
+        "min_ram_gb": 32,
+        "notes": "Dense flagship-class generalist; strongest Qwen 3 that fits a single 24-32 GB GPU.",
+    },
+    {
+        "id": "deepseek-r1:32b",
+        "label": "DeepSeek R1 32B",
+        "family": "DeepSeek",
+        "size_gb": 20.0,
+        "min_ram_gb": 32,
+        "notes": "Large reasoning distillation; strong on math/programming benchmarks.",
+    },
+    {
+        "id": "deepseek-r1:70b",
+        "label": "DeepSeek R1 70B",
+        "family": "DeepSeek",
+        "size_gb": 43.0,
+        "min_ram_gb": 64,
+        "notes": "70B reasoning distillation; multi-GPU or 64 GB+ host.",
+    },
+    {
         "id": "gpt-oss:120b",
         "label": "GPT-OSS 120B",
         "family": "OpenAI GPT-OSS",
         "size_gb": 65.0,
         "min_ram_gb": 80,
         "notes": "OpenAI open-weight flagship; needs ~80 GB (datacenter GPU or very large host).",
+    },
+    {
+        "id": "llama4:scout",
+        "label": "Llama 4 Scout (MoE, multimodal)",
+        "family": "Meta Llama",
+        "size_gb": 67.0,
+        "min_ram_gb": 80,
+        "notes": "16x17B MoE (109B total / 17B active); multimodal, very long context. Datacenter GPU or large host.",
+    },
+    {
+        "id": "qwen3:235b",
+        "label": "Qwen 3 235B-A22B (MoE)",
+        "family": "Qwen",
+        "size_gb": 142.0,
+        "min_ram_gb": 160,
+        "notes": "Flagship MoE (22B active); frontier open-weight quality. Multi-GPU / very large host only.",
     },
 ]
 

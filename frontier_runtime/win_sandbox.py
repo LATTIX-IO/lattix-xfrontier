@@ -27,6 +27,7 @@ import os
 import subprocess
 import sys
 from dataclasses import dataclass, field
+from typing import Any
 from xml.sax.saxutils import escape
 
 # Well-known AppContainer capability names → granted only when needed.
@@ -76,6 +77,36 @@ def compute_job_limits(*, memory: str, pids: int, kill_on_close: bool = True) ->
         active_process_limit=max(0, int(pids or 0)),
         kill_on_close=kill_on_close,
     )
+
+
+def _env_flag(name: str, default: bool = False) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return str(raw).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def select_confinement_tier(*, forced: str | None, require_appcontainer: bool) -> tuple[str, bool]:
+    """Decide the Windows confinement tier and whether a weaker fallback is allowed.
+
+    Returns ``(tier, allow_fallback)`` where ``tier`` is ``"appcontainer"`` or
+    ``"job"``. ``allow_fallback`` is ``False`` when the operator requires
+    AppContainer: a failed AppContainer setup must then **fail closed** rather than
+    silently drop to the resource-only Job-Object tier — which bounds memory and
+    process count but does NOT confine the filesystem or network. For hostile
+    agent code that silent downgrade is a security regression, so the native /
+    secure deployment can demand the strong tier via
+    ``FRONTIER_WIN_SANDBOX_REQUIRE_APPCONTAINER=1``.
+
+    An explicit ``FRONTIER_WIN_SANDBOX_TIER=job`` is the operator deliberately
+    choosing the baseline tier, so ``require_appcontainer`` does not apply there.
+    Pure/testable (no execution, no Win32)."""
+    tier = str(forced or "appcontainer").strip().lower()
+    if tier not in {"appcontainer", "job"}:
+        tier = "appcontainer"
+    if tier == "job":
+        return "job", True
+    return "appcontainer", not require_appcontainer
 
 
 def capability_sids(*, allow_network: bool) -> list[str]:
@@ -229,7 +260,7 @@ def acl_grant_commands(sid_string: str, *, write_paths: list[str], read_paths: l
     return cmds
 
 
-def _derive_appcontainer_sid(name: str):
+def _derive_appcontainer_sid(name: str) -> tuple[Any, str]:
     import ctypes
 
     userenv = ctypes.WinDLL("userenv", use_last_error=True)
@@ -254,7 +285,7 @@ def _derive_appcontainer_sid(name: str):
     return sid, str(str_ptr.value or "")
 
 
-def _derive_capability_sids(cap_names: list[str]):
+def _derive_capability_sids(cap_names: list[str]) -> list[Any]:
     import ctypes
     from ctypes import wintypes
 
@@ -389,7 +420,7 @@ def _run_in_appcontainer(
         k32.CloseHandle(h_job)
 
 
-def _configure_job(k32, limits: JobLimits):
+def _configure_job(k32: Any, limits: JobLimits) -> Any:
     """Create + configure a Job Object (memory/process caps + kill-on-close)."""
     import ctypes
     from ctypes import wintypes
@@ -453,14 +484,21 @@ def run_confined(
     Default tier is **AppContainer + Job Object** (deep isolation, on par with
     bwrap on Linux / seatbelt on macOS); it degrades to the Job-Object tier if
     AppContainer setup fails. Force a tier with ``FRONTIER_WIN_SANDBOX_TIER``
-    (``appcontainer`` | ``job``).
+    (``appcontainer`` | ``job``). Set
+    ``FRONTIER_WIN_SANDBOX_REQUIRE_APPCONTAINER=1`` to **fail closed** instead of
+    silently degrading to the resource-only Job-Object tier when AppContainer is
+    unavailable — use this for the hostile-code threat model where losing
+    filesystem/network confinement is unacceptable.
     """
     if not _is_windows():
         raise RuntimeError("win_sandbox.run_confined is Windows-only")
     limits = compute_job_limits(memory=memory, pids=pids)
-    tier = str(os.getenv("FRONTIER_WIN_SANDBOX_TIER") or "appcontainer").strip().lower()
+    tier, allow_fallback = select_confinement_tier(
+        forced=os.getenv("FRONTIER_WIN_SANDBOX_TIER"),
+        require_appcontainer=_env_flag("FRONTIER_WIN_SANDBOX_REQUIRE_APPCONTAINER"),
+    )
 
-    if tier != "job":
+    if tier == "appcontainer":
         try:
             code = _run_in_appcontainer(
                 command, limits, allow_network=allow_network,
@@ -468,7 +506,15 @@ def run_confined(
                 cwd=cwd, timeout=timeout,
             )
             return ConfinementResult(code, "appcontainer-job")
-        except Exception as exc:  # noqa: BLE001 - fall back to the solid tier
+        except Exception as exc:  # noqa: BLE001
+            if not allow_fallback:
+                # Fail closed: this deployment requires real capability confinement
+                # and must NOT silently downgrade to the resource-only Job tier.
+                raise RuntimeError(
+                    "AppContainer confinement is required "
+                    "(FRONTIER_WIN_SANDBOX_REQUIRE_APPCONTAINER=1) but could not be "
+                    f"established: {exc}"
+                ) from exc
             sys.stderr.write(f"[win_sandbox] appcontainer unavailable, using job-object: {exc}\n")
 
     code = _run_with_job_object(command, limits, cwd=cwd, timeout=timeout)
