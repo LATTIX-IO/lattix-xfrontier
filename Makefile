@@ -1,11 +1,11 @@
-.PHONY: up down update remove local-up local-down stack-up stack-down test lint typecheck policy-test helm-validate release-bundle bootstrap health ps logs smoke install-opa frontend-serve resource-baseline
+.PHONY: up down update remove local-up local-down stack-up stack-down test lint typecheck policy-test helm-validate release-bundle bootstrap health ps logs smoke install-opa
 
 # Canonical public install path: install/bootstrap.sh (or install/bootstrap.ps1 on Windows).
 # This Makefile is kept as a source-checkout convenience wrapper for contributors.
 
 ifeq ($(OS),Windows_NT)
 VENV_PYTHON := .venv/Scripts/python.exe
-DEFAULT_PYTHON := python
+DEFAULT_PYTHON := py -3
 DEV_NULL := NUL
 else
 VENV_PYTHON := .venv/bin/python
@@ -46,14 +46,14 @@ stack-down:     ## Stop the full platform stack
 	$(CLI_RUNNER) stack-down
 
 test:           ## Run all tests
-	$(PYTHON) -m pytest apps/backend/tests tests -v
+	pytest apps/backend/tests tests -v --cov=app --cov=frontier_runtime --cov-report=term-missing
 
 lint:           ## Lint and format
-	$(PYTHON) -m ruff check . --fix
-	$(PYTHON) -m ruff format .
+	ruff check . --fix
+	ruff format .
 
 typecheck:      ## Type check
-	$(PYTHON) -m mypy frontier_tooling/ frontier_runtime/
+	mypy frontier_tooling/ frontier_runtime/
 
 policy-test:    ## Test OPA policies
 	$(OPA_RUNNER) test policies/ -v
@@ -89,14 +89,4 @@ logs:
 
 smoke:
 	$(CLI_RUNNER) smoke
-
-frontend-serve: ## Build and serve the frontend production bundle (far lighter than `next dev`)
-	cd apps/frontend && npm run build && npm run start
-
-resource-baseline: ## Capture per-process and per-container memory baseline to docs/perf/baselines/
-ifeq ($(OS),Windows_NT)
-	powershell -NoProfile -ExecutionPolicy Bypass -File scripts/resource-baseline.ps1
-else
-	bash scripts/resource-baseline.sh
-endif
 

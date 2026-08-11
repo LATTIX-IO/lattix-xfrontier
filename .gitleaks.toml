@@ -1,9 +1,13 @@
-[allowlist]
-  # Allow redaction placeholders (e.g. "[REDACTED]", "[REDACTED_TOKEN]") without excluding whole source files.
-  regexes = [
-    "\\[REDACTED[^\\]]*\\]"
-  ]
-  paths = [
-    "(?i)\\..*\\.env",
-    "apps/frontend/src/lib/frontier-node-catalog.ts"
-  ]
+title = "lattix-xfrontier gitleaks config"
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Ignore generated local installer state, build artifacts, and internal worktree copies"
+paths = [
+  '''^\.artifacts/''',
+  '''^\.installer/''',
+  '''^\.claude/worktrees/''',
+  '''^apps/frontend/\.next/''',
+]

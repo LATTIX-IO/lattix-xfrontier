@@ -2,13 +2,11 @@
 
 import Link from "next/link";
 import { useState } from "react";
-import { useRouter } from "next/navigation";
 import { getPublishedWorkflows, createWorkflowRun } from "@/lib/api";
 import type { WorkflowDefinition } from "@/types/frontier";
 import { useEffect } from "react";
 
 export default function WorkflowStartPage() {
-  const router = useRouter();
   const [workflows, setWorkflows] = useState<WorkflowDefinition[]>([]);
   const [startingId, setStartingId] = useState<string | null>(null);
   const [lastRunId, setLastRunId] = useState<string | null>(null);
@@ -22,12 +20,10 @@ export default function WorkflowStartPage() {
     setStartingId(workflowId);
     setStartError(null);
     try {
-      const result = await createWorkflowRun({ workflow_definition_id: workflowId });
+      const result = await createWorkflowRun({ workflow_definition_id: workflowId, session_kind: "workflow" });
       setLastRunId(result.id);
-      router.push(`/runs/${result.id}`);
-    } catch (error) {
-      const detail = error instanceof Error && error.message ? ` (${error.message})` : "";
-      setStartError(`Unable to start workflow run.${detail}`);
+    } catch {
+      setStartError("Unable to start workflow run. Please try again after backend is healthy.");
     } finally {
       setStartingId(null);
     }
@@ -81,7 +77,7 @@ export default function WorkflowStartPage() {
       {lastRunId ? (
         <div className="fx-panel flex items-center justify-between p-3 text-sm">
           <p className="fx-muted">Workflow run started: <span className="font-mono text-[var(--foreground)]">{lastRunId}</span></p>
-          <Link className="fx-btn-secondary px-3 py-1.5 text-xs" href={`/runs/${lastRunId}`}>
+          <Link className="fx-btn-secondary px-3 py-1.5 text-xs" href={`/inbox?session=${encodeURIComponent(lastRunId)}`}>
             Open run
           </Link>
         </div>

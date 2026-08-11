@@ -2,7 +2,7 @@ export type FrontierNodeTemplate = {
   id: string;
   key: `frontier/${string}`;
   name: string;
-  category: "Core" | "Agent" | "Knowledge" | "Integration" | "Control" | "Logic" | "Cognition";
+  category: "Core" | "Agent" | "Knowledge" | "Integration" | "Control" | "Logic";
   description: string;
   color: string;
 };
@@ -25,36 +25,12 @@ export const frontierNodeTemplates: FrontierNodeTemplate[] = [
     color: "#1f7f53",
   },
   {
-    id: "c0c9a1f8-0b38-4cf0-92dc-25b6e43e4a01",
-    key: "frontier/goal",
-    name: "Goal",
-    category: "Cognition",
-    description: "Define intent, success criteria, constraints, priorities, and output contract.",
-    color: "#2962ff",
-  },
-  {
-    id: "8f5f1cec-b70f-49cf-aef6-0f8a0f8348da",
-    key: "frontier/evidence",
-    name: "Evidence",
-    category: "Cognition",
-    description: "Capture and validate evidence claims before synthesis and commitment.",
-    color: "#00796b",
-  },
-  {
-    id: "eb9c3fc3-8f1f-494c-bd18-8aefe7408686",
-    key: "frontier/assembly",
-    name: "Assembly",
-    category: "Cognition",
-    description: "Fuse goal and evidence into a bounded commitment proposal.",
-    color: "#6a1b9a",
-  },
-  {
-    id: "19708cbc-0efd-4fc4-9dc8-942b8f3629d7",
-    key: "frontier/commitment",
-    name: "Commitment",
-    category: "Cognition",
-    description: "Finalize or escalate a commitment using explicit confidence thresholds.",
-    color: "#ef6c00",
+    id: "6f7f5a2d-5a7a-4ec0-9a0e-0df04ca4ee15",
+    key: "frontier/workflow",
+    name: "Workflow",
+    category: "Agent",
+    description: "Invoke a pre-built workflow as a subflow inside a larger playbook graph.",
+    color: "#0f6a8f",
   },
   {
     id: "32d0f4db-6f9a-4a49-b4f6-3ac950d0a20f",
@@ -85,7 +61,7 @@ export const frontierNodeTemplates: FrontierNodeTemplate[] = [
     key: "frontier/memory",
     name: "Memory",
     category: "Knowledge",
-    description: "Read/write short-term or long-term memory scoped to tenant/run.",
+    description: "Read/write short-term or long-term memory scoped to runs, users, agents, workflows, or playbooks.",
     color: "#4f5966",
   },
   {
@@ -119,6 +95,62 @@ export const frontierNodeTemplates: FrontierNodeTemplate[] = [
     category: "Logic",
     description: "Consolidate multiple inbound events/flows with AND/OR logic into a single output.",
     color: "#7863d3",
+  },
+  {
+    id: "71aa5d1b-6534-41bd-916b-d7f94302a676",
+    key: "frontier/router",
+    name: "Router",
+    category: "Logic",
+    description: "Make deterministic routing decisions from rules, thresholds, or keyword classifiers.",
+    color: "#3158a4",
+  },
+  {
+    id: "9fd19bb2-4ca0-40e0-9fe4-bca2f7558607",
+    key: "frontier/transform",
+    name: "Transform",
+    category: "Logic",
+    description: "Shape payloads deterministically through mapping, templating, extraction, redaction, or merge operations.",
+    color: "#1e8a72",
+  },
+  {
+    id: "9583f5c2-1b5d-4940-97fe-0d8c550821c1",
+    key: "frontier/error-handler",
+    name: "Error Handler",
+    category: "Control",
+    description: "Normalize failures, apply fallback payloads, and emit structured recovery status for downstream steps.",
+    color: "#aa5a2f",
+  },
+  {
+    id: "32b134b6-31b0-4de6-a3f5-1880a77e5660",
+    key: "frontier/iterator",
+    name: "Iterator",
+    category: "Logic",
+    description: "Process lists, batches, and paginated payloads with loop and done branches.",
+    color: "#5670d9",
+  },
+  {
+    id: "1d72f742-4a0f-4547-9d83-06b9d6ec5c26",
+    key: "frontier/event",
+    name: "Event",
+    category: "Integration",
+    description: "Publish or consume workflow events with structured envelopes and receipts.",
+    color: "#0f8c8c",
+  },
+  {
+    id: "adce4a88-bf09-40d0-a439-7d40285bb712",
+    key: "frontier/data-store",
+    name: "Data Store",
+    category: "Integration",
+    description: "Create, read, update, append, or delete business records inside a scoped data store.",
+    color: "#6e7c2d",
+  },
+  {
+    id: "416728cc-cfdf-445b-9950-605e08b9b4e3",
+    key: "frontier/wait",
+    name: "Wait",
+    category: "Control",
+    description: "Delay, timeout, or resume execution windows with explicit resume and timeout branches.",
+    color: "#8c6a13",
   },
 ];
 

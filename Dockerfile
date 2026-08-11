@@ -20,10 +20,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PYTHONPATH=/app/apps/backend
 
-# git is required at runtime: the multi-agent build/implementer nodes provision
-# git worktrees and produce unified diffs via the harness coding loop.
 RUN apt-get update \
-    && apt-get install --yes --no-install-recommends curl git \
+    && apt-get install --yes --no-install-recommends curl \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd --gid 1000 lattix \
     && useradd --uid 1000 --gid 1000 --create-home lattix

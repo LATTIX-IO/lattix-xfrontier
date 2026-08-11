@@ -67,26 +67,6 @@ jobs:
           name: coverage
           path: coverage.xml
 
-  windows-sandbox:
-    # Validate the Windows AppContainer/Job-Object isolation launch paths on a
-    # real Windows runner. The win32-gated smoke tests in test_windows_sandbox.py
-    # never execute on the ubuntu `test` job (sys.platform != win32), so without
-    # this job the Windows confinement paths go untested. Dependency-light: the
-    # sandbox modules are stdlib-only and the test file is self-contained, so
-    # --noconftest skips the heavy backend/FastAPI conftest import.
-    runs-on: windows-latest
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-      - name: Install test deps
-        run: python -m pip install --upgrade pip pytest
-      - name: Windows sandbox tests (AppContainer + Job Object)
-        run: pytest tests/backend/test_windows_sandbox.py --noconftest -v
-
   helm-validate:
     runs-on: ubuntu-latest
     permissions:

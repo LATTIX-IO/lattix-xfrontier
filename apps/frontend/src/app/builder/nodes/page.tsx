@@ -1,9 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { TypedDeleteButton } from "@/components/typed-delete-button";
-import { NodeFieldForm } from "@/components/node-field-form";
-import { getNodeDefinitions, type NodeFieldSpec } from "@/lib/api";
+import { getNodeDefinitions } from "@/lib/api";
 import { frontierNodeTemplates, type FrontierNodeTemplate } from "@/lib/frontier-node-catalog";
 import { useEffect, useMemo, useState } from "react";
 
@@ -31,7 +29,6 @@ const emptyTemplate: FrontierNodeTemplate = {
 export default function NodeLibraryPage() {
   const [nodeTemplates, setNodeTemplates] = useState<FrontierNodeTemplate[]>(frontierNodeTemplates);
   const [selectedNode, setSelectedNode] = useState<string>(frontierNodeTemplates[0]?.id ?? "");
-  const [nodeInputs, setNodeInputs] = useState<Record<string, NodeFieldSpec[]>>({});
 
   useEffect(() => {
     let cancelled = false;
@@ -59,13 +56,6 @@ export default function NodeLibraryPage() {
       if (mapped.length > 0) {
         setNodeTemplates(mapped);
         setSelectedNode((current) => (mapped.some((item) => item.id === current) ? current : mapped[0].id));
-        const inputsByKey: Record<string, NodeFieldSpec[]> = {};
-        for (const node of response) {
-          if (node.inputs && node.inputs.length > 0) {
-            inputsByKey[node.type_key] = node.inputs;
-          }
-        }
-        setNodeInputs(inputsByKey);
       }
     }
 
@@ -130,7 +120,7 @@ export default function NodeLibraryPage() {
   }
 
   return (
-    <section className="space-y-4">
+    <section className="flex min-h-0 flex-col space-y-4 xl:h-full">
       <header>
         <h1 className="text-2xl font-semibold">Node Library</h1>
         <p className="fx-muted">
@@ -138,10 +128,13 @@ export default function NodeLibraryPage() {
         </p>
       </header>
 
-      <div className="grid gap-4 xl:grid-cols-[360px_1fr]">
-        <aside className="fx-panel p-4">
+      <div className="grid min-h-0 gap-4 xl:flex-1 xl:grid-cols-[360px_1fr]">
+        <aside className="fx-panel flex min-h-[calc(100vh-14rem)] flex-col p-4 xl:min-h-0">
           <h2 className="mb-2 text-sm font-semibold uppercase tracking-wide">Frontier Node Kit</h2>
-          <div className="max-h-[520px] overflow-auto border border-[var(--fx-border)]">
+          <div
+            aria-label="Available node templates"
+            className="min-h-0 flex-1 overflow-y-auto border border-[var(--fx-border)]"
+          >
             <ul className="text-sm">
               {nodeTemplates.length === 0 ? (
                 <li className="px-3 py-3 text-xs fx-muted">No node templates available.</li>
@@ -168,21 +161,6 @@ export default function NodeLibraryPage() {
                         <Link href={`/builder/nodes/${template.id}`} className="fx-muted hover:underline">
                           Open
                         </Link>
-                        <TypedDeleteButton
-                          itemType="node"
-                          itemId={template.id}
-                          itemName={template.name}
-                          onDeleted={(deletedId) => {
-                            setNodeTemplates((current) => {
-                              const next = current.filter((item) => item.id !== deletedId);
-                              if (selectedNode === deletedId) {
-                                setSelectedNode(next[0]?.id ?? "");
-                              }
-                              return next;
-                            });
-                          }}
-                          buttonClassName="fx-btn-warning px-1.5 py-0.5 text-[10px]"
-                        />
                       </div>
                     </div>
                   </div>
@@ -191,21 +169,12 @@ export default function NodeLibraryPage() {
             </ul>
           </div>
           <p className="fx-muted mt-2 text-xs">Showing {nodeTemplates.length} reusable node templates in the Frontier kit.</p>
+          <p className="mt-2 text-xs text-[var(--foreground)]">
+            Node definitions are currently read-only. The custom-node publishing workflow stays hidden until secure backend lifecycle support is implemented.
+          </p>
         </aside>
 
         <div className="space-y-4">
-          <div className="fx-panel p-4">
-            <div className="mb-3 flex items-center justify-between">
-              <h2 className="text-sm font-semibold uppercase tracking-wide">{selectedTemplate.name} — configurable inputs</h2>
-              <span className="fx-muted text-[10px] uppercase">{selectedTemplate.key}</span>
-            </div>
-            <p className="fx-muted mb-3 text-xs">
-              Declarative input schema. The studio renders this node&apos;s config panel from these specs —
-              edit once here and every workflow gets the same controls.
-            </p>
-            <NodeFieldForm fields={nodeInputs[selectedTemplate.key] ?? []} readOnly />
-          </div>
-
           <div className="fx-panel p-4">
             <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide">Custom node builder</h2>
             <div className="grid gap-3 md:grid-cols-2">
@@ -359,9 +328,8 @@ export default function NodeLibraryPage() {
           <div className="fx-panel p-4">
             <h3 className="mb-2 text-sm font-semibold">Configuration preview</h3>
             <pre className="fx-field max-h-72 overflow-auto p-3 text-xs">{JSON.stringify(configPreview, null, 2)}</pre>
-            <div className="mt-3 flex gap-2">
-              <button className="fx-btn-secondary px-3 py-2 text-sm">Save custom node draft</button>
-              <button className="fx-btn-primary px-3 py-2 text-sm">Publish node package</button>
+            <div className="mt-3 rounded border border-[color-mix(in_srgb,var(--fx-warning)_42%,var(--ui-border))] bg-[color-mix(in_srgb,var(--fx-warning)_10%,transparent)] px-3 py-3 text-sm text-[var(--foreground)]">
+              Custom node save and publish actions are intentionally disabled until the backend supports authenticated node lifecycle management.
             </div>
           </div>
         </div>
