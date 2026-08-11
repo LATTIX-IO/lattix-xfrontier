@@ -892,7 +892,12 @@ def test_packaged_installer_runtime_env_prepends_managed_scripts_dir(
     editable_scripts = tmp_path / ".venv" / ("Scripts" if os.name == "nt" else "bin")
     python_bin = editable_scripts / ("python.exe" if os.name == "nt" else "python")
     path_separator = ";" if os.name == "nt" else ":"
-    monkeypatch.setenv("PATH", str(tmp_path / "system" / "bin"))
+    monkeypatch.setenv(
+        "PATH",
+        path_separator.join(
+            [str(tmp_path / "system" / "bin"), str(editable_scripts), str(tmp_path / "other" / "bin")]
+        ),
+    )
 
     env = packaged_installer._runtime_env(
         tmp_path,
@@ -901,7 +906,11 @@ def test_packaged_installer_runtime_env_prepends_managed_scripts_dir(
         venv_dir=tmp_path / ".venv",
     )
 
-    assert env["PATH"].split(path_separator, 1)[0] == str(editable_scripts)
+    assert env["PATH"].split(path_separator) == [
+        str(editable_scripts),
+        str(tmp_path / "system" / "bin"),
+        str(tmp_path / "other" / "bin"),
+    ]
     assert env[packaged_installer.FRONTIER_APP_HOME_ENV] == str(tmp_path)
     assert env["FRONTIER_PYTHON_BIN"] == str(python_bin)
     assert env["VIRTUAL_ENV"] == str(tmp_path / ".venv")

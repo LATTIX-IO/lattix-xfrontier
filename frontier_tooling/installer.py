@@ -246,9 +246,10 @@ def _runtime_env(
 ) -> dict[str, str]:
     current_path = str(os.getenv("PATH") or "")
     path_separator = _path_separator_for_scripts_dir(scripts_dir, current_path)
+    scripts_dir_str = str(scripts_dir)
     path_entries = [entry for entry in current_path.split(path_separator) if entry]
-    if str(scripts_dir) not in path_entries:
-        path_entries.insert(0, str(scripts_dir))
+    path_entries = [entry for entry in path_entries if entry.casefold() != scripts_dir_str.casefold()]
+    path_entries.insert(0, scripts_dir_str)
     env = os.environ.copy()
     env["PATH"] = path_separator.join(path_entries)
     env[FRONTIER_APP_HOME_ENV] = str(install_root)
