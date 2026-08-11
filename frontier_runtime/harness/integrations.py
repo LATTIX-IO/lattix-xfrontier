@@ -288,4 +288,5 @@ class DevFlow:
 class DeliveryTarget(Protocol):
     def deliver(
         self, task: SweTask, spec: Spec, team: TeamResult, policy: DeliveryPolicy
-    ) -> DeliveryResult: ...
+    ) -> DeliveryResult:
+        raise NotImplementedError
