@@ -277,7 +277,9 @@ def test_skill_carries_maturity_tier_defaults_and_accepts_overrides() -> None:
         assert body["dependencies"] == ["commit"]
         assert len(body["eval_dataset"]) == 1
         # Bundled skills default to tier3/draft.
-        bundled = next(s for s in client.get("/skills", headers=READ_HEADERS).json() if s["name"] == "commit")
+        bundled = next(
+            s for s in client.get("/skills", headers=READ_HEADERS).json() if s["name"] == "commit"
+        )
         assert bundled["tier"] == "tier3"
         assert bundled["maturity"] == "draft"
     finally:
@@ -303,7 +305,10 @@ def test_skill_eval_scores_and_sets_validated(monkeypatch) -> None:
     def _fake_chat(*, system_prompt, user_prompt, model, temperature, **_kwargs):
         calls["n"] += 1
         if "grading an AI response" in user_prompt:
-            return '{"score": 0.9, "reason": "uppercased correctly"}', {"mode": "live", "model": model}
+            return '{"score": 0.9, "reason": "uppercased correctly"}', {
+                "mode": "live",
+                "model": model,
+            }
         return "HI", {"mode": "live", "model": model}
 
     monkeypatch.setattr(main_module, "_run_openai_chat", _fake_chat)

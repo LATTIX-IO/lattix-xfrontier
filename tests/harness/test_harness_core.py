@@ -57,7 +57,9 @@ def test_profile_pattern_resolution():
 
 
 def test_profile_forced_and_overrides():
-    p = resolve_profile("vllm", "x", profile_id="local-weak", overrides={"edit_format": "search-replace"})
+    p = resolve_profile(
+        "vllm", "x", profile_id="local-weak", overrides={"edit_format": "search-replace"}
+    )
     assert p.profile_id == "local-weak"
     assert p.edit_format == "search-replace"  # override wins
     # frozen dataclass: override produces a new instance
@@ -109,9 +111,7 @@ def test_validate_tool_call_accepts_and_rejects():
 
 def test_validate_coerces_stringified_int():
     schemas = schema_by_name(tool_schemas())
-    args, reason = validate_tool_call(
-        "execute_bash", '{"command": "ls", "timeout": "30"}', schemas
-    )
+    args, reason = validate_tool_call("execute_bash", '{"command": "ls", "timeout": "30"}', schemas)
     assert reason == "" and args["timeout"] == 30
 
 
@@ -120,7 +120,9 @@ def test_constraint_kwargs_by_backend():
 
     tools = tool_schemas()
     xg = ModelCapabilityProfile(structured_output="xgrammar")
-    assert constraint_kwargs("vllm", xg, tools)["extra_body"]["guided_decoding_backend"] == "xgrammar"
+    assert (
+        constraint_kwargs("vllm", xg, tools)["extra_body"]["guided_decoding_backend"] == "xgrammar"
+    )
     none = ModelCapabilityProfile(structured_output="none")
     assert constraint_kwargs("vllm", none, tools) == {}
 

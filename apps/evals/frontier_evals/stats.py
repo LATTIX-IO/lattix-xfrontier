@@ -41,9 +41,7 @@ def summarize(seed_summaries: list[SeedSummary], per_instance_pass: dict[str, in
         sem = 0.0
     n_instances = len(per_instance_pass)
     pass_at_k = (
-        sum(1 for v in per_instance_pass.values() if v > 0) / n_instances
-        if n_instances
-        else 0.0
+        sum(1 for v in per_instance_pass.values() if v > 0) / n_instances if n_instances else 0.0
     )
     return EvalSummary(
         n_seeds=n,

@@ -19,15 +19,26 @@ requires_git = pytest.mark.skipif(shutil.which("git") is None, reason="no git")
 
 def _repo(root: Path) -> None:
     (root / "app.py").write_text("x = 1\n")
-    for a in (("init", "-q"), ("config", "user.email", "t@e.com"), ("config", "user.name", "t"),
-              ("add", "-A"), ("commit", "-qm", "init")):
+    for a in (
+        ("init", "-q"),
+        ("config", "user.email", "t@e.com"),
+        ("config", "user.name", "t"),
+        ("add", "-A"),
+        ("commit", "-qm", "init"),
+    ):
         subprocess.run(["git", *a], cwd=str(root), check=True, capture_output=True)
 
 
 # -- binding payload round-trip --------------------------------------------
 def test_binding_payload_roundtrip():
-    b = WorkspaceBinding(repo_path="/repo", base_ref="main", branch="feat/x",
-                         allow_outside="deny", extra_paths=["/shared"], test_command="pytest")
+    b = WorkspaceBinding(
+        repo_path="/repo",
+        base_ref="main",
+        branch="feat/x",
+        allow_outside="deny",
+        extra_paths=["/shared"],
+        test_command="pytest",
+    )
     p = b.to_payload()
     assert p["isolation"] == "worktree" and p["allow_outside"] == "deny"
     b2 = WorkspaceBinding.from_payload(p)
@@ -59,13 +70,15 @@ def test_editor_escalates_out_of_bounds(tmp_path):
         out_of_bounds="ask",
     )
     # in-bounds edit works
-    ok = ts.dispatch("str_replace_editor",
-                     {"command": "create", "path": "new.py", "file_text": "y = 2\n"})
+    ok = ts.dispatch(
+        "str_replace_editor", {"command": "create", "path": "new.py", "file_text": "y = 2\n"}
+    )
     assert "written" in ok.lower()
     # out-of-bounds edit is blocked + escalated, NOT executed
     outside = str((tmp_path / "evil.py"))
-    res = ts.dispatch("str_replace_editor",
-                      {"command": "create", "path": outside, "file_text": "pwn"})
+    res = ts.dispatch(
+        "str_replace_editor", {"command": "create", "path": outside, "file_text": "pwn"}
+    )
     assert "permission required" in res.lower()
     assert not (tmp_path / "evil.py").exists()  # nothing written outside
     assert ts.escalations and ts.escalations[0]["path"] == outside
@@ -83,8 +96,9 @@ def test_out_of_bounds_deny_policy_blocks_without_escalation_invite(tmp_path):
         out_of_bounds="deny",
         on_escalation=seen.append,
     )
-    res = ts.dispatch("str_replace_editor",
-                      {"command": "view", "path": str(tmp_path / "outside.py")})
+    res = ts.dispatch(
+        "str_replace_editor", {"command": "view", "path": str(tmp_path / "outside.py")}
+    )
     assert "[denied]" in res
     assert len(seen) == 1  # escalation still recorded for audit
 
@@ -99,8 +113,9 @@ def test_extra_path_grant_allows_outside_repo(tmp_path):
     shared.mkdir()
     (shared / "lib.py").write_text("Z = 9\n")
     ts = CodingToolset(
-        workspace=Workspace(run_id="t",
-                            executor=LocalDirectExecutor(root, extra_paths=[str(shared)])),
+        workspace=Workspace(
+            run_id="t", executor=LocalDirectExecutor(root, extra_paths=[str(shared)])
+        ),
         out_of_bounds="ask",
     )
     res = ts.dispatch("str_replace_editor", {"command": "view", "path": str(shared / "lib.py")})

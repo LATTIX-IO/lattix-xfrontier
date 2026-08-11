@@ -104,7 +104,5 @@ def test_rename_run_requires_title() -> None:
     runs = client.get("/workflow-runs", headers={"x-frontier-actor": "frontier-admin"}).json()
     if not runs:
         return
-    response = client.post(
-        f"/workflow-runs/{runs[0]['id']}/rename", json={}, headers=ADMIN_HEADERS
-    )
+    response = client.post(f"/workflow-runs/{runs[0]['id']}/rename", json={}, headers=ADMIN_HEADERS)
     assert response.status_code == 400

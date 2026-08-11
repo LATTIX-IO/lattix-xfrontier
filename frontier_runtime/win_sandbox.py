@@ -179,10 +179,17 @@ def _run_with_job_object(
     k32 = ctypes.WinDLL("kernel32", use_last_error=True)
 
     class _IO_COUNTERS(ctypes.Structure):
-        _fields_ = [(n, ctypes.c_ulonglong) for n in (
-            "ReadOperationCount", "WriteOperationCount", "OtherOperationCount",
-            "ReadTransferCount", "WriteTransferCount", "OtherTransferCount",
-        )]
+        _fields_ = [
+            (n, ctypes.c_ulonglong)
+            for n in (
+                "ReadOperationCount",
+                "WriteOperationCount",
+                "OtherOperationCount",
+                "ReadTransferCount",
+                "WriteTransferCount",
+                "OtherTransferCount",
+            )
+        ]
 
     class _BASIC_LIMIT(ctypes.Structure):
         _fields_ = [
@@ -219,9 +226,7 @@ def _run_with_job_object(
         if limits.memory_bytes > 0:
             info.ProcessMemoryLimit = limits.memory_bytes
         # 9 == JobObjectExtendedLimitInformation
-        if not k32.SetInformationJobObject(
-            h_job, 9, ctypes.byref(info), ctypes.sizeof(info)
-        ):
+        if not k32.SetInformationJobObject(h_job, 9, ctypes.byref(info), ctypes.sizeof(info)):
             raise OSError(ctypes.get_last_error(), "SetInformationJobObject failed")
 
         proc = subprocess.Popen(command, cwd=cwd or None)
@@ -246,7 +251,9 @@ _CREATE_SUSPENDED = 0x00000004
 _SE_GROUP_ENABLED = 0x00000004
 
 
-def acl_grant_commands(sid_string: str, *, write_paths: list[str], read_paths: list[str]) -> list[list[str]]:
+def acl_grant_commands(
+    sid_string: str, *, write_paths: list[str], read_paths: list[str]
+) -> list[list[str]]:
     """icacls argv lists that grant the AppContainer SID access to the bound paths.
 
     AppContainer processes are denied file access by default, so the workspace
@@ -269,13 +276,19 @@ def _derive_appcontainer_sid(name: str) -> tuple[Any, str]:
     # Idempotent: create the profile if missing, then derive its SID.
     try:
         userenv.CreateAppContainerProfile(
-            ctypes.c_wchar_p(name), ctypes.c_wchar_p(name), ctypes.c_wchar_p(name),
-            None, 0, ctypes.byref(sid),
+            ctypes.c_wchar_p(name),
+            ctypes.c_wchar_p(name),
+            ctypes.c_wchar_p(name),
+            None,
+            0,
+            ctypes.byref(sid),
         )
     except Exception:  # noqa: BLE001 - already exists / non-fatal; derive below
         pass
     sid = ctypes.c_void_p()
-    hr = userenv.DeriveAppContainerSidFromAppContainerName(ctypes.c_wchar_p(name), ctypes.byref(sid))
+    hr = userenv.DeriveAppContainerSidFromAppContainerName(
+        ctypes.c_wchar_p(name), ctypes.byref(sid)
+    )
     if hr != 0 or not sid.value:
         raise OSError(f"DeriveAppContainerSidFromAppContainerName failed (hr={hr})")
     # SID → string form for icacls grants.
@@ -298,8 +311,10 @@ def _derive_capability_sids(cap_names: list[str]) -> list[Any]:
         cap_count = wintypes.DWORD()
         ok = kb.DeriveCapabilitySidsFromName(
             ctypes.c_wchar_p(name),
-            ctypes.byref(group_sids), ctypes.byref(group_count),
-            ctypes.byref(cap_sids), ctypes.byref(cap_count),
+            ctypes.byref(group_sids),
+            ctypes.byref(group_count),
+            ctypes.byref(cap_sids),
+            ctypes.byref(cap_count),
         )
         if ok and cap_count.value:
             for i in range(cap_count.value):
@@ -308,8 +323,14 @@ def _derive_capability_sids(cap_names: list[str]) -> list[Any]:
 
 
 def _run_in_appcontainer(
-    command: list[str], limits: JobLimits, *, allow_network: bool,
-    read_paths: list[str], write_paths: list[str], cwd: str = "", timeout: int = 0,
+    command: list[str],
+    limits: JobLimits,
+    *,
+    allow_network: bool,
+    read_paths: list[str],
+    write_paths: list[str],
+    cwd: str = "",
+    timeout: int = 0,
 ) -> int:
     """Launch ``command`` inside an AppContainer (low-privilege, capability-gated)
     bounded by a Job Object. Grants the container SID ACLs on the bound paths so
@@ -351,7 +372,9 @@ def _run_in_appcontainer(
         caps_array[i].Attributes = _SE_GROUP_ENABLED
     sec = _SECURITY_CAPABILITIES()
     sec.AppContainerSid = sid
-    sec.Capabilities = ctypes.cast(caps_array, ctypes.POINTER(_SID_AND_ATTRIBUTES)) if cap_sids else None
+    sec.Capabilities = (
+        ctypes.cast(caps_array, ctypes.POINTER(_SID_AND_ATTRIBUTES)) if cap_sids else None
+    )
     sec.CapabilityCount = len(cap_sids)
 
     # Build the PROC_THREAD attribute list carrying the security capabilities.
@@ -362,22 +385,35 @@ def _run_in_appcontainer(
     if not k32.InitializeProcThreadAttributeList(attr_list, 1, 0, ctypes.byref(size)):
         raise OSError(ctypes.get_last_error(), "InitializeProcThreadAttributeList failed")
     if not k32.UpdateProcThreadAttribute(
-        attr_list, 0, ctypes.c_size_t(_PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES),
-        ctypes.byref(sec), ctypes.sizeof(sec), None, None,
+        attr_list,
+        0,
+        ctypes.c_size_t(_PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES),
+        ctypes.byref(sec),
+        ctypes.sizeof(sec),
+        None,
+        None,
     ):
         raise OSError(ctypes.get_last_error(), "UpdateProcThreadAttribute failed")
 
     class _STARTUPINFOW(ctypes.Structure):
         _fields_ = [
-            ("cb", wintypes.DWORD), ("lpReserved", wintypes.LPWSTR),
-            ("lpDesktop", wintypes.LPWSTR), ("lpTitle", wintypes.LPWSTR),
-            ("dwX", wintypes.DWORD), ("dwY", wintypes.DWORD),
-            ("dwXSize", wintypes.DWORD), ("dwYSize", wintypes.DWORD),
-            ("dwXCountChars", wintypes.DWORD), ("dwYCountChars", wintypes.DWORD),
-            ("dwFillAttribute", wintypes.DWORD), ("dwFlags", wintypes.DWORD),
-            ("wShowWindow", wintypes.WORD), ("cbReserved2", wintypes.WORD),
+            ("cb", wintypes.DWORD),
+            ("lpReserved", wintypes.LPWSTR),
+            ("lpDesktop", wintypes.LPWSTR),
+            ("lpTitle", wintypes.LPWSTR),
+            ("dwX", wintypes.DWORD),
+            ("dwY", wintypes.DWORD),
+            ("dwXSize", wintypes.DWORD),
+            ("dwYSize", wintypes.DWORD),
+            ("dwXCountChars", wintypes.DWORD),
+            ("dwYCountChars", wintypes.DWORD),
+            ("dwFillAttribute", wintypes.DWORD),
+            ("dwFlags", wintypes.DWORD),
+            ("wShowWindow", wintypes.WORD),
+            ("cbReserved2", wintypes.WORD),
             ("lpReserved2", ctypes.POINTER(ctypes.c_byte)),
-            ("hStdInput", wintypes.HANDLE), ("hStdOutput", wintypes.HANDLE),
+            ("hStdInput", wintypes.HANDLE),
+            ("hStdOutput", wintypes.HANDLE),
             ("hStdError", wintypes.HANDLE),
         ]
 
@@ -386,8 +422,10 @@ def _run_in_appcontainer(
 
     class _PROCESS_INFORMATION(ctypes.Structure):
         _fields_ = [
-            ("hProcess", wintypes.HANDLE), ("hThread", wintypes.HANDLE),
-            ("dwProcessId", wintypes.DWORD), ("dwThreadId", wintypes.DWORD),
+            ("hProcess", wintypes.HANDLE),
+            ("hThread", wintypes.HANDLE),
+            ("dwProcessId", wintypes.DWORD),
+            ("dwThreadId", wintypes.DWORD),
         ]
 
     si = _STARTUPINFOEXW()
@@ -399,16 +437,25 @@ def _run_in_appcontainer(
     h_job = _configure_job(k32, limits)
     try:
         ok = k32.CreateProcessW(
-            None, cmdline, None, None, False,
+            None,
+            cmdline,
+            None,
+            None,
+            False,
             _EXTENDED_STARTUPINFO_PRESENT | _CREATE_SUSPENDED,
-            None, ctypes.c_wchar_p(cwd or None), ctypes.byref(si), ctypes.byref(pi),
+            None,
+            ctypes.c_wchar_p(cwd or None),
+            ctypes.byref(si),
+            ctypes.byref(pi),
         )
         if not ok:
             raise OSError(ctypes.get_last_error(), "CreateProcessW (AppContainer) failed")
         try:
             k32.AssignProcessToJobObject(h_job, pi.hProcess)
             k32.ResumeThread(pi.hThread)
-            k32.WaitForSingleObject(pi.hProcess, wintypes.DWORD(0xFFFFFFFF if not timeout else timeout * 1000))
+            k32.WaitForSingleObject(
+                pi.hProcess, wintypes.DWORD(0xFFFFFFFF if not timeout else timeout * 1000)
+            )
             code = wintypes.DWORD()
             k32.GetExitCodeProcess(pi.hProcess, ctypes.byref(code))
             return int(code.value)
@@ -426,10 +473,17 @@ def _configure_job(k32: Any, limits: JobLimits) -> Any:
     from ctypes import wintypes
 
     class _IO(ctypes.Structure):
-        _fields_ = [(n, ctypes.c_ulonglong) for n in (
-            "ReadOperationCount", "WriteOperationCount", "OtherOperationCount",
-            "ReadTransferCount", "WriteTransferCount", "OtherTransferCount",
-        )]
+        _fields_ = [
+            (n, ctypes.c_ulonglong)
+            for n in (
+                "ReadOperationCount",
+                "WriteOperationCount",
+                "OtherOperationCount",
+                "ReadTransferCount",
+                "WriteTransferCount",
+                "OtherTransferCount",
+            )
+        ]
 
     class _BASIC(ctypes.Structure):
         _fields_ = [
@@ -446,9 +500,12 @@ def _configure_job(k32: Any, limits: JobLimits) -> Any:
 
     class _EXT(ctypes.Structure):
         _fields_ = [
-            ("BasicLimitInformation", _BASIC), ("IoInfo", _IO),
-            ("ProcessMemoryLimit", ctypes.c_size_t), ("JobMemoryLimit", ctypes.c_size_t),
-            ("PeakProcessMemoryUsed", ctypes.c_size_t), ("PeakJobMemoryUsed", ctypes.c_size_t),
+            ("BasicLimitInformation", _BASIC),
+            ("IoInfo", _IO),
+            ("ProcessMemoryLimit", ctypes.c_size_t),
+            ("JobMemoryLimit", ctypes.c_size_t),
+            ("PeakProcessMemoryUsed", ctypes.c_size_t),
+            ("PeakJobMemoryUsed", ctypes.c_size_t),
         ]
 
     k32.CreateJobObjectW.restype = wintypes.HANDLE
@@ -501,9 +558,13 @@ def run_confined(
     if tier == "appcontainer":
         try:
             code = _run_in_appcontainer(
-                command, limits, allow_network=allow_network,
-                read_paths=read_paths or [], write_paths=write_paths or [],
-                cwd=cwd, timeout=timeout,
+                command,
+                limits,
+                allow_network=allow_network,
+                read_paths=read_paths or [],
+                write_paths=write_paths or [],
+                cwd=cwd,
+                timeout=timeout,
             )
             return ConfinementResult(code, "appcontainer-job")
         except Exception as exc:  # noqa: BLE001

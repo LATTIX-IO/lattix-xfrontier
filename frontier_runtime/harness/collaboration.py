@@ -152,7 +152,7 @@ _FACILITATE_TURN = (
     '{{"thinking": "your assessment of agreements, disagreements, and gaps", '
     '"consensus": true or false, "message": "what you tell the team now", '
     '"agreed_design": "if consensus: a concrete minimal plan the team supports — '
-    'approach, files/components to change, test strategy, and how it handles the '
+    "approach, files/components to change, test strategy, and how it handles the "
     'security/performance/deployment risks raised", "open_questions": ["if not '
     'consensus: the specific unresolved questions for the next round"]}}'
 )
@@ -198,24 +198,43 @@ class CollaborativeTeam:
 
     def _ask(self, role: str, instruction: str, context: str) -> dict[str, Any]:
         persona = self.prompts.get(role, "")
-        text = _single_shot(self.client_for(role), persona, f"{context}\n\n{instruction}",
-                            self._profile(role))
+        text = _single_shot(
+            self.client_for(role), persona, f"{context}\n\n{instruction}", self._profile(role)
+        )
         return extract_json(text) or {"message": text.strip()[:1000]}
 
     def run(self, task: SweTask, spec: Spec | str) -> CollaborationResult:
-        spec_obj = spec if isinstance(spec, Spec) else Spec(
-            id=task.instance_id, title="", body=str(spec), source="inline")
+        spec_obj = (
+            spec
+            if isinstance(spec, Spec)
+            else Spec(id=task.instance_id, title="", body=str(spec), source="inline")
+        )
         conv = Conversation()
-        conv.add(Contribution("system", SPEAKERS["system"], "open", 0,
-                              message=f"Spec [{spec_obj.source}:{spec_obj.id}] {spec_obj.title}\n"
-                                      f"{spec_obj.body}"))
+        conv.add(
+            Contribution(
+                "system",
+                SPEAKERS["system"],
+                "open",
+                0,
+                message=f"Spec [{spec_obj.source}:{spec_obj.id}] {spec_obj.title}\n{spec_obj.body}",
+            )
+        )
 
         # 1. Tech Lead opens the discussion
         self._emit("phase", phase="open")
-        opening = self._ask("tech-lead", _FACILITATE_OPEN, f"Specification:\n{spec_obj.as_prompt()}")
-        conv.add(Contribution("tech-lead", SPEAKERS["tech-lead"], "open", 0,
-                              thinking=str(opening.get("thinking", "")),
-                              message=str(opening.get("message", ""))))
+        opening = self._ask(
+            "tech-lead", _FACILITATE_OPEN, f"Specification:\n{spec_obj.as_prompt()}"
+        )
+        conv.add(
+            Contribution(
+                "tech-lead",
+                SPEAKERS["tech-lead"],
+                "open",
+                0,
+                thinking=str(opening.get("thinking", "")),
+                message=str(opening.get("message", "")),
+            )
+        )
 
         # 2. Discussion rounds -> consensus design
         agreed_design = ""
@@ -224,23 +243,41 @@ class CollaborativeTeam:
             disc_round = r
             self._emit("phase", phase="discuss", round=r)
             for role in self.participants:
-                ctx = (f"Specification:\n{spec_obj.as_prompt()}\n\n"
-                       f"Discussion so far:\n{conv.visible()}")
+                ctx = (
+                    f"Specification:\n{spec_obj.as_prompt()}\n\n"
+                    f"Discussion so far:\n{conv.visible()}"
+                )
                 data = self._ask(role, _ENGINEER_TURN, ctx)
-                conv.add(Contribution(role, SPEAKERS.get(role, role), "discuss", r,
-                                      thinking=str(data.get("thinking", "")),
-                                      message=str(data.get("message", "")),
-                                      proposal=str(data.get("proposal", "")),
-                                      concerns=_as_list(data.get("concerns"))))
+                conv.add(
+                    Contribution(
+                        role,
+                        SPEAKERS.get(role, role),
+                        "discuss",
+                        r,
+                        thinking=str(data.get("thinking", "")),
+                        message=str(data.get("message", "")),
+                        proposal=str(data.get("proposal", "")),
+                        concerns=_as_list(data.get("concerns")),
+                    )
+                )
                 self._emit("contribution", role=role, round=r)
-            facil = self._ask("tech-lead", _FACILITATE_TURN,
-                              f"Specification:\n{spec_obj.as_prompt()}\n\n"
-                              f"Full discussion:\n{conv.visible()}")
+            facil = self._ask(
+                "tech-lead",
+                _FACILITATE_TURN,
+                f"Specification:\n{spec_obj.as_prompt()}\n\nFull discussion:\n{conv.visible()}",
+            )
             consensus = bool(facil.get("consensus"))
-            conv.add(Contribution("tech-lead", SPEAKERS["tech-lead"], "facilitate", r,
-                                  thinking=str(facil.get("thinking", "")),
-                                  message=str(facil.get("message", "")),
-                                  concerns=_as_list(facil.get("open_questions"))))
+            conv.add(
+                Contribution(
+                    "tech-lead",
+                    SPEAKERS["tech-lead"],
+                    "facilitate",
+                    r,
+                    thinking=str(facil.get("thinking", "")),
+                    message=str(facil.get("message", "")),
+                    concerns=_as_list(facil.get("open_questions")),
+                )
+            )
             self._emit("facilitate", round=r, consensus=consensus)
             if consensus and str(facil.get("agreed_design", "")).strip():
                 agreed_design = str(facil.get("agreed_design"))
@@ -262,71 +299,118 @@ class CollaborativeTeam:
             diff = impl.patch or ""
 
             self._emit("phase", phase="verify", round=b)
-            verify_roles = [r for r in ("backend", "frontend", "sdet", "security", "performance")
-                            if r in self.participants]
+            verify_roles = [
+                r
+                for r in ("backend", "frontend", "sdet", "security", "performance")
+                if r in self.participants
+            ]
             for role in verify_roles:
-                ctx = (f"Specification:\n{spec_obj.as_prompt()}\n\n"
-                       f"Agreed design:\n{agreed_design}\n\n"
-                       f"Implemented change (unified diff):\n{diff or '(no changes)'}")
+                ctx = (
+                    f"Specification:\n{spec_obj.as_prompt()}\n\n"
+                    f"Agreed design:\n{agreed_design}\n\n"
+                    f"Implemented change (unified diff):\n{diff or '(no changes)'}"
+                )
                 data = self._ask(role, _VERIFY_TURN, ctx)
-                conv.add(Contribution(role, SPEAKERS.get(role, role), "verify", b,
-                                      thinking=str(data.get("thinking", "")),
-                                      message=str(data.get("message", "")),
-                                      verdict=str(data.get("verdict", "")),
-                                      concerns=_as_list(data.get("concerns"))))
+                conv.add(
+                    Contribution(
+                        role,
+                        SPEAKERS.get(role, role),
+                        "verify",
+                        b,
+                        thinking=str(data.get("thinking", "")),
+                        message=str(data.get("message", "")),
+                        verdict=str(data.get("verdict", "")),
+                        concerns=_as_list(data.get("concerns")),
+                    )
+                )
 
             outcome = "submitted" if impl.outcome == LoopOutcome.SUBMITTED else impl.outcome.value
-            gate = self._ask("tech-lead", _GATE_TURN,
-                            f"Specification:\n{spec_obj.as_prompt()}\n\n"
-                            f"Agreed design:\n{agreed_design}\n\n"
-                            f"Implementation outcome: {outcome}; tests run: "
-                            f"{impl.telemetry.get('test_runs', 0)}\n\n"
-                            f"Change (unified diff):\n{diff or '(no changes)'}\n\n"
-                            f"Team verification:\n{conv.visible()}")
+            gate = self._ask(
+                "tech-lead",
+                _GATE_TURN,
+                f"Specification:\n{spec_obj.as_prompt()}\n\n"
+                f"Agreed design:\n{agreed_design}\n\n"
+                f"Implementation outcome: {outcome}; tests run: "
+                f"{impl.telemetry.get('test_runs', 0)}\n\n"
+                f"Change (unified diff):\n{diff or '(no changes)'}\n\n"
+                f"Team verification:\n{conv.visible()}",
+            )
             decision = str(gate.get("decision", "")).strip().lower()
             required = _as_list(gate.get("required_changes"))
             if decision not in ("approve", "request_changes"):
-                decision = "approve" if impl.outcome == LoopOutcome.SUBMITTED and not required else "request_changes"
-            conv.add(Contribution("tech-lead", SPEAKERS["tech-lead"], "gate", b,
-                                  thinking=str(gate.get("thinking", "")),
-                                  message=str(gate.get("message", "")),
-                                  verdict=decision, concerns=required))
+                decision = (
+                    "approve"
+                    if impl.outcome == LoopOutcome.SUBMITTED and not required
+                    else "request_changes"
+                )
+            conv.add(
+                Contribution(
+                    "tech-lead",
+                    SPEAKERS["tech-lead"],
+                    "gate",
+                    b,
+                    thinking=str(gate.get("thinking", "")),
+                    message=str(gate.get("message", "")),
+                    verdict=decision,
+                    concerns=required,
+                )
+            )
             self._emit("gate", round=b, decision=decision)
             if decision == "approve" and impl.outcome == LoopOutcome.SUBMITTED:
                 approved = True
                 break
             if required:
                 changes = "\n".join(f"- {c}" for c in required)
-                directives = (f"{spec_obj.as_prompt()}\n\n## Agreed design\n{agreed_design}\n\n"
-                              f"## Required changes from the team (address all)\n{changes}")
+                directives = (
+                    f"{spec_obj.as_prompt()}\n\n## Agreed design\n{agreed_design}\n\n"
+                    f"## Required changes from the team (address all)\n{changes}"
+                )
 
         handback = self._handback(spec_obj, agreed_design, impl, approved)
         return CollaborationResult(
-            spec=spec_obj, approved=approved, agreed_design=agreed_design, conversation=conv,
+            spec=spec_obj,
+            approved=approved,
+            agreed_design=agreed_design,
+            conversation=conv,
             final_patch=(impl.patch if (impl and approved) else ""),
-            discussion_rounds=disc_round, build_rounds=build_round, implement=impl,
+            discussion_rounds=disc_round,
+            build_rounds=build_round,
+            implement=impl,
             handback=handback,
         )
 
     def _implement(self, task: SweTask, directives: str, build_round: int) -> SweAgentResult:
         impl_task = SweTask(
             instance_id=f"{task.instance_id}-b{build_round}",
-            problem_statement=directives, executor=task.executor, test_command=task.test_command,
-            base_ref=task.base_ref, repo_hint=task.repo_hint, git_executor=task.git_executor,
-            seed=task.seed, metadata=task.metadata)
+            problem_statement=directives,
+            executor=task.executor,
+            test_command=task.test_command,
+            base_ref=task.base_ref,
+            repo_hint=task.repo_hint,
+            git_executor=task.git_executor,
+            seed=task.seed,
+            metadata=task.metadata,
+        )
         agent = SweAgent(
-            client=self.client_for(IMPLEMENTER), profile=self._profile(IMPLEMENTER),
-            budgets=self.budgets, trajectory_dir=self.trajectory_dir,
+            client=self.client_for(IMPLEMENTER),
+            profile=self._profile(IMPLEMENTER),
+            budgets=self.budgets,
+            trajectory_dir=self.trajectory_dir,
             system_prompt_override=self.prompts.get(IMPLEMENTER),
-            out_of_bounds=self.out_of_bounds, on_escalation=self.on_escalation)
+            out_of_bounds=self.out_of_bounds,
+            on_escalation=self.on_escalation,
+        )
         return agent.solve(impl_task)
 
     def _fallback_design(self, conv: Conversation) -> str:
         proposals = [f"- {t.speaker}: {t.proposal}" for t in conv.turns if t.proposal]
         return "Consensus not explicitly reached; proceeding on the team's proposals:\n" + (
-            "\n".join(proposals) or "- implement the spec minimally and test it")
+            "\n".join(proposals) or "- implement the spec minimally and test it"
+        )
 
-    def _handback(self, spec: Spec, design: str, impl: SweAgentResult | None, approved: bool) -> str:
+    def _handback(
+        self, spec: Spec, design: str, impl: SweAgentResult | None, approved: bool
+    ) -> str:
         status = "complete and approved by the team" if approved else "NOT complete"
         tests = impl.telemetry.get("test_runs", 0) if impl else 0
         return (
@@ -334,8 +418,11 @@ class CollaborativeTeam:
             f"Agreed approach:\n{design[:1200]}\n"
             f"Implementation: {'patch produced' if (impl and impl.has_patch and approved) else 'no final patch'}; "
             f"tests run: {tests}.\n"
-            + ("Ready for your review/merge." if approved
-               else "Returned to you for direction — the team could not converge on a passing solution.")
+            + (
+                "Ready for your review/merge."
+                if approved
+                else "Returned to you for direction — the team could not converge on a passing solution."
+            )
         )
 
 
@@ -385,8 +472,15 @@ def build_collaborative_team(
         prompts[role] = spec.system_prompt
         profiles[role] = spec.profile(overrides=profile_overrides)
     return CollaborativeTeam(
-        client_for=client_for, prompts=prompts, profiles=profiles,
-        budgets=budgets or LoopBudgets(), participants=participants,
-        max_discussion_rounds=max_discussion_rounds, max_build_rounds=max_build_rounds,
-        out_of_bounds=out_of_bounds, on_escalation=on_escalation,
-        trajectory_dir=trajectory_dir, on_event=on_event)
+        client_for=client_for,
+        prompts=prompts,
+        profiles=profiles,
+        budgets=budgets or LoopBudgets(),
+        participants=participants,
+        max_discussion_rounds=max_discussion_rounds,
+        max_build_rounds=max_build_rounds,
+        out_of_bounds=out_of_bounds,
+        on_escalation=on_escalation,
+        trajectory_dir=trajectory_dir,
+        on_event=on_event,
+    )

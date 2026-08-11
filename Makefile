@@ -5,7 +5,7 @@
 
 ifeq ($(OS),Windows_NT)
 VENV_PYTHON := .venv/Scripts/python.exe
-DEFAULT_PYTHON := py -3
+DEFAULT_PYTHON := python
 DEV_NULL := NUL
 else
 VENV_PYTHON := .venv/bin/python
@@ -46,14 +46,14 @@ stack-down:     ## Stop the full platform stack
 	$(CLI_RUNNER) stack-down
 
 test:           ## Run all tests
-	pytest apps/backend/tests tests -v --cov=app --cov=frontier_runtime --cov-report=term-missing
+	$(PYTHON) -m pytest apps/backend/tests tests -v
 
 lint:           ## Lint and format
-	ruff check . --fix
-	ruff format .
+	$(PYTHON) -m ruff check . --fix
+	$(PYTHON) -m ruff format .
 
 typecheck:      ## Type check
-	mypy frontier_tooling/ frontier_runtime/
+	$(PYTHON) -m mypy frontier_tooling/ frontier_runtime/
 
 policy-test:    ## Test OPA policies
 	$(OPA_RUNNER) test policies/ -v

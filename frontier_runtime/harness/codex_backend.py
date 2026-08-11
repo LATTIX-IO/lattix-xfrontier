@@ -68,16 +68,26 @@ def map_thread_event(ev: dict[str, Any]) -> dict[str, Any] | None:
             return {
                 "kind": "file_change",
                 "status": str(item.get("status") or ""),
-                "files": [str(c.get("path")) for c in changes if isinstance(c, dict) and c.get("path")],
+                "files": [
+                    str(c.get("path")) for c in changes if isinstance(c, dict) and c.get("path")
+                ],
                 "kinds": [str(c.get("kind")) for c in changes if isinstance(c, dict)],
             }
         if itype == "mcp_tool_call":
-            return {"kind": "mcp_tool", "server": item.get("server"), "tool": item.get("tool"), "status": item.get("status")}
+            return {
+                "kind": "mcp_tool",
+                "server": item.get("server"),
+                "tool": item.get("tool"),
+                "status": item.get("status"),
+            }
         if itype == "error":
             return {"kind": "error", "message": str(item.get("message") or "")}
         return None
     if etype == "turn.completed":
-        return {"kind": "usage", "usage": ev.get("usage") if isinstance(ev.get("usage"), dict) else {}}
+        return {
+            "kind": "usage",
+            "usage": ev.get("usage") if isinstance(ev.get("usage"), dict) else {},
+        }
     if etype == "turn.failed":
         err = ev.get("error") if isinstance(ev.get("error"), dict) else {}
         return {"kind": "error", "message": str(err.get("message") or "turn failed")}
@@ -96,12 +106,21 @@ def _build_command(
     config_overrides: dict[str, str],
 ) -> list[str]:
     args = [
-        codex_bin, "exec", "--json",
-        "--skip-git-repo-check", "--ephemeral", "--ignore-user-config",
-        "--cd", str(cwd),
-        "--sandbox", sandbox,
-        "--oss", "-m", model,
-        "-o", last_message_file,
+        codex_bin,
+        "exec",
+        "--json",
+        "--skip-git-repo-check",
+        "--ephemeral",
+        "--ignore-user-config",
+        "--cd",
+        str(cwd),
+        "--sandbox",
+        sandbox,
+        "--oss",
+        "-m",
+        model,
+        "-o",
+        last_message_file,
     ]
     for key, value in (config_overrides or {}).items():
         args += ["-c", f"{key}={value}"]
@@ -140,13 +159,21 @@ def run_codex(
         fd, last_msg_path = tempfile.mkstemp(prefix="codex-last-", suffix=".txt")
         os.close(fd)
         cmd = _build_command(
-            codex_bin=binary, cwd=cwd, model=model, sandbox=sandbox,
-            last_message_file=last_msg_path, config_overrides=overrides,
+            codex_bin=binary,
+            cwd=cwd,
+            model=model,
+            sandbox=sandbox,
+            last_message_file=last_msg_path,
+            config_overrides=overrides,
         )
         try:
             proc = subprocess.Popen(
-                cmd, cwd=cwd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE, text=True,
+                cmd,
+                cwd=cwd,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
             )
         except FileNotFoundError:
             result.outcome = "unavailable"

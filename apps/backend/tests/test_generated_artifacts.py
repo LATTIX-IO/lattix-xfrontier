@@ -346,6 +346,7 @@ platform_services.Neo4jRunGraph = _FakeNeo4jRunGraph
 platform_services.PostgresStateStore = _FakePostgresStateStore
 platform_services.PostgresLongTermMemoryStore = _FakeLongTermMemoryStore
 platform_services.RedisMemoryStore = _FakeRedisMemoryStore
+platform_services.PostgresWorldGraph = _FakeNeo4jRunGraph
 sys.modules.setdefault("app.platform_services", platform_services)
 
 import app.main as main_module

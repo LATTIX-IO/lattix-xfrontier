@@ -20,7 +20,9 @@ from frontier_runtime.harness.swe_agent import SweAgentResult, SweTask
 from frontier_evals.grading import GradeResult
 
 
-def write_predictions(results: list[tuple[SweTask, SweAgentResult]], path: Path, model: str) -> Path:
+def write_predictions(
+    results: list[tuple[SweTask, SweAgentResult]], path: Path, model: str
+) -> Path:
     with path.open("w", encoding="utf-8") as fh:
         for task, result in results:
             fh.write(

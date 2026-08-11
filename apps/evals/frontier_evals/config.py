@@ -42,7 +42,8 @@ class EvalConfig:
             provider=os.getenv("FRONTIER_EVALS_PROVIDER", "vllm"),
             profile_id=os.getenv("FRONTIER_EVALS_PROFILE", ""),
             docker_host=os.getenv("FRONTIER_EVALS_DOCKER_HOST", os.getenv("DOCKER_HOST", "")),
-            allow_local=os.getenv("FRONTIER_EVALS_ALLOW_LOCAL", "0").strip() in {"1", "true", "yes"},
+            allow_local=os.getenv("FRONTIER_EVALS_ALLOW_LOCAL", "0").strip()
+            in {"1", "true", "yes"},
             output_dir=os.getenv("FRONTIER_EVALS_OUTPUT_DIR", "eval-results"),
             threshold=float(os.getenv("FRONTIER_EVALS_THRESHOLD", "0.30")),
         )

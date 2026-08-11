@@ -51,9 +51,7 @@ def test_trigger_create_list_revoke_lifecycle() -> None:
         assert body["webhook_url"] == f"/triggers/webhook/{created_token}"
         assert created_token in store.workflow_triggers
 
-        listing = client.get(
-            f"/workflow-definitions/{workflow_id}/triggers", headers=ADMIN_HEADERS
-        )
+        listing = client.get(f"/workflow-definitions/{workflow_id}/triggers", headers=ADMIN_HEADERS)
         assert listing.status_code == 200
         entries = listing.json()
         assert len(entries) == 1
@@ -111,13 +109,9 @@ def test_webhook_fire_starts_a_run_without_operator_session() -> None:
 
         # The run is attributed to the trigger owner and tagged as webhook-sourced.
         fire_events = [
-            event
-            for event in store.audit_events
-            if event.action == "workflow.trigger.fire"
+            event for event in store.audit_events if event.action == "workflow.trigger.fire"
         ]
-        assert any(
-            event.metadata.get("workflow_id") == workflow_id for event in fire_events
-        )
+        assert any(event.metadata.get("workflow_id") == workflow_id for event in fire_events)
     finally:
         if token:
             store.workflow_triggers.pop(token, None)

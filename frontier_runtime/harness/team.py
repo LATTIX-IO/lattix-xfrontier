@@ -289,7 +289,11 @@ class TeamFlow:
         if decision not in ("approve", "request_changes"):
             # safe default: if any reviewer blocks or no submission, request changes
             blocking = any(r.requests_changes for r in reviews)
-            decision = "request_changes" if blocking or impl.outcome != LoopOutcome.SUBMITTED else "approve"
+            decision = (
+                "request_changes"
+                if blocking or impl.outcome != LoopOutcome.SUBMITTED
+                else "approve"
+            )
         req = data.get("required_changes")
         deferred = data.get("deferred")
         return ModeratorVerdict(

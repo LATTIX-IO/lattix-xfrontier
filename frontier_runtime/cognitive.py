@@ -112,7 +112,9 @@ class AssemblyDefinition:
 
 
 class GoalColumn:
-    def observe(self, *, assembly_id: str, config: dict[str, Any], run_input: dict[str, Any]) -> ColumnState:
+    def observe(
+        self, *, assembly_id: str, config: dict[str, Any], run_input: dict[str, Any]
+    ) -> ColumnState:
         intent = str(config.get("intent") or run_input.get("message") or "").strip()
         success_criteria = _coerce_string_list(config.get("success_criteria"))
         constraints = _coerce_string_list(config.get("constraints"))
@@ -295,22 +297,34 @@ class ConsensusEngine:
         )
         if blockers:
             dissenting_columns.append("evidence")
-            next_actions.append("Collect the missing required evidence before autonomous execution.")
-            next_actions.append("Escalate to a human checkpoint because required evidence is missing.")
+            next_actions.append(
+                "Collect the missing required evidence before autonomous execution."
+            )
+            next_actions.append(
+                "Escalate to a human checkpoint because required evidence is missing."
+            )
         if confidence < max(0.0, min(1.0, float(confidence_threshold))):
             if "synthesis" not in dissenting_columns:
                 dissenting_columns.append("synthesis")
-            next_actions.append("Escalate to a human checkpoint because confidence is below threshold.")
+            next_actions.append(
+                "Escalate to a human checkpoint because confidence is below threshold."
+            )
 
         if not next_actions:
             next_actions.append("Proceed with the commitment and monitor the outcome.")
 
         rationale = str(synthesis_state.belief_set.get("rationale") or "").strip()
-        decision = str(synthesis_state.belief_set.get("decision") or "No commitment produced").strip()
+        decision = str(
+            synthesis_state.belief_set.get("decision") or "No commitment produced"
+        ).strip()
         return Commitment(
             decision=decision,
             confidence=confidence,
-            supporting_columns=[goal_state.column_id, evidence_state.column_id, synthesis_state.column_id],
+            supporting_columns=[
+                goal_state.column_id,
+                evidence_state.column_id,
+                synthesis_state.column_id,
+            ],
             dissenting_columns=dissenting_columns,
             blockers=blockers,
             next_actions=next_actions,

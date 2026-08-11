@@ -113,7 +113,10 @@ class Workspace:
             parts = line.split("\t")
             if len(parts) >= 3:
                 adds, dels, path = parts[0], parts[1], parts[2]
-                count_map[path] = (int(adds) if adds.isdigit() else 0, int(dels) if dels.isdigit() else 0)
+                count_map[path] = (
+                    int(adds) if adds.isdigit() else 0,
+                    int(dels) if dels.isdigit() else 0,
+                )
 
         # Split the unified diff into per-file blocks (keyed by the b/ path).
         blocks: dict[str, str] = {}

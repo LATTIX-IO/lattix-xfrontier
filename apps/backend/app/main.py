@@ -13,6 +13,7 @@ import ipaddress
 import socket
 import threading
 import time
+import platform
 import tomllib
 import http.cookiejar
 import importlib
@@ -3301,6 +3302,8 @@ def _build_state_backends() -> tuple[Any, Any | None]:
 _POSTGRES_STATE, _AUDIT_LOG = _build_state_backends()
 _REDIS_MEMORY = RedisMemoryStore(os.getenv("REDIS_URL", ""))
 _POSTGRES_MEMORY = PostgresLongTermMemoryStore(os.getenv("POSTGRES_DSN", ""))
+
+
 def _build_world_graph() -> Any:
     """Select the world-model graph backend.
 
@@ -13382,10 +13385,16 @@ def _dump_definition_document(payload: Any, fmt: str) -> tuple[bytes, str]:
     normalized = (fmt or "json").strip().lower()
     if normalized in {"yaml", "yml"}:
         if _yaml is None:
-            raise HTTPException(status_code=400, detail="YAML support is not available on this server.")
-        text = _yaml.safe_dump(payload, sort_keys=False, default_flow_style=False, allow_unicode=True)
+            raise HTTPException(
+                status_code=400, detail="YAML support is not available on this server."
+            )
+        text = _yaml.safe_dump(
+            payload, sort_keys=False, default_flow_style=False, allow_unicode=True
+        )
         return text.encode("utf-8"), "application/x-yaml"
-    return (json.dumps(payload, indent=2, sort_keys=False) + "\n").encode("utf-8"), "application/json"
+    return (json.dumps(payload, indent=2, sort_keys=False) + "\n").encode(
+        "utf-8"
+    ), "application/json"
 
 
 def _parse_definition_document(content: str, fmt: str) -> Any:
@@ -13482,7 +13491,9 @@ def _resolve_graph_definition_refs(graph_json: Any, *, context: str) -> dict[str
         wf_token = str(
             cfg.get("workflow_definition_id") or cfg.get("workflow_id") or cfg.get("workflow") or ""
         ).strip()
-        if wf_token and ("workflow" in ntype or "workflow_definition_id" in cfg or "workflow_id" in cfg):
+        if wf_token and (
+            "workflow" in ntype or "workflow_definition_id" in cfg or "workflow_id" in cfg
+        ):
             resolved_wf = _workflow_id_for_reference(wf_token)
             if resolved_wf is None:
                 missing_workflows.append(wf_token)
@@ -13519,7 +13530,9 @@ def _prepare_imported_graph_doc(doc: dict[str, Any], *, context: str) -> dict[st
     graph_src = (
         doc.get("graph_json")
         or doc.get("graph")
-        or (doc.get("config_json", {}) if isinstance(doc.get("config_json"), dict) else {}).get("graph_json")
+        or (doc.get("config_json", {}) if isinstance(doc.get("config_json"), dict) else {}).get(
+            "graph_json"
+        )
         or {}
     )
     resolved_graph = _resolve_graph_definition_refs(graph_src, context=context)
@@ -13534,7 +13547,9 @@ def export_agent_definition(item_id: str, request: Request, format: str = "json"
     item = store.agent_definitions.get(item_id)
     if item is None:
         raise HTTPException(status_code=404, detail="Agent not found")
-    return _export_response(item.model_dump(), fmt=format, filename_stem=f"agent-{item.name or item_id}")
+    return _export_response(
+        item.model_dump(), fmt=format, filename_stem=f"agent-{item.name or item_id}"
+    )
 
 
 @app.post("/agent-definitions/import")
@@ -13543,7 +13558,9 @@ def import_agent_definition(
 ) -> dict[str, Any]:
     doc = _import_request_document(payload)
     if not isinstance(doc, dict):
-        raise HTTPException(status_code=400, detail="Agent import must be a single definition object.")
+        raise HTTPException(
+            status_code=400, detail="Agent import must be a single definition object."
+        )
     requested_status = str(doc.get("status") or "").strip().lower()
     save_agent_definition(request, doc)  # enforces admin + validates + persists
     agent_id = str(doc.get("id") or "")
@@ -13566,12 +13583,16 @@ def import_agent_definition(
 
 
 @app.get("/workflow-definitions/{item_id}/export")
-def export_workflow_definition_doc(item_id: str, request: Request, format: str = "json") -> Response:
+def export_workflow_definition_doc(
+    item_id: str, request: Request, format: str = "json"
+) -> Response:
     _enforce_request_authn(request, action="workflow.definition.export")
     item = store.workflow_definitions.get(item_id)
     if item is None:
         raise HTTPException(status_code=404, detail="Workflow not found")
-    return _export_response(item.model_dump(), fmt=format, filename_stem=f"workflow-{item.name or item_id}")
+    return _export_response(
+        item.model_dump(), fmt=format, filename_stem=f"workflow-{item.name or item_id}"
+    )
 
 
 @app.post("/workflow-definitions/import")
@@ -13580,7 +13601,9 @@ def import_workflow_definition(
 ) -> dict[str, Any]:
     doc = _import_request_document(payload)
     if not isinstance(doc, dict):
-        raise HTTPException(status_code=400, detail="Workflow import must be a single definition object.")
+        raise HTTPException(
+            status_code=400, detail="Workflow import must be a single definition object."
+        )
     # Resolve agent references by name→id and fail if any referenced agent is
     # missing (tells the user to create those agents first).
     doc = _prepare_imported_graph_doc(doc, context="Workflow")
@@ -13610,7 +13633,9 @@ def _upsert_playbook_from_doc(request: Request, doc: dict[str, Any]) -> str:
     actor = _enforce_builder_access(request, action="playbook.import")
     _enforce_emergency_write_policy("playbook.import", actor)
     if not isinstance(doc, dict):
-        raise HTTPException(status_code=400, detail="Playbook import must be a single definition object.")
+        raise HTTPException(
+            status_code=400, detail="Playbook import must be a single definition object."
+        )
     if not str(doc.get("id") or "").strip():
         doc = {**doc, "id": str(uuid4())}
     # Resolve agent/workflow references by name→id and fail if any are missing.
@@ -13629,7 +13654,9 @@ def export_playbook(playbook_id: str, request: Request, format: str = "json") ->
     item = store.playbooks.get(playbook_id)
     if item is None:
         raise HTTPException(status_code=404, detail="Playbook not found")
-    return _export_response(item.model_dump(), fmt=format, filename_stem=f"playbook-{item.name or playbook_id}")
+    return _export_response(
+        item.model_dump(), fmt=format, filename_stem=f"playbook-{item.name or playbook_id}"
+    )
 
 
 @app.post("/playbooks/import")
@@ -13661,7 +13688,10 @@ def import_bundle(
 ) -> dict[str, Any]:
     doc = _import_request_document(payload)
     if not isinstance(doc, dict):
-        raise HTTPException(status_code=400, detail="Bundle import must be an object with agents/workflows/playbooks.")
+        raise HTTPException(
+            status_code=400,
+            detail="Bundle import must be an object with agents/workflows/playbooks.",
+        )
     counts = {"agents": 0, "workflows": 0, "playbooks": 0}
     errors: list[str] = []
     # Mirror the single-item import: publish definitions that declare a live
@@ -13678,7 +13708,9 @@ def import_bundle(
                 except HTTPException as exc:
                     errors.append(f"agent {aid} publish: {getattr(exc, 'detail', exc)}")
         except Exception as exc:  # noqa: BLE001
-            errors.append(f"agent {entry.get('id', '?') if isinstance(entry, dict) else '?'}: {exc}")
+            errors.append(
+                f"agent {entry.get('id', '?') if isinstance(entry, dict) else '?'}: {exc}"
+            )
     for entry in doc.get("workflows") or []:
         try:
             if isinstance(entry, dict):
@@ -13693,13 +13725,17 @@ def import_bundle(
                 except HTTPException as exc:
                     errors.append(f"workflow {wid} publish: {getattr(exc, 'detail', exc)}")
         except Exception as exc:  # noqa: BLE001
-            errors.append(f"workflow {entry.get('id', '?') if isinstance(entry, dict) else '?'}: {exc}")
+            errors.append(
+                f"workflow {entry.get('id', '?') if isinstance(entry, dict) else '?'}: {exc}"
+            )
     for entry in doc.get("playbooks") or []:
         try:
             _upsert_playbook_from_doc(request, entry if isinstance(entry, dict) else {})
             counts["playbooks"] += 1
         except Exception as exc:  # noqa: BLE001
-            errors.append(f"playbook {entry.get('id', '?') if isinstance(entry, dict) else '?'}: {exc}")
+            errors.append(
+                f"playbook {entry.get('id', '?') if isinstance(entry, dict) else '?'}: {exc}"
+            )
     _persist_store_state()
     return {"ok": not errors, **counts, "errors": errors}
 
@@ -13943,7 +13979,7 @@ def _resolve_working_folder(value: str) -> str | None:
     if candidate.is_absolute():
         target = candidate
     else:
-        rel = raw[len("projects/"):] if raw.lower().startswith("projects/") else raw
+        rel = raw[len("projects/") :] if raw.lower().startswith("projects/") else raw
         target = root / rel
     try:
         target = target.resolve()
@@ -13956,9 +13992,11 @@ def _resolve_working_folder(value: str) -> str | None:
 def list_workspace_folders(request: Request, path: str = "") -> dict[str, Any]:
     """List immediate subfolders under the mounted projects root for the
     working-folder picker. `path` (optional) drills into a subfolder."""
-    actor = _enforce_request_authn(request, action="workspace.folders.list")
+    _enforce_request_authn(request, action="workspace.folders.list")
     root = _projects_root_path()
-    base = _resolve_working_folder(path) if path else (str(root.resolve()) if root.exists() else None)
+    base = (
+        _resolve_working_folder(path) if path else (str(root.resolve()) if root.exists() else None)
+    )
     result: dict[str, Any] = {
         "root": str(root),
         "path": base or "",
@@ -14015,14 +14053,10 @@ def list_run_escalations(run_id: str, request: Request) -> dict[str, Any]:
 
 
 @app.post("/workflow-runs/{run_id}/escalations/{escalation_id}/approve")
-def approve_run_escalation(
-    run_id: str, escalation_id: str, request: Request
-) -> dict[str, Any]:
+def approve_run_escalation(run_id: str, escalation_id: str, request: Request) -> dict[str, Any]:
     """Grant an agent access to a folder outside its bound working folder. The
     grant is remembered for that repo and merged into extra_paths on later runs."""
-    actor = _enforce_request_authn(
-        request, payload={}, action="workflow.run.escalations.approve"
-    )
+    actor = _enforce_request_authn(request, payload={}, action="workflow.run.escalations.approve")
     details = store.run_details.get(run_id) or {}
     escalations = details.get("escalations")
     if not isinstance(escalations, list):
@@ -14437,9 +14471,7 @@ def _gather_mcp_run_tools(
         if integration.auth_type != "none" and not token:
             continue
         try:
-            server = mcp_client.McpHttpClient(
-                base_url, bearer_token=token, timeout_seconds=15.0
-            )
+            server = mcp_client.McpHttpClient(base_url, bearer_token=token, timeout_seconds=15.0)
             tools = server.list_tools()
         except Exception:  # noqa: BLE001 - unreachable servers contribute no tools
             continue
@@ -14583,13 +14615,14 @@ def _graph_json_has_nodes(graph_json: Any) -> bool:
         return False
 
 
-def _resolve_collaboration_turns(
-    agent_def: "AgentDefinition", payload: dict[str, Any]
-) -> int:
+def _resolve_collaboration_turns(agent_def: "AgentDefinition", payload: dict[str, Any]) -> int:
     """Turn cap, configurable per playbook/workflow (kickoff payload) or per agent
     (config_json), falling back to a conservative default."""
     config = getattr(agent_def, "config_json", {}) or {}
-    for candidate in (payload.get("max_collaboration_turns"), config.get("max_collaboration_turns")):
+    for candidate in (
+        payload.get("max_collaboration_turns"),
+        config.get("max_collaboration_turns"),
+    ):
         try:
             value = int(candidate)
         except (TypeError, ValueError):
@@ -14802,10 +14835,16 @@ def _assign_agents_to_run(run_id: str, members: list[dict[str, str]]) -> None:
     if isinstance(existing, list):
         for item in existing:
             if isinstance(item, dict) and item.get("id"):
-                by_id[str(item["id"])] = {"id": str(item["id"]), "name": str(item.get("name") or "Agent")}
+                by_id[str(item["id"])] = {
+                    "id": str(item["id"]),
+                    "name": str(item.get("name") or "Agent"),
+                }
     for member in members:
         if member.get("id"):
-            by_id[str(member["id"])] = {"id": str(member["id"]), "name": str(member.get("name") or "Agent")}
+            by_id[str(member["id"])] = {
+                "id": str(member["id"]),
+                "name": str(member.get("name") or "Agent"),
+            }
     details["assigned_agents"] = list(by_id.values())
 
 
@@ -15041,7 +15080,9 @@ def _run_agent_collaboration(
         if primary_def is not None:
             transcript = "\n".join(transcript_lines[-12:])
             synthesis_system = _augment_system_prompt_with_skills(
-                _resolve_agent_system_prompt(primary_def, requested_token=_slugify(primary_def.name))[0]
+                _resolve_agent_system_prompt(
+                    primary_def, requested_token=_slugify(primary_def.name)
+                )[0]
             )
             synthesis_prompt = (
                 "The multi-agent exchange below is complete. As the lead, reason over it and write "
@@ -15482,9 +15523,7 @@ def create_workflow_run(
                 temperature=0.2,
                 tools=tool_schemas or None,
                 tool_executor=_execute_mcp_tool if tool_dispatch else None,
-                max_tool_calls=max(
-                    1, int(store.platform_settings.max_tool_calls_per_run or 8)
-                ),
+                max_tool_calls=max(1, int(store.platform_settings.max_tool_calls_per_run or 8)),
                 on_tool_event=_emit_tool_event,
                 reasoning_effort=composer_opts["reasoning_effort"],
             )
@@ -15940,7 +15979,9 @@ def _dispatch_graph_target_in_chat(
         run_payload["workspace"] = workspace
 
     base = _graph_payload_from_json(graph_json)
-    gp = GraphPayload(schema_version=base.schema_version, nodes=base.nodes, links=base.links, input=run_payload)
+    gp = GraphPayload(
+        schema_version=base.schema_version, nodes=base.nodes, links=base.links, input=run_payload
+    )
 
     store.run_events.setdefault(run_id, []).append(
         WorkflowRunEvent(
@@ -15952,6 +15993,7 @@ def _dispatch_graph_target_in_chat(
             metadata={"phase": "workflow", "target": target_name},
         )
     )
+
     def _chat_sink(kind: str, data: dict[str, Any]) -> None:
         """Stream each agent's reasoning + message (and the implementer's tool
         work) into the chat as it happens, so the user sees the back-and-forth."""
@@ -16133,9 +16175,7 @@ def send_run_message(
     if agent_def is None:
         agent_def = _ensure_default_chat_agent_present(actor="system/default-chat-agent")
 
-    pinned_seed_tokens = [
-        _slugify(member.name) for member in roster if member.id != agent_def.id
-    ]
+    pinned_seed_tokens = [_slugify(member.name) for member in roster if member.id != agent_def.id]
 
     run.status = "Running"
     run.progressLabel = "Responding"
@@ -16657,9 +16697,7 @@ def create_workflow_trigger(
         "label": str(payload.get("label") or "Webhook trigger"),
         "created_at": _now_iso(),
     }
-    _append_audit_event(
-        "workflow.trigger.create", actor, "allowed", {"workflow_id": item_id}
-    )
+    _append_audit_event("workflow.trigger.create", actor, "allowed", {"workflow_id": item_id})
     _persist_store_state()
     # The full token is returned exactly once.
     return {
@@ -16720,9 +16758,7 @@ def fire_workflow_trigger(
     request.state.frontier_auth_context = {"authenticated": True, "actor": actor}
 
     prompt = str(payload.get("prompt") or "").strip() or "Run triggered via webhook."
-    _append_audit_event(
-        "workflow.trigger.fire", actor, "allowed", {"workflow_id": workflow.id}
-    )
+    _append_audit_event("workflow.trigger.fire", actor, "allowed", {"workflow_id": workflow.id})
     run_payload = {
         "title": f"Webhook: {workflow.name}",
         "prompt": prompt,
@@ -16741,9 +16777,7 @@ class _TriggerRequestShim:
     """
 
     def __init__(self, actor: str) -> None:
-        self.state = SimpleNamespace(
-            frontier_auth_context={"authenticated": True, "actor": actor}
-        )
+        self.state = SimpleNamespace(frontier_auth_context={"authenticated": True, "actor": actor})
         self.headers: dict[str, str] = {}
 
 
@@ -17166,8 +17200,11 @@ def search_knowledge_collection(
     results = [
         {
             "content": entry.get("content", ""),
-            "document_name": entry.get("document_name") or entry.get("metadata", {}).get("document_name", ""),
-            "chunk_index": entry.get("chunk_index", entry.get("metadata", {}).get("chunk_index", 0)),
+            "document_name": entry.get("document_name")
+            or entry.get("metadata", {}).get("document_name", ""),
+            "chunk_index": entry.get(
+                "chunk_index", entry.get("metadata", {}).get("chunk_index", 0)
+            ),
             "score": entry.get("score"),
         }
         for entry in entries
@@ -20538,7 +20575,11 @@ def _agent_resolution_for_node(config: dict[str, Any]) -> Any:
 
     # Coding backend for code nodes: native SweAgent (default) or the Codex
     # subprocess backend. Node config wins, else the platform env default.
-    backend = str(cfg.get("harness_backend") or os.getenv("FRONTIER_HARNESS_BACKEND") or "native").strip().lower()
+    backend = (
+        str(cfg.get("harness_backend") or os.getenv("FRONTIER_HARNESS_BACKEND") or "native")
+        .strip()
+        .lower()
+    )
     if backend not in {"native", "codex"}:
         backend = "native"
 
@@ -20614,9 +20655,7 @@ def _should_use_compiler(payload: GraphPayload) -> bool:
     native path (and its runtime-engine metadata) unchanged."""
     has_cycle = _topological_order([node.id for node in payload.nodes], payload.links) is None
     agent_nodes = sum(
-        1
-        for node in payload.nodes
-        if _normalize_node_type(node.type).startswith("frontier/agent")
+        1 for node in payload.nodes if _normalize_node_type(node.type).startswith("frontier/agent")
     )
     return has_cycle or agent_nodes >= 2
 
@@ -20635,7 +20674,7 @@ def _compile_and_run_frontier_graph(
     ``(node_results, events)`` shaped like the native path so the response model
     and UI are unchanged.
     """
-    from app import graph_compiler as gc
+    from . import graph_compiler as gc
 
     events: list[GraphRunEvent] = []
 
@@ -20646,7 +20685,9 @@ def _compile_and_run_frontier_graph(
             except Exception:  # noqa: BLE001 - event sink must never break a run
                 pass
         node_id = str(data.get("node_id") or kind)
-        etype = kind if kind in {"node_started", "node_completed", "node_failed"} else "node_completed"
+        etype = (
+            kind if kind in {"node_started", "node_completed", "node_failed"} else "node_completed"
+        )
         title = str(data.get("title") or kind.replace("_", " ").title())
         detail = {k: v for k, v in data.items() if k not in {"node_id", "title"}}
         events.append(
@@ -20655,16 +20696,20 @@ def _compile_and_run_frontier_graph(
                 node_id=node_id,
                 type=etype,  # type: ignore[arg-type]
                 title=title[:120],
-                summary=(str(data.get("note") or "").strip()[:300]
-                         or (str(detail)[:300] if detail else "")
-                         or "ok"),
+                summary=(
+                    str(data.get("note") or "").strip()[:300]
+                    or (str(detail)[:300] if detail else "")
+                    or "ok"
+                ),
                 created_at=_now_iso(),
             )
         )
 
     run_input = payload.input if isinstance(payload.input, dict) else {}
     runtime = run_input.get("runtime") if isinstance(run_input.get("runtime"), dict) else {}
-    session_id = str(runtime.get("session_id") or run_input.get("session_id") or f"session:{run_id}")
+    session_id = str(
+        runtime.get("session_id") or run_input.get("session_id") or f"session:{run_id}"
+    )
     execution_state: dict[str, Any] = {
         "run_id": run_id,
         "runtime": runtime,
@@ -20760,7 +20805,9 @@ def _compile_and_run_frontier_graph(
     node_results = result.get("node_results", {})
     if not isinstance(node_results, dict):
         node_results = {}
-    changed_files = result.get("changed_files") if isinstance(result.get("changed_files"), list) else []
+    changed_files = (
+        result.get("changed_files") if isinstance(result.get("changed_files"), list) else []
+    )
     return node_results, events, changed_files
 
 
@@ -20841,22 +20888,36 @@ def _run_compiled_workflow_run(
     )
 
     try:
-        node_results, compiled_events, changed_files = _compile_and_run_frontier_graph(gp, run_id=run_id)
+        node_results, compiled_events, changed_files = _compile_and_run_frontier_graph(
+            gp, run_id=run_id
+        )
     except Exception as exc:  # noqa: BLE001
         store.runs[run_id] = WorkflowRunSummary(
-            id=run_id, title=title, status="Failed", updatedAt="just now",
-            progressLabel="Multi-agent run failed", kind=run_kind,  # type: ignore[arg-type]
+            id=run_id,
+            title=title,
+            status="Failed",
+            updatedAt="just now",
+            progressLabel="Multi-agent run failed",
+            kind=run_kind,  # type: ignore[arg-type]
         )
         store.run_events.setdefault(run_id, []).append(
             WorkflowRunEvent(
-                id=f"evt-{uuid4()}", type="error", title="Multi-agent workflow failed",
-                summary=_sanitize_runtime_error_message(exc), createdAt=_now_iso(), metadata={},
+                id=f"evt-{uuid4()}",
+                type="error",
+                title="Multi-agent workflow failed",
+                summary=_sanitize_runtime_error_message(exc),
+                createdAt=_now_iso(),
+                metadata={},
             )
         )
         store.run_details[run_id] = {
-            "artifacts": [], "status": "Failed", "graph": graph_json,
-            "agent_traces": [], "response_text": _sanitize_runtime_error_message(exc),
-            "approvals": {"required": False, "pending": False}, "access": access_context,
+            "artifacts": [],
+            "status": "Failed",
+            "graph": graph_json,
+            "agent_traces": [],
+            "response_text": _sanitize_runtime_error_message(exc),
+            "approvals": {"required": False, "pending": False},
+            "access": access_context,
         }
         _persist_store_state()
         return
@@ -20907,20 +20968,29 @@ def _run_compiled_workflow_run(
     for node_id, res in node_results.items():
         if isinstance(res, dict) and str(res.get("patch") or "").strip():
             patch_artifact = ArtifactSummary(
-                id=str(uuid4()), name=f"Patch — {res.get('title') or node_id}",
-                status="Needs Review", version=1,
+                id=str(uuid4()),
+                name=f"Patch — {res.get('title') or node_id}",
+                status="Needs Review",
+                version=1,
             )
             _upsert_artifact_summary(patch_artifact)
             artifacts.append(patch_artifact)
 
     store.runs[run_id] = WorkflowRunSummary(
-        id=run_id, title=title, status="Needs Review", updatedAt="just now",
-        progressLabel="Team handed back a completed feature", kind=run_kind,  # type: ignore[arg-type]
+        id=run_id,
+        title=title,
+        status="Needs Review",
+        updatedAt="just now",
+        progressLabel="Team handed back a completed feature",
+        kind=run_kind,  # type: ignore[arg-type]
     )
     store.run_events.setdefault(run_id, []).append(
         WorkflowRunEvent(
-            id=f"evt-{uuid4()}", type="artifact_created", title="Team handback ready",
-            summary=response_text[:500], createdAt=_now_iso(),
+            id=f"evt-{uuid4()}",
+            type="artifact_created",
+            title="Team handback ready",
+            summary=response_text[:500],
+            createdAt=_now_iso(),
             metadata={"artifact_id": main_artifact.id},
         )
     )

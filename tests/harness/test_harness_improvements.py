@@ -26,8 +26,13 @@ def _repo(root: Path) -> None:
     (root / "pkg").mkdir()
     (root / "pkg" / "__init__.py").write_text("")
     (root / "pkg" / "core.py").write_text("def add(a, b):\n    return a - b\n")
-    for args in (("init", "-q"), ("config", "user.email", "t@e.com"),
-                 ("config", "user.name", "t"), ("add", "-A"), ("commit", "-q", "-m", "x")):
+    for args in (
+        ("init", "-q"),
+        ("config", "user.email", "t@e.com"),
+        ("config", "user.name", "t"),
+        ("add", "-A"),
+        ("commit", "-q", "-m", "x"),
+    ):
         subprocess.run(["git", *args], cwd=str(root), check=True, capture_output=True)
 
 
@@ -92,8 +97,12 @@ def test_submit_diff_excludes_pycache(tmp_path):
     # make a real source edit
     ts.dispatch(
         "str_replace_editor",
-        {"command": "str_replace", "path": "pkg/core.py",
-         "old_str": "return a - b", "new_str": "return a + b"},
+        {
+            "command": "str_replace",
+            "path": "pkg/core.py",
+            "old_str": "return a - b",
+            "new_str": "return a + b",
+        },
     )
     # simulate test side effects: a pyc + a __pycache__ dir
     (tmp_path / "pkg" / "__pycache__").mkdir()

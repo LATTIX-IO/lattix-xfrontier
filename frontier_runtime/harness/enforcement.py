@@ -101,8 +101,7 @@ def reask_tool_message(tool_call_id: str, name: str, reason: str) -> dict[str, A
         "role": "tool",
         "tool_call_id": tool_call_id,
         "content": (
-            f"[invalid tool call to '{name}': {reason}] "
-            "Re-issue the call with corrected arguments."
+            f"[invalid tool call to '{name}': {reason}] Re-issue the call with corrected arguments."
         ),
     }
 

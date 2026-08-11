@@ -20,10 +20,7 @@ from app.main import IntegrationDefinition, store
 def test_mcp_sse_payload_parsing() -> None:
     from app.mcp_client import McpHttpClient
 
-    body = (
-        "event: message\n"
-        'data: {"jsonrpc":"2.0","id":1,"result":{"tools":[]}}\n\n'
-    )
+    body = 'event: message\ndata: {"jsonrpc":"2.0","id":1,"result":{"tools":[]}}\n\n'
     parsed = McpHttpClient._parse_sse_payload(body)
     assert parsed is not None
     assert parsed["result"]["tools"] == []
