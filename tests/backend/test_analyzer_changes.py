@@ -154,18 +154,18 @@ def test_cross_functional_v2_graph_compiles():
     assert {"security-audit", "qa-verify", "perf-verify"} <= node_ids
 
     class N:
-        def __init__(s, d):
-            s.id = d["id"]
-            s.type = d["type"]
-            s.title = d.get("title", d["id"])
-            s.config = d.get("config", {})
+        def __init__(self, d):
+            self.id = d["id"]
+            self.type = d["type"]
+            self.title = d.get("title", d["id"])
+            self.config = d.get("config", {})
 
     class E:
-        def __init__(s, d):
-            s.from_node = d["from"]
-            s.to_node = d["to"]
-            s.from_port = d.get("from_port")
-            s.to_port = d.get("to_port")
+        def __init__(self, d):
+            self.from_node = d["from"]
+            self.to_node = d["to"]
+            self.from_port = d.get("from_port")
+            self.to_port = d.get("to_port")
 
     nodes = [N(n) for n in graph["nodes"]]
     links = [E(e) for e in graph["links"]]
