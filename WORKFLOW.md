@@ -30,7 +30,9 @@ hooks:
     set -euo pipefail
     if [ -d .git ] && [ -z "$(git status --porcelain)" ]; then
       git fetch --all --prune
-      git pull --ff-only || true
+      if ! git pull --ff-only; then
+        echo "WARN: git pull --ff-only failed; continuing without updating workspace" >&2
+      fi
     fi
   after_run: |
     set -euo pipefail
