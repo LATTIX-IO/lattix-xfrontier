@@ -85,12 +85,19 @@ jobs:
 
       - name: SAST via Semgrep
         run: |
-          semgrep --config=auto --exclude .venv --exclude .next --exclude node_modules --exclude dist --json=semgrep-results.json . || true
-          
+          semgrep --config=auto --exclude .venv --exclude .next --exclude node_modules --exclude dist --sarif --output semgrep-results.sarif . || true
+
+      - name: Upload Semgrep artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: semgrep-results
+          path: semgrep-results.sarif
+          if-no-files-found: warn
+
       - name: Upload Semgrep results
         uses: github/codeql-action/upload-sarif@v3
         with:
-          sarif_file: semgrep-results.json
+          sarif_file: semgrep-results.sarif
           category: semgrep
 
       - name: Secret scanning via Gitleaks
