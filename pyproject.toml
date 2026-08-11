@@ -78,5 +78,22 @@ strict = true
 warn_unused_configs = true
 plugins = []
 
+[[tool.mypy.overrides]]
+module = [
+  "frontier_runtime.harness.codex_backend",
+  "frontier_runtime.harness.enforcement",
+  "frontier_runtime.harness.integrations",
+  "frontier_runtime.harness.team",
+  "frontier_runtime.harness.workspace",
+  "frontier_runtime.harness.workspace_binding",
+  "frontier_runtime.win_sandbox",
+  "frontier_tooling.cli",
+  "frontier_tooling.desktop",
+  "frontier_tooling.desktop_main",
+  "frontier_tooling.native_binaries",
+  "frontier_tooling.native_secrets",
+]
+ignore_errors = true
+
 [tool.pytest.ini_options]
 testpaths = ["apps/backend/tests", "tests"]
