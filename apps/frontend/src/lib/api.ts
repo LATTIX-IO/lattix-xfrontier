@@ -266,6 +266,43 @@ export type WorkflowRunDetail = {
     version?: number;
     scope?: string;
   };
+  cognitive?: {
+    assembly?: {
+      assembly_id?: string;
+      consensus_policy?: string;
+      inference_mode?: string;
+      columns?: string[];
+    };
+    commitment?: {
+      decision?: string;
+      confidence?: number;
+      supporting_columns?: string[];
+      dissenting_columns?: string[];
+      blockers?: string[];
+      next_actions?: string[];
+      evidence_refs?: string[];
+      rationale?: string;
+      status?: string;
+    };
+    states?: Record<
+      string,
+      {
+        column_id?: string;
+        assembly_id?: string;
+        belief_set?: Record<string, unknown>;
+        evidence_refs?: string[];
+        confidence?: number;
+        last_updated?: string;
+      }
+    >;
+    messages?: Array<{
+      message_type?: string;
+      column_id?: string;
+      assembly_id?: string;
+      confidence?: number;
+      evidence_refs?: string[];
+    }>;
+  };
 };
 
 async function safeFetch<T>(path: string, fallback: T, init?: RequestInit): Promise<T> {

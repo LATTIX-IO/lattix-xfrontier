@@ -220,6 +220,108 @@ const SCHEMAS: Record<string, NodeSchema> = {
     inputAliases: { data: "context" },
     outputAliases: { output: "prompt", system_prompt: "prompt" },
   },
+  goal: {
+    inputs: [
+      { name: "in", type: "flow" },
+      { name: "context", type: "data" },
+    ],
+    outputs: [
+      { name: "out", type: "flow" },
+      { name: "goal", type: "goal" },
+    ],
+    defaults: {
+      intent: "",
+      success_criteria: [],
+      constraints: [],
+      priorities: [],
+      output_contract: "",
+    },
+    widgets: [
+      {
+        key: "intent",
+        label: "intent",
+        kind: "text",
+        defaultValue: "",
+        multiline: true,
+        help: "Primary task objective that the assembly should optimize for.",
+      },
+      {
+        key: "success_criteria",
+        label: "success_criteria",
+        kind: "text",
+        defaultValue: "",
+        multiline: true,
+        help: "One item per line or JSON list describing what success looks like.",
+      },
+      {
+        key: "constraints",
+        label: "constraints",
+        kind: "text",
+        defaultValue: "",
+        multiline: true,
+        help: "Explicit constraints or guard boundaries the cognitive flow must respect.",
+      },
+      {
+        key: "priorities",
+        label: "priorities",
+        kind: "text",
+        defaultValue: "",
+        multiline: true,
+        help: "Ordered priorities that help break ties during synthesis and commitment.",
+      },
+      {
+        key: "output_contract",
+        label: "output_contract",
+        kind: "text",
+        defaultValue: "",
+        multiline: true,
+        help: "Expected decision/output format the commitment should produce.",
+      },
+    ],
+    outputAliases: { output: "goal", belief: "goal" },
+  },
+  evidence: {
+    inputs: [
+      { name: "in", type: "flow" },
+      { name: "context", type: "data" },
+    ],
+    outputs: [
+      { name: "out", type: "flow" },
+      { name: "evidence", type: "evidence" },
+    ],
+    defaults: {
+      allowed_sources: [],
+      required_evidence: [],
+      ranking_rules: "freshness_then_relevance",
+    },
+    widgets: [
+      {
+        key: "allowed_sources",
+        label: "allowed_sources",
+        kind: "text",
+        defaultValue: "",
+        multiline: true,
+        help: "Allowed evidence sources for this node (one per line or JSON list).",
+      },
+      {
+        key: "required_evidence",
+        label: "required_evidence",
+        kind: "text",
+        defaultValue: "",
+        multiline: true,
+        help: "Required evidence phrases or categories that must be present before commitment.",
+      },
+      {
+        key: "ranking_rules",
+        label: "ranking_rules",
+        kind: "combo",
+        defaultValue: "freshness_then_relevance",
+        options: ["freshness_then_relevance", "relevance_then_freshness", "manual"],
+        help: "How evidence should be prioritized before assembly.",
+      },
+    ],
+    outputAliases: { output: "evidence", claims: "evidence" },
+  },
   agent: {
     inputs: [
       { name: "in", type: "flow" },
@@ -260,6 +362,92 @@ const SCHEMAS: Record<string, NodeSchema> = {
       { key: "system_prompt", label: "system_prompt", kind: "text", defaultValue: "", multiline: true, help: "Inline prompt fallback. If a prompt node is connected, connected prompt typically takes precedence depending on runtime composition order." },
     ],
     outputAliases: { output: "out", tool_api: "tool_request", query: "retrieval_query", request: "tool_request" },
+  },
+  assembly: {
+    inputs: [
+      { name: "in", type: "flow" },
+      { name: "goal", type: "goal" },
+      { name: "evidence", type: "evidence" },
+    ],
+    outputs: [
+      { name: "out", type: "flow" },
+      { name: "synthesis", type: "data" },
+      { name: "commitment", type: "commitment" },
+      { name: "dissent", type: "data" },
+    ],
+    defaults: {
+      consensus_policy: "weighted-support",
+      inference_mode: "bounded",
+      confidence_threshold: 0.6,
+    },
+    widgets: [
+      {
+        key: "consensus_policy",
+        label: "consensus_policy",
+        kind: "combo",
+        defaultValue: "weighted-support",
+        options: ["weighted-support"],
+        help: "Consensus policy used to fuse goal and evidence in the MVP slice.",
+      },
+      {
+        key: "inference_mode",
+        label: "inference_mode",
+        kind: "combo",
+        defaultValue: "bounded",
+        options: ["bounded"],
+        help: "Inference strategy for the MVP assembly runtime.",
+      },
+      {
+        key: "confidence_threshold",
+        label: "confidence_threshold",
+        kind: "number",
+        defaultValue: 0.6,
+        help: "Minimum confidence required before commitment is considered autonomous.",
+      },
+    ],
+    outputAliases: { output: "commitment", proposal: "commitment" },
+  },
+  commitment: {
+    inputs: [
+      { name: "in", type: "flow" },
+      { name: "commitment", type: "commitment" },
+    ],
+    outputs: [
+      { name: "out", type: "flow" },
+      { name: "result", type: "data" },
+    ],
+    defaults: {
+      autonomy_level: "bounded",
+      confidence_threshold: 0.6,
+      escalation_rules: "human_checkpoint",
+    },
+    widgets: [
+      {
+        key: "autonomy_level",
+        label: "autonomy_level",
+        kind: "combo",
+        defaultValue: "bounded",
+        options: ["bounded", "manual"],
+        help: "How much autonomy the commitment node is allowed to exercise.",
+      },
+      {
+        key: "confidence_threshold",
+        label: "confidence_threshold",
+        kind: "number",
+        defaultValue: 0.6,
+        help: "Confidence threshold required before finalizing the commitment.",
+      },
+      {
+        key: "escalation_rules",
+        label: "escalation_rules",
+        kind: "combo",
+        defaultValue: "human_checkpoint",
+        options: ["human_checkpoint", "manual_review"],
+        help: "Escalation behavior when blockers or low confidence prevent commitment.",
+      },
+    ],
+    inputAliases: { proposal: "commitment" },
+    outputAliases: { output: "result", published: "result" },
   },
   "tool-call": {
     inputs: [

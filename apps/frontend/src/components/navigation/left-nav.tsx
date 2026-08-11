@@ -164,16 +164,43 @@ export function LeftNav({ mode, pathname, inAdmin, expanded, platformVersion }: 
     return null;
   }
 
+  const roleLabel = mode === "builder" ? "Builder" : "Operator";
+
   return (
     <div className="flex h-full flex-col">
       <div className="border-b border-[var(--ui-border)] px-3 pb-3 pt-3">
-        <button type="button" className="fx-workspace-switcher w-full text-left" aria-label="Workspace switcher">
-          <span className="fx-workspace-switcher-kicker">{workspaceLabel}</span>
-          <span className="mt-1 block truncate text-[0.92rem] font-semibold text-[hsl(var(--foreground))]">Lattix Corporation</span>
-          <span className="mt-1 flex items-center justify-between gap-2 text-[0.72rem] text-[var(--fx-muted)]">
-            <span className="truncate">{modeLabel}</span>
-            <span aria-hidden="true">⌄</span>
+        <button
+          type="button"
+          className="fx-workspace-switcher flex w-full items-center gap-2.5 text-left"
+          aria-label="Workspace switcher"
+          title={`${workspaceLabel} · ${modeLabel}`}
+        >
+          <span
+            className="flex h-[22px] w-[22px] shrink-0 items-center justify-center rounded-[4px] bg-[hsl(var(--foreground))] font-mono text-[10px] font-bold tracking-[0.04em] text-[hsl(var(--card))]"
+            aria-hidden="true"
+          >
+            LX
           </span>
+          <span className="flex min-w-0 flex-1 flex-col leading-tight">
+            <span className="truncate text-[12px] font-semibold text-[hsl(var(--foreground))]">
+              Lattix Corporation
+            </span>
+            <span className="truncate font-mono text-[10px] uppercase tracking-[0.08em] text-[var(--fx-muted)]">
+              {roleLabel}
+            </span>
+          </span>
+          <svg
+            width="10"
+            height="10"
+            viewBox="0 0 10 10"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.5"
+            className="shrink-0 text-[var(--fx-muted)]"
+            aria-hidden="true"
+          >
+            <path d="M2 4l3 3 3-3" />
+          </svg>
         </button>
       </div>
 

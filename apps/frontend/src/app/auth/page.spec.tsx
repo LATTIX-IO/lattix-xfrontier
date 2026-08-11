@@ -1,104 +1,200 @@
 import "@testing-library/jest-dom/vitest";
-import { render, screen } from "@testing-library/react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+const { loginMock, registerMock, getSessionMock, routerReplaceMock, routerRefreshMock } = vi.hoisted(() => ({
+  loginMock: vi.fn(),
+  registerMock: vi.fn(),
+  getSessionMock: vi.fn(),
+  routerReplaceMock: vi.fn(),
+  routerRefreshMock: vi.fn(),
+}));
 
 vi.mock("next/navigation", () => ({
   useRouter: () => ({
-    replace: vi.fn(),
-    refresh: vi.fn(),
+    replace: routerReplaceMock,
+    refresh: routerRefreshMock,
     push: vi.fn(),
   }),
 }));
 
-import AuthPage from "@/app/auth/page";
+vi.mock("@/lib/api", () => ({
+  loginWithLocalPassword: loginMock,
+  registerWithLocalPassword: registerMock,
+  getOperatorSession: getSessionMock,
+}));
 
-describe("AuthPage", () => {
-  const originalEnv = { ...process.env };
+import { LattixAuthCard } from "@/components/auth/lattix-auth-card";
+
+function renderCard(initialErrorCode?: string | null) {
+  return render(<LattixAuthCard initialErrorCode={initialErrorCode ?? undefined} />);
+}
+
+describe("LattixAuthCard", () => {
+  beforeEach(() => {
+    loginMock.mockReset();
+    registerMock.mockReset();
+    getSessionMock.mockReset();
+    routerReplaceMock.mockReset();
+    routerRefreshMock.mockReset();
+  });
 
   afterEach(() => {
-    process.env = { ...originalEnv };
+    vi.clearAllMocks();
   });
 
-  it("renders Casdoor-backed sign-in and sign-up actions", () => {
-    process.env.FRONTIER_AUTH_MODE = "oidc";
-    process.env.FRONTIER_AUTH_OIDC_PROVIDER = "casdoor";
-    process.env.FRONTIER_AUTH_OIDC_ISSUER = "http://127.0.0.1:8081";
-    process.env.FRONTIER_AUTH_OIDC_AUDIENCE = "frontier-ui";
-    process.env.FRONTIER_AUTH_OIDC_CLIENT_ID = "frontier-web";
-    process.env.FRONTIER_AUTH_OIDC_SIGNIN_URL = "http://127.0.0.1:8081/login/oauth/authorize";
-    process.env.FRONTIER_AUTH_OIDC_SIGNUP_URL = "http://127.0.0.1:8081/signup";
-    process.env.FRONTIER_AUTH_OIDC_SCOPES = "openid profile email";
+  it("renders the Lattix sign-in card with email, password, footer, and brand", () => {
+    renderCard();
 
-    render(<AuthPage />);
-
-    expect(screen.getByRole("heading", { name: /one frontier, whichever iam your team already trusts/i })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Sign in" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Create account" })).toBeInTheDocument();
-    expect(screen.getByLabelText(/username/i)).toBeInTheDocument();
-    expect(screen.getByLabelText(/password/i)).toBeInTheDocument();
-    expect(screen.getByText(/why this stays inside xfrontier/i)).toBeInTheDocument();
-    expect(screen.getByText(/configured against http:\/\/127\.0\.0\.1:8081/i)).toBeInTheDocument();
+    expect(screen.getAllByText(/lattix/i).length).toBeGreaterThan(0);
+    expect(screen.getByText(/secure access/i)).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: /sign in/i })).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByRole("tab", { name: /sign up/i })).toHaveAttribute("aria-selected", "false");
+    expect(screen.getByLabelText(/^email$/i)).toHaveAttribute("type", "email");
+    expect(screen.getByLabelText(/^password$/i)).toHaveAttribute("type", "password");
+    expect(screen.getByRole("button", { name: /^sign in$/i })).toBeInTheDocument();
+    expect(screen.getByText(/encrypted channel/i)).toBeInTheDocument();
+    expect(screen.getByText(/lattix technologies corp/i)).toBeInTheDocument();
   });
 
-  it("shows setup guidance when oidc is incomplete", () => {
-    process.env.FRONTIER_AUTH_MODE = "oidc";
-    process.env.FRONTIER_AUTH_OIDC_PROVIDER = "oidc";
-    process.env.FRONTIER_AUTH_OIDC_ISSUER = "";
-    process.env.FRONTIER_AUTH_OIDC_SIGNIN_URL = "";
-    process.env.FRONTIER_AUTH_OIDC_SIGNUP_URL = "";
+  it("renders a resolved error message from the auth_error search param", () => {
+    renderCard("invalid_credentials");
 
-    render(<AuthPage />);
-
-    expect(screen.getByText(/oidc issuer must be a valid absolute http\(s\) url/i)).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: /sign in with oidc provider/i })).toHaveAttribute("href", "#auth-not-configured");
+    expect(
+      screen.getByRole("alert"),
+    ).toHaveTextContent(/email or password was not accepted/i);
   });
 
-  it("disables interactive auth actions when redirect URLs do not match the configured issuer", () => {
-    process.env.FRONTIER_AUTH_MODE = "oidc";
-    process.env.FRONTIER_AUTH_OIDC_PROVIDER = "oidc";
-    process.env.FRONTIER_AUTH_OIDC_ISSUER = "https://issuer.example.com";
-    process.env.FRONTIER_AUTH_OIDC_SIGNIN_URL = "https://evil.example.com/login";
-    process.env.FRONTIER_AUTH_OIDC_SIGNUP_URL = "https://issuer.example.com/signup";
+  it("toggles password visibility", () => {
+    renderCard();
 
-    render(<AuthPage />);
+    const passwordInput = screen.getByLabelText(/^password$/i);
+    expect(passwordInput).toHaveAttribute("type", "password");
 
-    expect(screen.getByText(/sign-in url must belong to the configured oidc issuer origin/i)).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: /sign in with oidc provider/i })).toHaveAttribute("href", "#auth-not-configured");
-    expect(screen.getByRole("link", { name: /create account/i })).toHaveAttribute("href", "#auth-not-configured");
+    fireEvent.click(screen.getByRole("button", { name: /show password/i }));
+
+    expect(passwordInput).toHaveAttribute("type", "text");
   });
 
-  it("explains shared-token fallback when interactive login is disabled", () => {
-    process.env.FRONTIER_AUTH_MODE = "shared-token";
-    process.env.FRONTIER_AUTH_OIDC_PROVIDER = "";
+  it("submits sign-in through Casdoor-backed /auth/login and routes to the default destination", async () => {
+    loginMock.mockResolvedValueOnce({ ok: true, authenticated: true, provider: "casdoor", mode: "oidc" });
+    getSessionMock.mockResolvedValueOnce({
+      authenticated: true,
+      capabilities: { can_builder: false, can_admin: false },
+      default_mode: "user",
+    });
 
-    render(<AuthPage />);
+    renderCard();
 
-    expect(screen.getByText(/shared operator token/i)).toBeInTheDocument();
-    expect(screen.getByText(/using the shared-token fallback/i)).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText(/^email$/i), { target: { value: "operator@lattix.io" } });
+    fireEvent.change(screen.getByLabelText(/^password$/i), { target: { value: "correct-horse" } });
+    fireEvent.click(screen.getByRole("button", { name: /^sign in$/i }));
+
+    await waitFor(() => {
+      expect(loginMock).toHaveBeenCalledWith({
+        username: "operator@lattix.io",
+        password: "correct-horse",
+      });
+    });
+    await waitFor(() => expect(routerReplaceMock).toHaveBeenCalledWith("/inbox"));
   });
 
-  it("does not offer a direct console bypass link", () => {
-    process.env.FRONTIER_AUTH_MODE = "oidc";
-    process.env.FRONTIER_AUTH_OIDC_PROVIDER = "casdoor";
-    process.env.FRONTIER_AUTH_OIDC_ISSUER = "http://127.0.0.1:8081";
-    process.env.FRONTIER_AUTH_OIDC_SIGNIN_URL = "http://127.0.0.1:8081/login/oauth/authorize";
-    process.env.FRONTIER_AUTH_OIDC_SIGNUP_URL = "http://127.0.0.1:8081/signup";
+  it("routes builder-default operators to the builder workflows screen", async () => {
+    loginMock.mockResolvedValueOnce({ ok: true, authenticated: true, provider: "casdoor", mode: "oidc" });
+    getSessionMock.mockResolvedValueOnce({
+      authenticated: true,
+      capabilities: { can_builder: true, can_admin: true },
+      default_mode: "builder",
+    });
 
-    render(<AuthPage />);
+    renderCard();
 
-    expect(screen.queryByRole("link", { name: /continue to the console/i })).not.toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText(/^email$/i), { target: { value: "builder@lattix.io" } });
+    fireEvent.change(screen.getByLabelText(/^password$/i), { target: { value: "hunter2hunter" } });
+    fireEvent.click(screen.getByRole("button", { name: /^sign in$/i }));
+
+    await waitFor(() => expect(routerReplaceMock).toHaveBeenCalledWith("/builder/workflows"));
   });
 
-  it("falls back to provider-hosted links for non-local oidc issuers", () => {
-    process.env.FRONTIER_AUTH_MODE = "oidc";
-    process.env.FRONTIER_AUTH_OIDC_PROVIDER = "oidc";
-    process.env.FRONTIER_AUTH_OIDC_ISSUER = "https://issuer.example.com";
-    process.env.FRONTIER_AUTH_OIDC_SIGNIN_URL = "https://issuer.example.com/login";
-    process.env.FRONTIER_AUTH_OIDC_SIGNUP_URL = "https://issuer.example.com/signup";
+  it("surfaces the server error when credentials are rejected", async () => {
+    loginMock.mockRejectedValueOnce(new Error("Request failed (401): Invalid credentials"));
 
-    render(<AuthPage />);
+    renderCard();
 
-    expect(screen.getByRole("link", { name: /sign in with oidc provider/i })).toHaveAttribute("href", "https://issuer.example.com/login");
-    expect(screen.getByRole("link", { name: /create account/i })).toHaveAttribute("href", "https://issuer.example.com/signup");
+    fireEvent.change(screen.getByLabelText(/^email$/i), { target: { value: "bad@lattix.io" } });
+    fireEvent.change(screen.getByLabelText(/^password$/i), { target: { value: "nope" } });
+    fireEvent.click(screen.getByRole("button", { name: /^sign in$/i }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(/invalid credentials/i);
+    expect(routerReplaceMock).not.toHaveBeenCalled();
+  });
+
+  it("falls back to the canonical copy when the server message is missing", async () => {
+    loginMock.mockRejectedValueOnce(new Error(""));
+
+    renderCard();
+
+    fireEvent.change(screen.getByLabelText(/^email$/i), { target: { value: "bad@lattix.io" } });
+    fireEvent.change(screen.getByLabelText(/^password$/i), { target: { value: "nope" } });
+    fireEvent.click(screen.getByRole("button", { name: /^sign in$/i }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(/email or password was not accepted/i);
+  });
+
+  it("switches to sign-up mode, collects first/last/email/password + confirmation, and posts to /auth/register", async () => {
+    registerMock.mockResolvedValueOnce({
+      ok: true,
+      authenticated: true,
+      provider: "casdoor",
+      mode: "oidc",
+      created: true,
+    });
+    getSessionMock.mockResolvedValueOnce({
+      authenticated: true,
+      capabilities: { can_builder: false, can_admin: false },
+      default_mode: "user",
+    });
+
+    renderCard();
+
+    fireEvent.click(screen.getByRole("tab", { name: /sign up/i }));
+
+    expect(screen.getByRole("tab", { name: /sign up/i })).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByLabelText(/first name/i)).toBeInTheDocument();
+    expect(screen.getByLabelText(/last name/i)).toBeInTheDocument();
+    expect(screen.getByLabelText(/confirm password/i)).toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText(/first name/i), { target: { value: "New" } });
+    fireEvent.change(screen.getByLabelText(/last name/i), { target: { value: "Operator" } });
+    fireEvent.change(screen.getByLabelText(/^email$/i), { target: { value: "new@lattix.io" } });
+    fireEvent.change(screen.getByLabelText(/^password$/i), { target: { value: "fresh-pass" } });
+    fireEvent.change(screen.getByLabelText(/confirm password/i), { target: { value: "fresh-pass" } });
+    fireEvent.click(screen.getByRole("button", { name: /^create account$/i }));
+
+    await waitFor(() => {
+      expect(registerMock).toHaveBeenCalledWith({
+        username: "new@lattix.io",
+        email: "new@lattix.io",
+        display_name: "New Operator",
+        password: "fresh-pass",
+      });
+    });
+    await waitFor(() => expect(routerReplaceMock).toHaveBeenCalledWith("/inbox"));
+  });
+
+  it("blocks sign-up submission when the password confirmation does not match", async () => {
+    renderCard();
+
+    fireEvent.click(screen.getByRole("tab", { name: /sign up/i }));
+
+    fireEvent.change(screen.getByLabelText(/first name/i), { target: { value: "A" } });
+    fireEvent.change(screen.getByLabelText(/last name/i), { target: { value: "B" } });
+    fireEvent.change(screen.getByLabelText(/^email$/i), { target: { value: "c@lattix.io" } });
+    fireEvent.change(screen.getByLabelText(/^password$/i), { target: { value: "one" } });
+    fireEvent.change(screen.getByLabelText(/confirm password/i), { target: { value: "two" } });
+    fireEvent.click(screen.getByRole("button", { name: /^create account$/i }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(/passwords do not match/i);
+    expect(registerMock).not.toHaveBeenCalled();
   });
 });

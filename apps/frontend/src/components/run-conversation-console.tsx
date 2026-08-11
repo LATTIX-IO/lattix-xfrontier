@@ -20,7 +20,14 @@ type Props = {
 };
 
 type EventFilter = "all" | "chat" | "system" | "errors";
-type RightPanelTab = "graph" | "artifacts" | "approvals" | "guardrails";
+type RightPanelTab = "graph" | "cognition" | "artifacts" | "approvals" | "guardrails";
+
+function toStringList(value: unknown): string[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value.map((item) => String(item ?? "").trim()).filter(Boolean);
+}
 
 function normalizeComparableText(value: string): string {
   return String(value || "").replace(/\s+/g, " ").trim();
@@ -191,12 +198,24 @@ export function RunConversationConsole({ runId, run, events }: Props) {
   const usedAgentStudioAgent = hasAgentNode || agentTraces.length > 0;
 
   const guardrailEvents = orderedEvents.filter((event) => event.type === "guardrail_result");
+  const cognitiveSummary = run.cognitive ?? null;
+  const cognitiveCommitment = cognitiveSummary?.commitment ?? null;
+  const cognitiveAssembly = cognitiveSummary?.assembly ?? null;
+  const cognitiveStates = cognitiveSummary?.states ?? {};
+  const cognitiveMessages = Array.isArray(cognitiveSummary?.messages) ? cognitiveSummary.messages : [];
+  const cognitiveStateEntries = Object.entries(cognitiveStates);
 
   useEffect(() => {
     if (approvals.required && approvals.pending) {
       setRightPanelTab("approvals");
     }
   }, [approvals.pending, approvals.required]);
+
+  useEffect(() => {
+    if (cognitiveCommitment && rightPanelTab === "graph") {
+      setRightPanelTab("cognition");
+    }
+  }, [cognitiveCommitment, rightPanelTab]);
 
   useEffect(() => {
     let active = true;
@@ -569,6 +588,7 @@ export function RunConversationConsole({ runId, run, events }: Props) {
               <div className="mb-2 flex items-center gap-1 rounded-lg border border-[var(--ui-border)] bg-[hsl(var(--card))] p-1 text-xs">
                 {([
                   ["graph", "Execution Graph"],
+                  ["cognition", "Cognition"],
                   ["artifacts", "Artifacts"],
                   ["approvals", "Approvals"],
                   ["guardrails", "Guardrails"],
@@ -593,6 +613,112 @@ export function RunConversationConsole({ runId, run, events }: Props) {
                     </span>
                   </div>
                   <ReactFlowCanvas nodes={effectiveGraphNodes} links={effectiveGraphLinks} height={560} readOnly />
+                </div>
+              ) : null}
+
+              {rightPanelTab === "cognition" ? (
+                <div className="p-2">
+                  <h3 className="mb-2 text-sm font-semibold">Cognitive artifacts</h3>
+                  {!cognitiveCommitment ? (
+                    <p className="fx-muted text-xs">No cognitive artifacts were captured for this run.</p>
+                  ) : (
+                    <div className="space-y-2 text-xs">
+                      <div className="rounded-md border border-[var(--ui-border)] bg-[hsl(var(--card)/0.9)] p-2">
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <p className="font-semibold text-[var(--foreground)]">Commitment</p>
+                          <div className="flex flex-wrap items-center gap-1.5">
+                            <span className="rounded-full border border-[var(--ui-border)] px-2 py-0.5 text-[11px] text-[var(--foreground)]">
+                              Status: {String(cognitiveCommitment.status || "captured")}
+                            </span>
+                            <span className="rounded-full border border-[var(--ui-border)] px-2 py-0.5 text-[11px] text-[var(--foreground)]">
+                              Confidence: {typeof cognitiveCommitment.confidence === "number" ? `${Math.round(cognitiveCommitment.confidence * 100)}%` : "n/a"}
+                            </span>
+                          </div>
+                        </div>
+                        <p className="mt-2 text-xs font-medium text-[var(--foreground)]">{String(cognitiveCommitment.decision || "No decision captured")}</p>
+                        {String(cognitiveCommitment.rationale || "").trim() ? (
+                          <p className="mt-1 text-xs leading-relaxed text-[hsl(var(--muted-foreground))]">{String(cognitiveCommitment.rationale)}</p>
+                        ) : null}
+                      </div>
+
+                      <div className="grid gap-2 md:grid-cols-2">
+                        <div className="rounded-md border border-[var(--ui-border)] bg-[hsl(var(--card)/0.9)] p-2">
+                          <p className="fx-muted text-[10px] uppercase tracking-wide">Blockers</p>
+                          {toStringList(cognitiveCommitment.blockers).length > 0 ? (
+                            <ul className="mt-1 list-disc space-y-0.5 pl-4 text-[var(--foreground)]">
+                              {toStringList(cognitiveCommitment.blockers).map((item, index) => (
+                                <li key={`blocker-${index}`}>{item}</li>
+                              ))}
+                            </ul>
+                          ) : (
+                            <p className="mt-1 text-[var(--foreground)]">No blockers.</p>
+                          )}
+                        </div>
+                        <div className="rounded-md border border-[var(--ui-border)] bg-[hsl(var(--card)/0.9)] p-2">
+                          <p className="fx-muted text-[10px] uppercase tracking-wide">Next actions</p>
+                          {toStringList(cognitiveCommitment.next_actions).length > 0 ? (
+                            <ul className="mt-1 list-disc space-y-0.5 pl-4 text-[var(--foreground)]">
+                              {toStringList(cognitiveCommitment.next_actions).map((item, index) => (
+                                <li key={`next-action-${index}`}>{item}</li>
+                              ))}
+                            </ul>
+                          ) : (
+                            <p className="mt-1 text-[var(--foreground)]">No next actions recorded.</p>
+                          )}
+                        </div>
+                      </div>
+
+                      <div className="grid gap-2 md:grid-cols-2">
+                        <div className="rounded-md border border-[var(--ui-border)] bg-[hsl(var(--card)/0.9)] p-2">
+                          <p className="fx-muted text-[10px] uppercase tracking-wide">Supporting columns</p>
+                          <p className="mt-1 text-[var(--foreground)]">{toStringList(cognitiveCommitment.supporting_columns).join(", ") || "None"}</p>
+                        </div>
+                        <div className="rounded-md border border-[var(--ui-border)] bg-[hsl(var(--card)/0.9)] p-2">
+                          <p className="fx-muted text-[10px] uppercase tracking-wide">Dissenting columns</p>
+                          <p className="mt-1 text-[var(--foreground)]">{toStringList(cognitiveCommitment.dissenting_columns).join(", ") || "None"}</p>
+                        </div>
+                      </div>
+
+                      <div className="rounded-md border border-[var(--ui-border)] bg-[hsl(var(--card)/0.9)] p-2">
+                        <p className="fx-muted text-[10px] uppercase tracking-wide">Assembly</p>
+                        <p className="mt-1 text-[var(--foreground)]">
+                          {String(cognitiveAssembly?.assembly_id || "unknown")} • {String(cognitiveAssembly?.consensus_policy || "unspecified")} • {String(cognitiveAssembly?.inference_mode || "unspecified")}
+                        </p>
+                        {toStringList(cognitiveAssembly?.columns).length > 0 ? (
+                          <p className="mt-1 text-[hsl(var(--muted-foreground))]">Columns: {toStringList(cognitiveAssembly?.columns).join(", ")}</p>
+                        ) : null}
+                      </div>
+
+                      {cognitiveStateEntries.length > 0 ? (
+                        <div className="rounded-md border border-[var(--ui-border)] bg-[hsl(var(--card)/0.9)] p-2">
+                          <p className="fx-muted text-[10px] uppercase tracking-wide">Column states</p>
+                          <div className="mt-2 space-y-1.5">
+                            {cognitiveStateEntries.map(([key, value]) => (
+                              <div key={key} className="flex items-center justify-between gap-2 rounded border border-[var(--ui-border)] px-2 py-1">
+                                <span className="font-medium text-[var(--foreground)]">{String(value?.column_id || key)}</span>
+                                <span className="text-[hsl(var(--muted-foreground))]">
+                                  Confidence: {typeof value?.confidence === "number" ? `${Math.round(value.confidence * 100)}%` : "n/a"}
+                                </span>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      ) : null}
+
+                      {cognitiveMessages.length > 0 ? (
+                        <div className="rounded-md border border-[var(--ui-border)] bg-[hsl(var(--card)/0.9)] p-2">
+                          <p className="fx-muted text-[10px] uppercase tracking-wide">Messages</p>
+                          <div className="mt-2 flex flex-wrap gap-1.5">
+                            {cognitiveMessages.map((message, index) => (
+                              <span key={`cognitive-message-${index}`} className="rounded-full border border-[var(--ui-border)] px-2 py-0.5 text-[11px] text-[var(--foreground)]">
+                                {String(message.message_type || "message")} · {String(message.column_id || "unknown")}
+                              </span>
+                            ))}
+                          </div>
+                        </div>
+                      ) : null}
+                    </div>
+                  )}
                 </div>
               ) : null}
 

@@ -1,15 +1,34 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import {
+  CLASSIFICATION_PRESETS,
+  type ClassificationPreset,
+  useClassificationBanner,
+} from "@/components/classification-banner";
 import { getAtfAlignmentReport, getPlatformSettings, savePlatformSettings } from "@/lib/api";
 import type { AtfAlignmentReport } from "@/types/frontier";
 
 const sectionNav = [
   { id: "section-brand", label: "Brand & Identity" },
+  { id: "section-classification", label: "Classification Banner" },
   { id: "section-security", label: "Security & Governance" },
   { id: "section-runtime", label: "Runtime Policy" },
   { id: "section-user-defaults", label: "User Defaults" },
 ] as const;
+
+const CLASSIFICATION_PRESET_META: Array<{
+  key: ClassificationPreset;
+  label: string;
+  description: string;
+}> = [
+  { key: "neutral", label: "Neutral", description: "Informational banner with no classification signal." },
+  { key: "success", label: "All Clear", description: "Green check; zero-trust posture nominal." },
+  { key: "confidential", label: "Confidential", description: "Amber; handling guidance required." },
+  { key: "restricted", label: "Restricted", description: "Red; elevated access control." },
+  { key: "secret", label: "Secret", description: "Blue; secret-level controls in effect." },
+  { key: "topsecret", label: "Top Secret", description: "Black; highest-level classification." },
+];
 
 export default function SettingsPage() {
   const runtimeEngineOptions = ["native", "langgraph", "langchain", "semantic-kernel", "autogen"] as const;
@@ -22,6 +41,7 @@ export default function SettingsPage() {
   } as const;
   const [activeSection, setActiveSection] = useState<string>(sectionNav[0].id);
   const observerRef = useRef<IntersectionObserver | null>(null);
+  const [classificationBanner, setClassificationBanner] = useClassificationBanner();
   const [loaded, setLoaded] = useState(false);
   const [saveState, setSaveState] = useState<"idle" | "saving" | "saved" | "error">("idle");
   const [atfReport, setAtfReport] = useState<AtfAlignmentReport | null>(null);
@@ -296,6 +316,72 @@ export default function SettingsPage() {
                 Website
                 <input className="fx-field mt-1 w-full px-2 py-2 text-sm" value={website} onChange={(e) => setWebsite(e.target.value)} />
               </label>
+            </div>
+          </article>
+
+          <article id="section-classification" className="fx-panel p-3 scroll-mt-32">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <h2 className="text-sm font-semibold">Classification banner</h2>
+                <p className="fx-muted text-xs">
+                  Controls the operator-visible strip at the top of the console. Stored locally on this device.
+                </p>
+              </div>
+              <label className="inline-flex items-center gap-2 text-xs">
+                <input
+                  type="checkbox"
+                  checked={classificationBanner.enabled}
+                  onChange={(event) => setClassificationBanner({ enabled: event.target.checked })}
+                />
+                <span>Visible</span>
+              </label>
+            </div>
+
+            <label className="mt-3 block text-xs">
+              Banner text
+              <input
+                className="fx-field mt-1 w-full px-2 py-2 font-mono text-[12px]"
+                value={classificationBanner.text}
+                placeholder="Internal · Operational Console"
+                onChange={(event) => setClassificationBanner({ text: event.target.value })}
+              />
+            </label>
+
+            <div className="mt-3">
+              <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[var(--fx-muted)]">
+                Preset
+              </p>
+              <div className="mt-2 grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+                {CLASSIFICATION_PRESET_META.map(({ key, label, description }) => {
+                  const preset = CLASSIFICATION_PRESETS[key];
+                  const isActive = classificationBanner.preset === key;
+                  return (
+                    <button
+                      key={key}
+                      type="button"
+                      onClick={() => setClassificationBanner({ preset: key })}
+                      aria-pressed={isActive}
+                      className={`flex flex-col gap-2 rounded-md border px-2.5 py-2 text-left text-[11px] transition ${
+                        isActive
+                          ? "border-[hsl(var(--primary))] bg-[hsl(var(--primary)/0.08)]"
+                          : "border-[var(--ui-border)] hover:bg-[var(--fx-nav-hover)]"
+                      }`}
+                    >
+                      <span
+                        className="flex items-center justify-center rounded-sm px-2 py-1 font-mono text-[10px] font-bold uppercase tracking-[0.1em]"
+                        style={{
+                          background: preset.background,
+                          color: preset.foreground,
+                          border: `1px solid ${preset.border}`,
+                        }}
+                      >
+                        {label}
+                      </span>
+                      <span className="text-[10px] text-[var(--fx-muted)]">{description}</span>
+                    </button>
+                  );
+                })}
+              </div>
             </div>
           </article>
 

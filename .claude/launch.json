@@ -3,10 +3,21 @@
   "configurations": [
     {
       "name": "frontend",
-      "runtimeExecutable": "node",
-      "runtimeArgs": ["node_modules/next/dist/bin/next", "dev", "--port", "3001"],
-      "port": 3001,
-      "cwd": "apps/frontend"
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["--prefix", "apps/frontend", "run", "dev"],
+      "port": 3000
+    },
+    {
+      "name": "local-stack",
+      "runtimeExecutable": "docker",
+      "runtimeArgs": ["compose", "-f", "docker-compose.local.yml", "up"],
+      "port": 3000
+    },
+    {
+      "name": "secure-stack",
+      "runtimeExecutable": "docker",
+      "runtimeArgs": ["compose", "-f", "docker-compose.yml", "up"],
+      "port": 8000
     }
   ]
 }

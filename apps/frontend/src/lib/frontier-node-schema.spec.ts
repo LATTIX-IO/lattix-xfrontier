@@ -5,7 +5,11 @@ import { getNodePorts, resolveNodePortAlias } from "@/lib/frontier-node-schema";
 const NODE_TYPES = [
   "frontier/trigger",
   "frontier/prompt",
+  "frontier/goal",
+  "frontier/evidence",
   "frontier/agent",
+  "frontier/assembly",
+  "frontier/commitment",
   "frontier/tool-call",
   "frontier/retrieval",
   "frontier/memory",
@@ -43,6 +47,15 @@ describe("frontier-node-schema canonical ports", () => {
     expect(inputNames).toEqual(expect.arrayContaining(["in", "candidate_output", "context"]));
     expect(outputNames).toEqual(expect.arrayContaining(["out", "approved_output", "violations", "decision"]));
   });
+
+  it("cognitive MVP nodes define expected canonical ports", () => {
+    expect(getNodePorts("frontier/goal").outputs.map((item) => item.name)).toEqual(expect.arrayContaining(["out", "goal"]));
+    expect(getNodePorts("frontier/evidence").outputs.map((item) => item.name)).toEqual(expect.arrayContaining(["out", "evidence"]));
+    expect(getNodePorts("frontier/assembly").inputs.map((item) => item.name)).toEqual(expect.arrayContaining(["in", "goal", "evidence"]));
+    expect(getNodePorts("frontier/assembly").outputs.map((item) => item.name)).toEqual(expect.arrayContaining(["out", "synthesis", "commitment", "dissent"]));
+    expect(getNodePorts("frontier/commitment").inputs.map((item) => item.name)).toEqual(expect.arrayContaining(["in", "commitment"]));
+    expect(getNodePorts("frontier/commitment").outputs.map((item) => item.name)).toEqual(expect.arrayContaining(["out", "result"]));
+  });
 });
 
 describe("frontier-node-schema alias resolution", () => {
@@ -55,6 +68,14 @@ describe("frontier-node-schema alias resolution", () => {
     expect(resolveNodePortAlias("frontier/tool-call", "input", "tool_input")).toBe("request");
     expect(resolveNodePortAlias("frontier/output", "input", "approved_output")).toBe("result");
     expect(resolveNodePortAlias("frontier/output", "input", "payload")).toBe("result");
+  });
+
+  it("maps aliases for cognitive MVP nodes", () => {
+    expect(resolveNodePortAlias("frontier/goal", "output", "belief")).toBe("goal");
+    expect(resolveNodePortAlias("frontier/evidence", "output", "claims")).toBe("evidence");
+    expect(resolveNodePortAlias("frontier/assembly", "output", "proposal")).toBe("commitment");
+    expect(resolveNodePortAlias("frontier/commitment", "input", "proposal")).toBe("commitment");
+    expect(resolveNodePortAlias("frontier/commitment", "output", "published")).toBe("result");
   });
 
   it("falls back safely when unknown alias is provided", () => {

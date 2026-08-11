@@ -136,8 +136,12 @@ celerybeat.pid
 # SageMath parsed files
 *.sage.py
 
+# Claude Code agent scratch worktrees (embedded git repos; never track)
+.claude/worktrees/
+
 # Environments
 .env
+.env.symphony.local
 .envrc
 .desloppify/
 .installer/
@@ -216,3 +220,8 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# Nexus AI memory — local, private pointers (never commit)
+CLAUDE.local.md
+AGENTS.local.md
+.ai-memory/local/

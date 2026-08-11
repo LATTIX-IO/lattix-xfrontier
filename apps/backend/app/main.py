@@ -39,6 +39,13 @@ from app.platform_services import (
     PostgresStateStore,
     RedisMemoryStore,
 )
+from frontier_runtime.cognitive import (
+    ColumnState,
+    ConsensusEngine,
+    EvidenceColumn,
+    GoalColumn,
+    SynthesisColumn,
+)
 from app.request_security import (
     RouteAccessCategory,
     RouteAccessRule,
@@ -4646,6 +4653,68 @@ def _validate_graph(payload: GraphPayload) -> GraphValidationResult:
                     )
                 )
 
+        if normalized_type == "frontier/goal":
+            if not str(node.config.get("intent") or "").strip():
+                issues.append(
+                    GraphValidationIssue(
+                        code="GOAL_INTENT_REQUIRED",
+                        message="Goal nodes require config.intent.",
+                        path=f"{node_path}.config.intent",
+                    )
+                )
+
+        if normalized_type == "frontier/evidence":
+            required_evidence = node.config.get("required_evidence")
+            if required_evidence is not None and not isinstance(required_evidence, list):
+                issues.append(
+                    GraphValidationIssue(
+                        code="EVIDENCE_REQUIRED_LIST_INVALID",
+                        message="Evidence nodes require config.required_evidence to be a list when provided.",
+                        path=f"{node_path}.config.required_evidence",
+                    )
+                )
+
+        if normalized_type == "frontier/assembly":
+            if len(_incoming_to_port(node_id, "goal")) == 0:
+                issues.append(
+                    GraphValidationIssue(
+                        code="ASSEMBLY_GOAL_INPUT_REQUIRED",
+                        message="Assembly nodes require a goal input connection to port 'goal'.",
+                        path=f"{node_path}.inputs.goal",
+                    )
+                )
+            if len(_incoming_to_port(node_id, "evidence")) == 0:
+                issues.append(
+                    GraphValidationIssue(
+                        code="ASSEMBLY_EVIDENCE_INPUT_REQUIRED",
+                        message="Assembly nodes require an evidence input connection to port 'evidence'.",
+                        path=f"{node_path}.inputs.evidence",
+                    )
+                )
+            threshold_raw = node.config.get("confidence_threshold", 0.6)
+            try:
+                threshold = float(threshold_raw)
+            except (TypeError, ValueError):
+                threshold = -1.0
+            if threshold < 0.0 or threshold > 1.0:
+                issues.append(
+                    GraphValidationIssue(
+                        code="ASSEMBLY_CONFIDENCE_THRESHOLD_INVALID",
+                        message="Assembly nodes require config.confidence_threshold between 0.0 and 1.0.",
+                        path=f"{node_path}.config.confidence_threshold",
+                    )
+                )
+
+        if normalized_type == "frontier/commitment":
+            if len(_incoming_to_port(node_id, "commitment")) == 0:
+                issues.append(
+                    GraphValidationIssue(
+                        code="COMMITMENT_INPUT_REQUIRED",
+                        message="Commitment nodes require a commitment input connection to port 'commitment'.",
+                        path=f"{node_path}.inputs.commitment",
+                    )
+                )
+
         if normalized_type.startswith("frontier/agent"):
             if not str(node.config.get("agent_id") or "").strip():
                 issues.append(
@@ -4897,6 +4966,33 @@ def _port_values(
     for name in port_names:
         merged.extend(by_port.get(name, []))
     return merged
+
+
+def _column_state_from_payload(
+    *, column_id: str, assembly_id: str, payload: dict[str, Any] | None
+) -> ColumnState:
+    source = payload if isinstance(payload, dict) else {}
+    belief_set = source.get("belief_set") if isinstance(source.get("belief_set"), dict) else {}
+    evidence_refs = source.get("evidence_refs") if isinstance(source.get("evidence_refs"), list) else []
+    confidence_raw = source.get("confidence", 0.0)
+    try:
+        confidence = max(0.0, min(1.0, float(confidence_raw)))
+    except (TypeError, ValueError):
+        confidence = 0.0
+    adaptation_metrics = (
+        source.get("adaptation_metrics")
+        if isinstance(source.get("adaptation_metrics"), dict)
+        else {}
+    )
+    return ColumnState(
+        column_id=column_id,
+        assembly_id=str(source.get("assembly_id") or assembly_id),
+        belief_set=dict(belief_set),
+        evidence_refs=[str(item) for item in evidence_refs if str(item or "").strip()],
+        confidence=confidence,
+        last_updated=str(source.get("last_updated") or _now_iso()),
+        adaptation_metrics=dict(adaptation_metrics),
+    )
 
 
 def _safe_json(value: Any) -> str:
@@ -5824,6 +5920,126 @@ def _execute_node(
                 "safety_level": safety_level,
                 "include_citations": include_citations,
             },
+        }
+
+    if node_type == "frontier/goal":
+        goal_column = GoalColumn()
+        goal_state = goal_column.observe(
+            assembly_id=node.id,
+            config=node.config if isinstance(node.config, dict) else {},
+            run_input=run_input,
+        )
+        goal_message = goal_column.emit_message(goal_state)
+        return {
+            "goal": goal_state.belief_set,
+            "goal_state": goal_state.model_dump(),
+            "belief_update": goal_message.__dict__,
+            "confidence": goal_state.confidence,
+            "out": goal_state.belief_set,
+        }
+
+    if node_type == "frontier/evidence":
+        evidence_column = EvidenceColumn()
+        evidence_state = evidence_column.observe(
+            assembly_id=node.id,
+            config=node.config if isinstance(node.config, dict) else {},
+            run_input=run_input,
+            incoming_context=incoming,
+        )
+        evidence_message = evidence_column.emit_message(evidence_state)
+        return {
+            "evidence": evidence_state.belief_set.get("evidence", []),
+            "evidence_state": evidence_state.model_dump(),
+            "evidence_claim": evidence_message.__dict__,
+            "confidence": evidence_state.confidence,
+            "out": evidence_state.belief_set.get("evidence", []),
+        }
+
+    if node_type == "frontier/assembly":
+        by_port = incoming_by_port or {}
+        goal_inputs = _port_values(by_port, "goal")
+        evidence_inputs = _port_values(by_port, "evidence")
+        goal_payload = goal_inputs[-1] if goal_inputs else {}
+        evidence_payload = evidence_inputs[-1] if evidence_inputs else {}
+        goal_state = _column_state_from_payload(
+            column_id="goal",
+            assembly_id=node.id,
+            payload=goal_payload.get("goal_state") if isinstance(goal_payload, dict) else None,
+        )
+        evidence_state = _column_state_from_payload(
+            column_id="evidence",
+            assembly_id=node.id,
+            payload=evidence_payload.get("evidence_state") if isinstance(evidence_payload, dict) else None,
+        )
+        synthesis_state = SynthesisColumn().observe(
+            assembly_id=node.id,
+            goal_state=goal_state,
+            evidence_state=evidence_state,
+        )
+        threshold_raw = node.config.get("confidence_threshold", 0.6)
+        try:
+            confidence_threshold = max(0.0, min(1.0, float(threshold_raw)))
+        except (TypeError, ValueError):
+            confidence_threshold = 0.6
+        commitment = ConsensusEngine().fuse(
+            goal_state=goal_state,
+            evidence_state=evidence_state,
+            synthesis_state=synthesis_state,
+            confidence_threshold=confidence_threshold,
+        )
+        return {
+            "assembly": {
+                "assembly_id": node.id,
+                "consensus_policy": str(node.config.get("consensus_policy") or "weighted-support"),
+                "inference_mode": str(node.config.get("inference_mode") or "bounded"),
+            },
+            "synthesis": synthesis_state.belief_set,
+            "synthesis_state": synthesis_state.model_dump(),
+            "commitment": commitment.model_dump(),
+            "dissent": {
+                "columns": commitment.dissenting_columns,
+                "blockers": commitment.blockers,
+            },
+            "confidence": commitment.confidence,
+            "out": commitment.model_dump(),
+        }
+
+    if node_type == "frontier/commitment":
+        by_port = incoming_by_port or {}
+        commitment_inputs = _port_values(by_port, "commitment")
+        commitment_payload = commitment_inputs[-1] if commitment_inputs else {}
+        commitment_data = (
+            dict(commitment_payload.get("commitment"))
+            if isinstance(commitment_payload, dict)
+            and isinstance(commitment_payload.get("commitment"), dict)
+            else {}
+        )
+        if not commitment_data and isinstance(commitment_payload, dict):
+            commitment_data = dict(commitment_payload)
+        confidence_raw = commitment_data.get("confidence", 0.0)
+        try:
+            confidence = max(0.0, min(1.0, float(confidence_raw)))
+        except (TypeError, ValueError):
+            confidence = 0.0
+        threshold_raw = node.config.get("confidence_threshold", 0.6)
+        try:
+            confidence_threshold = max(0.0, min(1.0, float(threshold_raw)))
+        except (TypeError, ValueError):
+            confidence_threshold = 0.6
+        blocked = confidence < confidence_threshold or bool(commitment_data.get("blockers"))
+        autonomy_level = str(node.config.get("autonomy_level") or "bounded")
+        published_commitment = {
+            **commitment_data,
+            "autonomy_level": autonomy_level,
+            "status": "escalated" if blocked else "committed",
+            "confidence_threshold": confidence_threshold,
+        }
+        return {
+            "commitment": published_commitment,
+            "result": published_commitment,
+            "published": published_commitment,
+            "blocked": blocked,
+            "out": published_commitment,
         }
 
     if node_type == "frontier/manifold":
@@ -14991,6 +15207,34 @@ def get_node_definitions(request: Request, include_internal: bool = False) -> li
             description="Workflow entrypoint for user kickoff, schedule, or external event.",
             category="Core",
             color="#6ca0ff",
+        ),
+        NodeDefinition(
+            type_key="frontier/goal",
+            title="Goal",
+            description="Define intent, success criteria, constraints, priorities, and output contract.",
+            category="Cognition",
+            color="#2962ff",
+        ),
+        NodeDefinition(
+            type_key="frontier/evidence",
+            title="Evidence",
+            description="Capture and validate evidence claims before synthesis and commitment.",
+            category="Cognition",
+            color="#00796b",
+        ),
+        NodeDefinition(
+            type_key="frontier/assembly",
+            title="Assembly",
+            description="Fuse goal and evidence signals into a bounded cognitive commitment proposal.",
+            category="Cognition",
+            color="#6a1b9a",
+        ),
+        NodeDefinition(
+            type_key="frontier/commitment",
+            title="Commitment",
+            description="Finalize or escalate a bounded commitment using explicit confidence thresholds.",
+            category="Cognition",
+            color="#ef6c00",
         ),
         NodeDefinition(
             type_key="frontier/agent",

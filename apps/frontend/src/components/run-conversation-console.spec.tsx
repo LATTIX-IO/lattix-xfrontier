@@ -71,6 +71,32 @@ describe("RunConversationConsole", () => {
     },
     agent_traces: [],
     approvals: { required: false, pending: false },
+    cognitive: {
+      assembly: {
+        assembly_id: "assembly-1",
+        consensus_policy: "weighted-support",
+        inference_mode: "bounded",
+        columns: ["goal", "evidence", "synthesis"],
+      },
+      commitment: {
+        decision: "Proceed with the release recommendation",
+        confidence: 0.72,
+        supporting_columns: ["goal", "evidence", "synthesis"],
+        dissenting_columns: ["evidence"],
+        blockers: ["Missing required evidence: approval memo"],
+        next_actions: ["Escalate to human checkpoint."],
+        rationale: "Evidence is incomplete for autonomous release.",
+        status: "escalated",
+      },
+      states: {
+        goal: { column_id: "goal", confidence: 0.8 },
+        evidence: { column_id: "evidence", confidence: 0.5 },
+      },
+      messages: [
+        { message_type: "belief_update", column_id: "goal" },
+        { message_type: "evidence_claim", column_id: "evidence" },
+      ],
+    },
   };
 
   const events = [
@@ -115,5 +141,18 @@ describe("RunConversationConsole", () => {
 
     expect(await screen.findByText(/Unable to load ATF posture/i)).toBeInTheDocument();
     expect(getAtfAlignmentReportMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("renders cognitive commitment details when present", async () => {
+    getAtfAlignmentReportMock.mockClear();
+
+    render(<RunConversationConsole runId="run-3" run={run} events={events} />);
+
+    expect(await screen.findByText(/Cognitive artifacts/i)).toBeInTheDocument();
+    expect(screen.getByText(/Proceed with the release recommendation/i)).toBeInTheDocument();
+    expect(screen.getByText(/Missing required evidence: approval memo/i)).toBeInTheDocument();
+    expect(screen.getByText(/Escalate to human checkpoint\./i)).toBeInTheDocument();
+    expect(screen.getByText(/weighted-support/i)).toBeInTheDocument();
+    expect(screen.getByText(/belief_update · goal/i)).toBeInTheDocument();
   });
 });
