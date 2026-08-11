@@ -6,6 +6,7 @@ import {
   getPlaybooks,
   instantiatePlaybook,
 } from "@/lib/api";
+import { ImportExportControls } from "@/components/import-export-controls";
 import type { PlaybookDefinition } from "@/types/frontier";
 
 export default function PlaybooksPage() {
@@ -38,6 +39,14 @@ export default function PlaybooksPage() {
     };
   }, []);
 
+  async function reloadPlaybooks() {
+    try {
+      setPlaybooks(await getPlaybooks());
+    } catch {
+      setError("Unable to load playbooks.");
+    }
+  }
+
   async function handleCreateFromPlaybook(playbook: PlaybookDefinition) {
     setBusyKey(`playbook:${playbook.id}`);
     setError(null);
@@ -55,9 +64,21 @@ export default function PlaybooksPage() {
 
   return (
     <section className="space-y-6">
-      <header>
-        <h1 className="text-2xl font-semibold">Playbooks</h1>
-        <p className="fx-muted">Playbooks are collaborations of workflows designed to achieve high-level outcomes.</p>
+      <header className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h1 className="text-2xl font-semibold">Playbooks</h1>
+          <p className="fx-muted">Playbooks are collaborations of workflows designed to achieve high-level outcomes.</p>
+        </div>
+        <div className="flex items-center gap-3">
+          <ImportExportControls kind="playbooks" onImported={() => void reloadPlaybooks()} />
+          <button
+            type="button"
+            className="fx-btn-primary px-3 py-2 text-sm font-medium"
+            onClick={() => router.push(`/builder/workflows/${crypto.randomUUID()}`)}
+          >
+            New Workflow
+          </button>
+        </div>
       </header>
 
       {error && (
@@ -66,31 +87,49 @@ export default function PlaybooksPage() {
         </div>
       )}
 
-      <div className="grid gap-4">
-        <article className="fx-panel p-4">
-          <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide fx-muted">Available Playbooks</h2>
-          <ul className="space-y-2 text-sm">
+      <div className="fx-panel overflow-hidden">
+        <table className="w-full text-sm">
+          <thead className="fx-table-head">
+            <tr>
+              <th className="px-3 py-2 text-left">Playbook</th>
+              <th className="px-3 py-2 text-left">Category</th>
+              <th className="px-3 py-2 text-left">Status</th>
+              <th className="px-3 py-2 text-left">Description</th>
+              <th className="px-3 py-2 text-right">Action</th>
+            </tr>
+          </thead>
+          <tbody>
             {playbooks.map((playbook) => (
-              <li key={playbook.id} className="border border-[var(--fx-border)] bg-[var(--fx-surface-elevated)] p-3">
-                <div className="flex items-start justify-between gap-3">
-                  <div>
-                    <div className="font-semibold text-[var(--foreground)]">{playbook.name}</div>
-                    <div className="fx-muted">{playbook.description}</div>
-                    <div className="mt-1 text-xs fx-muted">category={playbook.category} · status={playbook.status}</div>
+              <tr key={playbook.id} className="border-t border-[var(--fx-border)]">
+                <td className="px-3 py-2 align-top font-medium text-[var(--foreground)]">{playbook.name}</td>
+                <td className="px-3 py-2 align-top text-[var(--foreground)]">{playbook.category}</td>
+                <td className="px-3 py-2 align-top text-[var(--foreground)]">{playbook.status}</td>
+                <td className="fx-muted px-3 py-2 align-top">
+                  <p className="max-w-[34rem] leading-snug line-clamp-3" title={playbook.description}>
+                    {playbook.description}
+                  </p>
+                </td>
+                <td className="px-3 py-2 align-top text-right whitespace-nowrap">
+                  <div className="flex flex-nowrap items-center justify-end gap-2">
+                    <ImportExportControls kind="playbooks" id={playbook.id} compact onImported={() => void reloadPlaybooks()} />
+                    <button
+                      className="fx-btn-secondary px-2.5 py-1 text-xs font-medium"
+                      disabled={busyKey === `playbook:${playbook.id}` || playbook.status !== "active"}
+                      onClick={() => void handleCreateFromPlaybook(playbook)}
+                    >
+                      {busyKey === `playbook:${playbook.id}` ? "Creating…" : "Launch Playbook"}
+                    </button>
                   </div>
-                  <button
-                    className="fx-btn-secondary px-2 py-1 text-xs"
-                    disabled={busyKey === `playbook:${playbook.id}` || playbook.status !== "active"}
-                    onClick={() => void handleCreateFromPlaybook(playbook)}
-                  >
-                    {busyKey === `playbook:${playbook.id}` ? "Creating..." : "Launch Playbook"}
-                  </button>
-                </div>
-              </li>
+                </td>
+              </tr>
             ))}
-            {playbooks.length === 0 && <li className="fx-muted">No playbooks available.</li>}
-          </ul>
-        </article>
+            {playbooks.length === 0 ? (
+              <tr className="border-t border-[var(--fx-border)]">
+                <td className="fx-muted px-3 py-3" colSpan={5}>No playbooks available.</td>
+              </tr>
+            ) : null}
+          </tbody>
+        </table>
       </div>
     </section>
   );

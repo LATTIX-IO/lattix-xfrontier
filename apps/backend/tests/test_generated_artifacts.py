@@ -124,6 +124,11 @@ class _FakeRedisMemoryStore:
 class _FakeLongTermMemoryStore:
     def __init__(self, *_args: object, **_kwargs: object) -> None:
         self.enabled = True
+        # Mirror the real store's attribute surface so callers that introspect
+        # vector/embedding capabilities (e.g. the knowledge vector-store list)
+        # work when this fake is bound in place of the real store.
+        self.vector_enabled = False
+        self.embedding_model = "text-embedding-3-small"
         self._entries: dict[tuple[str, str, str], list[dict[str, object]]] = defaultdict(list)
         self._consolidation_candidates: dict[str, dict[str, object]] = {}
 
@@ -346,6 +351,17 @@ sys.modules.setdefault("app.platform_services", platform_services)
 import app.main as main_module
 from app.main import app, store
 from app.request_security import validate_route_inventory
+
+# The fakes above only take effect if THIS module is the first to import
+# ``app.main`` (so the ``setdefault`` wins and main binds its singletons from the
+# fakes). When another test module imports ``app.main`` first, main has already
+# bound the real (and, without a database, disabled no-op) stores. Rebind the
+# module-level singletons directly so these tests get in-memory fakes regardless
+# of test-file import order.
+main_module._POSTGRES_STATE = _FakePostgresStateStore()
+main_module._REDIS_MEMORY = _FakeRedisMemoryStore()
+main_module._POSTGRES_MEMORY = _FakeLongTermMemoryStore()
+main_module._NEO4J_GRAPH = _FakeNeo4jRunGraph()
 
 
 client = TestClient(app)
@@ -2858,6 +2874,18 @@ def test_workflow_run_without_explicit_agent_redeploys_and_uses_default_chat_age
         default_agent = store.agent_definitions[default_agent_id]
         assert default_agent.status == "published"
         assert default_agent.name == "Default Chat Agent"
+
+        # Execution runs on the bounded worker pool; wait for it to finish.
+        def _execution_settled() -> bool:
+            if store.runs[run_id].status == "Running":
+                return False
+            detail_payload = store.run_details.get(run_id)
+            return isinstance(detail_payload, dict) and bool(detail_payload.get("agent_traces"))
+
+        deadline = time.time() + 15
+        while time.time() < deadline and not _execution_settled():
+            time.sleep(0.05)
+        assert _execution_settled(), "run execution did not settle within 15s"
 
         detail = store.run_details[run_id]
         assert detail["agent_traces"][0]["agent"] == "Default Chat Agent"

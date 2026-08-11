@@ -61,7 +61,7 @@ xFrontier sits on a sensitive boundary: operator intent becomes agent execution 
 | Capability tokens | `CapabilityMinter` / `CapabilityVerifier`, optional Biscuit | Scope-limited, verified at use |
 | Policy decisions | OPA — agent, budget, data classification, filesystem, network egress, network, tool jail | An unavailable PDP is a deny |
 | Guardrails | `frontier_runtime/guardrails.py` — prompt render, DLP, capability enforcement | Applied to output paths; redaction before persistence and logging |
-| Tool isolation | `frontier_runtime/sandbox.py` | Explicit strategy per host platform with declared capabilities; no silent downgrade |
+| Tool isolation | `frontier_runtime/sandbox.py` | Explicit strategy per host platform — `kernel-bwrap` (Linux), `kernel-seatbelt` (macOS), `windows-appcontainer` (Windows), `hardened-docker` — with declared capabilities and no silent downgrade |
 | Egress control | Sandbox egress gateway, per-integration `egress_allowlist` | Deny by default; allowlist is data, not code |
 | Secret storage | Vault (`hvac`), installer-managed mirroring | Secrets never in the repo, logs, or memory records |
 | Audit integrity | Hash-chained, signed events (`frontier_runtime/events.py`) | No execution path bypasses the event log |
@@ -96,8 +96,11 @@ Require explicit security review when a change touches:
 
 Do not describe these as covered:
 
-- **Windows tool isolation is weaker than Linux/macOS on this branch.** `HostPlatform.WINDOWS` exists but no confinement strategy implements it; `SandboxPolicy.capabilities()` reports no namespace isolation and no strict syscall filtering off Linux. Fail-closed Windows AppContainer confinement exists on `origin/main` and is not present here.
-- `k8s-gvisor` and `k8s-kata` are `IsolationStrategy` values with no implementing strategy.
-- `budget_policy.rego` has no test file.
-- Control-plane persistence failures are swallowed silently; definitions can be lost on restart without a log line.
-- `apps/backend/` — the entire control plane — is not covered by `make typecheck`.
+- `k8s-gvisor` and `k8s-kata` are `IsolationStrategy` values with no implementing strategy. Selecting them must not silently resolve to a weaker tier.
+- `budget_policy.rego` has no test file; every other policy does.
+- Control-plane persistence failures are swallowed; definitions can be lost on restart without a signal.
+- `apps/backend/` — the entire control plane — is not covered by `make typecheck` (491 `mypy --strict` errors).
+- **`apps/backend/app/main.py:1587` calls `platform.system()` without importing `platform`** — a latent `NameError` on that path, currently flagged by `ruff` as `F821`.
+- The test suite does not collect (`tests/` lacks `__init__.py`, breaking `tests.harness`), so there is no automated security-regression signal until that is fixed.
+
+Windows tool confinement **is** implemented — `_WindowsAppContainerStrategy` with the `windows-appcontainer` tier, selected fail-closed rather than downgrading to a bare Job Object (`FRONTIER_FORCE_WINDOWS_APPCONTAINER` forces it).

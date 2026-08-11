@@ -21,10 +21,13 @@ Lattix xFrontier — a secure, local-first multi-agent orchestration platform (A
 - Frontend (`apps/frontend/`): `npm run test` (vitest), `npm run lint`, `npm run build`
 - Python 3.12+, hatchling. Issues tracked in Linear (`FRONT-*`).
 
-Known gate gaps — do not mistake a green gate for full coverage:
-- `make typecheck` and CI check only `frontier_tooling/` and `frontier_runtime/`. `apps/backend/` is **not** type-checked.
+Known gate gaps as of 2026-08-10 — several gates are currently **red**; do not assume a clean baseline:
+- `pytest` aborts during collection: `tests/harness/` has an `__init__.py` but `tests/` does not, so `tests.harness` is unimportable.
+- `ruff check .` reports 24 errors, including `F821 Undefined name 'platform'` at `apps/backend/app/main.py:1587` — a latent `NameError`.
+- `make typecheck` covers only `frontier_tooling/` and `frontier_runtime/`, and reports 38 errors even there. `apps/backend/` is **not** type-checked (491 errors).
 - CI runs `ruff check` but not `ruff format --check`.
-- The Python suite passes only in the `pyproject.toml` `testpaths` order. Reordering surfaces cross-file state leakage.
+
+If your change is unrelated to these, say so explicitly in the handoff rather than claiming a green run.
 
 See `QUALITY_SCORE.md` for the full evidence table and `WORKFLOW.md` for the executable per-issue contract.
 

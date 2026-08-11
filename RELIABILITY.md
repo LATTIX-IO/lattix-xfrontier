@@ -21,12 +21,12 @@ xFrontier reliability depends on three things: control-plane state surviving res
 
 - **Control-plane state loss on restart.** `_persist_store_state()` catches and discards every exception. With `POSTGRES_DSN` unset or Postgres unreachable, the platform runs normally and loses all workflow, agent, and guardrail definitions on restart, with no log line. This is the highest-severity known reliability gap.
 - **Replay-state unavailability.** Correctly handled: the A2A nonce path raises `503 A2A replay state persistence unavailable` rather than accepting unverifiable traffic.
-- **Silent isolation downgrade.** A host where the intended strategy is unavailable must not fall back to a weaker tier without an explicit, logged, opt-in control. `restricted-process` is gated behind `FRONTIER_ALLOW_RESTRICTED_PROCESS_SANDBOX` for this reason.
+- **Silent isolation downgrade.** A host where the intended strategy is unavailable must not fall back to a weaker tier without an explicit, logged, opt-in control. `restricted-process` is gated behind `FRONTIER_ALLOW_RESTRICTED_PROCESS_SANDBOX`, and Windows AppContainer confinement is fail-closed rather than downgrading to a bare Job Object.
 - **Unimplemented Kubernetes isolation.** `k8s-gvisor` and `k8s-kata` exist as `IsolationStrategy` values with no implementing strategy. Selecting them must not resolve to something weaker.
-- **Long-running runs appear stuck.** There is no SSE or WebSocket stream; run progress is poll-only through `GET /workflow-runs/{run_id}/events`. Slow graphs look idle to an operator between polls.
+- **Stream interruption.** Run progress streams over SSE (`text/event-stream`). A dropped stream must not be indistinguishable from a completed run; clients need an explicit terminal event or a reconnect path.
 - **Non-native engine absence.** LangGraph, LangChain, Semantic Kernel, and AutoGen are optional imports. A missing module must produce a clear provider-status result, not a partially executed graph.
 - **Memory consolidation drift.** Consolidation, decay, dedup, and world-graph projection are all feature-flagged off. Enabling them mid-run changes retrieval behavior for in-flight sessions.
-- **Test-order state leakage.** Module-level state shared across test files masks isolation defects that could equally affect a long-lived process.
+- **The test suite does not currently collect.** `tests/harness` is unimportable (`tests/` lacks `__init__.py`), so `pytest` aborts before running anything. Until fixed, there is no automated regression signal at all.
 
 ## Reliability expectations
 

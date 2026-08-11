@@ -6,19 +6,19 @@ Active plan areas and the evidence each must produce before it counts as done. I
 
 | Area | Status | Notes |
 | --- | --- | --- |
-| Cognitive MVP foundation | In progress (uncommitted) | Goal/evidence/assembly/commitment columns implemented and tested in `frontier_runtime/cognitive.py`; the work exists only as working-tree changes on `feat/cognitive-mvp-foundation` |
-| Branch reconciliation | Blocked | `feat/cognitive-mvp-foundation` has zero unique commits and is 54 behind `origin/main`; main carries desktop-installer and Windows AppContainer sandbox work not present here |
+| Cognitive MVP foundation | Landed | Goal/evidence/assembly/commitment columns in `frontier_runtime/cognitive.py`, wired into the graph executor |
+| Restore green gates | **Urgent** | `pytest` does not collect (`tests/` lacks `__init__.py`), `ruff` reports 24 errors including `F821 Undefined name 'platform'` at `main.py:1587`, gated `mypy` reports 38 |
 | Columnar cognitive expansion | Planned | Evaluation, Uncertainty, State, Decomposition, Prediction, Adaptation columns per `docs/COLOUMN_LAYER_IMPLEMENTATION_PLAN.md` |
-| Backend type safety | Planned | Bring `apps/backend/` into `make typecheck`; 310 `mypy --strict` errors across 4 files today |
-| Control-plane persistence | Planned | Replace the in-memory store + silent snapshot with a real repository boundary; surface write failures instead of swallowing them |
-| `main.py` decomposition | Planned | Extract routers/services from a 15,839-LOC, 87-route module; extract opportunistically when substantially touching a domain area |
-| Test isolation | Planned | Remove module-level state leakage so the suite passes in any order, not just the `testpaths` order |
-| Run streaming | Planned | No SSE/WebSocket today; run progress is poll-only via `GET /workflow-runs/{run_id}/events` |
+| Backend type safety | Planned | Bring `apps/backend/` into `make typecheck`; 491 `mypy --strict` errors across 26 files today |
+| Control-plane persistence | Planned | Replace the in-memory store + swallowed snapshot failures with a real repository boundary that surfaces write errors |
+| `main.py` decomposition | Planned | Extract routers/services from a 21,228-LOC, 139-route module; extract opportunistically when substantially touching a domain area |
+| Run streaming | Landed | SSE (`text/event-stream`); clients still need explicit stream-drop handling |
+| Windows isolation | Landed | `_WindowsAppContainerStrategy` / `windows-appcontainer` tier, fail-closed |
 | Kubernetes isolation tiers | Planned | `k8s-gvisor` and `k8s-kata` are enum values with no implementing strategy |
 | MAF integration | Undecided | Currently a code emitter in `generated_artifacts.py`, not an execution engine — either wire it or restate the architecture |
 | Memory feature rollout | Feature-flagged | Consolidation, hybrid retrieval, decay, vector/file dedup, WAL, and world-graph projection all default off; needs a staged enablement plan |
 | Policy coverage | Planned | `budget_policy.rego` has no test file; every other policy does |
-| Format gating | Planned | Add `ruff format --check` to CI; 5 files currently drift |
+| Format gating | Planned | Add `ruff format --check` to CI |
 | Agent standards adoption | Landed | Shared Lattix bundle `2026.05.05` installed; see `.github/agent-standards/README.md`. Not yet auto-synced — this repo is absent from the monorepo `.gitmodules` |
 
 ## Linear backlog shape

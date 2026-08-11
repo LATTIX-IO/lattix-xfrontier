@@ -7,6 +7,7 @@ import {
   useClassificationBanner,
 } from "@/components/classification-banner";
 import { getAtfAlignmentReport, getPlatformSettings, savePlatformSettings } from "@/lib/api";
+import { ComposerDefaultsSettings } from "@/components/composer-defaults-settings";
 import type { AtfAlignmentReport } from "@/types/frontier";
 
 const sectionNav = [
@@ -622,6 +623,8 @@ export default function SettingsPage() {
               </label>
             </div>
           </article>
+
+          <ComposerDefaultsSettings />
         </div>
       </div>
     </section>

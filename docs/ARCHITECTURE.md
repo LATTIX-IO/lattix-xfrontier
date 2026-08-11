@@ -50,7 +50,7 @@ This section is the Lattix-standard architecture record for this repo. `DESIGN.m
 
 | Surface | Owns |
 | --- | --- |
-| `apps/backend/` | Control plane: 87 REST routes, definitions, versioning, publish/activate/rollback, security policy resolution, run lifecycle, audit |
+| `apps/backend/` | Control plane: 139 REST routes, definitions, versioning, publish/activate/rollback, security policy resolution, run lifecycle, SSE run streaming, audit |
 | `apps/workers/` | Worker runtime in four layers — L1 orchestrator and workflow specs, L2 event bus/envelopes/registry/policy/security, L3 agent loader, plus A2A network and JWT |
 | `frontier_runtime/` | Shared primitives: cognitive columns, guardrails, events and hash chain, security (OPA, Vault, capability, replay), sandbox, conversation, memory helpers, install |
 | `frontier_tooling/` | `lattix` CLI and the installer |
@@ -79,7 +79,7 @@ Fourteen executable node types: `trigger`, `agent`, `prompt`, `tool-call`, `retr
 ### Architectural constraints
 
 - New control-plane features land in `apps/backend/` or `apps/workers/`; the removed `lattix_frontier/` package is not revived.
-- `apps/backend/app/main.py` is a 15,839-LOC monolith. Prefer extracting a cohesive router or service over appending to it.
+- `apps/backend/app/main.py` is a 21,228-LOC monolith. Prefer extracting a cohesive router or service over appending to it.
 - Cognitive columns are additive. Existing `frontier/agent` semantics and legacy graphs must keep validating and running.
 - Execution engines are optional imports reported through `/runtime/providers`, never hard dependencies.
 - Microsoft Agent Framework is currently a **code emitter** in `generated_artifacts.py`, not an execution engine. Describe it accurately until that changes.

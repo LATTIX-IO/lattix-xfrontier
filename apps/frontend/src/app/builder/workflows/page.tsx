@@ -1,16 +1,27 @@
+import { randomUUID } from "node:crypto";
 import Link from "next/link";
 import { TypedDeleteButton } from "@/components/typed-delete-button";
 import { WorkflowStatusButton } from "@/components/workflow-status-button";
+import { ImportExportControls } from "@/components/import-export-controls";
 import { getWorkflowDefinitions } from "@/lib/api";
 
 export default async function BuilderWorkflowsPage() {
   const workflows = await getWorkflowDefinitions();
+  const newWorkflowId = randomUUID();
 
   return (
     <section className="space-y-4">
-      <header>
-        <h1 className="text-2xl font-semibold">Workflow Studio</h1>
-        <p className="fx-muted">Workflows are tasks for one or more agents to execute end-to-end.</p>
+      <header className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h1 className="text-2xl font-semibold">Workflow Studio</h1>
+          <p className="fx-muted">Workflows are tasks for one or more agents to execute end-to-end.</p>
+        </div>
+        <div className="flex items-center gap-3">
+          <ImportExportControls kind="workflow-definitions" />
+          <Link className="fx-btn-primary px-3 py-2 text-sm font-medium" href={`/builder/workflows/${newWorkflowId}`}>
+            New Workflow
+          </Link>
+        </div>
       </header>
 
       <div className="fx-panel overflow-hidden">
@@ -27,12 +38,17 @@ export default async function BuilderWorkflowsPage() {
           <tbody>
             {workflows.map((workflow) => (
               <tr key={workflow.id} className="border-t border-[var(--fx-border)]">
-                <td className="px-3 py-2 text-[var(--foreground)]">{workflow.name}</td>
-                <td className="px-3 py-2 text-[var(--foreground)]">{workflow.status}</td>
-                <td className="px-3 py-2 text-[var(--foreground)]">v{workflow.version}</td>
-                <td className="fx-muted px-3 py-2">{workflow.description}</td>
-                <td className="px-3 py-2 text-right">
-                  <div className="flex justify-end gap-2">
+                <td className="px-3 py-2 align-top font-medium text-[var(--foreground)]">{workflow.name}</td>
+                <td className="px-3 py-2 align-top text-[var(--foreground)]">{workflow.status}</td>
+                <td className="px-3 py-2 align-top text-[var(--foreground)]">v{workflow.version}</td>
+                <td className="fx-muted px-3 py-2 align-top">
+                  <p className="max-w-[34rem] leading-snug line-clamp-3" title={workflow.description}>
+                    {workflow.description}
+                  </p>
+                </td>
+                <td className="px-3 py-2 align-top text-right whitespace-nowrap">
+                  <div className="flex flex-nowrap items-center justify-end gap-2">
+                    <ImportExportControls kind="workflow-definitions" id={workflow.id} compact />
                     <Link className="fx-btn-primary px-2.5 py-1 text-xs font-medium" href={`/builder/workflows/${workflow.id}`}>
                       Open
                     </Link>

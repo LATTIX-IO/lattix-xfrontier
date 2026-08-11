@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { Inter, Space_Mono } from "next/font/google";
 import { AppShell } from "@/components/app-shell";
+import { DesktopLifecycle } from "@/components/desktop-lifecycle";
 import { ToastProvider } from "@/components/toast";
 import "./globals.css";
 
@@ -31,6 +32,7 @@ export default function RootLayout({
         className={`${inter.variable} ${spaceMono.variable} antialiased`}
       >
         <ToastProvider>
+          <DesktopLifecycle />
           <AppShell>{children}</AppShell>
         </ToastProvider>
       </body>

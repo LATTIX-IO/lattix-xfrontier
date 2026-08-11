@@ -26,7 +26,8 @@
       "Bash(GIT_TRACE_SETUP=1 git rev-parse --show-toplevel)",
       "Bash(git status *)",
       "Bash(git add *)",
-      "Bash(tasklist //FI \"IMAGENAME eq git.exe\")"
+      "Bash(tasklist //FI \"IMAGENAME eq git.exe\")",
+      "PowerShell(Set-Location E:\\\\lattix\\\\lattix-xfrontier; Test-Path apps\\\\backend\\\\requirements.txt; Get-ChildItem apps\\\\backend | Select-Object Name -First 12; \"--- container view of /workspace ---\"; docker run --rm -v \"${PWD}:/workspace\" alpine ls /workspace/apps/backend 2>&1 | Select-Object -First 12)"
     ]
   }
 }

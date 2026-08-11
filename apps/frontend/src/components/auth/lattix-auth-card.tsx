@@ -81,15 +81,15 @@ function IconMoon(props: { className?: string }) {
   );
 }
 
-function IconLogo(props: { className?: string }) {
+function BrandMark(props: { className?: string }) {
+  const theme = useSyncExternalStore(subscribeTheme, readTheme, () => "dark" as const);
   return (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" className={props.className}>
-      <path d="M4 4h6v6H4z" />
-      <path d="M14 4h6v6h-6z" />
-      <path d="M4 14h6v6H4z" />
-      <path d="M14 14h6v6h-6z" />
-      <path d="M10 7h4M7 10v4M17 10v4M10 17h4" />
-    </svg>
+    // eslint-disable-next-line @next/next/no-img-element -- static brand asset, no optimization needed
+    <img
+      src={theme === "dark" ? "/logo-mark-dark.svg" : "/logo-mark-light.svg"}
+      alt="Lattix logo"
+      className={props.className}
+    />
   );
 }
 
@@ -347,9 +347,7 @@ export function LattixAuthCard({ initialErrorCode }: LattixAuthCardProps = {}) {
       >
         {/* Brand */}
         <div className="mb-8 flex flex-col items-center" style={{ animation: "fx-fade-up-in 0.3s ease-out 0.075s both" }}>
-          <div className="mb-4 flex h-14 w-14 items-center justify-center border border-[var(--ui-border)] bg-[hsl(var(--background))] text-[hsl(var(--primary))]">
-            <IconLogo className="h-8 w-8" />
-          </div>
+          <BrandMark className="mb-4 h-14 w-14 rounded-[10px] border border-[var(--ui-border)] shadow-[0_8px_24px_rgba(0,0,0,0.25)]" />
           <span className="font-mono text-[13px] font-bold uppercase tracking-[0.3em] text-[hsl(var(--primary))]">
             Lattix
           </span>

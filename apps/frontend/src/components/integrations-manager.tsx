@@ -1,7 +1,15 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { deleteIntegration, getIntegrations, saveIntegration, testIntegration } from "@/lib/api";
+import {
+  deleteIntegration,
+  getIntegrationCatalog,
+  getIntegrations,
+  installCatalogIntegration,
+  saveIntegration,
+  testIntegration,
+  type IntegrationCatalogEntry,
+} from "@/lib/api";
 import type { IntegrationDefinition } from "@/types/frontier";
 
 type LastTestMetadata = {
@@ -81,6 +89,38 @@ export function IntegrationsManager() {
   const [oauthAudience, setOauthAudience] = useState("");
   const [statusMessage, setStatusMessage] = useState("");
   const [testingId, setTestingId] = useState<string | null>(null);
+  const [catalog, setCatalog] = useState<IntegrationCatalogEntry[]>([]);
+  const [installingId, setInstallingId] = useState<string | null>(null);
+  const [showCustom, setShowCustom] = useState(false);
+
+  async function refreshCatalog() {
+    try {
+      setCatalog(await getIntegrationCatalog());
+    } catch {
+      // Catalog is additive; the manager remains usable without it.
+    }
+  }
+
+  useEffect(() => {
+    void refreshCatalog();
+  }, []);
+
+  async function installFromCatalog(entry: IntegrationCatalogEntry) {
+    setInstallingId(entry.catalog_id);
+    try {
+      const result = await installCatalogIntegration(entry.catalog_id);
+      setStatusMessage(
+        result.already_installed
+          ? `${entry.name} is already installed.`
+          : `${entry.name} added as a draft — configure its credentials below.`,
+      );
+      await Promise.all([refresh(), refreshCatalog()]);
+    } catch (err) {
+      setStatusMessage(err instanceof Error ? err.message : `Unable to install ${entry.name}.`);
+    } finally {
+      setInstallingId(null);
+    }
+  }
 
   async function refresh() {
     setLoading(true);
@@ -171,6 +211,7 @@ export function IntegrationsManager() {
       metadata_json,
     });
     resetForm();
+    setShowCustom(false);
     await refresh();
     setStatusMessage("Integration saved.");
   }
@@ -196,13 +237,65 @@ export function IntegrationsManager() {
 
   return (
     <section className="space-y-4">
-      <header>
-        <h1 className="text-2xl font-semibold">Integration Manager</h1>
-        <p className="fx-muted">Configure local connectors for tools, data stores, queues, and APIs.</p>
+      <header className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h1 className="text-2xl font-semibold">Integrations</h1>
+          <p className="fx-muted">Connect MCP servers and APIs for tools, data stores, and queues.</p>
+        </div>
+        <button
+          type="button"
+          className="fx-btn-primary px-3 py-2 text-sm font-medium"
+          onClick={() => {
+            setShowCustom((v) => !v);
+            setStatusMessage("");
+          }}
+        >
+          {showCustom ? "Close" : "Add Custom"}
+        </button>
       </header>
 
       <div className="fx-panel p-4">
-        <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide">Add integration</h2>
+        <div className="mb-3 flex items-center justify-between">
+          <h2 className="text-sm font-semibold uppercase tracking-wide">Catalog — MCP servers &amp; APIs</h2>
+          <span className="fx-muted text-xs">Preloaded, vetted entries. Credentials are configured after install.</span>
+        </div>
+        <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-3">
+          {catalog.map((entry) => {
+            const protocol = String(entry.metadata_json?.protocol ?? "http");
+            return (
+              <div key={entry.catalog_id} className="border border-[var(--fx-border)] bg-[var(--fx-surface-elevated)] p-2.5 text-xs">
+                <div className="flex items-start justify-between gap-2">
+                  <p className="font-medium text-[var(--foreground)]">{entry.name}</p>
+                  <span className="fx-muted rounded-full border border-[var(--ui-border)] px-2 py-0.5 text-[10px] uppercase">
+                    {protocol === "mcp" ? "MCP" : "API"}
+                  </span>
+                </div>
+                <p className="fx-muted mt-1 truncate">{entry.capabilities.join(", ")}</p>
+                <div className="mt-2 flex items-center justify-between">
+                  <span className="fx-muted text-[10px] uppercase">{entry.auth_type === "none" ? "no auth" : entry.auth_type}</span>
+                  {entry.installed ? (
+                    <span className="text-[hsl(var(--state-success))]">Installed</span>
+                  ) : (
+                    <button
+                      type="button"
+                      disabled={installingId === entry.catalog_id}
+                      onClick={() => void installFromCatalog(entry)}
+                      className="fx-btn-secondary px-2 py-1 text-[11px] font-medium disabled:opacity-60"
+                    >
+                      {installingId === entry.catalog_id ? "Adding..." : "Add"}
+                    </button>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+          {catalog.length === 0 ? <p className="fx-muted text-xs">Catalog unavailable.</p> : null}
+        </div>
+      </div>
+
+      {showCustom ? (
+      <div className="fx-panel p-4">
+        <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide">Connect an API or MCP server</h2>
         <div className="grid gap-3 md:grid-cols-2">
           <label className="block text-sm">
             Name
@@ -354,77 +447,103 @@ export function IntegrationsManager() {
           ) : null}
         </div>
 
-        <div className="mt-3">
+        <div className="mt-3 flex gap-2">
           <button onClick={handleCreate} className="fx-btn-primary px-3 py-2 text-sm">
             Save integration
           </button>
+          <button
+            type="button"
+            onClick={() => {
+              resetForm();
+              setShowCustom(false);
+            }}
+            className="fx-btn-secondary px-3 py-2 text-sm"
+          >
+            Cancel
+          </button>
         </div>
       </div>
+      ) : null}
 
-      <div className="fx-panel overflow-hidden">
-        <table className="w-full text-sm">
-          <thead className="fx-table-head">
-            <tr>
-              <th className="px-3 py-2 text-left">Name</th>
-              <th className="px-3 py-2 text-left">Type</th>
-              <th className="px-3 py-2 text-left">Status</th>
-              <th className="px-3 py-2 text-left">Auth</th>
-              <th className="px-3 py-2 text-left">Secret ref</th>
-              <th className="px-3 py-2 text-left">Last test</th>
-              <th className="px-3 py-2 text-left">Base URL / DSN</th>
-              <th className="px-3 py-2 text-right">Actions</th>
-            </tr>
-          </thead>
-          <tbody>
-            {loading ? (
-              <tr>
-                <td className="px-3 py-3 text-xs text-[var(--foreground)]" colSpan={8}>Loading integrations...</td>
-              </tr>
-            ) : items.length === 0 ? (
-              <tr>
-                <td className="px-3 py-3 text-xs text-[var(--foreground)]" colSpan={8}>No integrations configured yet.</td>
-              </tr>
-            ) : (
-              items.map((item) => (
-                <tr key={item.id} className="border-t border-[var(--fx-border)] align-top">
-                  <td className="px-3 py-2">{item.name}</td>
-                  <td className="px-3 py-2">{item.type}</td>
-                  <td className="px-3 py-2">{item.status}</td>
-                  <td className="px-3 py-2">
-                    <div>{item.auth_type}</div>
-                    <div className="fx-muted text-[11px]">{authSummary(item)}</div>
-                  </td>
-                  <td className="px-3 py-2 font-mono text-xs">{item.secret_ref || "(none)"}</td>
-                  <td className="px-3 py-2 text-xs">
-                    {(() => {
-                      const lastTest = readLastTest(item.metadata_json);
-                      if (!lastTest) {
-                        return <span className="fx-muted">Not tested</span>;
-                      }
-                      return (
-                        <div className="space-y-0.5">
-                          <p className={lastTest.ok ? "text-emerald-300" : "text-rose-300"}>{lastTest.ok ? "OK" : "Failed"}</p>
-                          {Array.isArray(lastTest.warnings) && lastTest.warnings.length > 0 ? (
-                            <p className="fx-muted">{lastTest.warnings.length} warning(s)</p>
-                          ) : null}
-                        </div>
-                      );
-                    })()}
-                  </td>
-                  <td className="px-3 py-2 font-mono text-xs">{item.base_url || "(unset)"}</td>
-                  <td className="px-3 py-2">
-                    <div className="flex justify-end gap-2">
-                      <button onClick={() => handleTest(item.id)} className="fx-btn-secondary px-2 py-1 text-xs" disabled={testingId === item.id}>
-                        {testingId === item.id ? "Testing..." : "Test"}
-                      </button>
-                      <button onClick={() => handleDelete(item.id)} className="fx-btn-warning px-2 py-1 text-xs">Delete</button>
+      <div>
+        <div className="mb-3 flex items-center justify-between">
+          <h2 className="text-sm font-semibold uppercase tracking-wide">Configured integrations</h2>
+          <span className="fx-muted text-xs">{items.length} connected</span>
+        </div>
+        {loading ? (
+          <p className="fx-muted text-sm">Loading integrations...</p>
+        ) : items.length === 0 ? (
+          <div className="fx-panel p-6 text-center text-sm fx-muted">
+            No integrations connected yet. Install one from the catalog above, or use{" "}
+            <span className="text-[var(--foreground)]">Add Custom</span> to connect an API or MCP server.
+          </div>
+        ) : (
+          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+            {items.map((item) => {
+              const lastTest = readLastTest(item.metadata_json);
+              const isMcp = String(readAuthConfig(item.metadata_json).protocol ?? item.metadata_json?.protocol ?? "") === "mcp"
+                || item.type === "custom";
+              return (
+                <article key={item.id} className="fx-panel flex flex-col gap-2 p-3 text-xs">
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="min-w-0">
+                      <p className="truncate font-medium text-[var(--foreground)]">{item.name}</p>
+                      <p className="fx-muted truncate font-mono text-[11px]">{item.base_url || "(no endpoint)"}</p>
                     </div>
-                  </td>
-                </tr>
-              ))
-            )}
-          </tbody>
-        </table>
+                    <span className="fx-muted shrink-0 rounded-full border border-[var(--ui-border)] px-2 py-0.5 text-[10px] uppercase">
+                      {isMcp ? "MCP" : item.type === "http" ? "API" : item.type}
+                    </span>
+                  </div>
+                  <div className="flex flex-wrap gap-1.5">
+                    <span
+                      className={`rounded-full border px-2 py-0.5 text-[10px] uppercase ${
+                        item.status === "configured"
+                          ? "border-[hsl(var(--state-success)/0.5)] text-[hsl(var(--state-success))]"
+                          : item.status === "error"
+                            ? "border-[hsl(var(--state-critical)/0.5)] text-[hsl(var(--state-critical))]"
+                            : "border-[var(--ui-border)] fx-muted"
+                      }`}
+                    >
+                      {item.status}
+                    </span>
+                    <span className="rounded-full border border-[var(--ui-border)] px-2 py-0.5 text-[10px] fx-muted">
+                      {authSummary(item)}
+                    </span>
+                    {lastTest ? (
+                      <span
+                        className={`rounded-full border px-2 py-0.5 text-[10px] ${
+                          lastTest.ok
+                            ? "border-[hsl(var(--state-success)/0.5)] text-[hsl(var(--state-success))]"
+                            : "border-[hsl(var(--state-critical)/0.5)] text-[hsl(var(--state-critical))]"
+                        }`}
+                      >
+                        test {lastTest.ok ? "OK" : "failed"}
+                      </span>
+                    ) : null}
+                  </div>
+                  {item.secret_ref ? (
+                    <p className="fx-muted font-mono text-[10px]">secret: {item.secret_ref}</p>
+                  ) : null}
+                  <div className="mt-auto flex gap-2 pt-1">
+                    <button
+                      onClick={() => handleTest(item.id)}
+                      className="fx-btn-secondary px-2.5 py-1 text-[11px] font-medium disabled:opacity-60"
+                      disabled={testingId === item.id}
+                    >
+                      {testingId === item.id ? "Testing…" : "Test"}
+                    </button>
+                    <button
+                      onClick={() => handleDelete(item.id)}
+                      className="fx-btn-warning px-2.5 py-1 text-[11px] font-medium"
+                    >
+                      Delete
+                    </button>
+                  </div>
+                </article>
+              );
+            })}
+          </div>
+        )}
       </div>
 
       {statusMessage ? <p className="text-xs text-[var(--foreground)]">{statusMessage}</p> : null}

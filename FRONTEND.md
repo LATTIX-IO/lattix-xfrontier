@@ -29,7 +29,7 @@ Mode switching between operator and builder is a first-class control (`mode-swit
 - **Security scope is UI-visible.** `security-scope-editor.tsx` and `classification-banner.tsx` exist so posture is legible. Never render a definition's actions without its scope and classification context.
 - **Never re-implement authorization client-side.** The backend resolves security policy (`/agent-definitions/{id}/security-policy`, `/workflow-definitions/{id}/security-policy`). The UI reflects decisions; it does not make them.
 - **Destructive actions are typed.** Use `typed-delete-button.tsx` for deletes and archives. Do not add a bare confirm.
-- **Runs are polled, not streamed.** There is no SSE endpoint. Poll `GET /workflow-runs/{run_id}/events`, show an explicit "last updated" signal, and never let a slow run render as idle or complete.
+- **Run progress streams over SSE** (`text/event-stream`). Handle stream drop explicitly — a disconnected stream must never render as a completed run. Show a reconnect or stale-data affordance.
 - **Handle all four states.** Loading, empty, error, and retry — for every data surface. `loading.tsx`, `error.tsx`, and `not-found.tsx` exist at the app level; route-level surfaces still need their own.
 - **API access goes through `lib/api.ts`.** One client, one error-mapping path. No ad-hoc `fetch` in components.
 - **`lib/mock-data.ts` is for offline development only.** It must never become a fallback that hides a failed API call from the operator.
@@ -50,4 +50,4 @@ Mode switching between operator and builder is a first-class control (`mode-swit
 - Interaction tests over implementation-detail snapshots.
 - Cover approval gates, security-scope editing, node validation, error states, and the API boundary.
 - Do not weaken an existing test to make a change pass.
-- Current baseline: 78 tests across 12 spec files, all passing.
+- Run `npm test` before handoff. Note that the Python suite is currently red at collection (see `QUALITY_SCORE.md`); the frontend suite is independent of that.
