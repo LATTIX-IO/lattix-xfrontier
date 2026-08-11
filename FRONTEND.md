@@ -8,9 +8,8 @@ Next.js 16.2.1 (webpack, not turbopack) · React 19.2.3 with the React Compiler 
 
 Commands, run from `apps/frontend/`:
 
-```bash
-npm run dev && npm run lint && npm test && npm run build
-```
+    npm run dev   # start dev server (separate terminal)
+    npm run lint && npm test && npm run build
 
 ## Surface map
 
