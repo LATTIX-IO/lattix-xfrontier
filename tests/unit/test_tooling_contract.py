@@ -304,6 +304,10 @@ def test_bootstrap_shell_script_does_not_replace_caller_shell() -> None:
     assert "FRONTIER_INSTALLER_OUTPUT" in bootstrap_sh
     assert "[ -t 0 ] && [ -t 1 ]" in bootstrap_sh
     assert "export FRONTIER_INSTALLER_OUTPUT=tui" in bootstrap_sh
+    assert 'docker_output="$(docker info 2>&1)"' in bootstrap_sh
+    assert "*permission\\ denied*)" in bootstrap_sh
+    assert "cannot access the daemon" in bootstrap_sh
+    assert "docker group" in bootstrap_sh
 
 
 def test_public_frontier_installer_imports_packaged_module() -> None:

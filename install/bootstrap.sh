@@ -121,7 +121,17 @@ ensure_linux_python() {
 
 wait_for_docker() {
   attempts=0
-  until docker info >/dev/null 2>&1; do
+  while :; do
+    if docker_output="$(docker info 2>&1)"; then
+      return 0
+    fi
+    docker_output_lc="$(printf '%s' "$docker_output" | tr '[:upper:]' '[:lower:]')"
+    case "$docker_output_lc" in
+      *permission\ denied*)
+        echo "Docker is installed but this user cannot access the daemon. Add your user to the docker group and sign in again, or rerun the bootstrap with sudo." >&2
+        exit 1
+        ;;
+    esac
     attempts=$((attempts + 1))
     if [ "$attempts" -ge 60 ]; then
       echo "Docker is installed but the daemon is not ready. Start Docker and rerun the bootstrap." >&2
