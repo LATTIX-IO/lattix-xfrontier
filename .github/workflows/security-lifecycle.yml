@@ -102,12 +102,19 @@ jobs:
 
       - name: Secret scanning via Gitleaks
         run: |
-          gitleaks detect --source . --no-git --redact --report-format json --report-path gitleaks-report.json || true
+          gitleaks detect --source . --no-git --redact --report-format sarif --report-path gitleaks-results.sarif || true
+
+      - name: Upload Gitleaks artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: gitleaks-results
+          path: gitleaks-results.sarif
+          if-no-files-found: warn
 
       - name: Upload Gitleaks results
         uses: github/codeql-action/upload-sarif@v3
         with:
-          sarif_file: gitleaks-report.json
+          sarif_file: gitleaks-results.sarif
           category: gitleaks
 
       - name: SCA/config via Trivy
