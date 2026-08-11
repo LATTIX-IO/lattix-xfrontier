@@ -1,0 +1,7 @@
+[allowlist]
+  # Allow REDACTED placeholders in example/env files
+  paths = [
+    "(?i)\\..*\\.env",
+    "apps/frontend/src/lib/frontier-node-catalog.ts",
+    "apps/backend/app/main.py"
+  ]
