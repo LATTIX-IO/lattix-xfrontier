@@ -198,8 +198,8 @@ jobs:
           - Last updated: $(git log -1 --format="%ci" -- THREAT-MODEL.md 2>/dev/null || echo "N/A")
           
           ## Pentest Gate Results
-          - SAST (Semgrep): $(ls artifacts/semgrep-results.json 2>/dev/null && echo "Artifacts collected" || echo "No artifacts")
-          - Secret scanning (Gitleaks): $(ls artifacts/gitleaks-report.json 2>/dev/null && echo "Artifacts collected" || echo "No artifacts")
+          - SAST (Semgrep): $(ls artifacts/semgrep-results.sarif 2>/dev/null && echo "Artifacts collected" || echo "No artifacts")
+          - Secret scanning (Gitleaks): $(ls artifacts/gitleaks-results.sarif 2>/dev/null && echo "Artifacts collected" || echo "No artifacts")
           - SCA/Config (Trivy): $(ls artifacts/trivy-results.sarif 2>/dev/null && echo "Artifacts collected" || echo "No artifacts")
           - Policy tests: $(echo "Run in pentest job")
           - Compose validation: $(echo "Run in pentest job")
