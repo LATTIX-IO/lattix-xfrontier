@@ -252,7 +252,9 @@ def _extract_dir(archive_path: Path, spec: BinarySpec, bin_dir: Path) -> Path:
     if spec.nested_glob:
         inner = next(iter(sorted(root.rglob(spec.nested_glob))), None)
         if inner is None:
-            raise ValueError(f"nested archive '{spec.nested_glob}' not found in {archive_path.name}")
+            raise ValueError(
+                f"nested archive '{spec.nested_glob}' not found in {archive_path.name}"
+            )
         _extract_all(inner, spec.nested_archive, root)
         try:
             inner.unlink()

@@ -1572,7 +1572,15 @@ class PostgresWorldGraph(_BasePostgresService):
             )
         self._initialized = True
 
-    def _merge_node(self, cursor: Any, *, node_id: str, label: str, props: dict[str, Any], memory_scope: str = "") -> None:
+    def _merge_node(
+        self,
+        cursor: Any,
+        *,
+        node_id: str,
+        label: str,
+        props: dict[str, Any],
+        memory_scope: str = "",
+    ) -> None:
         if not node_id:
             return
         cursor.execute(
@@ -1588,7 +1596,9 @@ class PostgresWorldGraph(_BasePostgresService):
             (node_id, label, memory_scope, json.dumps(props, default=_json_default)),
         )
 
-    def _merge_edge(self, cursor: Any, *, src: str, dst: str, rel: str, props: dict[str, Any] | None = None) -> None:
+    def _merge_edge(
+        self, cursor: Any, *, src: str, dst: str, rel: str, props: dict[str, Any] | None = None
+    ) -> None:
         if not src or not dst:
             return
         cursor.execute(
@@ -1602,18 +1612,29 @@ class PostgresWorldGraph(_BasePostgresService):
             (src, dst, rel, json.dumps(props or {}, default=_json_default)),
         )
 
-    def record_run(self, *, run_id: str, title: str, agent: str | None, workflow: str | None) -> None:
+    def record_run(
+        self, *, run_id: str, title: str, agent: str | None, workflow: str | None
+    ) -> None:
         if not self.enabled:
             return
         try:
             self._ensure()
             with self._connect() as connection, connection.cursor() as cursor:
-                self._merge_node(cursor, node_id=run_id, label="WorkflowRun", props={"title": title})
+                self._merge_node(
+                    cursor, node_id=run_id, label="WorkflowRun", props={"title": title}
+                )
                 if agent:
-                    self._merge_node(cursor, node_id=f"agent:{agent}", label="Agent", props={"name": agent})
+                    self._merge_node(
+                        cursor, node_id=f"agent:{agent}", label="Agent", props={"name": agent}
+                    )
                     self._merge_edge(cursor, src=run_id, dst=f"agent:{agent}", rel="EXECUTED_BY")
                 if workflow:
-                    self._merge_node(cursor, node_id=f"workflow:{workflow}", label="Workflow", props={"name": workflow})
+                    self._merge_node(
+                        cursor,
+                        node_id=f"workflow:{workflow}",
+                        label="Workflow",
+                        props={"name": workflow},
+                    )
                     self._merge_edge(cursor, src=run_id, dst=f"workflow:{workflow}", rel="PART_OF")
         except Exception:  # noqa: BLE001
             return
@@ -1624,7 +1645,9 @@ class PostgresWorldGraph(_BasePostgresService):
         owner = projection.get("owner") if isinstance(projection.get("owner"), dict) else {}
         memory = projection.get("memory") if isinstance(projection.get("memory"), dict) else {}
         topics = projection.get("topics") if isinstance(projection.get("topics"), list) else []
-        evidences = projection.get("evidences") if isinstance(projection.get("evidences"), list) else []
+        evidences = (
+            projection.get("evidences") if isinstance(projection.get("evidences"), list) else []
+        )
         if not owner or not memory:
             return
         owner_id = str(owner.get("id") or "")
@@ -1634,7 +1657,9 @@ class PostgresWorldGraph(_BasePostgresService):
             self._ensure()
             with self._connect() as connection, connection.cursor() as cursor:
                 self._merge_node(
-                    cursor, node_id=owner_id, label="KnowledgeOwner",
+                    cursor,
+                    node_id=owner_id,
+                    label="KnowledgeOwner",
                     memory_scope=str(owner.get("memory_scope") or scope),
                     props={
                         "name": str(owner.get("name") or ""),
@@ -1643,7 +1668,10 @@ class PostgresWorldGraph(_BasePostgresService):
                     },
                 )
                 self._merge_node(
-                    cursor, node_id=memory_id, label="KnowledgeMemory", memory_scope=scope,
+                    cursor,
+                    node_id=memory_id,
+                    label="KnowledgeMemory",
+                    memory_scope=scope,
                     props={
                         "content": str(memory.get("content") or ""),
                         "kind": str(memory.get("kind") or "memory-consolidation"),
@@ -1655,16 +1683,27 @@ class PostgresWorldGraph(_BasePostgresService):
                         "created_at": str(memory.get("at") or memory.get("created_at") or ""),
                     },
                 )
-                self._merge_edge(cursor, src=owner_id, dst=memory_id, rel="OWNS_MEMORY", props={"memory_scope": scope})
+                self._merge_edge(
+                    cursor,
+                    src=owner_id,
+                    dst=memory_id,
+                    rel="OWNS_MEMORY",
+                    props={"memory_scope": scope},
+                )
                 for item in evidences:
                     if not isinstance(item, dict) or not str(item.get("id") or ""):
                         continue
                     ev_id = str(item.get("id"))
                     self._merge_node(
-                        cursor, node_id=ev_id, label="MemoryEvidence", memory_scope=scope,
+                        cursor,
+                        node_id=ev_id,
+                        label="MemoryEvidence",
+                        memory_scope=scope,
                         props={
                             "name": str(item.get("name") or item.get("id") or ""),
-                            "bucket_id": str(item.get("bucket_id") or memory.get("bucket_id") or ""),
+                            "bucket_id": str(
+                                item.get("bucket_id") or memory.get("bucket_id") or ""
+                            ),
                             "memory_scope": str(item.get("memory_scope") or scope),
                         },
                     )
@@ -1675,10 +1714,18 @@ class PostgresWorldGraph(_BasePostgresService):
                     t_id = str(item.get("id"))
                     weight = int(item.get("weight") or 0)
                     self._merge_node(
-                        cursor, node_id=t_id, label="KnowledgeTopic",
+                        cursor,
+                        node_id=t_id,
+                        label="KnowledgeTopic",
                         props={"name": str(item.get("name") or ""), "weight": weight},
                     )
-                    self._merge_edge(cursor, src=memory_id, dst=t_id, rel="MENTIONS_TOPIC", props={"weight": weight})
+                    self._merge_edge(
+                        cursor,
+                        src=memory_id,
+                        dst=t_id,
+                        rel="MENTIONS_TOPIC",
+                        props={"weight": weight},
+                    )
                     self._merge_edge(cursor, src=owner_id, dst=t_id, rel="RELATES_TO_TOPIC")
         except Exception:  # noqa: BLE001
             return

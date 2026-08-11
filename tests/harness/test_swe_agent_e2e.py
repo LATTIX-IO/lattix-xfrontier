@@ -21,6 +21,7 @@ from frontier_runtime.harness.swe_agent import SweAgent, SweTask
 
 from tests.harness.conftest import git_init, requires_bash, requires_git, tool_response
 
+
 def _shell_python() -> str:
     """Find a python interpreter the *shell* can execute (git-bash on Windows
     cannot run the Windows python.exe by path, but `python3` works)."""
@@ -126,7 +127,9 @@ def test_budget_exhaustion_yields_zero_credit(tmp_path):
     executor = LocalDirectExecutor(tmp_path)
     # A client that never submits — just keeps running cheap bash.
     client = ScriptedChatClient(
-        responses=[tool_response(f"c{i}", "execute_bash", command="echo working") for i in range(20)],
+        responses=[
+            tool_response(f"c{i}", "execute_bash", command="echo working") for i in range(20)
+        ],
     )
     agent = SweAgent(
         client=client,
@@ -187,9 +190,7 @@ def test_trajectory_is_written(tmp_path):
     _make_repo(tmp_path)
     executor = LocalDirectExecutor(tmp_path)
     traj_dir = tmp_path / "traj"
-    client = ScriptedChatClient(
-        responses=[tool_response("s", "submit", answer="trivial")]
-    )
+    client = ScriptedChatClient(responses=[tool_response("s", "submit", answer="trivial")])
     agent = SweAgent(
         client=client,
         profile=resolve_profile("scripted", "x", profile_id="local-32b-class"),

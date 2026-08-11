@@ -88,7 +88,9 @@ def test_noop_solver_resolves_nothing(tmp_path):
     from frontier_evals.runner import run_eval
 
     config = EvalConfig(mode="plumbing", dataset="synthetic-mini", seeds=[0])
-    run = run_eval(config, client_factory=lambda task: build_noop_solver(), output_dir=tmp_path / "o")
+    run = run_eval(
+        config, client_factory=lambda task: build_noop_solver(), output_dir=tmp_path / "o"
+    )
     assert run.summary["resolve_rate_mean"] == 0.0
     assert run.summary["meets_threshold"] is False
 
@@ -103,7 +105,9 @@ def test_remote_guardrail_blocks_local_live_fleet():
         config.enforce_remote_guardrail(n_instances=50)
     # small smoke (<=2) is allowed; --allow-local overrides
     config.enforce_remote_guardrail(n_instances=2)
-    EvalConfig(mode="live", api_base_url="http://localhost:8000/v1", allow_local=True).enforce_remote_guardrail(50)
+    EvalConfig(
+        mode="live", api_base_url="http://localhost:8000/v1", allow_local=True
+    ).enforce_remote_guardrail(50)
 
 
 def test_stats_sem_math():

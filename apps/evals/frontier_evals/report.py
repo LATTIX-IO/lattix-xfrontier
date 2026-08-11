@@ -14,8 +14,14 @@ if TYPE_CHECKING:
 def write_report(run: "EvalRun", out_dir: Path) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
     (out_dir / "summary.json").write_text(
-        json.dumps({"config": run.config, "summary": run.summary,
-                    "results": [asdict(r) for r in run.results]}, indent=2),
+        json.dumps(
+            {
+                "config": run.config,
+                "summary": run.summary,
+                "results": [asdict(r) for r in run.results],
+            },
+            indent=2,
+        ),
         encoding="utf-8",
     )
     (out_dir / "report.md").write_text(_markdown(run), encoding="utf-8")

@@ -48,7 +48,12 @@ submit
 
 
 def build_task_prompt(problem_statement: str, *, repo_hint: str = "", test_hint: str = "") -> str:
-    parts = ["Resolve the following issue in the repository.\n", "<issue>", problem_statement.strip(), "</issue>"]
+    parts = [
+        "Resolve the following issue in the repository.\n",
+        "<issue>",
+        problem_statement.strip(),
+        "</issue>",
+    ]
     if repo_hint:
         parts.append(f"\nRepository: {repo_hint}")
     if test_hint:

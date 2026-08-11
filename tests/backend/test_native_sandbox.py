@@ -51,7 +51,9 @@ def test_local_native_never_falls_back_to_docker(monkeypatch):
     monkeypatch.delenv("KUBERNETES_SERVICE_HOST", raising=False)
     monkeypatch.setattr(sb, "detect_host_platform", lambda *a, **k: sb.HostPlatform.LINUX)
     # docker present, bwrap absent → must NOT pick hardened-docker under native
-    monkeypatch.setattr(sb.shutil, "which", lambda name: "/usr/bin/docker" if name == "docker" else None)
+    monkeypatch.setattr(
+        sb.shutil, "which", lambda name: "/usr/bin/docker" if name == "docker" else None
+    )
     mgr = sb.SandboxManager()
     assert mgr._detect() == sb.IsolationStrategy.RESTRICTED_PROCESS
 

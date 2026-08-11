@@ -248,9 +248,7 @@ class LocalSandboxExecutor:
             )
         start = _time.time()
         try:
-            proc = subprocess.run(
-                plan.command, capture_output=True, text=True, timeout=timeout
-            )
+            proc = subprocess.run(plan.command, capture_output=True, text=True, timeout=timeout)
             return ExecResult(
                 exit_code=proc.returncode,
                 stdout=proc.stdout or "",
@@ -380,7 +378,7 @@ class DockerContainerExecutor:
         b64 = base64.b64encode(content.encode("utf-8")).decode("ascii")
         target = self._abs(path)
         script = (
-            f"mkdir -p \"$(dirname {shlex.quote(target)})\" && "
+            f'mkdir -p "$(dirname {shlex.quote(target)})" && '
             f"printf %s {shlex.quote(b64)} | base64 -d > {shlex.quote(target)}"
         )
         res = self._exec(["bash", "-lc", script], timeout=60)

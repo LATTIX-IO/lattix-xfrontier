@@ -48,28 +48,61 @@ def smoke(output_dir: str, seeds: str) -> None:
 
 @cli.command("collaborate")
 @click.option("--repo", required=True, help="Path to the local git repo the team works in.")
-@click.option("--spec", required=True, help="Spec text, @file, or linear:FRONT-123 (needs Linear wiring).")
-@click.option("--test-command", default="", help="Command the team runs to verify (e.g. 'pytest -q').")
+@click.option(
+    "--spec", required=True, help="Spec text, @file, or linear:FRONT-123 (needs Linear wiring)."
+)
+@click.option(
+    "--test-command", default="", help="Command the team runs to verify (e.g. 'pytest -q')."
+)
 @click.option("--api-base-url", default="http://localhost:11434/v1")
 @click.option("--model", default="gpt-oss:20b")
 @click.option("--provider", default="ollama")
-@click.option("--seats", default="backend,frontend,sdet,security,devops,performance",
-              help="Comma-separated discussion seats (tech-lead always facilitates).")
+@click.option(
+    "--seats",
+    default="backend,frontend,sdet,security,devops,performance",
+    help="Comma-separated discussion seats (tech-lead always facilitates).",
+)
 @click.option("--base-ref", default="", help="Branch/sha to base the work on (default: HEAD).")
 @click.option("--branch", default="", help="Working branch (default: frontier/<task>).")
-@click.option("--isolation", default="worktree", type=click.Choice(["worktree", "in-place"]),
-              help="worktree = isolated checkout per task (recommended); in-place = edit the repo directly.")
-@click.option("--allow-outside", default="ask", type=click.Choice(["ask", "deny", "allow"]),
-              help="What the team may do outside the bound repo.")
-@click.option("--grant", "grants", multiple=True, help="Extra path(s) the team is permitted to touch.")
+@click.option(
+    "--isolation",
+    default="worktree",
+    type=click.Choice(["worktree", "in-place"]),
+    help="worktree = isolated checkout per task (recommended); in-place = edit the repo directly.",
+)
+@click.option(
+    "--allow-outside",
+    default="ask",
+    type=click.Choice(["ask", "deny", "allow"]),
+    help="What the team may do outside the bound repo.",
+)
+@click.option(
+    "--grant", "grants", multiple=True, help="Extra path(s) the team is permitted to touch."
+)
 @click.option("--task-id", default="", help="Task/chat id (names the worktree + branch).")
 @click.option("--discussion-rounds", default=2, type=int)
 @click.option("--build-rounds", default=2, type=int)
 @click.option("--max-steps", default=40, type=int)
 @click.option("--trajectory-dir", default="")
-def collaborate(repo, spec, test_command, api_base_url, model, provider, seats,
-                base_ref, branch, isolation, allow_outside, grants, task_id,
-                discussion_rounds, build_rounds, max_steps, trajectory_dir):
+def collaborate(
+    repo,
+    spec,
+    test_command,
+    api_base_url,
+    model,
+    provider,
+    seats,
+    base_ref,
+    branch,
+    isolation,
+    allow_outside,
+    grants,
+    task_id,
+    discussion_rounds,
+    build_rounds,
+    max_steps,
+    trajectory_dir,
+):
     """Give a spec to a cross-functional team, bound to a specific repo.
 
     The team is confined to the bound repo (isolated git worktree by default);
@@ -93,13 +126,23 @@ def collaborate(repo, spec, test_command, api_base_url, model, provider, seats,
 
     run_id = task_id or _Path(repo).name
     binding = WorkspaceBinding(
-        repo_path=repo, base_ref=base_ref, branch=branch, isolation=isolation,
-        allow_outside=allow_outside, extra_paths=list(grants), test_command=test_command)
+        repo_path=repo,
+        base_ref=base_ref,
+        branch=branch,
+        isolation=isolation,
+        allow_outside=allow_outside,
+        extra_paths=list(grants),
+        test_command=test_command,
+    )
     manager = WorkspaceManager()
     task, prov = manager.build_task(binding, run_id, spec_text)
-    click.echo(f"  · workspace: {prov.root} (branch {prov.branch}, outside={allow_outside})", err=True)
+    click.echo(
+        f"  · workspace: {prov.root} (branch {prov.branch}, outside={allow_outside})", err=True
+    )
 
-    client = OpenAIChatClient(model=model, base_url=api_base_url, api_key="local", provider=provider)
+    client = OpenAIChatClient(
+        model=model, base_url=api_base_url, api_key="local", provider=provider
+    )
     participants = tuple(s.strip() for s in seats.split(",") if s.strip())
     team = build_collaborative_team(
         client_for=lambda role: client,
@@ -123,18 +166,35 @@ def collaborate(repo, spec, test_command, api_base_url, model, provider, seats,
 
 @cli.command("develop")
 @click.option("--repo", required=True, help="Path to the local git repo to work in.")
-@click.option("--spec", default="", help="Spec text, @file, or linear:FRONT-123 (needs Linear wiring).")
-@click.option("--test-command", default="", help="Command the team runs to verify (e.g. 'pytest -q').")
+@click.option(
+    "--spec", default="", help="Spec text, @file, or linear:FRONT-123 (needs Linear wiring)."
+)
+@click.option(
+    "--test-command", default="", help="Command the team runs to verify (e.g. 'pytest -q')."
+)
 @click.option("--api-base-url", default="http://localhost:11434/v1")
 @click.option("--model", default="gpt-oss:20b")
 @click.option("--provider", default="ollama")
 @click.option("--max-rounds", default=3, type=int)
 @click.option("--max-steps", default=40, type=int)
-@click.option("--open-pr/--no-open-pr", default=False, help="Open a GitHub PR on approve (needs gh).")
+@click.option(
+    "--open-pr/--no-open-pr", default=False, help="Open a GitHub PR on approve (needs gh)."
+)
 @click.option("--target-branch", default="main")
 @click.option("--trajectory-dir", default="")
-def develop(repo, spec, test_command, api_base_url, model, provider, max_rounds, max_steps,
-            open_pr, target_branch, trajectory_dir):
+def develop(
+    repo,
+    spec,
+    test_command,
+    api_base_url,
+    model,
+    provider,
+    max_rounds,
+    max_steps,
+    open_pr,
+    target_branch,
+    trajectory_dir,
+):
     """Cross-functional dev workflow: plan -> execute -> test -> secure -> deploy-prep.
 
     Brings the whole agent team together as a chat to take a spec to
@@ -156,14 +216,18 @@ def develop(repo, spec, test_command, api_base_url, model, provider, max_rounds,
     else:
         spec_text = spec or "(no spec provided)"
 
-    client = OpenAIChatClient(model=model, base_url=api_base_url, api_key="local", provider=provider)
+    client = OpenAIChatClient(
+        model=model, base_url=api_base_url, api_key="local", provider=provider
+    )
     executor = LocalDirectExecutor(repo)
 
     delivery = None
     policy = DeliveryPolicy(auto_open_pr=open_pr, target_branch=target_branch)
     if open_pr:
+
         def gh_runner(args):
             return executor.run(["gh", *args], timeout=120)
+
         delivery = GitHubDelivery(github=GhCliGitHub(executor=executor, gh_runner=gh_runner))
 
     workflow = build_development_workflow(
@@ -175,8 +239,13 @@ def develop(repo, spec, test_command, api_base_url, model, provider, max_rounds,
         trajectory_dir=_Path(trajectory_dir) if trajectory_dir else None,
         on_event=lambda kind, data: click.echo(f"  · {kind}: {data}", err=True),
     )
-    task = SweTask(instance_id=_Path(repo).name, problem_statement=spec_text,
-                   executor=executor, test_command=test_command, base_ref=target_branch)
+    task = SweTask(
+        instance_id=_Path(repo).name,
+        problem_statement=spec_text,
+        executor=executor,
+        test_command=test_command,
+        base_ref=target_branch,
+    )
     result = workflow.run(task, spec_text)
 
     click.echo(result.chat())
@@ -186,14 +255,18 @@ def develop(repo, spec, test_command, api_base_url, model, provider, max_rounds,
 @cli.command("team")
 @click.option("--repo", required=True, help="Path to a local git repo to work in.")
 @click.option("--spec", required=True, help="Spec text, or @path/to/spec.md to read from a file.")
-@click.option("--test-command", default="", help="Command the agents run to verify (e.g. 'pytest -q').")
+@click.option(
+    "--test-command", default="", help="Command the agents run to verify (e.g. 'pytest -q')."
+)
 @click.option("--api-base-url", default="http://localhost:11434/v1")
 @click.option("--model", default="gpt-oss:20b")
 @click.option("--provider", default="ollama")
 @click.option("--max-rounds", default=3, type=int)
 @click.option("--max-steps", default=40, type=int)
 @click.option("--trajectory-dir", default="")
-def team(repo, spec, test_command, api_base_url, model, provider, max_rounds, max_steps, trajectory_dir):
+def team(
+    repo, spec, test_command, api_base_url, model, provider, max_rounds, max_steps, trajectory_dir
+):
     """Run the multi-agent dev team (architect→implement→review→moderate→fix) on a local repo."""
     import json as _json
     from pathlib import Path as _Path
@@ -205,7 +278,9 @@ def team(repo, spec, test_command, api_base_url, model, provider, max_rounds, ma
     from frontier_runtime.harness.team import build_team_from_shipped
 
     spec_text = _Path(spec[1:]).read_text(encoding="utf-8") if spec.startswith("@") else spec
-    client = OpenAIChatClient(model=model, base_url=api_base_url, api_key="local", provider=provider)
+    client = OpenAIChatClient(
+        model=model, base_url=api_base_url, api_key="local", provider=provider
+    )
     team_flow = build_team_from_shipped(
         client_for=lambda role: client,
         budgets=LoopBudgets(max_steps=max_steps),
@@ -220,13 +295,18 @@ def team(repo, spec, test_command, api_base_url, model, provider, max_rounds, ma
         test_command=test_command,
     )
     result = team_flow.run(task, spec=spec_text)
-    click.echo(_json.dumps({
-        "approved": result.approved,
-        "rounds": result.round_count,
-        "plan": result.plan[:500],
-        "final_patch_bytes": len(result.final_patch.encode("utf-8")),
-        "verdicts": [r.verdict.decision for r in result.rounds],
-    }, indent=2))
+    click.echo(
+        _json.dumps(
+            {
+                "approved": result.approved,
+                "rounds": result.round_count,
+                "plan": result.plan[:500],
+                "final_patch_bytes": len(result.final_patch.encode("utf-8")),
+                "verdicts": [r.verdict.decision for r in result.rounds],
+            },
+            indent=2,
+        )
+    )
     if result.final_patch:
         click.echo("\n--- final patch ---\n" + result.final_patch)
     sys.exit(0 if result.approved else 2)
@@ -251,7 +331,12 @@ def list_instances(dataset: str, limit: int, split: str) -> None:
 @click.option("--api-base-url", default="")
 @click.option("--provider", default="vllm")
 @click.option("--profile", default="", help="Force a model capability profile id.")
-@click.option("--agent", "agent_id", default="", help="Shipped agent id (examples/agents/<id>) to drive the run, e.g. sdet-swe-agent.")
+@click.option(
+    "--agent",
+    "agent_id",
+    default="",
+    help="Shipped agent id (examples/agents/<id>) to drive the run, e.g. sdet-swe-agent.",
+)
 @click.option("--docker-host", default="")
 @click.option("--seeds", default="0")
 @click.option("--instance-ids", default="", help="Comma-separated subset of instance ids.")

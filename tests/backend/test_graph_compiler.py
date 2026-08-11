@@ -69,7 +69,10 @@ def _native_executor(node, incoming, by_port):
     if "trigger" in t:
         return {"message": "Spec: add a /health endpoint."}
     if "output" in t:
-        return {"published": {"destination": node.config.get("destination")}, "message": "delivered"}
+        return {
+            "published": {"destination": node.config.get("destination")},
+            "message": "delivered",
+        }
     return {"message": f"native {node.id}"}
 
 
@@ -153,11 +156,17 @@ def test_router_forces_forward_port_after_loop_bound():
     router = gc._router_for("consensus", port_targets, deps, ancestors_of)
 
     # model keeps voting to continue, but the bound forces the forward port
-    state = {"node_outputs": {"consensus": {"route": "continue_discussion"}}, "loop_counts": {"consensus": 3}}
+    state = {
+        "node_outputs": {"consensus": {"route": "continue_discussion"}},
+        "loop_counts": {"consensus": 3},
+    }
     assert router(state) == "agreed"  # forward (build is not an ancestor)
 
     # below the bound, honour the model's choice
-    state2 = {"node_outputs": {"consensus": {"route": "continue_discussion"}}, "loop_counts": {"consensus": 1}}
+    state2 = {
+        "node_outputs": {"consensus": {"route": "continue_discussion"}},
+        "loop_counts": {"consensus": 1},
+    }
     assert router(state2) == "continue_discussion"
 
 
@@ -222,18 +231,40 @@ def test_code_node_delegates_to_swe_agent(monkeypatch):
         workspace = _WS()
         binding = _Binding()
 
-    node = _Node({"id": "build", "type": "frontier/agent", "title": "Build", "config": {"agent_id": "sdet", "phase": "build"}})
-    deps = _deps(_RoutingClient(), resolve=lambda cfg: _chat_resolution("sdet", "code"), provisioned=_Prov())
+    node = _Node(
+        {
+            "id": "build",
+            "type": "frontier/agent",
+            "title": "Build",
+            "config": {"agent_id": "sdet", "phase": "build"},
+        }
+    )
+    deps = _deps(
+        _RoutingClient(), resolve=lambda cfg: _chat_resolution("sdet", "code"), provisioned=_Prov()
+    )
 
-    res = gc._run_agent_node(node, incoming=[], out_ports=[], state={"run_input": {"message": "build it"}}, deps=deps)
+    res = gc._run_agent_node(
+        node, incoming=[], out_ports=[], state={"run_input": {"message": "build it"}}, deps=deps
+    )
     assert res["mode"] == "code"
     assert res["patch"].startswith("diff --git")
     assert res["route"] == "agreed"
 
 
 def test_code_node_without_workspace_degrades_to_plan_only():
-    node = _Node({"id": "build", "type": "frontier/agent", "title": "Build", "config": {"agent_id": "sdet", "phase": "build"}})
-    deps = _deps(_RoutingClient(), resolve=lambda cfg: _chat_resolution("sdet", "code"), provisioned=None)
-    res = gc._run_agent_node(node, incoming=[], out_ports=[], state={"run_input": {"message": "build it"}}, deps=deps)
+    node = _Node(
+        {
+            "id": "build",
+            "type": "frontier/agent",
+            "title": "Build",
+            "config": {"agent_id": "sdet", "phase": "build"},
+        }
+    )
+    deps = _deps(
+        _RoutingClient(), resolve=lambda cfg: _chat_resolution("sdet", "code"), provisioned=None
+    )
+    res = gc._run_agent_node(
+        node, incoming=[], out_ports=[], state={"run_input": {"message": "build it"}}, deps=deps
+    )
     assert res["mode"] in {"plan_only", "simulated"}
     assert res["route"] == "agreed"  # never traps the graph when it cannot build

@@ -26,9 +26,10 @@ def _shell_python() -> str:
 
     for cand in ("python3", "python"):
         try:
-            if subprocess.run(
-                ["bash", "-c", f"{cand} --version"], capture_output=True
-            ).returncode == 0:
+            if (
+                subprocess.run(["bash", "-c", f"{cand} --version"], capture_output=True).returncode
+                == 0
+            ):
                 return cand
         except OSError:
             continue
@@ -72,7 +73,9 @@ _SYNTHETIC: list[LoadedInstance] = [
             "print('OK')\n"
         ),
         fix=FixRecipe(
-            edits=[{"path": "mathlib/core.py", "old": "    return a - b", "new": "    return a + b"}]
+            edits=[
+                {"path": "mathlib/core.py", "old": "    return a - b", "new": "    return a + b"}
+            ]
         ),
     ),
     LoadedInstance(
@@ -81,10 +84,7 @@ _SYNTHETIC: list[LoadedInstance] = [
             "utils.safe_max(values) raises on an empty list; it should return None when empty."
         ),
         files={
-            "utils.py": (
-                "def safe_max(values):\n"
-                "    return max(values)\n"
-            ),
+            "utils.py": ("def safe_max(values):\n    return max(values)\n"),
         },
         test_script=(
             "import os, sys; sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))\n"
@@ -115,10 +115,7 @@ _SYNTHETIC: list[LoadedInstance] = [
             "but it currently always slices len(p) chars."
         ),
         files={
-            "text.py": (
-                "def strip_prefix(s, p):\n"
-                "    return s[len(p):]\n"
-            ),
+            "text.py": ("def strip_prefix(s, p):\n    return s[len(p):]\n"),
         },
         test_script=(
             "import os, sys; sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))\n"
@@ -226,7 +223,9 @@ def swebench_tasks(
     return tasks
 
 
-def swebench_instance_ids(limit: int = 20, *, split: str = "test", dataset: str = "princeton-nlp/SWE-bench_Verified") -> list[str]:
+def swebench_instance_ids(
+    limit: int = 20, *, split: str = "test", dataset: str = "princeton-nlp/SWE-bench_Verified"
+) -> list[str]:
     """List the first ``limit`` instance ids from a SWE-bench dataset.
 
     Runs on the runner (needs the ``datasets`` extra). Used to pick a real,
@@ -235,7 +234,9 @@ def swebench_instance_ids(limit: int = 20, *, split: str = "test", dataset: str 
     try:
         from datasets import load_dataset  # type: ignore
     except ImportError as exc:  # pragma: no cover - runner-only
-        raise RuntimeError("swebench_instance_ids requires the 'swebench' extra (datasets)") from exc
+        raise RuntimeError(
+            "swebench_instance_ids requires the 'swebench' extra (datasets)"
+        ) from exc
     ds = load_dataset(dataset, split=split)
     ids = [row["instance_id"] for row in ds]
     return ids[:limit] if limit and limit > 0 else ids

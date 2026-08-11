@@ -162,9 +162,7 @@ class McpHttpClient:
 
     def call_tool(self, name: str, arguments: dict[str, Any] | None = None) -> str:
         self.initialize()
-        result = self._call(
-            "tools/call", {"name": str(name), "arguments": arguments or {}}
-        )
+        result = self._call("tools/call", {"name": str(name), "arguments": arguments or {}})
         if result.get("isError"):
             parts = result.get("content") or []
             detail = "; ".join(

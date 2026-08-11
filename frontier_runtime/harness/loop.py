@@ -132,16 +132,19 @@ class AgentLoop:
                         "current answer; no further tool calls are available.",
                     }
                 )
-                rec.annotation("budget_forced_submit", step=step, elapsed=elapsed,
-                               tokens=tokens_estimate)
+                rec.annotation(
+                    "budget_forced_submit", step=step, elapsed=elapsed, tokens=tokens_estimate
+                )
             elif over_budget and forced_final:
                 outcome = LoopOutcome.BUDGET_EXHAUSTED
                 break
 
             extra = constraint_kwargs(getattr(self.client, "provider", ""), self.profile, tools)
             if forced_final:
-                extra = {**extra, "tool_choice": {"type": "function",
-                                                  "function": {"name": "submit"}}}
+                extra = {
+                    **extra,
+                    "tool_choice": {"type": "function", "function": {"name": "submit"}},
+                }
             # Local inference servers (Ollama/vLLM/llama.cpp) under load throw
             # transient errors/timeouts. Retry with backoff before giving up so
             # long-horizon runs survive a contended endpoint.
@@ -157,7 +160,9 @@ class AgentLoop:
                     )
                     break
                 except Exception as exc:  # noqa: BLE001 - transient provider failure
-                    rec.annotation("provider_error", step=step, attempt=attempt, error=str(exc)[:200])
+                    rec.annotation(
+                        "provider_error", step=step, attempt=attempt, error=str(exc)[:200]
+                    )
                     self._emit("provider_error", attempt=attempt, error=str(exc))
                     if attempt < self.provider_max_retries:
                         time.sleep(self.provider_retry_backoff * (2**attempt))
@@ -169,8 +174,9 @@ class AgentLoop:
             assistant_msg = self._assistant_message(resp)
             messages.append(assistant_msg)
             rec.message(assistant_msg, step=step, usage=resp.usage or None)
-            self._emit("model_step", step=step, has_tools=bool(resp.tool_calls),
-                       text=resp.text[:200])
+            self._emit(
+                "model_step", step=step, has_tools=bool(resp.tool_calls), text=resp.text[:200]
+            )
 
             if not resp.tool_calls:
                 # No tool call. In bash-only mode, try to parse an action.
@@ -206,9 +212,14 @@ class AgentLoop:
         elapsed = time.time() - start
         if outcome == LoopOutcome.ERROR and self.toolset.submitted:
             outcome = LoopOutcome.SUBMITTED
-        if step >= self.budgets.max_steps and not self.toolset.submitted and outcome in (
-            LoopOutcome.ERROR,
-            LoopOutcome.BUDGET_EXHAUSTED,
+        if (
+            step >= self.budgets.max_steps
+            and not self.toolset.submitted
+            and outcome
+            in (
+                LoopOutcome.ERROR,
+                LoopOutcome.BUDGET_EXHAUSTED,
+            )
         ):
             outcome = LoopOutcome.BUDGET_EXHAUSTED
 

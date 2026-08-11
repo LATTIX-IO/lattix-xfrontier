@@ -86,7 +86,12 @@ def test_node_definitions_include_cognitive_mvp_nodes() -> None:
 
     assert response.status_code == 200
     type_keys = {item["type_key"] for item in response.json()}
-    assert {"frontier/goal", "frontier/evidence", "frontier/assembly", "frontier/commitment"}.issubset(type_keys)
+    assert {
+        "frontier/goal",
+        "frontier/evidence",
+        "frontier/assembly",
+        "frontier/commitment",
+    }.issubset(type_keys)
 
 
 def test_graph_validation_accepts_cognitive_mvp_graph() -> None:

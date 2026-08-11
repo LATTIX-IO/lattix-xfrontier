@@ -374,11 +374,18 @@ class _WindowsAppContainerStrategy:
         import sys as _sys
 
         args = [
-            _sys.executable, "-m", "frontier_runtime.win_sandbox", "run",
-            "--memory", str(policy.memory_limit),
-            "--pids", str(policy.pid_limit),
-            "--cpu", str(policy.cpu_limit),
-            "--timeout", str(policy.timeout_seconds),
+            _sys.executable,
+            "-m",
+            "frontier_runtime.win_sandbox",
+            "run",
+            "--memory",
+            str(policy.memory_limit),
+            "--pids",
+            str(policy.pid_limit),
+            "--cpu",
+            str(policy.cpu_limit),
+            "--timeout",
+            str(policy.timeout_seconds),
         ]
         if policy.allow_network:
             args.append("--allow-network")

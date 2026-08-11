@@ -99,9 +99,7 @@ def tool_schemas(edit_format: str = "search-replace") -> list[dict[str, Any]]:
         "insert_line)."
     )
     if edit_format == "whole-file":
-        editor_desc += (
-            " NOTE: prefer 'create' to rewrite the entire file when edits are difficult."
-        )
+        editor_desc += " NOTE: prefer 'create' to rewrite the entire file when edits are difficult."
     return [
         {
             "type": "function",

@@ -29,7 +29,17 @@ def _which_factory(available: set[str]):
 
 
 # Every infra binary present.
-_ALL = {"postgres", "pg_ctl", "initdb", "psql", "neo4j", "nats-server", "ollama", "redis-server", "opa"}
+_ALL = {
+    "postgres",
+    "pg_ctl",
+    "initdb",
+    "psql",
+    "neo4j",
+    "nats-server",
+    "ollama",
+    "redis-server",
+    "opa",
+}
 
 
 def _config(tmp_path, **kw) -> nl.NativeConfig:
@@ -62,7 +72,9 @@ def test_backend_service_required(tmp_path):
 
 def test_world_models_ride_on_postgres_no_neo4j(tmp_path):
     # World-models now live in the bundled Postgres — no Neo4j, no JRE, no NEO4J_* env.
-    plan = nl.build_native_plan(_config(tmp_path, enable_world_models=True), which=_which_factory(_ALL))
+    plan = nl.build_native_plan(
+        _config(tmp_path, enable_world_models=True), which=_which_factory(_ALL)
+    )
     assert "neo4j" not in plan.service_names()
     assert "NEO4J_URI" not in plan.env and "NEO4J_PASSWORD" not in plan.env
     assert plan.env["FRONTIER_MEMORY_GRAPH_PROJECTION_ENABLED"] == "true"
@@ -81,7 +93,9 @@ def test_world_models_off_when_postgres_absent_degrade(tmp_path):
 
 
 def test_world_models_off_disables_projection(tmp_path):
-    plan = nl.build_native_plan(_config(tmp_path, enable_world_models=False), which=_which_factory(_ALL))
+    plan = nl.build_native_plan(
+        _config(tmp_path, enable_world_models=False), which=_which_factory(_ALL)
+    )
     assert "neo4j" not in plan.service_names()
     assert plan.env["FRONTIER_MEMORY_GRAPH_PROJECTION_ENABLED"] == "false"
 
@@ -191,7 +205,9 @@ def test_pre_start_skipped_when_marker_exists(tmp_path):
 
     sup = nl.NativeSupervisor(
         plan,
-        spawn=lambda argv, *, env, cwd: type("P", (), {"poll": lambda self: None, "terminate": lambda self: None})(),
+        spawn=lambda argv, *, env, cwd: type(
+            "P", (), {"poll": lambda self: None, "terminate": lambda self: None}
+        )(),
         run=lambda argv, *, env: ran.append(argv) or 0,
         probe=lambda check: True,
         sleep=lambda s: None,

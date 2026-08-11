@@ -133,7 +133,11 @@ INTEGRATION_CATALOG: list[dict[str, Any]] = [
         "publisher": "third_party",
         "capabilities": ["repos", "issues", "pull_requests", "code_search"],
         "egress_allowlist": ["api.githubcopilot.com", "api.github.com"],
-        "metadata_json": {"protocol": "mcp", "transport": "http", "docs": "https://github.com/github/github-mcp-server"},
+        "metadata_json": {
+            "protocol": "mcp",
+            "transport": "http",
+            "docs": "https://github.com/github/github-mcp-server",
+        },
     },
     {
         "catalog_id": "mcp-linear",
@@ -144,7 +148,11 @@ INTEGRATION_CATALOG: list[dict[str, Any]] = [
         "publisher": "third_party",
         "capabilities": ["issues", "projects", "comments"],
         "egress_allowlist": ["mcp.linear.app", "api.linear.app"],
-        "metadata_json": {"protocol": "mcp", "transport": "http", "docs": "https://linear.app/docs/mcp"},
+        "metadata_json": {
+            "protocol": "mcp",
+            "transport": "http",
+            "docs": "https://linear.app/docs/mcp",
+        },
     },
     {
         "catalog_id": "api-linear-graphql",
@@ -155,7 +163,10 @@ INTEGRATION_CATALOG: list[dict[str, Any]] = [
         "publisher": "third_party",
         "capabilities": ["graphql", "issues", "comments", "attachments"],
         "egress_allowlist": ["api.linear.app"],
-        "metadata_json": {"protocol": "http", "docs": "https://developers.linear.app/docs/graphql/working-with-the-graphql-api"},
+        "metadata_json": {
+            "protocol": "http",
+            "docs": "https://developers.linear.app/docs/graphql/working-with-the-graphql-api",
+        },
     },
     {
         "catalog_id": "mcp-slack",
@@ -166,7 +177,11 @@ INTEGRATION_CATALOG: list[dict[str, Any]] = [
         "publisher": "third_party",
         "capabilities": ["messages", "channels", "search"],
         "egress_allowlist": ["slack.com", "api.slack.com"],
-        "metadata_json": {"protocol": "mcp", "transport": "stdio", "package": "@modelcontextprotocol/server-slack"},
+        "metadata_json": {
+            "protocol": "mcp",
+            "transport": "stdio",
+            "package": "@modelcontextprotocol/server-slack",
+        },
     },
     {
         "catalog_id": "mcp-notion",
@@ -177,7 +192,11 @@ INTEGRATION_CATALOG: list[dict[str, Any]] = [
         "publisher": "third_party",
         "capabilities": ["pages", "databases", "search"],
         "egress_allowlist": ["mcp.notion.com", "api.notion.com"],
-        "metadata_json": {"protocol": "mcp", "transport": "http", "docs": "https://developers.notion.com/docs/mcp"},
+        "metadata_json": {
+            "protocol": "mcp",
+            "transport": "http",
+            "docs": "https://developers.notion.com/docs/mcp",
+        },
     },
     {
         "catalog_id": "mcp-atlassian",
@@ -199,7 +218,12 @@ INTEGRATION_CATALOG: list[dict[str, Any]] = [
         "publisher": "first_party",
         "capabilities": ["read_files", "write_files", "directory_listing"],
         "egress_allowlist": [],
-        "metadata_json": {"protocol": "mcp", "transport": "stdio", "package": "@modelcontextprotocol/server-filesystem", "execution_mode_hint": "sandboxed"},
+        "metadata_json": {
+            "protocol": "mcp",
+            "transport": "stdio",
+            "package": "@modelcontextprotocol/server-filesystem",
+            "execution_mode_hint": "sandboxed",
+        },
     },
     {
         "catalog_id": "mcp-fetch",
@@ -210,7 +234,12 @@ INTEGRATION_CATALOG: list[dict[str, Any]] = [
         "publisher": "first_party",
         "capabilities": ["http_get", "html_to_markdown"],
         "egress_allowlist": [],
-        "metadata_json": {"protocol": "mcp", "transport": "stdio", "package": "mcp-server-fetch", "note": "Constrain egress via the platform allowlist before enabling."},
+        "metadata_json": {
+            "protocol": "mcp",
+            "transport": "stdio",
+            "package": "mcp-server-fetch",
+            "note": "Constrain egress via the platform allowlist before enabling.",
+        },
     },
     {
         "catalog_id": "mcp-postgres",
@@ -221,7 +250,11 @@ INTEGRATION_CATALOG: list[dict[str, Any]] = [
         "publisher": "first_party",
         "capabilities": ["read_only_queries", "schema_inspection"],
         "egress_allowlist": [],
-        "metadata_json": {"protocol": "mcp", "transport": "stdio", "package": "@modelcontextprotocol/server-postgres"},
+        "metadata_json": {
+            "protocol": "mcp",
+            "transport": "stdio",
+            "package": "@modelcontextprotocol/server-postgres",
+        },
     },
     {
         "catalog_id": "api-github-rest",
@@ -243,7 +276,10 @@ INTEGRATION_CATALOG: list[dict[str, Any]] = [
         "publisher": "third_party",
         "capabilities": ["chat_completions", "embeddings"],
         "egress_allowlist": ["integrate.api.nvidia.com"],
-        "metadata_json": {"protocol": "http", "note": "Also configurable platform-wide via NVIDIA_API_KEY for nim/<model> routing."},
+        "metadata_json": {
+            "protocol": "http",
+            "note": "Also configurable platform-wide via NVIDIA_API_KEY for nim/<model> routing.",
+        },
     },
     {
         "catalog_id": "api-openai",
@@ -254,7 +290,10 @@ INTEGRATION_CATALOG: list[dict[str, Any]] = [
         "publisher": "third_party",
         "capabilities": ["chat_completions", "embeddings"],
         "egress_allowlist": ["api.openai.com"],
-        "metadata_json": {"protocol": "http", "note": "Platform default provider; configured via OPENAI_API_KEY."},
+        "metadata_json": {
+            "protocol": "http",
+            "note": "Platform default provider; configured via OPENAI_API_KEY.",
+        },
     },
 ]
 

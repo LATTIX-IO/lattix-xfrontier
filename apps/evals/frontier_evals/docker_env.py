@@ -53,6 +53,4 @@ def instance_container(
     try:
         yield container_id
     finally:
-        subprocess.run(
-            ["docker", "kill", container_id], capture_output=True, text=True, env=env
-        )
+        subprocess.run(["docker", "kill", container_id], capture_output=True, text=True, env=env)

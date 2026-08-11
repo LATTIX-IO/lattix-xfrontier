@@ -138,14 +138,17 @@ class GhCliGitHub:
     """GitHubClient backed by host ``git push`` + the ``gh`` CLI."""
 
     executor: Executor
-    gh_runner: Callable[[list[str]], Any]  # runs gh args, returns ExecResult-like (.stdout/.exit_code)
+    gh_runner: Callable[
+        [list[str]], Any
+    ]  # runs gh args, returns ExecResult-like (.stdout/.exit_code)
 
     def push_branch(self, branch: str) -> None:
         self.executor.run_shell(f"git push -u origin {branch}", timeout=120)
 
     def find_open_pr(self, branch: str) -> dict[str, Any] | None:
-        res = self.gh_runner(["pr", "list", "--head", branch, "--state", "open",
-                              "--json", "number,url,state"])
+        res = self.gh_runner(
+            ["pr", "list", "--head", branch, "--state", "open", "--json", "number,url,state"]
+        )
         try:
             items = json.loads(res.stdout or "[]")
         except (json.JSONDecodeError, AttributeError):
@@ -153,13 +156,20 @@ class GhCliGitHub:
         return items[0] if items else None
 
     def open_pr(self, branch: str, base: str, title: str, body: str) -> dict[str, Any]:
-        res = self.gh_runner(["pr", "create", "--head", branch, "--base", base,
-                              "--title", title, "--body", body])
-        url = (getattr(res, "stdout", "") or "").strip().splitlines()[-1] if getattr(res, "stdout", "") else ""
+        res = self.gh_runner(
+            ["pr", "create", "--head", branch, "--base", base, "--title", title, "--body", body]
+        )
+        url = (
+            (getattr(res, "stdout", "") or "").strip().splitlines()[-1]
+            if getattr(res, "stdout", "")
+            else ""
+        )
         return {"url": url}
 
     def merge_pr(self, number: int, method: str) -> dict[str, Any]:
-        flag = {"merge": "--merge", "squash": "--squash", "rebase": "--rebase"}.get(method, "--squash")
+        flag = {"merge": "--merge", "squash": "--squash", "rebase": "--rebase"}.get(
+            method, "--squash"
+        )
         self.gh_runner(["pr", "merge", str(number), flag, "--delete-branch"])
         return {"merged": True}
 
@@ -172,7 +182,9 @@ class GhCliGitHub:
 class GitHubDelivery:
     github: GitHubClient
 
-    def deliver(self, task: SweTask, spec: Spec, team: TeamResult, policy: DeliveryPolicy) -> DeliveryResult:
+    def deliver(
+        self, task: SweTask, spec: Spec, team: TeamResult, policy: DeliveryPolicy
+    ) -> DeliveryResult:
         ex = task.git_executor or task.executor
         branch = f"{policy.branch_prefix}{spec.id or task.instance_id}".replace(" ", "-")
 
@@ -183,13 +195,19 @@ class GitHubDelivery:
                 num = int(existing.get("number"))
                 self.github.merge_pr(num, policy.merge_method)
                 return DeliveryResult(
-                    action="merged", branch=branch, pr_url=str(existing.get("url") or ""),
-                    pr_number=num, ci_status=self.github.ci_status(branch),
+                    action="merged",
+                    branch=branch,
+                    pr_url=str(existing.get("url") or ""),
+                    pr_number=num,
+                    ci_status=self.github.ci_status(branch),
                     detail=f"merged to {policy.target_branch} via {policy.merge_method}",
                 )
             return DeliveryResult(
-                action="awaiting_merge", branch=branch, pr_url=str(existing.get("url") or ""),
-                pr_number=int(existing.get("number")), ci_status=self.github.ci_status(branch),
+                action="awaiting_merge",
+                branch=branch,
+                pr_url=str(existing.get("url") or ""),
+                pr_number=int(existing.get("number")),
+                ci_status=self.github.ci_status(branch),
                 detail="PR already open; auto-merge disabled",
             )
 
@@ -200,12 +218,15 @@ class GitHubDelivery:
         commit_msg = f"{spec.title or task.instance_id}\n\nResolves {spec.url or spec.id}".strip()
         ex.run_shell(f"git checkout -B {branch}", timeout=60)
         ex.run_shell("git add -A", timeout=60)
-        ex.run_shell(f'git commit -m {json.dumps(commit_msg)}', timeout=60)
+        ex.run_shell(f"git commit -m {json.dumps(commit_msg)}", timeout=60)
         self.github.push_branch(branch)
-        pr = self.github.open_pr(branch, policy.target_branch, spec.title or task.instance_id,
-                                 _pr_body(spec, team))
+        pr = self.github.open_pr(
+            branch, policy.target_branch, spec.title or task.instance_id, _pr_body(spec, team)
+        )
         return DeliveryResult(
-            action="opened_pr", branch=branch, pr_url=str(pr.get("url") or ""),
+            action="opened_pr",
+            branch=branch,
+            pr_url=str(pr.get("url") or ""),
             ci_status=self.github.ci_status(branch),
             detail=f"opened PR against {policy.target_branch}",
         )
@@ -215,8 +236,11 @@ def _pr_body(spec: Spec, team: TeamResult) -> str:
     lines = [f"Spec: {spec.url or spec.id}", "", "## Summary", spec.body[:1000], ""]
     if team.rounds:
         last = team.rounds[-1]
-        lines += ["## Review", f"Rounds: {team.round_count}",
-                  f"Moderator: {last.verdict.rationale}"]
+        lines += [
+            "## Review",
+            f"Rounds: {team.round_count}",
+            f"Moderator: {last.verdict.rationale}",
+        ]
         if last.verdict.deferred:
             lines += ["", "Deferred (non-blocking):"] + [f"- {d}" for d in last.verdict.deferred]
     lines += ["", "_Generated by the xFrontier multi-agent dev team._"]
@@ -255,10 +279,13 @@ class DevFlow:
         if team_result.approved and self.delivery is not None:
             delivery_result = self.delivery.deliver(task, spec, team_result, self.policy)
             if self.on_event:
-                self.on_event("delivery", {"action": delivery_result.action,
-                                           "pr_url": delivery_result.pr_url})
+                self.on_event(
+                    "delivery", {"action": delivery_result.action, "pr_url": delivery_result.pr_url}
+                )
         return DevFlowResult(spec=spec, team=team_result, delivery=delivery_result)
 
 
 class DeliveryTarget(Protocol):
-    def deliver(self, task: SweTask, spec: Spec, team: TeamResult, policy: DeliveryPolicy) -> DeliveryResult: ...
+    def deliver(
+        self, task: SweTask, spec: Spec, team: TeamResult, policy: DeliveryPolicy
+    ) -> DeliveryResult: ...

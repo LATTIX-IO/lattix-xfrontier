@@ -38,7 +38,13 @@ class AgentSpec:
     def profile(self, *, overrides: dict[str, Any] | None = None) -> ModelCapabilityProfile:
         md = self.model_defaults
         prof_overrides: dict[str, Any] = {}
-        for key in ("edit_format", "tool_protocol", "temperature", "top_p", "max_effective_context"):
+        for key in (
+            "edit_format",
+            "tool_protocol",
+            "temperature",
+            "top_p",
+            "max_effective_context",
+        ):
             if key in md and md[key] is not None:
                 prof_overrides[key] = md[key]
         if overrides:
@@ -61,9 +67,7 @@ def list_shipped_agents(repo_root: Path | None = None) -> list[str]:
     if not root.is_dir():
         return []
     return sorted(
-        d.name
-        for d in root.iterdir()
-        if d.is_dir() and (d / "agent.config.json").exists()
+        d.name for d in root.iterdir() if d.is_dir() and (d / "agent.config.json").exists()
     )
 
 

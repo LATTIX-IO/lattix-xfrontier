@@ -115,9 +115,8 @@ class WorkspaceManager:
     """Provision per-task workspaces (git worktree isolation) from a binding."""
 
     def __init__(self, worktrees_root: Path | None = None) -> None:
-        self.worktrees_root = (
-            worktrees_root
-            or Path(os.getenv("FRONTIER_WORKTREES_ROOT") or (Path.home() / ".frontier" / "worktrees"))
+        self.worktrees_root = worktrees_root or Path(
+            os.getenv("FRONTIER_WORKTREES_ROOT") or (Path.home() / ".frontier" / "worktrees")
         )
 
     def provision(self, binding: WorkspaceBinding, run_id: str) -> ProvisionedWorkspace:
@@ -128,8 +127,12 @@ class WorkspaceManager:
 
         if binding.isolation == "in-place" or not self._is_git_repo(repo):
             executor = _make_executor(repo, binding.extra_paths)
-            ws = Workspace(run_id=run_id, executor=executor,
-                           test_command=binding.test_command, base_ref=binding.base_ref or "HEAD")
+            ws = Workspace(
+                run_id=run_id,
+                executor=executor,
+                test_command=binding.test_command,
+                base_ref=binding.base_ref or "HEAD",
+            )
             return ProvisionedWorkspace(binding, ws, repo, "(in-place)", lambda: None)
 
         # git worktree isolation: a fresh checkout off base_ref on a task branch
@@ -146,16 +149,18 @@ class WorkspaceManager:
                 raise RuntimeError(f"git worktree add failed: {add.stderr or add2.stderr}")
 
         executor = _make_executor(wt_dir, binding.extra_paths)
-        ws = Workspace(run_id=run_id, executor=executor,
-                       test_command=binding.test_command, base_ref=base)
+        ws = Workspace(
+            run_id=run_id, executor=executor, test_command=binding.test_command, base_ref=base
+        )
 
         def cleanup() -> None:
             self._remove_worktree(repo, wt_dir)
 
         return ProvisionedWorkspace(binding, ws, wt_dir, branch, cleanup)
 
-    def build_task(self, binding: WorkspaceBinding, run_id: str, problem_statement: str
-                   ) -> tuple[SweTask, ProvisionedWorkspace]:
+    def build_task(
+        self, binding: WorkspaceBinding, run_id: str, problem_statement: str
+    ) -> tuple[SweTask, ProvisionedWorkspace]:
         prov = self.provision(binding, run_id)
         task = SweTask(
             instance_id=run_id,

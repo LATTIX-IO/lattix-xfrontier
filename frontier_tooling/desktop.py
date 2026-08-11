@@ -175,9 +175,7 @@ def run_desktop_supervisor(*, log=print, **overrides: object) -> None:
         # the model (re-plan so newly-fetched binaries are picked up).
         ensure_sidecars(writable_bin_dir(), model=None, progress=log)
         plan2 = build_native_plan(desktop_config(**overrides))
-        deferred = NativePlan(
-            [s for s in plan2.services if s.name != "frontend"], plan2.env, []
-        )
+        deferred = NativePlan([s for s in plan2.services if s.name != "frontend"], plan2.env, [])
         sup = NativeSupervisor(deferred, log=log)
         deferred_supervisors.append(sup)
         _LIVE_SUPERVISORS.append(sup)

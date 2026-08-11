@@ -34,9 +34,7 @@ def git_available() -> bool:
 
 def git_init(root: Path) -> None:
     def run(*args: str) -> None:
-        subprocess.run(
-            ["git", *args], cwd=str(root), check=True, capture_output=True, text=True
-        )
+        subprocess.run(["git", *args], cwd=str(root), check=True, capture_output=True, text=True)
 
     run("init", "-q")
     run("config", "user.email", "test@example.com")

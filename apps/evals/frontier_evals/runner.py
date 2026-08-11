@@ -94,7 +94,10 @@ def run_eval(
                 traj_dir = out_dir / "instances" / inst.instance_id / f"seed-{seed}"
                 traj_dir.mkdir(parents=True, exist_ok=True)
                 agent = SweAgent(
-                    client=client, profile=profile, budgets=budgets, trajectory_dir=traj_dir,
+                    client=client,
+                    profile=profile,
+                    budgets=budgets,
+                    trajectory_dir=traj_dir,
                     system_prompt_override=spec.system_prompt if spec else None,
                 )
                 result = agent.solve(task)
@@ -117,9 +120,7 @@ def run_eval(
                 (traj_dir / "result.json").write_text(
                     json.dumps(asdict(ir), indent=2), encoding="utf-8"
                 )
-        seed_summaries.append(
-            SeedSummary(seed=seed, resolved=resolved_count, total=len(instances))
-        )
+        seed_summaries.append(SeedSummary(seed=seed, resolved=resolved_count, total=len(instances)))
 
     summary = summarize(seed_summaries, per_instance_pass)
     run.summary = {
@@ -132,7 +133,9 @@ def run_eval(
     return run
 
 
-def run_live_swebench(config: EvalConfig, *, output_dir: Path | None = None) -> EvalRun:  # pragma: no cover - live only
+def run_live_swebench(
+    config: EvalConfig, *, output_dir: Path | None = None
+) -> EvalRun:  # pragma: no cover - live only
     """Run real SWE-bench instances in Docker against the model under test.
 
     Untested in CI (needs a GPU-served model + Docker on a remote runner). Wired
@@ -169,7 +172,10 @@ def run_live_swebench(config: EvalConfig, *, output_dir: Path | None = None) -> 
                 traj_dir = out_dir / "instances" / iid / f"seed-{seed}"
                 traj_dir.mkdir(parents=True, exist_ok=True)
                 agent = SweAgent(
-                    client=client, profile=profile, budgets=budgets, trajectory_dir=traj_dir,
+                    client=client,
+                    profile=profile,
+                    budgets=budgets,
+                    trajectory_dir=traj_dir,
                     system_prompt_override=spec.system_prompt if spec else None,
                 )
                 result = agent.solve(task)
@@ -225,9 +231,7 @@ def _resolve_profile_for(config: EvalConfig, spec, client):
         )
     if spec is not None:
         return spec.profile()
-    return resolve_profile(
-        getattr(client, "provider", "reference"), getattr(client, "model", "")
-    )
+    return resolve_profile(getattr(client, "provider", "reference"), getattr(client, "model", ""))
 
 
 def _config_public(config: EvalConfig) -> dict[str, Any]:

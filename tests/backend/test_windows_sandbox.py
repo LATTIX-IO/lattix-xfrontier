@@ -196,6 +196,7 @@ def test_native_isolation_parity_across_os(monkeypatch):
     # macOS → seatbelt (sandbox-exec present)
     monkeypatch.setattr(sb, "detect_host_platform", lambda *a, **k: sb.HostPlatform.MACOS)
     import types as _types
+
     monkeypatch.setattr(sb, "Path", lambda p: _types.SimpleNamespace(is_file=lambda: True))
     assert sb.SandboxManager()._detect() == sb.IsolationStrategy.KERNEL_SEATBELT
 
@@ -225,8 +226,11 @@ def test_appcontainer_default_runs_or_falls_back(monkeypatch, tmp_path):
     # fall back to the Job-Object tier — either way the command runs cleanly.
     monkeypatch.delenv("FRONTIER_WIN_SANDBOX_TIER", raising=False)
     result = ws.run_confined(
-        ["cmd", "/c", "echo frontier-ok"], memory="256m", pids=16,
-        write_paths=[str(tmp_path)], cwd=str(tmp_path),
+        ["cmd", "/c", "echo frontier-ok"],
+        memory="256m",
+        pids=16,
+        write_paths=[str(tmp_path)],
+        cwd=str(tmp_path),
     )
     assert result.exit_code == 0
     assert result.tier in {"appcontainer-job", "job-object"}

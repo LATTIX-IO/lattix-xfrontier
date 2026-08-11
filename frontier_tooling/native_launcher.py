@@ -243,7 +243,9 @@ def build_native_plan(config: NativeConfig, *, which: WhichFn = _which) -> Nativ
             db = f"postgresql://{config.postgres_user}@{host}:{config.postgres_port}/{config.postgres_db}"
             pg_post.append(Step(argv=[psql, db, "-c", "CREATE EXTENSION IF NOT EXISTS vector"]))
         else:
-            warnings.append("psql not found; create the 'frontier' DB + 'vector' extension manually.")
+            warnings.append(
+                "psql not found; create the 'frontier' DB + 'vector' extension manually."
+            )
         services.append(
             ServiceSpec(
                 name="postgres",
@@ -302,7 +304,9 @@ def build_native_plan(config: NativeConfig, *, which: WhichFn = _which) -> Nativ
                 name="ollama",
                 argv=[ollama_bin, "serve"],
                 env={"OLLAMA_HOST": f"{host}:{config.ollama_port}", "OLLAMA_KEEP_ALIVE": "30m"},
-                health=HealthCheck("http", host, config.ollama_port, path="/api/tags", timeout_s=60),
+                health=HealthCheck(
+                    "http", host, config.ollama_port, path="/api/tags", timeout_s=60
+                ),
                 post_start=[Step(argv=[ollama_bin, "pull", config.ollama_model])],
                 required=False,
             )
@@ -334,7 +338,13 @@ def build_native_plan(config: NativeConfig, *, which: WhichFn = _which) -> Nativ
             services.append(
                 ServiceSpec(
                     name="opa",
-                    argv=[opa_bin, "run", "--server", f"--addr={host}:{config.opa_port}", "policies/"],
+                    argv=[
+                        opa_bin,
+                        "run",
+                        "--server",
+                        f"--addr={host}:{config.opa_port}",
+                        "policies/",
+                    ],
                     health=HealthCheck("http", host, config.opa_port, path="/health", timeout_s=20),
                     required=False,
                 )
@@ -353,8 +363,14 @@ def build_native_plan(config: NativeConfig, *, which: WhichFn = _which) -> Nativ
             ServiceSpec(
                 name="backend",
                 argv=[
-                    python, "-m", "uvicorn", "app.main:app",
-                    "--host", host, "--port", str(config.backend_port),
+                    python,
+                    "-m",
+                    "uvicorn",
+                    "app.main:app",
+                    "--host",
+                    host,
+                    "--port",
+                    str(config.backend_port),
                 ],
                 cwd=str(backend_dir),
                 env={
@@ -362,7 +378,9 @@ def build_native_plan(config: NativeConfig, *, which: WhichFn = _which) -> Nativ
                         p for p in (str(backend_dir), str(root), os.getenv("PYTHONPATH", "")) if p
                     )
                 },
-                health=HealthCheck("http", host, config.backend_port, path="/healthz", timeout_s=120),
+                health=HealthCheck(
+                    "http", host, config.backend_port, path="/healthz", timeout_s=120
+                ),
                 required=True,
             )
         )
@@ -447,9 +465,16 @@ def _agent_service_specs(
             ServiceSpec(
                 name=f"agent-{agent_id}",
                 argv=[
-                    python, "-m", "uvicorn", "app:app",
-                    "--app-dir", str(template_dir),
-                    "--host", host, "--port", str(port),
+                    python,
+                    "-m",
+                    "uvicorn",
+                    "app:app",
+                    "--app-dir",
+                    str(template_dir),
+                    "--host",
+                    host,
+                    "--port",
+                    str(port),
                 ],
                 env={
                     "AGENT_ID": agent_id,
@@ -563,7 +588,9 @@ class NativeSupervisor:
             if not self._wait_health(svc):
                 if svc.required:
                     self.stop_all()
-                    raise NativeLauncherError(f"required service '{svc.name}' failed its health check")
+                    raise NativeLauncherError(
+                        f"required service '{svc.name}' failed its health check"
+                    )
                 self._log(f"WARN: optional service '{svc.name}' did not become healthy; continuing")
                 continue
             self._run_steps(svc.post_start, svc_env)
@@ -607,7 +634,8 @@ class NativeSupervisor:
 
                 subprocess.run(
                     ["taskkill", "/F", "/T", "/PID", str(pid)],
-                    check=False, capture_output=True,
+                    check=False,
+                    capture_output=True,
                 )
                 return
             except Exception:  # noqa: BLE001

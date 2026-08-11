@@ -99,7 +99,9 @@ def test_ai_providers_save_merges_and_respects_secret_semantics() -> None:
         )
         assert first.status_code == 200
         # Settings saves replace the model instance; always re-read the store.
-        assert main_module.store.platform_settings.ai_providers["google"]["api_key"] == "google-key-1"
+        assert (
+            main_module.store.platform_settings.ai_providers["google"]["api_key"] == "google-key-1"
+        )
 
         # Blank key keeps the stored value; other fields update.
         client.post(

@@ -147,8 +147,12 @@ def _native_plan(*, world_models: bool, redis: bool):
 
 
 @cli.command("native-up")
-@click.option("--world-models/--no-world-models", default=True, help="Run the Neo4j world-graph sidecar.")
-@click.option("--redis/--no-redis", default=True, help="Run the Redis short-term cache (WAL fallback if off).")
+@click.option(
+    "--world-models/--no-world-models", default=True, help="Run the Neo4j world-graph sidecar."
+)
+@click.option(
+    "--redis/--no-redis", default=True, help="Run the Redis short-term cache (WAL fallback if off)."
+)
 def native_up_command(world_models: bool, redis: bool) -> None:
     """Start xFrontier natively (no Docker): managed Postgres+pgvector, Neo4j
     world models, NATS, Ollama, and the app — then print the resolved status."""

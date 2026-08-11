@@ -46,7 +46,7 @@ try:  # optional — YAML export/import; JSON always works without it
 except Exception:  # noqa: BLE001
     _yaml = None
 from pydantic import BaseModel, Field, ValidationError
-from . import cron as app_cron
+from app import cron as app_cron
 from app import knowledge as app_knowledge
 from app import local_models, mcp_client, skills_catalog
 from app.generated_artifacts import GeneratedArtifactService
@@ -20674,7 +20674,7 @@ def _compile_and_run_frontier_graph(
     ``(node_results, events)`` shaped like the native path so the response model
     and UI are unchanged.
     """
-    from app import graph_compiler as gc
+    from . import graph_compiler as gc
 
     events: list[GraphRunEvent] = []
 

@@ -13,7 +13,12 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from frontier_runtime.harness.llm import ChatResponse, OpenAIChatClient, ScriptedChatClient, ToolCall
+from frontier_runtime.harness.llm import (
+    ChatResponse,
+    OpenAIChatClient,
+    ScriptedChatClient,
+    ToolCall,
+)
 
 from frontier_evals.config import EvalConfig
 

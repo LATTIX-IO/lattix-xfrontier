@@ -107,16 +107,20 @@ def test_loop_handles_view_called_as_tool(tmp_path):
     client = ScriptedChatClient(
         responses=[
             # model calls editor sub-command 'view' directly as a tool
-            ChatResponse(tool_calls=[ToolCall(id="v", name="view",
-                                              arguments='{"path": "core.py"}')]),
-            ChatResponse(tool_calls=[ToolCall(id="s", name="submit",
-                                              arguments='{"answer": "seen"}')]),
+            ChatResponse(
+                tool_calls=[ToolCall(id="v", name="view", arguments='{"path": "core.py"}')]
+            ),
+            ChatResponse(
+                tool_calls=[ToolCall(id="s", name="submit", arguments='{"answer": "seen"}')]
+            ),
         ]
     )
     loop = AgentLoop(
-        client=client, toolset=ts,
+        client=client,
+        toolset=ts,
         profile=resolve_profile("scripted", "x", profile_id="local-32b-class"),
-        system_prompt="sys", user_prompt="look",
+        system_prompt="sys",
+        user_prompt="look",
         budgets=LoopBudgets(max_steps=5),
     )
     result = loop.run()

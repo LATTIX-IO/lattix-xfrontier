@@ -8,7 +8,6 @@ import json
 import sys
 from pathlib import Path
 
-import pytest
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(_REPO_ROOT) not in sys.path:
@@ -161,7 +160,8 @@ def test_tauri_conf_is_valid_and_complete():
 def test_tauri_capabilities_allow_sidecar_spawn():
     cap = json.loads((_TAURI_DIR / "capabilities" / "default.json").read_text(encoding="utf-8"))
     spawn_perms = [
-        p for p in cap["permissions"]
+        p
+        for p in cap["permissions"]
         if isinstance(p, dict) and p.get("identifier") == "shell:allow-spawn"
     ]
     assert spawn_perms, "sidecar spawn permission must be granted"

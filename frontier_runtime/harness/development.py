@@ -33,7 +33,12 @@ from frontier_runtime.harness.llm import ChatClient
 from frontier_runtime.harness.loop import LoopBudgets, LoopOutcome
 from frontier_runtime.harness.model_profiles import ModelCapabilityProfile, resolve_profile
 from frontier_runtime.harness.swe_agent import SweTask
-from frontier_runtime.harness.team import TeamFlow, TeamResult, _single_shot, build_team_from_shipped
+from frontier_runtime.harness.team import (
+    TeamFlow,
+    TeamResult,
+    _single_shot,
+    build_team_from_shipped,
+)
 
 PHASES = ("plan", "execute", "test", "secure", "moderate", "deploy")
 
@@ -122,10 +127,15 @@ class DevelopmentWorkflow:
             transcript.append(ChatTurn("deploy", "azure", _SPEAKERS["azure"], deploy_readiness))
             if self.delivery is not None:
                 delivery_result = self.delivery.deliver(task, spec_obj, team_result, self.policy)
-                transcript.append(ChatTurn(
-                    "deploy", "system", _SPEAKERS["system"],
-                    f"Delivery: {delivery_result.action}. {delivery_result.detail} "
-                    f"{delivery_result.pr_url}".strip()))
+                transcript.append(
+                    ChatTurn(
+                        "deploy",
+                        "system",
+                        _SPEAKERS["system"],
+                        f"Delivery: {delivery_result.action}. {delivery_result.detail} "
+                        f"{delivery_result.pr_url}".strip(),
+                    )
+                )
                 self._emit("delivery", action=delivery_result.action, pr_url=delivery_result.pr_url)
 
         return DevelopmentResult(
@@ -140,34 +150,60 @@ class DevelopmentWorkflow:
     # -- transcript assembly ------------------------------------------------
     def _build_transcript(self, spec: Spec, team: TeamResult) -> list[ChatTurn]:
         turns: list[ChatTurn] = []
-        turns.append(ChatTurn("plan", "system", _SPEAKERS["system"],
-                              f"Spec [{spec.source}:{spec.id}]: {spec.title}\n{spec.body}"))
+        turns.append(
+            ChatTurn(
+                "plan",
+                "system",
+                _SPEAKERS["system"],
+                f"Spec [{spec.source}:{spec.id}]: {spec.title}\n{spec.body}",
+            )
+        )
         if team.plan:
             turns.append(ChatTurn("plan", "architect", _SPEAKERS["architect"], team.plan))
         for rnd in team.rounds:
             label = f"(round {rnd.index + 1})"
             impl = rnd.implement
             outcome = "submitted" if impl.outcome == LoopOutcome.SUBMITTED else impl.outcome.value
-            turns.append(ChatTurn(
-                "execute", "implementer", _SPEAKERS["implementer"],
-                f"{label} {impl.answer or '(worked on the change)'}\n"
-                f"steps={impl.steps} outcome={outcome} edits={impl.telemetry.get('edits_applied', 0)}"))
-            turns.append(ChatTurn(
-                "test", "implementer", _SPEAKERS["implementer"],
-                f"{label} ran tests ({impl.telemetry.get('test_runs', 0)} run(s)); "
-                f"patch {'present' if impl.has_patch else 'empty'}."))
+            turns.append(
+                ChatTurn(
+                    "execute",
+                    "implementer",
+                    _SPEAKERS["implementer"],
+                    f"{label} {impl.answer or '(worked on the change)'}\n"
+                    f"steps={impl.steps} outcome={outcome} edits={impl.telemetry.get('edits_applied', 0)}",
+                )
+            )
+            turns.append(
+                ChatTurn(
+                    "test",
+                    "implementer",
+                    _SPEAKERS["implementer"],
+                    f"{label} ran tests ({impl.telemetry.get('test_runs', 0)} run(s)); "
+                    f"patch {'present' if impl.has_patch else 'empty'}.",
+                )
+            )
             for rv in rnd.reviews:
                 phase = "secure" if rv.role == "security" else "secure"
                 fcount = len(rv.findings)
-                turns.append(ChatTurn(
-                    phase, rv.role, _SPEAKERS.get(rv.role, rv.role),
-                    f"{label} verdict={rv.verdict}; {fcount} finding(s). {rv.summary}"))
+                turns.append(
+                    ChatTurn(
+                        phase,
+                        rv.role,
+                        _SPEAKERS.get(rv.role, rv.role),
+                        f"{label} verdict={rv.verdict}; {fcount} finding(s). {rv.summary}",
+                    )
+                )
             v = rnd.verdict
             req = "\n".join(f"  - {c}" for c in v.required_changes)
-            turns.append(ChatTurn(
-                "moderate", "moderator", _SPEAKERS["moderator"],
-                f"{label} decision={v.decision}. {v.rationale}"
-                + (f"\nRequired changes:\n{req}" if v.required_changes else "")))
+            turns.append(
+                ChatTurn(
+                    "moderate",
+                    "moderator",
+                    _SPEAKERS["moderator"],
+                    f"{label} decision={v.decision}. {v.rationale}"
+                    + (f"\nRequired changes:\n{req}" if v.required_changes else ""),
+                )
+            )
         return turns
 
     def _deploy_prep(self, spec: Spec, team: TeamResult) -> str:
@@ -184,8 +220,11 @@ class DevelopmentWorkflow:
         )
         try:
             return _single_shot(
-                self.deploy_client, self.deploy_prompt, user,
-                self.deploy_profile or resolve_profile("", ""))
+                self.deploy_client,
+                self.deploy_prompt,
+                user,
+                self.deploy_profile or resolve_profile("", ""),
+            )
         except Exception:  # noqa: BLE001 - deploy prep is advisory, never fatal
             return self._fallback_readiness(team)
 
@@ -229,8 +268,7 @@ def build_development_workflow(
     return DevelopmentWorkflow(
         team=team,
         deploy_client=client_for("azure"),
-        deploy_prompt=team.prompts.get("azure", "")
-        or _load_azure_prompt(repo_root),
+        deploy_prompt=team.prompts.get("azure", "") or _load_azure_prompt(repo_root),
         deploy_profile=team.profiles.get("azure"),
         delivery=delivery,
         policy=policy or DeliveryPolicy(),
