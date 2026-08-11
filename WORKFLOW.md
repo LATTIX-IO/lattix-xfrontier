@@ -40,8 +40,8 @@ agent:
   max_turns: 12
   max_retry_backoff_ms: 300000
   max_concurrent_agents_by_state:
-    todo: 1
-    in progress: 2
+    "Todo": 1
+    "In Progress": 2
 codex:
   command: bash "$SYMPHONY_CODEX_WRAPPER"
   turn_timeout_ms: 3600000
