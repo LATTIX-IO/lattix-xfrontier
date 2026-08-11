@@ -48,7 +48,7 @@ jobs:
             echo "::warning::Threat model not updated in 90+ days"
           fi
           for section in "Trust Boundaries" "Assets" "Threats" "Mitigations" "Required Tests"; do
-            if grep -q "## $section" THREAT-MODEL.md; then
+            if grep -qi "## $section" THREAT-MODEL.md; then
               echo "Section '$section' present - OK"
             else
               echo "::error::Required section '$section' missing from THREAT-MODEL.md"
