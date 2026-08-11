@@ -20,7 +20,7 @@ tracker:
 polling:
   interval_ms: 30000
 workspace:
-  root: "E:/lattix/.symphony/workspaces/lattix-xfrontier"
+  root: "$SYMPHONY_WORKSPACE_ROOT/lattix-xfrontier"
 hooks:
   timeout_ms: 120000
   after_create: |
