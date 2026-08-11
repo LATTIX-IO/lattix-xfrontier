@@ -40,27 +40,6 @@ function formatSessionSearchText(run: SessionRow): string {
   return [run.title, run.status, run.progressLabel, ...run.inboxReasons].join(" ").toLowerCase();
 }
 
-const NAV_GROUPS: ReadonlyArray<{
-  title: string;
-  items: ReadonlyArray<{ href: string; label: string; icon: NavIconName; expandable?: boolean }>;
-}> = [
-  {
-    title: "Work",
-    items: [
-      { href: "/home", label: "Command Center", icon: "home" },
-      { href: "/workflows/start", label: "Workflows", icon: "workflow" },
-      { href: "/playbooks", label: "Playbooks", icon: "playbooks" },
-    ],
-  },
-  {
-    title: "System",
-    items: [
-      { href: "/memory", label: "Memory", icon: "memory" },
-      { href: "/inbox", label: "Tasks", icon: "tasks", expandable: true },
-    ],
-  },
-];
-
 type NavIconName = "home" | "workflow" | "playbooks" | "memory" | "tasks" | "settings";
 
 function NavIcon({ name, active }: { name: NavIconName; active: boolean }) {
