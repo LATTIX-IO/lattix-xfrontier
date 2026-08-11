@@ -114,6 +114,13 @@ jobs:
         run: |
           trivy fs --scanners vuln,misconfig --severity HIGH,CRITICAL --format sarif --output trivy-results.sarif --skip-dirs .venv,.next,node_modules,dist . || true
 
+      - name: Upload Trivy artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: trivy-results
+          path: trivy-results.sarif
+          if-no-files-found: warn
+
       - name: Upload Trivy results
         uses: github/codeql-action/upload-sarif@v3
         with:
