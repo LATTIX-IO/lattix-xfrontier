@@ -95,12 +95,6 @@ function NavIcon({ name, active }: { name: NavIconName; active: boolean }) {
   );
 }
 
-function isActive(pathname: string, href: string): boolean {
-  if (href === "/home") return pathname === "/home";
-  if (href === "/inbox") return pathname.startsWith("/inbox");
-  return pathname === href || pathname.startsWith(`${href}/`);
-}
-
 export function UserConsoleSidebar({ pathname, selectedSessionId, expanded, platformVersion }: UserConsoleSidebarProps) {
   const router = useRouter();
   const [runs, setRuns] = useState<WorkflowRunSummary[]>([]);
